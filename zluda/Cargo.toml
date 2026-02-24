@@ -16,7 +16,7 @@ tenstorrent = []
 gemmini = []
 nvidia = []
 tmatmul = []
-cutile = []
+cutile = ["comgr/cutile"]
 embed_cudart = []
 flate2 = ["dep:flate2"]
 

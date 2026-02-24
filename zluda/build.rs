@@ -72,6 +72,9 @@ fn main() {
         }
         cudart_build.compile("cudart_shim");
 
+        // Link against zlib for PTX decompression
+        println!("cargo:rustc-link-lib=z");
+
         // Build cublas_shim
         let mut cublas_build = cc::Build::new();
         cublas_build.file("src/cublas_shim.c");

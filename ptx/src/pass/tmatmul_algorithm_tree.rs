@@ -1274,6 +1274,393 @@ impl AlgorithmTree {
     }
 }
 
+// =============================================================================
+// PTX Integration Module
+// =============================================================================
+
+/// PTX to AlgorithmTree converter
+/// Bridges PTX AST operations to TMatmul algorithm tree for scheduling
+pub struct PtxToAlgorithmTreeConverter {
+    /// The algorithm tree being built
+    pub tree: AlgorithmTree,
+    /// Mapping from PTX variable names to abstract vector IDs
+    var_to_vector: HashMap<String, usize>,
+    /// Track vector sizes from PTX declarations
+    var_sizes: HashMap<String, usize>,
+    /// Default vector size when not specified
+    default_vector_size: usize,
+}
+
+impl PtxToAlgorithmTreeConverter {
+    /// Create a new converter with given configuration
+    pub fn new(config: TMatmulConfig) -> Self {
+        Self {
+            tree: AlgorithmTree::new(config),
+            var_to_vector: HashMap::new(),
+            var_sizes: HashMap::new(),
+            default_vector_size: 64,
+        }
+    }
+
+    /// Create with default configuration
+    pub fn with_defaults() -> Self {
+        Self::new(TMatmulConfig::default())
+    }
+
+    /// Set default vector size
+    pub fn set_default_vector_size(&mut self, size: usize) {
+        self.default_vector_size = size;
+    }
+
+    /// Declare a vector variable
+    pub fn declare_vector(&mut self, name: &str, size: usize) -> usize {
+        if let Some(&id) = self.var_to_vector.get(name) {
+            return id;
+        }
+        let id = self.tree.new_abstract_vector(size);
+        self.var_to_vector.insert(name.to_string(), id);
+        self.var_sizes.insert(name.to_string(), size);
+        id
+    }
+
+    /// Get or create vector for a variable
+    pub fn get_or_create_vector(&mut self, name: &str) -> usize {
+        if let Some(&id) = self.var_to_vector.get(name) {
+            return id;
+        }
+        let size = self.var_sizes.get(name).copied().unwrap_or(self.default_vector_size);
+        self.declare_vector(name, size)
+    }
+
+    /// Load vector from memory
+    pub fn emit_load(&mut self, dst: &str, address_label: &str) -> usize {
+        let dst_id = self.get_or_create_vector(dst);
+        let mut info = HashMap::new();
+        info.insert("address_label".to_string(), OperationInfo::String(address_label.to_string()));
+        self.tree.new_abstract_operation(AbstractOperation::Ldv, vec![], vec![dst_id], Some(info))
+    }
+
+    /// Store vector to memory
+    pub fn emit_store(&mut self, src: &str, address_label: &str) -> usize {
+        let src_id = self.get_or_create_vector(src);
+        let mut info = HashMap::new();
+        info.insert("address_label".to_string(), OperationInfo::String(address_label.to_string()));
+        self.tree.new_abstract_operation(AbstractOperation::Sv, vec![src_id], vec![], Some(info))
+    }
+
+    /// Element-wise add: dst = src1 + src2
+    pub fn emit_add(&mut self, dst: &str, src1: &str, src2: &str) -> usize {
+        let dst_id = self.get_or_create_vector(dst);
+        let src1_id = self.get_or_create_vector(src1);
+        let src2_id = self.get_or_create_vector(src2);
+        self.tree.new_abstract_operation(AbstractOperation::Add, vec![src1_id, src2_id], vec![dst_id], None)
+    }
+
+    /// Element-wise subtract: dst = src1 - src2
+    pub fn emit_sub(&mut self, dst: &str, src1: &str, src2: &str) -> usize {
+        let dst_id = self.get_or_create_vector(dst);
+        let src1_id = self.get_or_create_vector(src1);
+        let src2_id = self.get_or_create_vector(src2);
+        self.tree.new_abstract_operation(AbstractOperation::Sub, vec![src1_id, src2_id], vec![dst_id], None)
+    }
+
+    /// Element-wise multiply: dst = src1 * src2
+    pub fn emit_mul(&mut self, dst: &str, src1: &str, src2: &str) -> usize {
+        let dst_id = self.get_or_create_vector(dst);
+        let src1_id = self.get_or_create_vector(src1);
+        let src2_id = self.get_or_create_vector(src2);
+        self.tree.new_abstract_operation(AbstractOperation::Mul, vec![src1_id, src2_id], vec![dst_id], None)
+    }
+
+    /// Sigmoid activation: dst = sigmoid(src)
+    pub fn emit_sigmoid(&mut self, dst: &str, src: &str) -> usize {
+        let dst_id = self.get_or_create_vector(dst);
+        let src_id = self.get_or_create_vector(src);
+        self.tree.new_abstract_operation(AbstractOperation::Sig, vec![src_id], vec![dst_id], None)
+    }
+
+    /// SiLU activation: dst = silu(src)
+    pub fn emit_silu(&mut self, dst: &str, src: &str) -> usize {
+        let dst_id = self.get_or_create_vector(dst);
+        let src_id = self.get_or_create_vector(src);
+        self.tree.new_abstract_operation(AbstractOperation::SiLU, vec![src_id], vec![dst_id], None)
+    }
+
+    /// RMS normalization: dst = rms_norm(src)
+    pub fn emit_rms_norm(&mut self, dst: &str, src: &str, rms_length: Option<usize>) -> usize {
+        let dst_id = self.get_or_create_vector(dst);
+        let src_id = self.get_or_create_vector(src);
+        let mut info = HashMap::new();
+        if let Some(len) = rms_length {
+            info.insert("rms_length".to_string(), OperationInfo::Int(len as i64));
+        }
+        self.tree.new_abstract_operation(
+            AbstractOperation::RmsNorm,
+            vec![src_id],
+            vec![dst_id],
+            if info.is_empty() { None } else { Some(info) }
+        )
+    }
+
+    /// Ternary matrix multiplication: dst = W @ src
+    pub fn emit_tmatmul(
+        &mut self,
+        dst: &str,
+        src: &str,
+        weight_label: &str,
+        num_rows: usize,
+        num_columns: usize,
+    ) -> usize {
+        let dst_id = self.get_or_create_vector(dst);
+        let src_id = self.get_or_create_vector(src);
+
+        let mut info = HashMap::new();
+        info.insert("address_label".to_string(), OperationInfo::String(weight_label.to_string()));
+        info.insert("NumRows".to_string(), OperationInfo::Int(num_rows as i64));
+        info.insert("NumColumns".to_string(), OperationInfo::Int(num_columns as i64));
+
+        self.tree.new_abstract_operation(AbstractOperation::TMatmul, vec![src_id], vec![dst_id], Some(info))
+    }
+
+    /// Fused multiply-add: dst = src1 * src2 + src3
+    /// Emits as mul followed by add
+    pub fn emit_fma(&mut self, dst: &str, src1: &str, src2: &str, src3: &str) -> usize {
+        // Create temp vector for intermediate result
+        let temp_name = format!("_fma_temp_{}", self.var_to_vector.len());
+        let temp_id = self.declare_vector(&temp_name, self.default_vector_size);
+
+        let src1_id = self.get_or_create_vector(src1);
+        let src2_id = self.get_or_create_vector(src2);
+        let src3_id = self.get_or_create_vector(src3);
+        let dst_id = self.get_or_create_vector(dst);
+
+        // mul: temp = src1 * src2
+        self.tree.new_abstract_operation(AbstractOperation::Mul, vec![src1_id, src2_id], vec![temp_id], None);
+
+        // add: dst = temp + src3
+        self.tree.new_abstract_operation(AbstractOperation::Add, vec![temp_id, src3_id], vec![dst_id], None)
+    }
+
+    /// Build an FFN layer pattern: output = down_proj(silu(gate_proj(x)) * up_proj(x))
+    pub fn emit_ffn_layer(
+        &mut self,
+        input: &str,
+        output: &str,
+        hidden_dim: usize,
+        intermediate_dim: usize,
+        gate_weights: &str,
+        up_weights: &str,
+        down_weights: &str,
+    ) {
+        // Declare vectors with proper sizes
+        let gate_name = format!("_ffn_gate_{}", self.var_to_vector.len());
+        let up_name = format!("_ffn_up_{}", self.var_to_vector.len() + 1);
+        let gate_silu_name = format!("_ffn_gate_silu_{}", self.var_to_vector.len() + 2);
+        let intermediate_name = format!("_ffn_intermediate_{}", self.var_to_vector.len() + 3);
+
+        self.declare_vector(input, hidden_dim);
+        self.declare_vector(&gate_name, intermediate_dim);
+        self.declare_vector(&up_name, intermediate_dim);
+        self.declare_vector(&gate_silu_name, intermediate_dim);
+        self.declare_vector(&intermediate_name, intermediate_dim);
+        self.declare_vector(output, hidden_dim);
+
+        // gate = gate_proj(x)
+        self.emit_tmatmul(&gate_name, input, gate_weights, intermediate_dim, hidden_dim);
+
+        // up = up_proj(x)
+        self.emit_tmatmul(&up_name, input, up_weights, intermediate_dim, hidden_dim);
+
+        // gate_silu = silu(gate)
+        self.emit_silu(&gate_silu_name, &gate_name);
+
+        // intermediate = gate_silu * up
+        self.emit_mul(&intermediate_name, &gate_silu_name, &up_name);
+
+        // output = down_proj(intermediate)
+        self.emit_tmatmul(output, &intermediate_name, down_weights, hidden_dim, intermediate_dim);
+    }
+
+    /// Build a transformer attention layer pattern
+    pub fn emit_attention_projection(
+        &mut self,
+        input: &str,
+        output: &str,
+        query_weights: &str,
+        key_weights: &str,
+        value_weights: &str,
+        hidden_dim: usize,
+        head_dim: usize,
+    ) {
+        let q_name = format!("_attn_q_{}", self.var_to_vector.len());
+        let k_name = format!("_attn_k_{}", self.var_to_vector.len() + 1);
+        let v_name = format!("_attn_v_{}", self.var_to_vector.len() + 2);
+
+        self.declare_vector(&q_name, head_dim);
+        self.declare_vector(&k_name, head_dim);
+        self.declare_vector(&v_name, head_dim);
+
+        // Q = Wq @ input
+        self.emit_tmatmul(&q_name, input, query_weights, head_dim, hidden_dim);
+
+        // K = Wk @ input
+        self.emit_tmatmul(&k_name, input, key_weights, head_dim, hidden_dim);
+
+        // V = Wv @ input
+        self.emit_tmatmul(&v_name, input, value_weights, head_dim, hidden_dim);
+
+        // For now, copy V to output (simplified - real attention is more complex)
+        // In practice you'd need softmax(QK^T/sqrt(d)) @ V
+        let v_id = self.var_to_vector[&v_name];
+        let output_id = self.get_or_create_vector(output);
+        self.tree.new_abstract_operation(AbstractOperation::Add, vec![v_id, v_id], vec![output_id], None);
+    }
+
+    /// Generate assembly from the built tree
+    pub fn generate_assembly(&self) -> String {
+        self.tree.generate_assembly()
+    }
+
+    /// Get summary of the built tree
+    pub fn print_summary(&self) {
+        self.tree.print_summary();
+    }
+
+    /// Consume and return the built algorithm tree
+    pub fn into_tree(self) -> AlgorithmTree {
+        self.tree
+    }
+}
+
+/// Pattern matcher for recognizing neural network operations in PTX
+pub struct PtxPatternMatcher {
+    /// Activation function patterns
+    activation_patterns: Vec<ActivationPattern>,
+    /// Matrix operation patterns
+    matmul_patterns: Vec<MatmulPattern>,
+}
+
+/// Recognized activation function pattern
+#[derive(Debug, Clone)]
+pub struct ActivationPattern {
+    pub name: String,
+    pub operation: AbstractOperation,
+    /// PTX instruction sequence that matches this pattern
+    pub instruction_sequence: Vec<String>,
+}
+
+/// Recognized matrix multiplication pattern
+#[derive(Debug, Clone)]
+pub struct MatmulPattern {
+    pub name: String,
+    /// Expected loop structure
+    pub is_loop_matmul: bool,
+    /// Uses tensor core MMA instructions
+    pub uses_tensor_core: bool,
+}
+
+impl PtxPatternMatcher {
+    pub fn new() -> Self {
+        let mut matcher = Self {
+            activation_patterns: Vec::new(),
+            matmul_patterns: Vec::new(),
+        };
+        matcher.register_default_patterns();
+        matcher
+    }
+
+    fn register_default_patterns(&mut self) {
+        // Sigmoid pattern: 1 / (1 + exp(-x))
+        self.activation_patterns.push(ActivationPattern {
+            name: "sigmoid".to_string(),
+            operation: AbstractOperation::Sig,
+            instruction_sequence: vec![
+                "neg".to_string(),
+                "ex2.approx".to_string(),
+                "add".to_string(),
+                "rcp.approx".to_string(),
+            ],
+        });
+
+        // SiLU pattern: x * sigmoid(x)
+        self.activation_patterns.push(ActivationPattern {
+            name: "silu".to_string(),
+            operation: AbstractOperation::SiLU,
+            instruction_sequence: vec![
+                "neg".to_string(),
+                "ex2.approx".to_string(),
+                "add".to_string(),
+                "rcp.approx".to_string(),
+                "mul".to_string(),
+            ],
+        });
+
+        // Tensor core matmul pattern
+        self.matmul_patterns.push(MatmulPattern {
+            name: "mma_matmul".to_string(),
+            is_loop_matmul: true,
+            uses_tensor_core: true,
+        });
+
+        // Loop-based matmul pattern
+        self.matmul_patterns.push(MatmulPattern {
+            name: "loop_matmul".to_string(),
+            is_loop_matmul: true,
+            uses_tensor_core: false,
+        });
+    }
+
+    /// Check if instruction sequence matches an activation pattern
+    pub fn match_activation(&self, instructions: &[&str]) -> Option<&ActivationPattern> {
+        for pattern in &self.activation_patterns {
+            if instructions.len() >= pattern.instruction_sequence.len() {
+                let matches = instructions
+                    .iter()
+                    .zip(pattern.instruction_sequence.iter())
+                    .all(|(inst, pat)| inst.starts_with(pat));
+                if matches {
+                    return Some(pattern);
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if a function name suggests matrix multiplication
+    pub fn is_matmul_function(&self, name: &str) -> bool {
+        let lower = name.to_lowercase();
+        lower.contains("gemm")
+            || lower.contains("matmul")
+            || lower.contains("linear")
+            || lower.contains("dense")
+            || lower.contains("fc")
+    }
+
+    /// Check if a function name suggests activation
+    pub fn is_activation_function(&self, name: &str) -> Option<AbstractOperation> {
+        let lower = name.to_lowercase();
+        if lower.contains("relu") {
+            // ReLU not directly supported, approximate with sig
+            Some(AbstractOperation::Sig)
+        } else if lower.contains("sigmoid") {
+            Some(AbstractOperation::Sig)
+        } else if lower.contains("silu") || lower.contains("swish") {
+            Some(AbstractOperation::SiLU)
+        } else if lower.contains("gelu") {
+            // GELU approximated as SiLU
+            Some(AbstractOperation::SiLU)
+        } else {
+            None
+        }
+    }
+}
+
+impl Default for PtxPatternMatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1353,5 +1740,133 @@ mod tests {
         assert!(asm.contains("tmatmul_import"));
         assert!(asm.contains("tmatmul_go"));
         assert!(asm.contains("tmatmul_export"));
+    }
+
+    #[test]
+    fn test_ptx_converter_basic() {
+        let mut converter = PtxToAlgorithmTreeConverter::with_defaults();
+
+        // Load inputs
+        converter.emit_load("a", "A_mem");
+        converter.emit_load("b", "B_mem");
+
+        // Add
+        converter.emit_add("c", "a", "b");
+
+        // Store
+        converter.emit_store("c", "C_mem");
+
+        let asm = converter.generate_assembly();
+        println!("PTX Converter Basic:\n{}", asm);
+        assert!(asm.contains("ldv"));
+        assert!(asm.contains("add"));
+        assert!(asm.contains("sv"));
+    }
+
+    #[test]
+    fn test_ptx_converter_fma() {
+        let mut converter = PtxToAlgorithmTreeConverter::with_defaults();
+
+        converter.emit_load("a", "A");
+        converter.emit_load("b", "B");
+        converter.emit_load("c", "C");
+
+        // d = a * b + c
+        converter.emit_fma("d", "a", "b", "c");
+
+        converter.emit_store("d", "D");
+
+        let asm = converter.generate_assembly();
+        println!("PTX Converter FMA:\n{}", asm);
+        assert!(asm.contains("mul"));
+        assert!(asm.contains("add"));
+    }
+
+    #[test]
+    fn test_ptx_converter_tmatmul() {
+        let config = TMatmulConfig { d: 32, ..Default::default() };
+        let mut converter = PtxToAlgorithmTreeConverter::new(config);
+
+        converter.declare_vector("x", 64);
+        converter.declare_vector("y", 64);
+
+        converter.emit_load("x", "X_mem");
+        converter.emit_tmatmul("y", "x", "W", 64, 64);
+        converter.emit_store("y", "Y_mem");
+
+        let asm = converter.generate_assembly();
+        println!("PTX Converter TMatmul:\n{}", asm);
+        assert!(asm.contains("tmatmul_import"));
+        assert!(asm.contains("tmatmul_go"));
+        assert!(asm.contains("tmatmul_export"));
+    }
+
+    #[test]
+    fn test_ptx_converter_ffn_layer() {
+        let config = TMatmulConfig { d: 32, ..Default::default() };
+        let mut converter = PtxToAlgorithmTreeConverter::new(config);
+
+        converter.emit_load("input", "Input");
+        converter.emit_ffn_layer(
+            "input",
+            "output",
+            64,  // hidden_dim
+            128, // intermediate_dim
+            "W_gate",
+            "W_up",
+            "W_down",
+        );
+        converter.emit_store("output", "Output");
+
+        converter.print_summary();
+
+        let asm = converter.generate_assembly();
+        println!("PTX Converter FFN Layer:\n{}", asm);
+        // Should have 3 tmatmul operations
+        assert!(asm.matches("tmatmul_go").count() >= 3);
+        // Should have silu
+        assert!(asm.contains("silu"));
+    }
+
+    #[test]
+    fn test_pattern_matcher() {
+        let matcher = PtxPatternMatcher::new();
+
+        // Test matmul detection
+        assert!(matcher.is_matmul_function("cublas_gemm"));
+        assert!(matcher.is_matmul_function("MatMulKernel"));
+        assert!(matcher.is_matmul_function("linear_forward"));
+        assert!(!matcher.is_matmul_function("relu_kernel"));
+
+        // Test activation detection
+        assert_eq!(
+            matcher.is_activation_function("sigmoid"),
+            Some(AbstractOperation::Sig)
+        );
+        assert_eq!(
+            matcher.is_activation_function("silu_kernel"),
+            Some(AbstractOperation::SiLU)
+        );
+        assert_eq!(
+            matcher.is_activation_function("gelu"),
+            Some(AbstractOperation::SiLU)
+        );
+    }
+
+    #[test]
+    fn test_activation_pattern_matching() {
+        let matcher = PtxPatternMatcher::new();
+
+        // Sigmoid pattern
+        let sigmoid_seq = vec!["neg", "ex2.approx.f32", "add.f32", "rcp.approx.f32"];
+        let pattern = matcher.match_activation(&sigmoid_seq);
+        assert!(pattern.is_some());
+        assert_eq!(pattern.unwrap().name, "sigmoid");
+
+        // SiLU pattern
+        let silu_seq = vec!["neg", "ex2.approx.f32", "add.f32", "rcp.approx.f32", "mul.f32"];
+        let pattern = matcher.match_activation(&silu_seq);
+        assert!(pattern.is_some());
+        assert_eq!(pattern.unwrap().name, "silu");
     }
 }
