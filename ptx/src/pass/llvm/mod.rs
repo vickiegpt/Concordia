@@ -22,6 +22,10 @@ const SHARED_ADDRESS_SPACE: u32 = 3;
 const CONSTANT_ADDRESS_SPACE: u32 = 4;
 const PRIVATE_ADDRESS_SPACE: u32 = 5;
 
+/// NVPTX kernel calling convention (LLVM CC 71)
+#[cfg(feature = "nvidia")]
+pub(super) const NVPTX_KERNEL_CC: u32 = 71;
+
 pub(super) struct Context(LLVMContextRef);
 
 impl Context {

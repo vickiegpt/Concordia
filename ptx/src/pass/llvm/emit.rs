@@ -101,7 +101,10 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
     }
 
     fn kernel_call_convention() -> u32 {
-        LLVMCallConv::LLVMAMDGPUKERNELCallConv as u32
+        #[cfg(feature = "nvidia")]
+        { return super::NVPTX_KERNEL_CC; }
+        #[cfg(not(feature = "nvidia"))]
+        { LLVMCallConv::LLVMAMDGPUKERNELCallConv as u32 }
     }
 
     fn func_call_convention() -> u32 {
@@ -128,6 +131,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                 }),
             )?;
             fn_ = unsafe { LLVMAddFunction(self.module, name.as_ptr(), fn_type) };
+            #[cfg(not(feature = "nvidia"))]
             self.emit_fn_attribute(fn_, "amdgpu-unsafe-fp-atomics", "true");
             self.emit_fn_attribute(fn_, "uniform-work-group-size", "true");
             self.emit_fn_attribute(fn_, "no-trapping-math", "true");
@@ -148,6 +152,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                 llvm_ftz(method.flush_to_zero_f16f64),
             );
         }
+        #[cfg(not(feature = "nvidia"))]
         self.emit_fn_attribute(fn_, "amdgpu-ieee", "false");
         for (i, param) in method.input_arguments.iter().enumerate() {
             let value = unsafe { LLVMGetParam(fn_, i as u32) };
