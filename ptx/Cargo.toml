@@ -55,6 +55,11 @@ int-enum = "1.1"
 
 
 [[example]]
+name = "pacc_benchmark"
+path = "examples/pacc_benchmark.rs"
+required-features = ["pacc"]
+
+[[example]]
 name = "emit_mlir_example"
 path = "examples/emit_mlir_example.rs"
 
