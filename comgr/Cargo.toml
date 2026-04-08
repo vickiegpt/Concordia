@@ -11,6 +11,7 @@ intel = []
 tenstorrent = []
 gemmini = []
 cutile = []
+pacc = []
 
 [lib]
 
@@ -20,5 +21,6 @@ intel_comgr_sys = { path = "../ext/intel_comgr-sys"  }
 tt_comgr_sys = { path = "../ext/tt_comgr-sys" }
 gemmini_comgr_sys = { path = "../ext/gemmini_comgr-sys" }
 cutile_comgr_sys = { path = "../ext/cutile_comgr-sys" }
+pacc_comgr_sys = { path = "../ext/pacc_comgr-sys" }
 hip_runtime_sys = { path = "../ext/hip_runtime-sys"  }
 ze_runtime_sys = { path = "../ext/ze_runtime-sys"  }

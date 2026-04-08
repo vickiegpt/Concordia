@@ -15,6 +15,7 @@ use strum_macros::EnumIter;
 pub(crate) mod debug_integration;
 mod deparamize_functions;
 pub(crate) mod emit_llvm;
+pub mod emit_pacc_vcix;
 pub mod emit_tmatmul_asm;
 pub(crate) mod emit_tosa_mlir;
 mod expand_operands;

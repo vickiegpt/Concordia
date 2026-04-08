@@ -25,6 +25,8 @@ members = [
     "ext/tt_comgr-sys",
     "ext/tt_runtime-sys",
     "ext/cutile_comgr-sys",
+    "ext/pacc_comgr-sys",
+    "ext/pacc_runtime-sys",
 ]
 
 default-members = ["zluda", "zluda_ml", "zluda_inject", "zluda_redirect"]
@@ -35,6 +37,7 @@ features = [
     "tenstorrent",
     "gemmini",
     "cutile",
+    "pacc",
 ]
 default = [
     "gemmini"

@@ -6,6 +6,8 @@ use gemmini_comgr_sys::*;
 use intel_comgr_sys::*;
 #[cfg(feature = "cutile")]
 use cutile_comgr_sys::*;
+#[cfg(feature = "pacc")]
+use pacc_comgr_sys::*;
 use std::{
     ffi::{CStr, CString},
     mem, ptr,
@@ -865,6 +867,8 @@ pub fn compile_cutile_bytecode(
         cutile_comgr_target_s::CUTILE_COMGR_TARGET_INTEL
     } else if target_str.contains("amd") || target_str.contains("gfx") {
         cutile_comgr_target_s::CUTILE_COMGR_TARGET_AMD
+    } else if target_str.contains("pacc") || target_str.contains("sifive") || target_str.contains("xm") {
+        cutile_comgr_target_s::CUTILE_COMGR_TARGET_GEMMINI // PACC uses same RISC-V target slot
     } else if target_str.contains("gemmini") || target_str.contains("riscv") {
         cutile_comgr_target_s::CUTILE_COMGR_TARGET_GEMMINI
     } else {
@@ -1014,6 +1018,154 @@ pub fn transform_cutile_to_tosa(
     cutile_comgr_release_data_set(output_set)?;
     cutile_comgr_release_data_set(input_set)?;
     cutile_comgr_release_action_info(action_info)?;
+
+    Ok(result)
+}
+
+/// PACC (RISC-V IME via VCIX) bitcode compilation pipeline
+///
+/// Takes LLVM bitcode (with VCIX intrinsics for matrix ops),
+/// links, optimizes, and generates RISC-V object code targeting
+/// SiFive Intelligence XM / RISC-V IME.
+#[cfg(feature = "pacc")]
+pub fn compile_bitcode_pacc(
+    target_arch: &CStr,
+    main_buffer: &[u8],
+    ptx_impl: &[u8],
+) -> Result<Vec<u8>, pacc_comgr_status_s> {
+    eprintln!("ZLUDA DEBUG: Compiling bitcode for PACC (RISC-V IME/VCIX)");
+    eprintln!(
+        "ZLUDA DEBUG: Main buffer size: {} bytes, PTX impl size: {} bytes",
+        main_buffer.len(),
+        ptx_impl.len()
+    );
+    eprintln!(
+        "ZLUDA DEBUG: Target architecture: {:?}",
+        target_arch.to_string_lossy()
+    );
+
+    // Create input data set
+    let mut input_data_set = unsafe { mem::zeroed() };
+    pacc_comgr_create_data_set(&mut input_data_set)?;
+
+    // Create main bitcode data
+    let mut main_data = unsafe { mem::zeroed() };
+    pacc_comgr_create_data(
+        pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_BC,
+        &mut main_data,
+    )?;
+    pacc_comgr_data_set_bytes(
+        main_data,
+        main_buffer.as_ptr() as *const std::os::raw::c_void,
+        main_buffer.len(),
+    )?;
+    pacc_comgr_data_set_name(main_data, c"main.bc".as_ptr())?;
+    pacc_comgr_data_set_add(input_data_set, main_data)?;
+
+    // Add PTX impl bitcode if provided
+    if !ptx_impl.is_empty() {
+        let mut ptx_data = unsafe { mem::zeroed() };
+        pacc_comgr_create_data(
+            pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_BC,
+            &mut ptx_data,
+        )?;
+        pacc_comgr_data_set_bytes(
+            ptx_data,
+            ptx_impl.as_ptr() as *const std::os::raw::c_void,
+            ptx_impl.len(),
+        )?;
+        pacc_comgr_data_set_name(ptx_data, c"ptx_impl.bc".as_ptr())?;
+        pacc_comgr_data_set_add(input_data_set, ptx_data)?;
+    }
+
+    // Create action info
+    let mut action_info = unsafe { mem::zeroed() };
+    pacc_comgr_create_action_info(&mut action_info)?;
+
+    // Set language to LLVM IR
+    pacc_comgr_action_info_set_language(
+        action_info,
+        pacc_comgr_language_s::PACC_COMGR_LANGUAGE_LLVM_IR,
+    )?;
+
+    // Create output data set
+    let mut output_data_set = unsafe { mem::zeroed() };
+    pacc_comgr_create_data_set(&mut output_data_set)?;
+
+    // Link bitcode if needed
+    let linked_data_set = if !ptx_impl.is_empty() {
+        eprintln!("ZLUDA DEBUG: Linking PACC bitcode modules");
+        let mut linked_set = unsafe { mem::zeroed() };
+        pacc_comgr_create_data_set(&mut linked_set)?;
+
+        pacc_comgr_do_action(
+            pacc_comgr_action_kind_s::PACC_COMGR_ACTION_LINK_BC_TO_BC,
+            action_info,
+            input_data_set,
+            linked_set,
+        )?;
+
+        linked_set
+    } else {
+        input_data_set
+    };
+
+    // Optimize bitcode
+    eprintln!("ZLUDA DEBUG: Optimizing PACC bitcode");
+    let mut optimized_set = unsafe { mem::zeroed() };
+    pacc_comgr_create_data_set(&mut optimized_set)?;
+
+    pacc_comgr_do_action(
+        pacc_comgr_action_kind_s::PACC_COMGR_ACTION_OPTIMIZE_BC_TO_BC,
+        action_info,
+        linked_data_set,
+        optimized_set,
+    )?;
+
+    // Generate RISC-V object code with VCIX
+    eprintln!("ZLUDA DEBUG: Generating PACC RISC-V+VCIX executable");
+    pacc_comgr_do_action(
+        pacc_comgr_action_kind_s::PACC_COMGR_ACTION_CODEGEN_BC_TO_RELOCATABLE,
+        action_info,
+        optimized_set,
+        output_data_set,
+    )?;
+
+    // Get the output data
+    let mut count = 0;
+    pacc_comgr_get_data_count(output_data_set, &mut count)?;
+
+    if count == 0 {
+        eprintln!("ZLUDA ERROR: No PACC output generated");
+        return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR);
+    }
+
+    let mut output_data = unsafe { mem::zeroed() };
+    pacc_comgr_get_data(output_data_set, 0, &mut output_data)?;
+
+    let mut size = 0;
+    pacc_comgr_data_get_bytes(output_data, std::ptr::null_mut(), &mut size)?;
+
+    let mut result = vec![0u8; size];
+    pacc_comgr_data_get_bytes(
+        output_data,
+        result.as_mut_ptr() as *mut std::os::raw::c_void,
+        &mut size,
+    )?;
+
+    // Cleanup
+    pacc_comgr_release_data(output_data)?;
+    pacc_comgr_release_data_set(output_data_set)?;
+    if !ptx_impl.is_empty() {
+        pacc_comgr_release_data_set(linked_data_set)?;
+    }
+    pacc_comgr_release_data_set(optimized_set)?;
+    pacc_comgr_release_action_info(action_info)?;
+
+    eprintln!(
+        "ZLUDA DEBUG: PACC compilation complete, output size: {} bytes",
+        result.len()
+    );
 
     Ok(result)
 }

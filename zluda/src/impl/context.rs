@@ -849,13 +849,23 @@ pub(crate) fn get_primary_ze(
     Ok(dev.primary_context())
 }
 
-// Intel context management functions (stub implementations)
+// Intel context management functions
 #[cfg(all(feature = "intel", not(feature = "amd")))]
 pub(crate) fn create_v2(pctx: *mut CUcontext, _flags: u32, _dev: CUdevice) -> CUresult {
-    // Create a virtual context for Intel backend
-    let ctx = Context::new(ze_device_handle_t(ptr::null_mut()));
-    let boxed = Box::new(ctx);
-    let raw_ctx = CUcontext(Box::into_raw(boxed) as *mut _);
+    use super::ZludaObject;
+
+    // Get the device handle for this ordinal (virtual or real)
+    let device = match super::driver::get_ze_handle_by_ordinal(_dev) {
+        Ok(d) => d,
+        Err(_) => ze_device_handle_t(ptr::null_mut()),
+    };
+
+    // Create context and wrap with LiveCheck so cookie validation works
+    let ctx = Context::new(device);
+    let raw_ctx = ctx.wrap();
+
+    // Push onto thread-local context stack so it becomes "current"
+    push(raw_ctx, device);
 
     if !pctx.is_null() {
         unsafe { *pctx = raw_ctx; }
@@ -1142,6 +1152,8 @@ pub(crate) fn get_limit(pvalue: &mut usize, limit: CUlimit) -> CUresult {
 
 #[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
 pub(crate) fn create_v2(pctx: *mut CUcontext, flags: u32, dev: CUdevice) -> CUresult {
+    use super::ZludaObject;
+
     eprintln!("[hetGPU context] create_v2 called: flags={}, dev={:?}", flags, dev);
 
     // Create real CUDA context
@@ -1154,10 +1166,9 @@ pub(crate) fn create_v2(pctx: *mut CUcontext, flags: u32, dev: CUdevice) -> CUre
         return Err(CUerror::UNKNOWN);
     }
 
-    // Create our context wrapper and store it
+    // Wrap with LiveCheck so cookie validation works in push/pop/FromCuda
     let ctx = Context::new(dev, cuda_ctx);
-    let boxed = Box::new(ctx);
-    let raw_ctx = CUcontext(Box::into_raw(boxed) as *mut _);
+    let raw_ctx = ctx.wrap();
 
     // Push to context stack
     push(raw_ctx, dev);

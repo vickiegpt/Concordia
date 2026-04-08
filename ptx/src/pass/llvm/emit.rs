@@ -529,6 +529,19 @@ impl<'a> MethodEmitContext<'a> {
             ast::Instruction::Tcgen05Cp { .. } => Ok(()), // nop - SM_100+ tensor core
             ast::Instruction::Tcgen05Shift { .. } => Ok(()), // nop - SM_100+ tensor core
             ast::Instruction::Tcgen05Mma { .. } => Ok(()), // nop - SM_100+ tensor core
+            // PACC: Emit VCIX intrinsics for matrix operations on RISC-V IME
+            ast::Instruction::Mma { data, arguments } => {
+                #[cfg(feature = "pacc")]
+                { self.emit_mma_pacc_vcix(data, arguments) }
+                #[cfg(not(feature = "pacc"))]
+                { return Err(error_unreachable()); }
+            }
+            ast::Instruction::LdMatrix { data, arguments } => {
+                #[cfg(feature = "pacc")]
+                { self.emit_ldmatrix_pacc(data, arguments) }
+                #[cfg(not(feature = "pacc"))]
+                { return Err(error_unreachable()); }
+            }
             // replaced by a function call
             ast::Instruction::Bfe { .. }
             | ast::Instruction::Bar { .. }
@@ -539,8 +552,6 @@ impl<'a> MethodEmitContext<'a> {
             | ast::Instruction::Vote { .. }
             | ast::Instruction::Nanosleep { .. }
             | ast::Instruction::ReduxSync { .. }
-            | ast::Instruction::LdMatrix { .. }
-            | ast::Instruction::Mma { .. }
             | ast::Instruction::Prmt { .. } => return Err(error_unreachable()),
         }
     }
@@ -2949,6 +2960,181 @@ impl<'a> MethodEmitContext<'a> {
         result
     }
      */
+
+    // =========================================================================
+    // PACC: VCIX intrinsic emission for RISC-V IME matrix operations
+    // =========================================================================
+
+    /// Emit a PTX mma instruction as a PACC matrix multiply-accumulate.
+    ///
+    /// Supports two codegen paths:
+    /// 1. **VCIX path** (for real SiFive XM hardware):
+    ///    Uses sf.vc.v.vvv/vvw intrinsics → CUSTOM-2 opcode
+    /// 2. **Zvbdot path** (for SiFive spike simulation):
+    ///    Uses inline asm with vqbdots/vfwbdot/vfqbdot → standard V encoding
+    ///
+    /// Maps PTX mma operands (dst=D, src1=A, src2=B, src3=C) to:
+    ///   D = C + A * B^T
+    #[cfg(feature = "pacc")]
+    fn emit_mma_pacc_vcix(
+        &mut self,
+        data: ast::MmaDetails,
+        arguments: ast::MmaArgs<SpirvWord>,
+    ) -> Result<(), TranslateError> {
+        use crate::pass::emit_pacc_vcix::{self, PaccElementType, PaccTileConfig};
+        use llvm_zluda::*;
+
+        // Map PTX scalar types to PACC element types
+        let a_elem = pacc_elem_from_scalar(data.atype_scalar);
+        let b_elem = pacc_elem_from_scalar(data.btype_scalar);
+        let d_elem = pacc_elem_from_scalar(data.dtype_scalar);
+
+        let src_sew = a_elem.sew_bits();
+        let dst_sew = d_elem.sew_bits();
+        let needs_widening = dst_sew > src_sew;
+
+        // Get LLVM types for the vector operands
+        let dst_type = get_type(self.context, &data.dtype())?;
+        let a_type = get_type(self.context, &data.atype())?;
+        let b_type = get_type(self.context, &data.btype())?;
+
+        // Load the operand values
+        let a_val = self.resolver.value(arguments.src1)?;
+        let b_val = self.resolver.value(arguments.src2)?;
+        let c_val = self.resolver.value(arguments.src3)?;
+
+        // Check if Zvbdot instruction is available for this type combo
+        let zvbdot_instr = emit_pacc_vcix::select_zvbdot_instr(a_elem, b_elem, d_elem);
+
+        if let Some(instr) = zvbdot_instr {
+            // --- Zvbdot path: inline assembly for spike simulation ---
+            // Build inline asm: "vqbdots.vv $0, $1, $2"
+            let asm_str = format!("{} $0, $1, $2\0", instr.mnemonic());
+            let constraints = b"=&v,v,v,0\0";
+
+            let asm_str_ref = unsafe {
+                LLVMGetInlineAsm(
+                    dst_type,
+                    asm_str.as_ptr() as *mut _,
+                    asm_str.len() - 1,
+                    constraints.as_ptr() as *mut _,
+                    constraints.len() - 1,
+                    1, // has side effects
+                    0, // not align stack
+                    llvm_zluda::LLVMInlineAsmDialect::LLVMInlineAsmDialectATT,
+                    0, // can throw = false
+                )
+            };
+
+            let mut args = [a_val, b_val, c_val];
+            let result = unsafe {
+                LLVMBuildCall2(
+                    self.builder,
+                    LLVMFunctionType(dst_type, [a_type, b_type, dst_type].as_ptr() as *mut _, 3, 0),
+                    asm_str_ref,
+                    args.as_mut_ptr(),
+                    args.len() as u32,
+                    LLVM_UNNAMED.as_ptr(),
+                )
+            };
+
+            self.resolver.register(arguments.dst, result);
+        } else {
+            // --- VCIX path: intrinsic call for hardware ---
+            let opcode: u64 = match (a_elem.is_signed(), b_elem.is_signed()) {
+                (true, true) => 3,
+                (false, false) => 0,
+                (true, false) => 2,
+                (false, true) => 1,
+            };
+
+            let intrinsic_name = if needs_widening {
+                "llvm.riscv.sf.vc.v.vvw.se\0"
+            } else {
+                "llvm.riscv.sf.vc.v.vvv.se\0"
+            };
+
+            let i64_type = unsafe { LLVMInt64TypeInContext(self.context) };
+            let opcode_val = unsafe { LLVMConstInt(i64_type, opcode, 0) };
+            let vl_val = unsafe { LLVMConstInt(i64_type, 64, 0) }; // VLEN=512/SEW=8
+
+            let param_types = [i64_type, dst_type, a_type, b_type, i64_type];
+            let fn_type = unsafe {
+                LLVMFunctionType(dst_type, param_types.as_ptr() as *mut _, param_types.len() as u32, 0)
+            };
+
+            let intrinsic_cstr = unsafe { CStr::from_bytes_with_nul_unchecked(intrinsic_name.as_bytes()) };
+            let mut fn_ = unsafe { LLVMGetNamedFunction(self.module, intrinsic_cstr.as_ptr()) };
+            if fn_ == ptr::null_mut() {
+                fn_ = unsafe { LLVMAddFunction(self.module, intrinsic_cstr.as_ptr(), fn_type) };
+            }
+
+            let mut args = [opcode_val, c_val, a_val, b_val, vl_val];
+            let result = unsafe {
+                LLVMBuildCall2(
+                    self.builder,
+                    fn_type,
+                    fn_,
+                    args.as_mut_ptr(),
+                    args.len() as u32,
+                    LLVM_UNNAMED.as_ptr(),
+                )
+            };
+
+            self.resolver.register(arguments.dst, result);
+        }
+
+        Ok(())
+    }
+
+    /// Emit a PTX ldmatrix instruction as a standard RVV vector load.
+    ///
+    /// ldmatrix loads matrix fragments from shared memory into registers.
+    /// On PACC, we use standard RVV vector loads (vle8/vle16) since IME
+    /// reuses the vector register file.
+    #[cfg(feature = "pacc")]
+    fn emit_ldmatrix_pacc(
+        &mut self,
+        data: ast::LdMatrixDetails,
+        arguments: ast::LdMatrixArgs<SpirvWord>,
+    ) -> Result<(), TranslateError> {
+        use llvm_zluda::*;
+
+        // ldmatrix loads from shared memory into register fragments
+        // For PACC, this becomes a standard vector load
+        let src_ptr = self.resolver.value(arguments.src)?;
+        let loaded_type = data.get_loaded_type();
+        let llvm_type = get_type(self.context, &loaded_type)?;
+
+        let load = unsafe {
+            LLVMBuildLoad2(self.builder, llvm_type, src_ptr, LLVM_UNNAMED.as_ptr())
+        };
+
+        // Shared memory loads can use relaxed alignment
+        let align = data.type_.size_of() as u32;
+        unsafe { LLVMSetAlignment(load, align) };
+
+        self.resolver.register(arguments.dst, load);
+        Ok(())
+    }
+}
+
+/// Map PTX ScalarType to PACC element type (used by emit_mma_pacc_vcix)
+#[cfg(feature = "pacc")]
+fn pacc_elem_from_scalar(scalar: ast::ScalarType) -> crate::pass::emit_pacc_vcix::PaccElementType {
+    use crate::pass::emit_pacc_vcix::PaccElementType;
+    match scalar {
+        ast::ScalarType::U8 => PaccElementType::Uint8,
+        ast::ScalarType::S8 => PaccElementType::Int8,
+        ast::ScalarType::U16 => PaccElementType::Uint16,
+        ast::ScalarType::S16 => PaccElementType::Int16,
+        ast::ScalarType::U32 | ast::ScalarType::B32 => PaccElementType::Int32,
+        ast::ScalarType::S32 => PaccElementType::Int32,
+        ast::ScalarType::F16 => PaccElementType::Float16,
+        ast::ScalarType::BF16 => PaccElementType::Bfloat16,
+        ast::ScalarType::F32 => PaccElementType::Float32,
+        _ => PaccElementType::Int8, // fallback
+    }
 }
 
 fn not_supported_by_atomics(qualifier: ast::LdStQualifier, underlying_type: *mut LLVMType) -> bool {
