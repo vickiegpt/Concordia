@@ -34,6 +34,9 @@ pub enum SmVersion {
     Sm89,
     /// Hopper
     Sm90,
+    /// Blackwell
+    Sm100,
+    Sm120, Sm120a,
 }
 
 impl SmVersion {
@@ -54,6 +57,9 @@ impl SmVersion {
             87 => Some(SmVersion::Sm87),
             89 => Some(SmVersion::Sm89),
             90 => Some(SmVersion::Sm90),
+            100 => Some(SmVersion::Sm100),
+            120 => Some(SmVersion::Sm120),
+            121 => Some(SmVersion::Sm120a),
             _ => None,
         }
     }
