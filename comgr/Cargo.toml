@@ -12,6 +12,7 @@ tenstorrent = []
 gemmini = []
 cutile = []
 pacc = []
+nvidia = ["dep:nvidia_sass"]
 
 [lib]
 
@@ -22,5 +23,6 @@ tt_comgr_sys = { path = "../ext/tt_comgr-sys" }
 gemmini_comgr_sys = { path = "../ext/gemmini_comgr-sys" }
 cutile_comgr_sys = { path = "../ext/cutile_comgr-sys" }
 pacc_comgr_sys = { path = "../ext/pacc_comgr-sys" }
+nvidia_sass = { path = "../nvidia_sass", optional = true }
 hip_runtime_sys = { path = "../ext/hip_runtime-sys"  }
 ze_runtime_sys = { path = "../ext/ze_runtime-sys"  }
