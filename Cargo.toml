@@ -29,6 +29,7 @@ members = [
     "ext/pacc_runtime-sys",
     "nvidia_sass",
     "ptxas",
+    "ext/aie_comgr-sys",
 ]
 
 default-members = ["zluda", "zluda_ml", "zluda_inject", "zluda_redirect"]
