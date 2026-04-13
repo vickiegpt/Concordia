@@ -74,9 +74,29 @@ pub fn compile_tosa_to_xclbin(
 pub(crate) fn find_toolchain_binary(name: &str) -> Result<PathBuf, AieComgrError> {
     if let Ok(dir) = std::env::var("AIE_TOOLCHAIN_DIR") {
         let candidate = PathBuf::from(&dir).join(name);
-        if candidate.exists() {
+        if candidate.is_file() {
             return Ok(candidate);
         }
     }
     which::which(name).map_err(|_| AieComgrError::ToolchainNotFound(name.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_input_returns_invalid_input() {
+        let config = AieCompileConfig::default();
+        let err = compile_tosa_to_xclbin("", &config).unwrap_err();
+        assert!(matches!(err, AieComgrError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn default_config_is_strix() {
+        let config = AieCompileConfig::default();
+        assert_eq!(config.device, AieDevice::Strix);
+        assert_eq!(config.num_cols, 4);
+        assert_eq!(config.num_rows, 5);
+    }
 }
