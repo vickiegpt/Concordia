@@ -89,9 +89,18 @@ pub(crate) fn run(
 fn run_step(step: &'static str, cmd: &mut Command) -> Result<(), AieComgrError> {
     let out = cmd.output()?;
     if !out.status.success() {
+        let mut diag = String::from_utf8_lossy(&out.stderr).into_owned();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if !stdout.is_empty() {
+            if !diag.is_empty() {
+                diag.push('\n');
+            }
+            diag.push_str("--- stdout ---\n");
+            diag.push_str(&stdout);
+        }
         return Err(AieComgrError::ToolchainFailed {
             step,
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            stderr: diag,
             exit_code: out.status.code().unwrap_or(-1),
         });
     }
