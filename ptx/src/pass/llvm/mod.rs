@@ -93,7 +93,7 @@ impl Drop for Module {
 }
 
 pub fn bitcode_to_ir(bitcode: Vec<u8>) -> Vec<u8> {
-    let bitcode: Vec<i8> = bitcode.iter().map(|&v| i8::from_ne_bytes([v])).collect();
+    
     let memory_buffer: LLVMMemoryBufferRef = unsafe {
         LLVMCreateMemoryBufferWithMemoryRangeCopy(bitcode.as_ptr(), bitcode.len(), ptr::null())
     };

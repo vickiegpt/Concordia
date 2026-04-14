@@ -7,6 +7,10 @@ fn main() {
         println!("cargo:rerun-if-changed=src/cudart_shim.c");
         println!("cargo:rerun-if-changed=src/cublas_shim.c");
         println!("cargo:rerun-if-changed=src/cublaslt_shim.c");
+        println!("cargo:rerun-if-changed=src/cusparse_shim.c");
+        println!("cargo:rerun-if-changed=src/cufft_shim.c");
+        println!("cargo:rerun-if-changed=src/nccl_shim.c");
+        println!("cargo:rerun-if-changed=src/torch_abi_shim.c");
 
         let cargo_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         let tools_dir = std::path::Path::new(&cargo_manifest_dir).parent().unwrap();
@@ -30,69 +34,65 @@ fn main() {
                 .display()
         );
 
-        // Add version scripts for all shims
-        let version_scripts = [
-            tools_dir.join("tools/cudart_shim/cudart_shim.map"),
-            tools_dir.join("tools/cublas_shim/cublas_shim.map"),
-            tools_dir.join("tools/cublaslt_shim/cublaslt_shim.map"),
-        ];
-
-        for version_script in &version_scripts {
-            if version_script.exists() {
-                println!(
-                    "cargo:rustc-link-arg=-Wl,--version-script={}",
-                    version_script.display()
-                );
-            } else {
-                eprintln!(
-                    "Warning: Version script not found at {}",
-                    version_script.display()
-                );
-            }
-        }
-
-        // Force the linker to keep all symbols from the shim archives
-        println!("cargo:rustc-link-arg=-Wl,--whole-archive");
-        println!("cargo:rustc-link-arg=-lcudart_shim");
-        println!("cargo:rustc-link-arg=-lcublas_shim");
-        println!("cargo:rustc-link-arg=-lcublaslt_shim");
-        println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
+        let out_dir = std::env::var("OUT_DIR").unwrap();
+        let profile_dir = std::path::Path::new(&out_dir)
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .expect("OUT_DIR should be under target/<profile>/build/<pkg>/out");
 
         let enable_logs = std::env::var("HETGPU_DEBUG_LOGS")
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on"))
             .unwrap_or(false);
 
-        // Build cudart_shim
-        let mut cudart_build = cc::Build::new();
-        cudart_build.file("src/cudart_shim.c");
-        cudart_build.flag("-fPIC");
-        cudart_build.flag("-Wno-unused-parameter");
+        let shim_so = profile_dir.join("libhetgpu_cuda_shim.so");
+        let compiler = cc::Build::new().get_compiler();
+        let mut shim_build = compiler.to_command();
+        shim_build.arg("-shared");
+        shim_build.arg("-fPIC");
+        shim_build.arg("-Wno-unused-parameter");
         if enable_logs {
-            cudart_build.define("HETGPU_DEBUG_LOGS", None);
+            shim_build.arg("-DHETGPU_DEBUG_LOGS");
         }
-        cudart_build.compile("cudart_shim");
+        shim_build.arg("-o");
+        shim_build.arg(&shim_so);
+        shim_build.arg("src/cudart_shim.c");
+        shim_build.arg("src/cublas_shim.c");
+        shim_build.arg("src/cublaslt_shim.c");
+        shim_build.arg("src/cusparse_shim.c");
+        shim_build.arg("src/cufft_shim.c");
+        shim_build.arg("src/nccl_shim.c");
+        shim_build.arg("src/torch_abi_shim.c");
+        shim_build.arg("-Wl,-soname,libhetgpu_cuda_shim.so");
+        shim_build.arg("-ldl");
+        shim_build.arg("-lz");
+        let status = shim_build.status().unwrap();
+        assert!(status.success(), "failed to build embedded CUDA shim");
 
-        // Link against zlib for PTX decompression
-        println!("cargo:rustc-link-lib=z");
-
-        // Build cublas_shim
-        let mut cublas_build = cc::Build::new();
-        cublas_build.file("src/cublas_shim.c");
-        cublas_build.flag("-fPIC");
-        cublas_build.flag("-Wno-unused-parameter");
+        let nccl_so = profile_dir.join("libnccl.so.2");
+        let mut nccl_build = compiler.to_command();
+        nccl_build.arg("-shared");
+        nccl_build.arg("-fPIC");
+        nccl_build.arg("-Wno-unused-parameter");
         if enable_logs {
-            cublas_build.define("HETGPU_DEBUG_LOGS", None);
+            nccl_build.arg("-DHETGPU_DEBUG_LOGS");
         }
-        cublas_build.compile("cublas_shim");
+        nccl_build.arg("-o");
+        nccl_build.arg(&nccl_so);
+        nccl_build.arg("src/nccl_shim.c");
+        nccl_build.arg("-Wl,-soname,libnccl.so.2");
+        let status = nccl_build.status().unwrap();
+        assert!(status.success(), "failed to build embedded NCCL shim");
 
-        // Build cublaslt_shim
-        let mut cublaslt_build = cc::Build::new();
-        cublaslt_build.file("src/cublaslt_shim.c");
-        cublaslt_build.flag("-fPIC");
-        cublaslt_build.flag("-Wno-unused-parameter");
-        if enable_logs {
-            cublaslt_build.define("HETGPU_DEBUG_LOGS", None);
-        }
-        cublaslt_build.compile("cublaslt_shim");
+        let nccl_link = profile_dir.join("libnccl.so");
+        let _ = std::fs::remove_file(&nccl_link);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("libnccl.so.2", &nccl_link).unwrap();
+
+        println!("cargo:rustc-link-search=native={}", profile_dir.display());
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+        println!("cargo:rustc-link-arg=-Wl,--no-as-needed");
+        println!("cargo:rustc-link-arg=-lhetgpu_cuda_shim");
+        println!("cargo:rustc-link-arg=-Wl,--as-needed");
     }
 }

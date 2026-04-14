@@ -27,9 +27,11 @@ static void sigfpe_handler(int sig, siginfo_t *info, void *ucontext_raw) {
         fprintf(stderr, "[hetGPU] Continuing execution (output values may be NaN/Inf)\n");
     }
 
-    // On x86_64, advance RIP past the faulting div/idiv instruction
-    // This allows the program to continue with undefined results
+    // Advance past the faulting divide instruction where the platform ABI lets
+    // us edit the saved program counter. This keeps the virtual backend
+    // permissive during framework probes that can otherwise SIGFPE.
     ucontext_t *uc = (ucontext_t *)ucontext_raw;
+#if defined(__x86_64__)
     // Skip 2-3 bytes (typical div/idiv instruction length on x86_64)
     // Look at the instruction to determine length
     unsigned char *rip = (unsigned char *)uc->uc_mcontext.gregs[REG_RIP];
@@ -55,6 +57,18 @@ static void sigfpe_handler(int sig, siginfo_t *info, void *ucontext_raw) {
     // Clear the divide-by-zero result register to prevent cascading errors
     uc->uc_mcontext.gregs[REG_RAX] = 0;
     uc->uc_mcontext.gregs[REG_RDX] = 0;
+#elif defined(__riscv) && defined(REG_PC)
+    uintptr_t pc = (uintptr_t)uc->uc_mcontext.__gregs[REG_PC];
+    uint16_t insn16 = 0;
+    memcpy(&insn16, (const void *)pc, sizeof(insn16));
+    uc->uc_mcontext.__gregs[REG_PC] = pc + ((insn16 & 0x3) == 0x3 ? 4 : 2);
+#if defined(REG_A0)
+    uc->uc_mcontext.__gregs[REG_A0] = 0;
+#endif
+#else
+    (void)uc;
+    signal(SIGFPE, SIG_DFL);
+#endif
 }
 
 __attribute__((constructor))
@@ -92,6 +106,31 @@ typedef void* CUdeviceptr;
 typedef void* CUmodule;
 typedef void* CUfunction;
 typedef void* CUstream;
+
+#define HETGPU_CUDA_SUCCESS 0
+#define HETGPU_CUDA_ERROR_INVALID_VALUE 1
+#define HETGPU_CUDA_ERROR_UNKNOWN 999
+
+static cudaError_t g_last_cuda_error = HETGPU_CUDA_SUCCESS;
+
+static int hetgpu_strict_pacc(void) {
+    const char* strict = getenv("HETGPU_PACC_STRICT");
+    return strict && strcmp(strict, "1") == 0;
+}
+
+static cudaError_t hetgpu_set_last_error(cudaError_t error) {
+    g_last_cuda_error = error;
+    return error;
+}
+
+static int hetgpu_pacc_kernel_has_handle(CUfunction func) {
+    if (!func) return 0;
+    // PaccKernel is #[repr(C)] with `device` followed by `kernel_ptr`.
+    // The C runtime shim only needs to know whether Rust created a real
+    // pacc_Kernel handle; it does not dereference the device or Rust String.
+    void** words = (void**)func;
+    return words[1] != NULL;
+}
 
 extern CUresult cuInit(unsigned int flags);
 extern CUresult cuDeviceGet(CUdevice* device, int ordinal);
@@ -601,8 +640,13 @@ cudaError_t cudaRuntimeGetVersion(int* version) {
     return 0;
 }
 
-cudaError_t cudaDeviceSynchronize(void) { return 0; }
-cudaError_t cudaStreamSynchronize(cudaStream_t stream) { (void)stream; return 0; }
+cudaError_t cudaDeviceSynchronize(void) {
+    return hetgpu_strict_pacc() ? g_last_cuda_error : HETGPU_CUDA_SUCCESS;
+}
+cudaError_t cudaStreamSynchronize(cudaStream_t stream) {
+    (void)stream;
+    return hetgpu_strict_pacc() ? g_last_cuda_error : HETGPU_CUDA_SUCCESS;
+}
 cudaError_t cudaStreamQuery(cudaStream_t stream) { (void)stream; return 0; }
 cudaError_t cudaStreamWaitEvent(cudaStream_t stream, cudaEvent_t event, unsigned int flags) {
     (void)stream; (void)event; (void)flags; return 0;
@@ -1145,7 +1189,7 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
 
     if (func == NULL) {
         fprintf(stderr, "[cudart_shim] ERROR: NULL function pointer\n");
-        return 1;  // cudaErrorInvalidValue
+        return hetgpu_set_last_error(HETGPU_CUDA_ERROR_INVALID_VALUE);
     }
 
     // Look up the function in our registration table
@@ -1167,13 +1211,17 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
     }
 
     if (cuFunc == NULL) {
-        // Function not found in registry - this is a function that wasn't registered via
-        // __cudaRegisterFunction (e.g., dynamically loaded or from a different module).
-        // For the virtual backend, we can't execute it, so just return success.
-        // WARNING: This leaves output tensors uninitialized which may cause SIGFPE!
         fprintf(stderr, "[cudart_shim] WARNING: Function %p not in registry - skipping (output uninitialized!)\n", func);
         fprintf(stderr, "[cudart_shim] This may cause SIGFPE in downstream operations like softmax\n");
-        return 0;  // cudaSuccess
+        if (hetgpu_strict_pacc()) {
+            return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
+        }
+        return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+    }
+
+    if (hetgpu_strict_pacc() && !hetgpu_pacc_kernel_has_handle(cuFunc)) {
+        fprintf(stderr, "[cudart_shim] ERROR: PACC kernel '%s' has no executable handle\n", funcName);
+        return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
     }
 
     // Forward to Driver API cuLaunchKernel
@@ -1194,7 +1242,7 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
     fflush(stderr);
 #endif
 
-    return (cudaError_t)result;
+    return hetgpu_set_last_error((cudaError_t)result);
 }
 
 // Helper to find .so file path from memory address using /proc/self/maps
@@ -1585,6 +1633,25 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
     } else {
         fprintf(stderr, "[cudart_shim] Invalid or missing FatbinHeader, using data pointer directly\n");
         payload = fatbin_header_ptr;
+
+        char so_path[512] = {0};
+        if (find_so_from_address(fatbin_header_ptr, so_path, sizeof(so_path))) {
+            fprintf(stderr, "[cudart_shim] Invalid-header fallback source .so: %s\n", so_path);
+            const char* ptx_dir = extract_ptx_from_so(so_path);
+            if (ptx_dir) {
+                size_t ptx_size = 0;
+                char* ptx_data = find_matching_ptx(ptx_dir, NULL, &ptx_size);
+                if (ptx_data && ptx_size > 50 && strstr(ptx_data, ".version") && strstr(ptx_data, ".target")) {
+                    fprintf(stderr, "[cudart_shim] Invalid-header fallback loaded %zu bytes of PTX from .so\n", ptx_size);
+                    payload = ptx_data;
+                    payload_size = ptx_size;
+                    payload_needs_free = 1;
+                } else if (ptx_data) {
+                    fprintf(stderr, "[cudart_shim] Invalid-header fallback PTX not usable (%zu bytes)\n", ptx_size);
+                    free(ptx_data);
+                }
+            }
+        }
     }
 
     // If we didn't find a payload, use the data pointer directly as fallback
@@ -1823,9 +1890,13 @@ cudaError_t cudaGetDriverEntryPointByVersion(const char* symbol,
 }
 
 // Last error query
-cudaError_t cudaGetLastError(void) { return 0; }
+cudaError_t cudaGetLastError(void) {
+    cudaError_t error = g_last_cuda_error;
+    g_last_cuda_error = HETGPU_CUDA_SUCCESS;
+    return error;
+}
 
-cudaError_t cudaPeekAtLastError(void) { return 0; }
+cudaError_t cudaPeekAtLastError(void) { return g_last_cuda_error; }
 
 // Mempool APIs (stubs)
 cudaError_t cudaDeviceGetDefaultMemPool(cudaMemPool_t* memPool, int device) {

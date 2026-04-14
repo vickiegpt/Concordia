@@ -399,3 +399,28 @@ pub(crate) unsafe fn get_attribute(
     }
     Ok(())
 }
+
+
+// ─── PACC pointer attribute stub ──────────────────────────────────────────────
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+pub(crate) fn get_attribute(
+    data: *mut ::core::ffi::c_void,
+    attribute: cuda_types::cuda::CUpointer_attribute,
+    ptr: cuda_types::cuda::CUdeviceptr,
+) -> cuda_types::cuda::CUresult {
+    use cuda_types::cuda::*;
+    if data.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    match attribute {
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_MEMORY_TYPE => {
+            unsafe { *(data as *mut u32) = 1; } // CU_MEMORYTYPE_HOST stub
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL => {
+            unsafe { *(data as *mut i32) = 0; }
+            Ok(())
+        }
+        _ => Err(CUerror::INVALID_VALUE),
+    }
+}

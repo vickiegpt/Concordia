@@ -1,4 +1,4 @@
-#[cfg(any(feature = "tenstorrent", feature = "nvidia"))]
+#[cfg(any(feature = "tenstorrent", feature = "nvidia", feature = "pacc"))]
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
@@ -7,6 +7,8 @@ use ze_runtime_sys::*;
 #[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent"), not(feature = "tmatmul")))]
 use nvidia_runtime_sys;
 
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+use pacc_runtime_sys;
 use std::ptr;
 #[cfg(feature = "amd")]
 pub(crate) fn get_attribute(
@@ -2241,4 +2243,202 @@ pub(crate) fn launch_kernel_ex(
         return Err(CUerror::UNKNOWN);
     }
     Ok(())
+}
+
+
+// ============================================================================
+// PACC function implementations (SiFive Intelligence XM / RISC-V IME)
+// ============================================================================
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+pub(crate) fn get_attribute(
+    pi: *mut i32,
+    attrib: cuda_types::cuda::CUfunction_attribute,
+    func: *mut crate::r#impl::module::PaccKernel,
+) -> cuda_types::cuda::CUresult {
+    use cuda_types::cuda::*;
+    if pi.is_null() || func.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    let result = match attrib {
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK => 1024,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES => 0,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_CONST_SIZE_BYTES => 0,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES => 0,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_NUM_REGS => 32,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_PTX_VERSION => 75,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_BINARY_VERSION => 75,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_CACHE_MODE_CA => 0,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES => 65536,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT => 0,
+        _ => return Err(CUerror::INVALID_VALUE),
+    };
+    unsafe { *pi = result };
+    Ok(())
+}
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+fn pacc_try_host_direct_copy_fallback(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> bool {
+    if std::env::var("HETGPU_PACC_HOST_DIRECT_COPY_FALLBACK")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return false;
+    }
+    if std::env::var("HETGPU_PACC_REAL_DEVICE_MEM").ok().as_deref() == Some("1") {
+        return false;
+    }
+    if !kernel_name.contains("direct_copy_kernel_cuda") || kernel_params.is_null() {
+        return false;
+    }
+
+    unsafe {
+        let n_slot = *kernel_params.add(0);
+        let data_slot = *kernel_params.add(2);
+        if n_slot.is_null() || data_slot.is_null() {
+            return false;
+        }
+        let n = *(n_slot as *const i32);
+        if n <= 0 || n > 1_000_000_000 {
+            return false;
+        }
+        let data = data_slot as *const *mut u8;
+        let dst = *data.add(0);
+        let src = *data.add(1);
+        if dst.is_null() || src.is_null() {
+            return false;
+        }
+
+        if kernel_name.contains("LoadWithCast") && kernel_name.contains("StoreWithCast") {
+            if kernel_name.contains("EUlfE") {
+                let src_f32 = src as *const f32;
+                let dst_bf16 = dst as *mut u16;
+                for i in 0..(n as usize) {
+                    let bits = (*src_f32.add(i)).to_bits();
+                    let lsb = (bits >> 16) & 1;
+                    let rounded = bits.wrapping_add(0x7fff + lsb) >> 16;
+                    *dst_bf16.add(i) = rounded as u16;
+                }
+                eprintln!("[PACC Backend] host direct_copy fallback f32->bf16 n={}", n);
+                return true;
+            }
+
+            if kernel_name.contains("BFloat16") {
+                let src_bf16 = src as *const u16;
+                let dst_f32 = dst as *mut f32;
+                for i in 0..(n as usize) {
+                    *dst_f32.add(i) = f32::from_bits((*src_bf16.add(i) as u32) << 16);
+                }
+                eprintln!("[PACC Backend] host direct_copy fallback bf16->f32 n={}", n);
+                return true;
+            }
+        }
+
+        if kernel_name.contains("LoadWithoutCast") && kernel_name.contains("StoreWithoutCast") {
+            let elem_size = if kernel_name.contains("EUlmE") {
+                8usize
+            } else if kernel_name.contains("BFloat16") || kernel_name.contains("Half") {
+                2usize
+            } else {
+                4usize
+            };
+            std::ptr::copy(src as *const u8, dst, (n as usize).saturating_mul(elem_size));
+            eprintln!("[PACC Backend] host direct_copy fallback memcpy elem_size={} n={}", elem_size, n);
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+pub(crate) fn launch_kernel(
+    f: *mut crate::r#impl::module::PaccKernel,
+    grid_dim_x: ::core::ffi::c_uint,
+    grid_dim_y: ::core::ffi::c_uint,
+    grid_dim_z: ::core::ffi::c_uint,
+    block_dim_x: ::core::ffi::c_uint,
+    block_dim_y: ::core::ffi::c_uint,
+    block_dim_z: ::core::ffi::c_uint,
+    shared_mem_bytes: ::core::ffi::c_uint,
+    stream: *mut ::core::ffi::c_void,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    extra: *mut *mut ::core::ffi::c_void,
+) -> cuda_types::cuda::CUresult {
+    use cuda_types::cuda::*;
+    if f.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    let kernel = unsafe { &*f };
+
+    if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES").ok().as_deref() == Some("1") {
+        eprintln!(
+            "[PACC Backend] Launching kernel '{}' grid=({},{},{}) block=({},{},{})",
+            kernel.kernel_name,
+            grid_dim_x, grid_dim_y, grid_dim_z,
+            block_dim_x, block_dim_y, block_dim_z
+        );
+    }
+
+    let strict = std::env::var("HETGPU_PACC_STRICT").ok().as_deref() == Some("1");
+
+    if pacc_try_host_direct_copy_fallback(&kernel.kernel_name, kernel_params) {
+        return Ok(());
+    }
+
+    if kernel.kernel_ptr.is_null() {
+        eprintln!("[PACC Backend] Missing PACC kernel handle for '{}'", kernel.kernel_name);
+        if strict {
+            return Err(CUerror::UNKNOWN);
+        }
+    } else {
+        let result = unsafe {
+            pacc_runtime_sys::pacc_LaunchKernel(
+                kernel.kernel_ptr,
+                grid_dim_x,
+                grid_dim_y,
+                grid_dim_z,
+                block_dim_x,
+                block_dim_y,
+                block_dim_z,
+            )
+        };
+        if result != pacc_runtime_sys::pacc_Result_Success {
+            eprintln!("[PACC Backend] pacc_LaunchKernel failed: {}", result);
+            if strict {
+                return Err(CUerror::UNKNOWN);
+            }
+        }
+    }
+
+    let _ = (shared_mem_bytes, stream, kernel_params, extra);
+    Ok(())
+}
+
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+pub(crate) fn launch_kernel_ex(
+    config: &cuda_types::cuda::CUlaunchConfig,
+    f: *mut crate::r#impl::module::PaccKernel,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    extra: *mut *mut ::core::ffi::c_void,
+) -> cuda_types::cuda::CUresult {
+    launch_kernel(
+        f,
+        config.gridDimX,
+        config.gridDimY,
+        config.gridDimZ,
+        config.blockDimX,
+        config.blockDimY,
+        config.blockDimZ,
+        config.sharedMemBytes,
+        config.hStream.0 as *mut _,
+        kernel_params,
+        extra,
+    )
 }

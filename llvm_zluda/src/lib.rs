@@ -51,7 +51,7 @@ extern "C" {
         B: LLVMBuilderRef,
         Ty: LLVMTypeRef,
         AddrSpace: u32,
-        Name: *const i8,
+        Name: *const u8,
     ) -> LLVMValueRef;
 
     pub fn LLVMZludaBuildAtomicRMW(
@@ -59,7 +59,7 @@ extern "C" {
         op: LLVMZludaAtomicRMWBinOp,
         PTR: LLVMValueRef,
         Val: LLVMValueRef,
-        scope: *const i8,
+        scope: *const u8,
         ordering: LLVMAtomicOrdering,
     ) -> LLVMValueRef;
 
@@ -68,7 +68,7 @@ extern "C" {
         Ptr: LLVMValueRef,
         Cmp: LLVMValueRef,
         New: LLVMValueRef,
-        scope: *const i8,
+        scope: *const u8,
         SuccessOrdering: LLVMAtomicOrdering,
         FailureOrdering: LLVMAtomicOrdering,
     ) -> LLVMValueRef;
@@ -78,8 +78,8 @@ extern "C" {
     pub fn LLVMZludaBuildFence(
         B: LLVMBuilderRef,
         ordering: LLVMAtomicOrdering,
-        scope: *const i8,
-        Name: *const i8,
+        scope: *const u8,
+        Name: *const u8,
     ) -> LLVMValueRef;
 
     // DWARF Debug Info functions
@@ -108,7 +108,7 @@ extern "C" {
     pub fn LLVMZludaSetAtomic(
         MemAccessInst: LLVMValueRef,
         Ordering: LLVMAtomicOrdering,
-        Scope: *const i8,
+        Scope: *const u8,
     );
 
     // LLVM Target initialization functions (for standalone binaries)

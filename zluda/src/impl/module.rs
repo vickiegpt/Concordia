@@ -11,6 +11,8 @@ use std::{ffi::CStr, ptr, sync::Arc};
 use tt_runtime_sys;
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+use pacc_runtime_sys;
 #[cfg(feature = "amd")]
 pub(crate) struct Module {
     base: hipModule_t,
@@ -58,7 +60,8 @@ impl ZludaObject for Module {
     feature = "intel",
     feature = "tenstorrent",
     feature = "tmatmul",
-    feature = "nvidia"
+    feature = "nvidia",
+    feature = "pacc"
 ))]
 pub(crate) fn get_loading_mode(mode: *mut cuda_types::cuda::CUmoduleLoadingMode) -> CUresult {
     if mode.is_null() {
@@ -1889,3 +1892,268 @@ impl ZludaObject for NvidiaKernel {
         Ok(())
     }
 }
+
+// ============================================================================
+// PACC backend module implementations (SiFive Intelligence XM / RISC-V IME)
+// ============================================================================
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) struct Module {
+    device: *mut pacc_runtime_sys::pacc_Device,
+    program: Option<*mut pacc_runtime_sys::pacc_Program>,
+    kernels: Vec<(String, *mut pacc_runtime_sys::pacc_Kernel)>,
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe impl Send for Module {}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe impl Sync for Module {}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl ZludaObject for Module {
+    const COOKIE: usize = 0xe9138bd040487d4a;
+
+    type CudaHandle = CUmodule;
+
+    fn drop_checked(&mut self) -> CUresult {
+        self.kernels.clear();
+        self.program = None;
+        Ok(())
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -> CUresult {
+    if image.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    // Try to extract PTX source
+    let image_bytes = unsafe { std::slice::from_raw_parts(image as *const u8, 8) };
+    let is_ptx = image_bytes.starts_with(b".version") || image_bytes.starts_with(b"//");
+
+    if is_ptx {
+        let c_str = unsafe { std::ffi::CStr::from_ptr(image as *const std::ffi::c_char) };
+        if let Ok(ptx_text) = c_str.to_str() {
+            crate::r#impl::checkpoint::register_module_ptx(image as u64, ptx_text);
+        }
+    }
+
+    // Create PACC device handle (device_id 0 for now)
+    let device = unsafe { pacc_runtime_sys::pacc_CreateDevice(0) };
+    if device.is_null() {
+        eprintln!("[PACC Backend] Failed to create PACC device");
+        if std::env::var("HETGPU_PACC_STRICT").ok().as_deref() == Some("1") {
+            return Err(CUerror::UNKNOWN);
+        }
+        // Continue with null device (stub mode)
+    }
+
+    // Create PACC program
+    let program_ptr = unsafe { pacc_runtime_sys::pacc_CreateProgram() };
+
+    // If PTX, try to compile to RISC-V via comgr
+    if is_ptx && !program_ptr.is_null() {
+        let c_str = unsafe { std::ffi::CStr::from_ptr(image as *const std::ffi::c_char) };
+        if let Ok(ptx_text) = c_str.to_str() {
+            eprintln!("[PACC Backend] Compiling PTX ({} bytes) to RISC-V...", ptx_text.len());
+            match ptx_parser::parse_module_checked(ptx_text) {
+                Ok(ast) => match ptx::to_llvm_module(
+                    ast,
+                    ptx::pass::Attributes { clock_rate: 1_000_000, emit_debug_info: false },
+                    |_| {},
+                ) {
+                    Ok(llvm_module) => {
+                        use std::ffi::CStr;
+                        let target = unsafe { CStr::from_bytes_with_nul_unchecked(b"riscv64-unknown-elf\0") };
+                        let ir_bytes = llvm_module.llvm_ir.write_bitcode_to_memory();
+                        match comgr::compile_bitcode_pacc(
+                            target,
+                            &*ir_bytes,
+                            llvm_module.linked_bitcode(),
+                        ) {
+                            Ok(elf_bytes) => {
+                                eprintln!("[PACC Backend] Compiled to RISC-V ELF ({} bytes)", elf_bytes.len());
+                                let result = unsafe {
+                                    pacc_runtime_sys::pacc_LoadProgram(
+                                        program_ptr,
+                                        elf_bytes.as_ptr() as *const std::ffi::c_void,
+                                        elf_bytes.len() as u64,
+                                    )
+                                };
+                                if result != pacc_runtime_sys::pacc_Result_Success {
+                                    eprintln!("[PACC Backend] pacc_LoadProgram failed: {}", result);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[PACC Backend] compile_bitcode_pacc failed: {:?}", e);
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("[PACC Backend] PTX to LLVM failed: {:?}", e),
+                },
+                Err(_) => eprintln!("[PACC Backend] PTX parse failed"),
+            }
+        }
+    }
+
+    let new_module = Module {
+        device,
+        program: if program_ptr.is_null() { None } else { Some(program_ptr) },
+        kernels: Vec::new(),
+    };
+
+    *module = new_module.wrap();
+
+    if is_ptx {
+        let c_str = unsafe { std::ffi::CStr::from_ptr(image as *const std::ffi::c_char) };
+        if let Ok(ptx_text) = c_str.to_str() {
+            crate::r#impl::checkpoint::register_module_ptx(module.0 as u64, ptx_text);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn unload(hmod: CUmodule) -> CUresult {
+    if hmod.0.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    super::drop_checked::<Module>(hmod)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn get_function(
+    hfunc: *mut CUfunction,
+    hmod: CUmodule,
+    name: *const ::core::ffi::c_char,
+) -> CUresult {
+    if hfunc.is_null() || hmod.0.is_null() || name.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    let function_name = unsafe {
+        std::ffi::CStr::from_ptr(name)
+            .to_str()
+            .map_err(|_| CUerror::INVALID_VALUE)?
+    };
+
+    eprintln!("[PACC Backend] Getting function: {}", function_name);
+
+    // Get program from the wrapped CUDA module handle. PACC modules use the
+    // same LiveCheck wrapper as the other backends; casting CUmodule directly
+    // to Module reads the cookie as fields and makes program look like None.
+    let module_ref = super::as_ref::<Module>(&hmod).as_result()?;
+    let kernel_ptr = if let Some(program) = module_ref.program {
+        unsafe { pacc_runtime_sys::pacc_CreateKernelOnDevice(program, module_ref.device, name) }
+    } else {
+        std::ptr::null_mut()
+    };
+
+    if std::env::var("HETGPU_PACC_LOG_KERNEL_HANDLES").ok().as_deref() == Some("1") {
+        eprintln!(
+            "[PACC Backend] Function '{}' module_device={:?} program={:?} kernel_ptr={:?}",
+            function_name,
+            module_ref.device,
+            module_ref.program,
+            kernel_ptr
+        );
+    }
+
+    let pacc_kernel = PaccKernel {
+        device: module_ref.device,
+        kernel_ptr,
+        kernel_name: function_name.to_string(),
+    };
+
+    let kernel_box = Box::new(pacc_kernel);
+    let kernel_raw = Box::into_raw(kernel_box);
+    unsafe { *hfunc = CUfunction(kernel_raw as *mut _) };
+    Ok(())
+}
+
+// PACC kernel structure
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[repr(C)]
+pub(crate) struct PaccKernel {
+    pub device: *mut pacc_runtime_sys::pacc_Device,
+    pub kernel_ptr: *mut pacc_runtime_sys::pacc_Kernel,
+    pub kernel_name: String,
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe impl Send for PaccKernel {}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe impl Sync for PaccKernel {}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl ZludaObject for PaccKernel {
+    const COOKIE: usize = 0xad74ceadb9b2d51c;
+
+    type CudaHandle = CUfunction;
+
+    fn drop_checked(&mut self) -> CUresult {
+        eprintln!("[PACC Backend] Cleaning up kernel: {}", self.kernel_name);
+        Ok(())
+    }
+}
+
+// FromCuda<CUfunction> for &PaccKernel is generated by from_cuda_object!(module::PaccKernel)

@@ -21,6 +21,35 @@ const COMPONENTS: &[&'static str] = &[
 ];
 
 fn main() {
+    // Allow using a pre-built LLVM installation via environment variable.
+    // Set LLVM_ZLUDA_PREBUILT to the LLVM prefix directory (e.g. /usr/lib/llvm-18).
+    if let Ok(prebuilt) = std::env::var("LLVM_ZLUDA_PREBUILT") {
+        let llvm_prefix = PathBuf::from(&prebuilt);
+        let llvm_config_path = llvm_prefix.join("bin").join("llvm-config");
+        println!("cargo:warning=Using pre-built LLVM from: {}", prebuilt);
+
+        let (cxxflags, ldflags, libdir, lib_names, system_libs) =
+            llvm_config_from_path(&llvm_config_path).expect("Failed to run llvm-config");
+
+        println!("cargo:rustc-link-arg={ldflags}");
+        println!("cargo:rustc-link-search=native={libdir}");
+        for lib in system_libs.split_ascii_whitespace() {
+            println!("cargo:rustc-link-arg={lib}");
+        }
+        link_llvm_components(lib_names);
+        compile_cxx_lib_with_include(cxxflags, llvm_prefix.join("include").to_str().unwrap().to_string());
+
+        let llc_path = llvm_prefix.join("bin").join("llc");
+        let llvm_dis_path = llvm_prefix.join("bin").join("llvm-dis");
+        if llc_path.exists() {
+            println!("cargo:rustc-env=LLC_PATH={}", llc_path.display());
+        }
+        if llvm_dis_path.exists() {
+            println!("cargo:rustc-env=LLVM_DIS_PATH={}", llvm_dis_path.display());
+        }
+        return;
+    }
+
     let mut cmake = Config::new(r"../ext/llvm-project/llvm");
     try_use_ninja(&mut cmake);
     cmake
@@ -117,7 +146,13 @@ fn llvm_config(
 ) -> io::Result<(String, String, String, String, String)> {
     let mut llvm_build_path = llvm_build_dir.clone();
     llvm_build_path.extend(path_to_llvm_config);
-    let mut cmd = Command::new(llvm_build_path);
+    llvm_config_from_path(&llvm_build_path)
+}
+
+fn llvm_config_from_path(
+    llvm_config_path: &PathBuf,
+) -> io::Result<(String, String, String, String, String)> {
+    let mut cmd = Command::new(llvm_config_path);
     cmd.args([
         "--link-static",
         "--cxxflags",
@@ -150,6 +185,10 @@ fn llvm_config(
 }
 
 fn compile_cxx_lib(cxxflags: String) {
+    compile_cxx_lib_with_include(cxxflags, "../ext/llvm-project/llvm/include".to_string());
+}
+
+fn compile_cxx_lib_with_include(cxxflags: String, include_path: String) {
     println!(
         "cargo:warning=Compiling C++ library with CXXFLAGS: {}",
         cxxflags
@@ -202,7 +241,7 @@ fn compile_cxx_lib(cxxflags: String) {
     cc.cpp(true).file("src/lib.cpp");
 
     // Add required includes for LLVM
-    cc.include("../ext/llvm-project/llvm/include");
+    cc.include(&include_path);
 
     println!("cargo:warning=About to compile lib.cpp");
     cc.compile("llvm_zluda_cpp");

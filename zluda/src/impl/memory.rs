@@ -789,3 +789,154 @@ pub(crate) fn set_d32_v2(dst_device: CUdeviceptr, ui: u32, n: usize) -> CUresult
     }
     Ok(())
 }
+
+
+// ─── PACC memory API ─────────────────────────────────────────────────────────
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+use cuda_types::cuda::*;
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[derive(Clone, Copy, Debug)]
+enum PaccAllocKind {
+    Host { align: usize },
+    Driver,
+}
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[derive(Clone, Copy, Debug)]
+struct PaccAlloc {
+    size: usize,
+    kind: PaccAllocKind,
+}
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+static PACC_ALLOC_MAP: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u64, PaccAlloc>>>
+    = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+fn pacc_alloc_host(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
+    use std::alloc::{alloc_zeroed, Layout};
+
+    let align = 64;
+    let alloc_size = bytesize.max(1);
+    let layout = Layout::from_size_align(alloc_size, align).map_err(|_| CUerror::OUT_OF_MEMORY)?;
+    let ptr = unsafe { alloc_zeroed(layout) };
+    if ptr.is_null() {
+        return Err(CUerror::OUT_OF_MEMORY);
+    }
+    Ok((
+        ptr as u64,
+        PaccAlloc {
+            size: alloc_size,
+            kind: PaccAllocKind::Host { align },
+        },
+    ))
+}
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
+    if dptr.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    let real_driver_alloc = std::env::var("HETGPU_PACC_REAL_DEVICE_MEM")
+        .ok()
+        .as_deref()
+        == Some("1");
+
+    let (addr, alloc) = if real_driver_alloc {
+        match pacc_runtime_sys::PaccDevice::open(0).and_then(|dev| dev.mem_alloc(bytesize as u64)) {
+            Ok(phys) => (
+                phys,
+                PaccAlloc {
+                    size: bytesize,
+                    kind: PaccAllocKind::Driver,
+                },
+            ),
+            Err(_) => pacc_alloc_host(bytesize)?,
+        }
+    } else {
+        pacc_alloc_host(bytesize)?
+    };
+
+    PACC_ALLOC_MAP.lock().unwrap().insert(addr, alloc);
+    unsafe { *dptr = CUdeviceptr_v2(addr as *mut _); }
+    Ok(())
+}
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
+    let addr = dptr.0 as u64;
+    if addr == 0 {
+        return Ok(());
+    }
+    let alloc = PACC_ALLOC_MAP.lock().unwrap().remove(&addr);
+    if let Some(alloc) = alloc {
+        match alloc.kind {
+            PaccAllocKind::Host { align } => {
+                if let Ok(layout) = std::alloc::Layout::from_size_align(alloc.size.max(1), align) {
+                    unsafe { std::alloc::dealloc(addr as *mut u8, layout); }
+                }
+            }
+            PaccAllocKind::Driver => {
+                if let Ok(dev) = pacc_runtime_sys::PaccDevice::open(0) {
+                    let _ = dev.mem_free(addr);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+pub(crate) fn copy_dto_h_v2(dst_host: *mut ::core::ffi::c_void, src_device: CUdeviceptr, byte_count: usize) -> CUresult {
+    if dst_host.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(src_device.0 as *const u8, dst_host as *mut u8, byte_count);
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+pub(crate) fn copy_hto_d_v2(dst_device: CUdeviceptr, src_host: *const ::core::ffi::c_void, byte_count: usize) -> CUresult {
+    if src_host.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(src_host as *const u8, dst_device.0 as *mut u8, byte_count);
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+pub(crate) fn get_address_range_v2(pbase: *mut CUdeviceptr, psize: *mut usize, dptr: CUdeviceptr) -> CUresult {
+    let addr = dptr.0 as u64;
+    let map = PACC_ALLOC_MAP.lock().unwrap();
+    if let Some(alloc) = map.get(&addr) {
+        if !pbase.is_null() {
+            unsafe { *pbase = CUdeviceptr_v2(addr as *mut _); }
+        }
+        if !psize.is_null() {
+            unsafe { *psize = alloc.size; }
+        }
+        Ok(())
+    } else {
+        Err(CUerror::INVALID_VALUE)
+    }
+}
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) -> CUresult {
+    let slice = unsafe { std::slice::from_raw_parts_mut(dst.0 as *mut u32, n) };
+    for x in slice { *x = ui; }
+    Ok(())
+}
+
+#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize) -> CUresult {
+    let slice = unsafe { std::slice::from_raw_parts_mut(dst.0 as *mut u8, n) };
+    for x in slice { *x = value; }
+    Ok(())
+}

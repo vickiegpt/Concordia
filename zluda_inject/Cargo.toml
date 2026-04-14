@@ -7,11 +7,10 @@ edition = "2018"
 [features]
 default = []
 intel = []
-amd = []
 tenstorrent = []
 gemmini = []
+pacc = []
 nvidia = []
-
 [[bin]]
 name = "zluda_with"
 path = "src/main.rs"

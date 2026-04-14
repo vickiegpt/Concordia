@@ -17,6 +17,7 @@ gemmini = []
 nvidia = []
 tmatmul = []
 cutile = ["comgr/cutile"]
+pacc = ["comgr/pacc", "ptx/pacc"]
 embed_cudart = []
 flate2 = ["dep:flate2"]
 
@@ -37,6 +38,7 @@ hip_runtime_sys = { path = "../ext/hip_runtime-sys" }
 tt_runtime_sys = { path = "../ext/tt_runtime-sys" }
 tt_comgr_sys = { path = "../ext/tt_comgr-sys" }
 cutile_comgr_sys = { path = "../ext/cutile_comgr-sys" }
+pacc_runtime_sys = { path = "../ext/pacc_runtime-sys" }
 nvidia_runtime_sys = { path = "../ext/nvidia_runtime-sys" }
 libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }

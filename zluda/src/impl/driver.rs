@@ -818,3 +818,113 @@ pub(crate) fn device_nvidia(dev_id: i32) -> Result<&'static Device, CUerror> {
 thread_local! {
     static NVIDIA_DEVICES: RefCell<HashMap<i32, NonNull<Device>>> = RefCell::new(HashMap::new());
 }
+
+
+// ============================================================================
+// PACC backend driver implementations (SiFive Intelligence XM / RISC-V IME)
+// ============================================================================
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
+    static GLOBAL_STATE: OnceLock<Result<GlobalState, CUerror>> = OnceLock::new();
+
+    GLOBAL_STATE
+        .get_or_init(|| {
+            let visible_devices = std::env::var("HETGPU_PACC_VISIBLE_DEVICES")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1)
+                .clamp(1, 4);
+
+            // PACC can expose one logical CUDA device per physical PACC.
+            let comgr_isa = CString::new("riscv64-pacc-ime").map_err(|_| CUerror::UNKNOWN)?;
+            let mut devices = Vec::with_capacity(visible_devices);
+
+            PACC_DEVICES.with(|map| {
+                let mut map = map.borrow_mut();
+                for dev_id in 0..visible_devices {
+                    let device = Device {
+                        _comgr_isa: comgr_isa.clone(),
+                        primary_context: LiveCheck::new(context::Context::new(dev_id as i32)),
+                    };
+                    let device_box = Box::new(device.clone());
+                    let device_ptr =
+                        unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(device.clone()))) };
+                    map.insert(dev_id as i32, device_ptr);
+                    devices.push(*device_box);
+                }
+            });
+
+            eprintln!(
+                "[PACC Backend] exposing {} CUDA-visible PACC device(s)",
+                visible_devices
+            );
+
+            Ok(GlobalState { devices })
+        })
+        .as_ref()
+        .map_err(|e| *e)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
+    let _ = flags;
+    global_state()?;
+
+    // Install checkpoint signal handler if enabled
+    if std::env::var("HETGPU_CHECKPOINT_ENABLED").ok().as_deref() != Some("0") {
+        if let Err(e) = super::checkpoint::install_signal_handler() {
+            eprintln!("[hetGPU] Warning: Failed to install checkpoint handler: {}", e);
+        }
+    }
+
+    eprintln!("[PACC Backend] cuInit: RISC-V IME backend initialized");
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn get_version(version: &mut ::core::ffi::c_int) -> CUresult {
+    *version = std::cmp::max(cuda_types::cuda::CUDA_VERSION as i32, 13000);
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn device_pacc(dev_id: i32) -> Result<&'static Device, CUerror> {
+    PACC_DEVICES.with(|map| {
+        let map_ref = map.borrow();
+        map_ref
+            .get(&dev_id)
+            .ok_or(CUerror::INVALID_DEVICE)
+            .map(|dev_ptr| unsafe { dev_ptr.as_ref() })
+    })
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+thread_local! {
+    static PACC_DEVICES: RefCell<HashMap<i32, NonNull<Device>>> = RefCell::new(HashMap::new());
+}
