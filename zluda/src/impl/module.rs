@@ -1969,10 +1969,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     let device = unsafe { pacc_runtime_sys::pacc_CreateDevice(0) };
     if device.is_null() {
         eprintln!("[PACC Backend] Failed to create PACC device");
-        if std::env::var("HETGPU_PACC_STRICT").ok().as_deref() == Some("1") {
-            return Err(CUerror::UNKNOWN);
-        }
-        // Continue with null device (stub mode)
+        return Err(CUerror::UNKNOWN);
     }
 
     // Create PACC program

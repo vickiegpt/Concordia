@@ -1,10 +1,8 @@
 /*
  * cuBLAS Shim for hetGPU
  *
- * Forwards cuBLAS calls to the real CUDA cuBLAS library for actual computation.
- * This ensures PyTorch operations work correctly while we develop the TMatmul path.
- *
- * Future work: Replace forwarding with TMatmul assembly for accelerated matrix ops.
+ * Routes GEMM calls into the PACC runtime job ABI.
+ * No CPU fallback or success-returning GEMM stubs are allowed in the PACC path.
  */
 
 #include <stddef.h>
@@ -114,27 +112,39 @@ typedef enum {
 
 static cublasMath_t g_math_mode = CUBLAS_DEFAULT_MATH;
 
-static int env_flag_enabled(const char *name, int default_value) {
-    const char *env = getenv(name);
-    if (!env || !env[0]) {
-        return default_value;
+extern int hetgpu_pacc_submit_gemm(
+    int transa, int transb, int m, int n, int k,
+    const void *alpha,
+    const void *A, int Atype, int lda, long long strideA,
+    const void *B, int Btype, int ldb, long long strideB,
+    const void *beta,
+    void *C, int Ctype, int ldc, long long strideC,
+    int batchCount, int computeType);
+
+static cublasStatus_t submit_pacc_gemm(
+    const char *name,
+    cublasOperation_t transa, cublasOperation_t transb,
+    int m, int n, int k,
+    const void *alpha,
+    const void *A, cudaDataType Atype, int lda, long long strideA,
+    const void *B, cudaDataType Btype, int ldb, long long strideB,
+    const void *beta,
+    void *C, cudaDataType Ctype, int ldc, long long strideC,
+    int batchCount, cublasComputeType_t computeType) {
+    int rc = hetgpu_pacc_submit_gemm(
+        (int)transa, (int)transb, m, n, k,
+        alpha,
+        A, (int)Atype, lda, strideA,
+        B, (int)Btype, ldb, strideB,
+        beta,
+        C, (int)Ctype, ldc, strideC,
+        batchCount, (int)computeType);
+    if (rc == 0) {
+        return CUBLAS_STATUS_SUCCESS;
     }
-    return strcmp(env, "0") != 0 && strcmp(env, "false") != 0 && strcmp(env, "FALSE") != 0;
+    DEBUG_LOG("%s requires PACC GEMM runtime submit; no CPU/stub fallback active", name);
+    return CUBLAS_STATUS_NOT_SUPPORTED;
 }
-
-static int fallback_zero_outputs_enabled(void) {
-    return env_flag_enabled("HETGPU_CUBLAS_FALLBACK_ZERO_OUTPUT", 0);
-}
-
-static int cpu_gemm_fallback_enabled(void) {
-    return env_flag_enabled("HETGPU_CUBLAS_CPU_FALLBACK", 0);
-}
-
-static int cpu_gemm_typed(cublasOperation_t transa, cublasOperation_t transb,
-                          int m, int n, int k,
-                          float alpha, const void *A, cudaDataType Atype, int lda,
-                          const void *B, cudaDataType Btype, int ldb,
-                          float beta, void *C, cudaDataType Ctype, int ldc);
 
 // cuBLAS handle management
 cublasStatus_t cublasCreate_v2(cublasHandle_t *handle) {
@@ -279,27 +289,11 @@ cublasStatus_t cublasSgemm_v2(cublasHandle_t handle,
     if (real_cublasSgemm_v2) {
         return real_cublasSgemm_v2(handle, transa, transb, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
     }
-    if (cpu_gemm_fallback_enabled()) {
-        float a = alpha ? *alpha : 1.0f;
-        float b = beta ? *beta : 0.0f;
-        if (cpu_gemm_typed(transa, transb, m, n, k, a, A, CUDA_R_32F, lda, B, CUDA_R_32F, ldb, b, C, CUDA_R_32F, ldc)) {
-            DEBUG_LOG("cublasSgemm_v2 CPU fallback computed C=%p", (void*)C);
-            return CUBLAS_STATUS_SUCCESS;
-        }
-    }
-    // Fallback: do not infer output allocation spans unless explicitly requested.
-    // PyTorch may hand this shim host-backed CUDA pointers whose usable span is
-    // smaller than the cuBLAS logical stride range; blind writes corrupt malloc
-    // metadata before the real PACC GEMM path exists.
-    DEBUG_LOG("cublasSgemm_v2 fallback: leaving output unchanged C=%p, ldc*n=%d", (void*)C, ldc * n);
-    if (fallback_zero_outputs_enabled() && C && n > 0 && ldc > 0) {
-        for (int col = 0; col < n; col++) {
-            for (int row = 0; row < ldc; row++) {
-                C[col * ldc + row] = 0.0f;
-            }
-        }
-    }
-    return CUBLAS_STATUS_SUCCESS;
+    return submit_pacc_gemm("cublasSgemm_v2", transa, transb, m, n, k,
+                            alpha, A, CUDA_R_32F, lda, 0,
+                            B, CUDA_R_32F, ldb, 0,
+                            beta, C, CUDA_R_32F, ldc, 0,
+                            1, CUBLAS_COMPUTE_32F);
 }
 
 cublasStatus_t cublasDgemm_v2(cublasHandle_t handle,
@@ -311,7 +305,11 @@ cublasStatus_t cublasDgemm_v2(cublasHandle_t handle,
                                const double *beta,
                                double *C, int ldc) {
     DEBUG_LOG("cublasDgemm_v2 called: m=%d, n=%d, k=%d", m, n, k);
-    return CUBLAS_STATUS_SUCCESS;
+    return submit_pacc_gemm("cublasDgemm_v2", transa, transb, m, n, k,
+                            alpha, A, CUDA_R_64F, lda, 0,
+                            B, CUDA_R_64F, ldb, 0,
+                            beta, C, CUDA_R_64F, ldc, 0,
+                            1, CUBLAS_COMPUTE_64F);
 }
 
 cublasStatus_t cublasHgemm(cublasHandle_t handle,
@@ -323,7 +321,11 @@ cublasStatus_t cublasHgemm(cublasHandle_t handle,
                             const void *beta,
                             void *C, int ldc) {
     DEBUG_LOG("cublasHgemm called: m=%d, n=%d, k=%d", m, n, k);
-    return CUBLAS_STATUS_SUCCESS;
+    return submit_pacc_gemm("cublasHgemm", transa, transb, m, n, k,
+                            alpha, A, CUDA_R_16F, lda, 0,
+                            B, CUDA_R_16F, ldb, 0,
+                            beta, C, CUDA_R_16F, ldc, 0,
+                            1, CUBLAS_COMPUTE_32F);
 }
 
 // Batched GEMM
@@ -337,20 +339,11 @@ cublasStatus_t cublasSgemmStridedBatched(cublasHandle_t handle,
                                           float *C, int ldc, long long int strideC,
                                           int batchCount) {
     DEBUG_LOG("cublasSgemmStridedBatched called: m=%d, n=%d, k=%d, batchCount=%d", m, n, k, batchCount);
-    if (cpu_gemm_fallback_enabled() && batchCount > 0) {
-        float a = alpha ? *alpha : 1.0f;
-        float b = beta ? *beta : 0.0f;
-        for (int batch = 0; batch < batchCount; batch++) {
-            const float *Ab = A + (size_t)batch * (size_t)strideA;
-            const float *Bb = B + (size_t)batch * (size_t)strideB;
-            float *Cb = C + (size_t)batch * (size_t)strideC;
-            if (!cpu_gemm_typed(transa, transb, m, n, k, a, Ab, CUDA_R_32F, lda, Bb, CUDA_R_32F, ldb, b, Cb, CUDA_R_32F, ldc)) {
-                break;
-            }
-        }
-        DEBUG_LOG("cublasSgemmStridedBatched CPU fallback computed C=%p", (void*)C);
-    }
-    return CUBLAS_STATUS_SUCCESS;
+    return submit_pacc_gemm("cublasSgemmStridedBatched", transa, transb, m, n, k,
+                            alpha, A, CUDA_R_32F, lda, strideA,
+                            B, CUDA_R_32F, ldb, strideB,
+                            beta, C, CUDA_R_32F, ldc, strideC,
+                            batchCount, CUBLAS_COMPUTE_32F);
 }
 
 cublasStatus_t cublasDgemmStridedBatched(cublasHandle_t handle,
@@ -363,209 +356,11 @@ cublasStatus_t cublasDgemmStridedBatched(cublasHandle_t handle,
                                           double *C, int ldc, long long int strideC,
                                           int batchCount) {
     DEBUG_LOG("cublasDgemmStridedBatched called: m=%d, n=%d, k=%d, batchCount=%d", m, n, k, batchCount);
-    return CUBLAS_STATUS_SUCCESS;
-}
-
-// Helper to get element size from cudaDataType
-static size_t get_element_size(cudaDataType dtype) {
-    switch (dtype) {
-        case CUDA_R_16F: return 2;
-        case CUDA_R_16BF: return 2;
-        case CUDA_R_32F: return 4;
-        case CUDA_R_64F: return 8;
-        case CUDA_R_32I: return 4;
-        default: return 0;
-    }
-}
-
-static float read_f32_unaligned(const void *ptr) {
-    float value;
-    memcpy(&value, ptr, sizeof(value));
-    return value;
-}
-
-static void write_f32_unaligned(void *ptr, float value) {
-    memcpy(ptr, &value, sizeof(value));
-}
-
-static float half_to_float(uint16_t h) {
-    uint32_t sign = ((uint32_t)h & 0x8000u) << 16;
-    uint32_t exp = ((uint32_t)h >> 10) & 0x1fu;
-    uint32_t mant = (uint32_t)h & 0x03ffu;
-    uint32_t out;
-    if (exp == 0) {
-        if (mant == 0) {
-            out = sign;
-        } else {
-            exp = 1;
-            while ((mant & 0x0400u) == 0) {
-                mant <<= 1;
-                exp--;
-            }
-            mant &= 0x03ffu;
-            out = sign | ((exp + 112u) << 23) | (mant << 13);
-        }
-    } else if (exp == 31) {
-        out = sign | 0x7f800000u | (mant << 13);
-    } else {
-        out = sign | ((exp + 112u) << 23) | (mant << 13);
-    }
-    float f;
-    memcpy(&f, &out, sizeof(f));
-    return f;
-}
-
-static uint16_t float_to_half(float f) {
-    uint32_t x;
-    memcpy(&x, &f, sizeof(x));
-    uint32_t sign = (x >> 16) & 0x8000u;
-    int32_t exp = (int32_t)((x >> 23) & 0xffu) - 127 + 15;
-    uint32_t mant = x & 0x7fffffu;
-    if (exp <= 0) {
-        if (exp < -10) {
-            return (uint16_t)sign;
-        }
-        mant |= 0x800000u;
-        uint32_t shifted = mant >> (uint32_t)(1 - exp + 13);
-        return (uint16_t)(sign | shifted);
-    }
-    if (exp >= 31) {
-        return (uint16_t)(sign | 0x7c00u);
-    }
-    return (uint16_t)(sign | ((uint32_t)exp << 10) | (mant >> 13));
-}
-
-static float bf16_to_float(uint16_t b) {
-    uint32_t x = ((uint32_t)b) << 16;
-    float f;
-    memcpy(&f, &x, sizeof(f));
-    return f;
-}
-
-static uint16_t float_to_bf16(float f) {
-    uint32_t x;
-    memcpy(&x, &f, sizeof(x));
-    uint32_t lsb = (x >> 16) & 1u;
-    x += 0x7fffu + lsb;
-    return (uint16_t)(x >> 16);
-}
-
-static float read_typed_value(const void *base, cudaDataType dtype, size_t index) {
-    const unsigned char *bytes = (const unsigned char *)base;
-    switch (dtype) {
-        case CUDA_R_32F:
-            return read_f32_unaligned(bytes + index * 4);
-        case CUDA_R_16F: {
-            uint16_t h;
-            memcpy(&h, bytes + index * 2, sizeof(h));
-            return half_to_float(h);
-        }
-        case CUDA_R_16BF: {
-            uint16_t b;
-            memcpy(&b, bytes + index * 2, sizeof(b));
-            return bf16_to_float(b);
-        }
-        case CUDA_R_64F: {
-            double d;
-            memcpy(&d, bytes + index * 8, sizeof(d));
-            return (float)d;
-        }
-        case CUDA_R_32I: {
-            int32_t v;
-            memcpy(&v, bytes + index * 4, sizeof(v));
-            return (float)v;
-        }
-        default:
-            return 0.0f;
-    }
-}
-
-static void write_typed_value(void *base, cudaDataType dtype, size_t index, float value) {
-    unsigned char *bytes = (unsigned char *)base;
-    switch (dtype) {
-        case CUDA_R_32F:
-            write_f32_unaligned(bytes + index * 4, value);
-            break;
-        case CUDA_R_16F: {
-            uint16_t h = float_to_half(value);
-            memcpy(bytes + index * 2, &h, sizeof(h));
-            break;
-        }
-        case CUDA_R_16BF: {
-            uint16_t b = float_to_bf16(value);
-            memcpy(bytes + index * 2, &b, sizeof(b));
-            break;
-        }
-        case CUDA_R_64F: {
-            double d = (double)value;
-            memcpy(bytes + index * 8, &d, sizeof(d));
-            break;
-        }
-        case CUDA_R_32I: {
-            int32_t v = (int32_t)value;
-            memcpy(bytes + index * 4, &v, sizeof(v));
-            break;
-        }
-        default:
-            break;
-    }
-}
-
-static float read_scalar_value(const void *ptr, cublasComputeType_t compute_type, float default_value) {
-    if (!ptr) {
-        return default_value;
-    }
-    switch (compute_type) {
-        case CUBLAS_COMPUTE_16F: {
-            uint16_t h;
-            memcpy(&h, ptr, sizeof(h));
-            return half_to_float(h);
-        }
-        case CUBLAS_COMPUTE_64F: {
-            double d;
-            memcpy(&d, ptr, sizeof(d));
-            return (float)d;
-        }
-        case CUBLAS_COMPUTE_32I: {
-            int32_t v;
-            memcpy(&v, ptr, sizeof(v));
-            return (float)v;
-        }
-        case CUBLAS_COMPUTE_32F:
-        default:
-            return read_f32_unaligned(ptr);
-    }
-}
-
-static int cpu_gemm_typed(cublasOperation_t transa, cublasOperation_t transb,
-                          int m, int n, int k,
-                          float alpha, const void *A, cudaDataType Atype, int lda,
-                          const void *B, cudaDataType Btype, int ldb,
-                          float beta, void *C, cudaDataType Ctype, int ldc) {
-    if (!A || !B || !C || m < 0 || n < 0 || k < 0 || lda <= 0 || ldb <= 0 || ldc <= 0) {
-        return 0;
-    }
-    if (get_element_size(Atype) == 0 || get_element_size(Btype) == 0 || get_element_size(Ctype) == 0) {
-        return 0;
-    }
-    for (int col = 0; col < n; col++) {
-        for (int row = 0; row < m; row++) {
-            float acc = 0.0f;
-            for (int kk = 0; kk < k; kk++) {
-                size_t a_index = (transa == CUBLAS_OP_N)
-                    ? (size_t)row + (size_t)kk * (size_t)lda
-                    : (size_t)kk + (size_t)row * (size_t)lda;
-                size_t b_index = (transb == CUBLAS_OP_N)
-                    ? (size_t)kk + (size_t)col * (size_t)ldb
-                    : (size_t)col + (size_t)kk * (size_t)ldb;
-                acc += read_typed_value(A, Atype, a_index) * read_typed_value(B, Btype, b_index);
-            }
-            size_t c_index = (size_t)row + (size_t)col * (size_t)ldc;
-            float old = beta == 0.0f ? 0.0f : read_typed_value(C, Ctype, c_index);
-            write_typed_value(C, Ctype, c_index, alpha * acc + beta * old);
-        }
-    }
-    return 1;
+    return submit_pacc_gemm("cublasDgemmStridedBatched", transa, transb, m, n, k,
+                            alpha, A, CUDA_R_64F, lda, strideA,
+                            B, CUDA_R_64F, ldb, strideB,
+                            beta, C, CUDA_R_64F, ldc, strideC,
+                            batchCount, CUBLAS_COMPUTE_64F);
 }
 
 // GemmEx - Extended GEMM with mixed precision
@@ -579,25 +374,12 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
                              void *C, cudaDataType Ctype, int ldc,
                              cublasComputeType_t computeType, cublasGemmAlgo_t algo) {
     DEBUG_LOG("cublasGemmEx called: m=%d, n=%d, k=%d, Atype=%d, Btype=%d, Ctype=%d, ldc=%d", m, n, k, Atype, Btype, Ctype, ldc);
-    if (cpu_gemm_fallback_enabled()) {
-        float a = read_scalar_value(alpha, computeType, 1.0f);
-        float b = read_scalar_value(beta, computeType, 0.0f);
-        if (cpu_gemm_typed(transa, transb, m, n, k, a, A, Atype, lda, B, Btype, ldb, b, C, Ctype, ldc)) {
-            DEBUG_LOG("cublasGemmEx CPU fallback computed C=%p", C);
-            return CUBLAS_STATUS_SUCCESS;
-        }
-    }
-    // Fallback: keep outputs untouched unless explicitly enabled. See
-    // cublasSgemm_v2 for why guessed writes are unsafe in the PACC shim.
-    if (fallback_zero_outputs_enabled() && C && n > 0 && ldc > 0) {
-        size_t elem_size = get_element_size(Ctype);
-        size_t total_bytes = (size_t)ldc * (size_t)n * elem_size;
-        DEBUG_LOG("cublasGemmEx fallback: zeroing output C=%p, total_bytes=%zu", C, total_bytes);
-        memset(C, 0, total_bytes);
-    } else {
-        DEBUG_LOG("cublasGemmEx fallback: leaving output unchanged C=%p", C);
-    }
-    return CUBLAS_STATUS_SUCCESS;
+    (void)algo;
+    return submit_pacc_gemm("cublasGemmEx", transa, transb, m, n, k,
+                            alpha, A, Atype, lda, 0,
+                            B, Btype, ldb, 0,
+                            beta, C, Ctype, ldc, 0,
+                            1, computeType);
 }
 
 // Complex number versions (stubs)
@@ -610,7 +392,8 @@ cublasStatus_t cublasCgemm_v2(cublasHandle_t handle,
                                const void *beta,
                                void *C, int ldc) {
     DEBUG_LOG("cublasCgemm_v2 called: m=%d, n=%d, k=%d", m, n, k);
-    return CUBLAS_STATUS_SUCCESS;
+    DEBUG_LOG("cublasCgemm_v2 complex GEMM is not implemented on PACC yet; no stub fallback active");
+    return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
 cublasStatus_t cublasZgemm_v2(cublasHandle_t handle,
@@ -622,7 +405,8 @@ cublasStatus_t cublasZgemm_v2(cublasHandle_t handle,
                                const void *beta,
                                void *C, int ldc) {
     DEBUG_LOG("cublasZgemm_v2 called: m=%d, n=%d, k=%d", m, n, k);
-    return CUBLAS_STATUS_SUCCESS;
+    DEBUG_LOG("cublasZgemm_v2 complex GEMM is not implemented on PACC yet; no stub fallback active");
+    return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
 // Batched complex
@@ -636,7 +420,8 @@ cublasStatus_t cublasCgemmStridedBatched(cublasHandle_t handle,
                                           void *C, int ldc, long long int strideC,
                                           int batchCount) {
     DEBUG_LOG("cublasCgemmStridedBatched called: m=%d, n=%d, k=%d, batchCount=%d", m, n, k, batchCount);
-    return CUBLAS_STATUS_SUCCESS;
+    DEBUG_LOG("cublasCgemmStridedBatched complex GEMM is not implemented on PACC yet; no stub fallback active");
+    return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
 // Dot products for complex
@@ -743,7 +528,8 @@ cublasStatus_t cublasSgemmBatched(cublasHandle_t handle,
                                    float *Carray[], int ldc,
                                    int batchCount) {
     DEBUG_LOG("cublasSgemmBatched called: m=%d, n=%d, k=%d, batchCount=%d", m, n, k, batchCount);
-    return CUBLAS_STATUS_SUCCESS;
+    DEBUG_LOG("cublasSgemmBatched pointer-array GEMM is not implemented on PACC yet; no stub fallback active");
+    return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
 cublasStatus_t cublasDgemmBatched(cublasHandle_t handle,
@@ -756,7 +542,8 @@ cublasStatus_t cublasDgemmBatched(cublasHandle_t handle,
                                    double *Carray[], int ldc,
                                    int batchCount) {
     DEBUG_LOG("cublasDgemmBatched called: m=%d, n=%d, k=%d, batchCount=%d", m, n, k, batchCount);
-    return CUBLAS_STATUS_SUCCESS;
+    DEBUG_LOG("cublasDgemmBatched pointer-array GEMM is not implemented on PACC yet; no stub fallback active");
+    return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
 // TRSM operations
@@ -870,14 +657,11 @@ cublasStatus_t cublasSgemmEx(cublasHandle_t handle,
                               const float *beta,
                               void *C, cudaDataType Ctype, int ldc) {
     DEBUG_LOG("cublasSgemmEx called: m=%d, n=%d, k=%d", m, n, k);
-    if (cpu_gemm_fallback_enabled()) {
-        float a = alpha ? *alpha : 1.0f;
-        float b = beta ? *beta : 0.0f;
-        if (cpu_gemm_typed(transa, transb, m, n, k, a, A, Atype, lda, B, Btype, ldb, b, C, Ctype, ldc)) {
-            DEBUG_LOG("cublasSgemmEx CPU fallback computed C=%p", C);
-        }
-    }
-    return CUBLAS_STATUS_SUCCESS;
+    return submit_pacc_gemm("cublasSgemmEx", transa, transb, m, n, k,
+                            alpha, A, Atype, lda, 0,
+                            B, Btype, ldb, 0,
+                            beta, C, Ctype, ldc, 0,
+                            1, CUBLAS_COMPUTE_32F);
 }
 
 // DotEx
@@ -903,38 +687,12 @@ cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
                                            int batchCount,
                                            cublasComputeType_t computeType, cublasGemmAlgo_t algo) {
     DEBUG_LOG("cublasGemmStridedBatchedEx called: m=%d, n=%d, k=%d, batchCount=%d, Atype=%d, Btype=%d, Ctype=%d", m, n, k, batchCount, Atype, Btype, Ctype);
-    if (cpu_gemm_fallback_enabled() && batchCount > 0) {
-        size_t a_elem = get_element_size(Atype);
-        size_t b_elem = get_element_size(Btype);
-        size_t c_elem = get_element_size(Ctype);
-        if (a_elem != 0 && b_elem != 0 && c_elem != 0) {
-            float a = read_scalar_value(alpha, computeType, 1.0f);
-            float b = read_scalar_value(beta, computeType, 0.0f);
-            for (int batch = 0; batch < batchCount; batch++) {
-                const unsigned char *Ab = (const unsigned char *)A + (size_t)batch * (size_t)strideA * a_elem;
-                const unsigned char *Bb = (const unsigned char *)B + (size_t)batch * (size_t)strideB * b_elem;
-                unsigned char *Cb = (unsigned char *)C + (size_t)batch * (size_t)strideC * c_elem;
-                if (!cpu_gemm_typed(transa, transb, m, n, k, a, Ab, Atype, lda, Bb, Btype, ldb, b, Cb, Ctype, ldc)) {
-                    break;
-                }
-            }
-            DEBUG_LOG("cublasGemmStridedBatchedEx CPU fallback computed C=%p", C);
-            return CUBLAS_STATUS_SUCCESS;
-        }
-    }
-    // Fallback: keep outputs untouched unless explicitly enabled. A logical
-    // stride range is not proof that the shim owns every byte in that range.
-    if (fallback_zero_outputs_enabled() && C && n > 0 && ldc > 0 && batchCount > 0) {
-        size_t elem_size = get_element_size(Ctype);
-        size_t batch_bytes = (size_t)ldc * (size_t)n * elem_size;
-        size_t total_bytes = (strideC > 0) ? (size_t)(strideC * (batchCount - 1)) * elem_size + batch_bytes
-                                           : batch_bytes * (size_t)batchCount;
-        DEBUG_LOG("cublasGemmStridedBatchedEx fallback: zeroing output C=%p, total_bytes=%zu", C, total_bytes);
-        memset(C, 0, total_bytes);
-    } else {
-        DEBUG_LOG("cublasGemmStridedBatchedEx fallback: leaving output unchanged C=%p", C);
-    }
-    return CUBLAS_STATUS_SUCCESS;
+    (void)algo;
+    return submit_pacc_gemm("cublasGemmStridedBatchedEx", transa, transb, m, n, k,
+                            alpha, A, Atype, lda, strideA,
+                            B, Btype, ldb, strideB,
+                            beta, C, Ctype, ldc, strideC,
+                            batchCount, computeType);
 }
 
 // QR factorization batched
@@ -1151,5 +909,6 @@ cublasStatus_t cublasZgemmStridedBatched(cublasHandle_t handle,
                                           void *C, int ldc, long long int strideC,
                                           int batchCount) {
     DEBUG_LOG("cublasZgemmStridedBatched called: m=%d, n=%d, k=%d, batchCount=%d", m, n, k, batchCount);
-    return CUBLAS_STATUS_SUCCESS;
+    DEBUG_LOG("cublasZgemmStridedBatched complex GEMM is not implemented on PACC yet; no stub fallback active");
+    return CUBLAS_STATUS_NOT_SUPPORTED;
 }

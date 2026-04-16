@@ -843,6 +843,10 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
         .ok()
         .as_deref()
         == Some("1");
+    let allow_host_device_mem = std::env::var("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM")
+        .ok()
+        .as_deref()
+        == Some("1");
 
     let (addr, alloc) = if real_driver_alloc {
         match pacc_runtime_sys::PaccDevice::open(0).and_then(|dev| dev.mem_alloc(bytesize as u64)) {
@@ -853,10 +857,22 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
                     kind: PaccAllocKind::Driver,
                 },
             ),
-            Err(_) => pacc_alloc_host(bytesize)?,
+            Err(e) => {
+                eprintln!("[PACC Backend] cuMemAlloc real device memory failed: {}", e);
+                return Err(CUerror::OUT_OF_MEMORY);
+            }
         }
-    } else {
+    } else if allow_host_device_mem {
+        eprintln!(
+            "[PACC Backend] HETGPU_PACC_ALLOW_HOST_DEVICE_MEM=1: using host-backed CUDA memory"
+        );
         pacc_alloc_host(bytesize)?
+    } else {
+        eprintln!(
+            "[PACC Backend] refusing host-backed CUDA memory; set HETGPU_PACC_REAL_DEVICE_MEM=1 \
+             for driver memory or HETGPU_PACC_ALLOW_HOST_DEVICE_MEM=1 only for non-PACC debugging"
+        );
+        return Err(CUerror::OUT_OF_MEMORY);
     };
 
     PACC_ALLOC_MAP.lock().unwrap().insert(addr, alloc);
@@ -893,6 +909,17 @@ pub(crate) fn copy_dto_h_v2(dst_host: *mut ::core::ffi::c_void, src_device: CUde
     if dst_host.is_null() {
         return Err(CUerror::INVALID_VALUE);
     }
+    let addr = src_device.0 as u64;
+    if let Some(alloc) = PACC_ALLOC_MAP.lock().unwrap().get(&addr) {
+        if matches!(alloc.kind, PaccAllocKind::Driver) {
+            eprintln!(
+                "[PACC Backend] refusing DtoH from unmapped PACC driver allocation 0x{:x}; \
+                 implement BO mmap/copy before using real device memory",
+                addr
+            );
+            return Err(CUerror::NOT_SUPPORTED);
+        }
+    }
     unsafe {
         std::ptr::copy_nonoverlapping(src_device.0 as *const u8, dst_host as *mut u8, byte_count);
     }
@@ -903,6 +930,17 @@ pub(crate) fn copy_dto_h_v2(dst_host: *mut ::core::ffi::c_void, src_device: CUde
 pub(crate) fn copy_hto_d_v2(dst_device: CUdeviceptr, src_host: *const ::core::ffi::c_void, byte_count: usize) -> CUresult {
     if src_host.is_null() {
         return Err(CUerror::INVALID_VALUE);
+    }
+    let addr = dst_device.0 as u64;
+    if let Some(alloc) = PACC_ALLOC_MAP.lock().unwrap().get(&addr) {
+        if matches!(alloc.kind, PaccAllocKind::Driver) {
+            eprintln!(
+                "[PACC Backend] refusing HtoD into unmapped PACC driver allocation 0x{:x}; \
+                 implement BO mmap/copy before using real device memory",
+                addr
+            );
+            return Err(CUerror::NOT_SUPPORTED);
+        }
     }
     unsafe {
         std::ptr::copy_nonoverlapping(src_host as *const u8, dst_device.0 as *mut u8, byte_count);
