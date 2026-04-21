@@ -73,12 +73,15 @@ fn main() {
     #[cfg(windows)]
     cmake.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");
 
-    // Override problematic Windows-specific C++ flags on non-Windows platforms
+    // Override problematic Windows-specific C++ flags on non-Windows platforms.
     #[cfg(not(windows))]
-    cmake.define(
-        "CMAKE_CXX_FLAGS",
-        "-ffunction-sections -fdata-sections -fPIC -m64",
-    );
+    {
+        let mut cxx_flags = "-ffunction-sections -fdata-sections -fPIC".to_string();
+        if matches!(std::env::consts::ARCH, "x86" | "x86_64") {
+            cxx_flags.push_str(" -m64");
+        }
+        cmake.define("CMAKE_CXX_FLAGS", cxx_flags);
+    }
 
     cmake.build_target("llvm-config");
     let llvm_dir = cmake.build();

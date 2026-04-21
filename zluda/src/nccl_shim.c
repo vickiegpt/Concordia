@@ -323,12 +323,20 @@ static ncclResult_t rendezvous_allreduce_f32(
                     comm->nranks
                 );
                 if (rc != 0) {
-                    fprintf(stderr, "[hetGPU nccl_shim] PACC reduce-sum hook failed rc=%d\n", rc);
-                    publish_abort(abort_path, "PACC reduce-sum hook failed\n");
-                    free(accum);
-                    free(rank_inputs);
-                    free(tmp);
-                    return ncclSystemError;
+                    if (env_enabled("HETGPU_NCCL_CPU_FALLBACK_AFTER_PACC")) {
+                        fprintf(stderr, "[hetGPU nccl_shim] PACC reduce-sum hook failed rc=%d; falling back to CPU sum\n", rc);
+                        for (int r = 0; r < comm->nranks; ++r) {
+                            float *src = rank_inputs + ((size_t)r * count);
+                            for (size_t i = 0; i < count; ++i) accum[i] += src[i];
+                        }
+                    } else {
+                        fprintf(stderr, "[hetGPU nccl_shim] PACC reduce-sum hook failed rc=%d\n", rc);
+                        publish_abort(abort_path, "PACC reduce-sum hook failed\n");
+                        free(accum);
+                        free(rank_inputs);
+                        free(tmp);
+                        return ncclSystemError;
+                    }
                 }
             } else if (hetgpu_pacc_nccl_all_reduce_f32) {
                 for (int r = 0; r < comm->nranks; ++r) {
@@ -337,12 +345,16 @@ static ncclResult_t rendezvous_allreduce_f32(
                 }
                 int rc = hetgpu_pacc_nccl_all_reduce_f32(accum, accum, count, op, comm->rank, comm->nranks);
                 if (rc != 0) {
-                    fprintf(stderr, "[hetGPU nccl_shim] PACC allreduce hook failed rc=%d\n", rc);
-                    publish_abort(abort_path, "PACC allreduce hook failed\n");
-                    free(accum);
-                    free(rank_inputs);
-                    free(tmp);
-                    return ncclSystemError;
+                    if (env_enabled("HETGPU_NCCL_CPU_FALLBACK_AFTER_PACC")) {
+                        fprintf(stderr, "[hetGPU nccl_shim] PACC allreduce hook failed rc=%d; keeping CPU sum result\n", rc);
+                    } else {
+                        fprintf(stderr, "[hetGPU nccl_shim] PACC allreduce hook failed rc=%d\n", rc);
+                        publish_abort(abort_path, "PACC allreduce hook failed\n");
+                        free(accum);
+                        free(rank_inputs);
+                        free(tmp);
+                        return ncclSystemError;
+                    }
                 }
             } else {
                 fprintf(stderr, "[hetGPU nccl_shim] PACC hook symbol unavailable\n");

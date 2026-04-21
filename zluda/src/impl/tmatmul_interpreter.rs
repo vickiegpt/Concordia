@@ -273,7 +273,9 @@ pub fn extract_bindings(asm: &str) -> HashMap<usize, String> {
 
 /// Check if the instruction list contains a norm operation (requires two-pass)
 fn has_norm(instructions: &[Instruction]) -> bool {
-    instructions.iter().any(|i| matches!(i, Instruction::Norm { .. }))
+    instructions
+        .iter()
+        .any(|i| matches!(i, Instruction::Norm { .. }))
 }
 
 /// Count the number of unique PARAM references to determine how many pointer params to read
@@ -292,25 +294,35 @@ pub fn count_param_refs(instructions: &[Instruction]) -> usize {
             Instruction::LoadVector { mem, .. } => {
                 if let MemRef::Param(idx) = mem {
                     found_any = true;
-                    if *idx >= max_param { max_param = *idx + 1; }
+                    if *idx >= max_param {
+                        max_param = *idx + 1;
+                    }
                 }
             }
             Instruction::StoreVector { mem, .. } => {
                 if let MemRef::Param(idx) = mem {
                     found_any = true;
-                    if *idx >= max_param { max_param = *idx + 1; }
+                    if *idx >= max_param {
+                        max_param = *idx + 1;
+                    }
                 }
             }
             Instruction::TMatmulGo { weights } => {
                 if let MemRef::Param(idx) = weights {
                     found_any = true;
-                    if *idx >= max_param { max_param = *idx + 1; }
+                    if *idx >= max_param {
+                        max_param = *idx + 1;
+                    }
                 }
             }
             _ => {}
         }
     }
-    if found_any { max_param } else { 0 }
+    if found_any {
+        max_param
+    } else {
+        0
+    }
 }
 
 /// Execute compiled TMatmul assembly on host memory.
@@ -336,9 +348,12 @@ pub unsafe fn execute_assembly(
     }
 
     // Calculate total elements
-    let total_elements = (grid_dims.0 as u64) * (block_dims.0 as u64)
-        * (grid_dims.1 as u64).max(1) * (block_dims.1 as u64).max(1)
-        * (grid_dims.2 as u64).max(1) * (block_dims.2 as u64).max(1);
+    let total_elements = (grid_dims.0 as u64)
+        * (block_dims.0 as u64)
+        * (grid_dims.1 as u64).max(1)
+        * (block_dims.1 as u64).max(1)
+        * (grid_dims.2 as u64).max(1)
+        * (block_dims.2 as u64).max(1);
 
     if total_elements == 0 {
         return Ok(()); // Nothing to do
@@ -398,16 +413,18 @@ pub unsafe fn execute_assembly(
     }
 
     // Check we have at least some valid params (non-null pointers)
-    let valid_params = param_ptrs.iter()
-        .filter(|ptr| !ptr.is_null())
-        .count();
+    let valid_params = param_ptrs.iter().filter(|ptr| !ptr.is_null()).count();
 
     if valid_params == 0 {
-        return Err(format!("No valid pointer params found (needed {}, all null/scalar)", num_params_needed));
+        return Err(format!(
+            "No valid pointer params found (needed {}, all null/scalar)",
+            num_params_needed
+        ));
     }
 
     // Determine actual element count: min of total_elements and smallest known allocation
-    let min_alloc_elements = param_sizes.iter()
+    let min_alloc_elements = param_sizes
+        .iter()
         .filter(|s| **s > 0)
         .map(|s| s / 4) // f32 = 4 bytes
         .min()
@@ -598,15 +615,11 @@ unsafe fn execute_instruction(
         Instruction::Norm { dst, src } => {
             // Use pre-computed RMS value
             let x = registers[*src as usize];
-            registers[*dst as usize] = if rms_value != 0.0 {
-                x / rms_value
-            } else {
-                x
-            };
+            registers[*dst as usize] = if rms_value != 0.0 { x / rms_value } else { x };
         }
-        Instruction::TMatmulImport { .. } |
-        Instruction::TMatmulGo { .. } |
-        Instruction::TMatmulExport { .. } => {
+        Instruction::TMatmulImport { .. }
+        | Instruction::TMatmulGo { .. }
+        | Instruction::TMatmulExport { .. } => {
             // Matrix multiply not supported in scalar interpreter mode
             // These would need a full matrix-vector implementation
         }
@@ -638,9 +651,7 @@ unsafe fn read_memory(
             let addr = ptr.add(byte_offset) as *const f32;
             addr.read_unaligned()
         }
-        MemRef::Spill(name) => {
-            spill_memory.get(name).copied().unwrap_or(0.0)
-        }
+        MemRef::Spill(name) => spill_memory.get(name).copied().unwrap_or(0.0),
         MemRef::Const(val) => *val,
     }
 }

@@ -60,14 +60,18 @@ def parse_newc(buf: bytes, base: int = 0, size: int | None = None):
             break
     return entries
 
-def patch_payload(entries, label: str, name: str, payload: bytes, pad: int = 0):
+def patch_payload(entries, label: str, name: str, payload: bytes, pad: int = 0, required: bool = True):
     if name not in entries:
         print(f"skip {label}:{name}: missing")
         return False
     entry = entries[name]
     size = entry["size"]
     if len(payload) > size:
-        raise SystemExit(f"{label}:{name}: payload {len(payload)} exceeds existing size {size}")
+        msg = f"{label}:{name}: payload {len(payload)} exceeds existing size {size}"
+        if required:
+            raise SystemExit(msg)
+        print(f"skip {msg}")
+        return False
     start = entry["data"]
     image[start:start + size] = payload + bytes([pad]) * (size - len(payload))
     print(f"patched {label}:{name}: {len(payload)} bytes into {size}-byte slot")
@@ -91,7 +95,7 @@ rmsnorm 0x20000a00 0x20000a40 0x20002a00 1 4 0.00001
 
 outer = parse_newc(image)
 patched = 0
-patched += patch_payload(outer, "outer", "bin/busybox.nosuid", jobd_bytes, 0)
+patched += patch_payload(outer, "outer", "bin/busybox.nosuid", jobd_bytes, 0, required=False)
 patched += patch_payload(outer, "outer", "home/root/pacc_skl_test", jobd_bytes, 0)
 patched += patch_payload(outer, "outer", "etc/init.d/rcS", rcs, ord("\n"))
 patched += patch_payload(outer, "outer", "etc/skel/.bashrc", conf_bytes or default_conf, ord("\n"))
@@ -100,7 +104,7 @@ inner_name = "core-image-minimal-qemuriscv64.cpio"
 if inner_name in outer:
     inner = outer[inner_name]
     inner_entries = parse_newc(image, inner["data"], inner["size"])
-    patched += patch_payload(inner_entries, "inner", "bin/busybox.nosuid", jobd_bytes, 0)
+    patched += patch_payload(inner_entries, "inner", "bin/busybox.nosuid", jobd_bytes, 0, required=False)
     patched += patch_payload(inner_entries, "inner", "home/root/pacc_skl_test", jobd_bytes, 0)
     patched += patch_payload(inner_entries, "inner", "etc/init.d/rcS", rcs, ord("\n"))
     patched += patch_payload(inner_entries, "inner", "etc/skel/.bashrc", conf_bytes or default_conf, ord("\n"))

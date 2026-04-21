@@ -22,13 +22,14 @@ use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ─── ioctl numbers ────────────────────────────────────────────────────────────
 
-pub const PACC_IOC_GET_INFO:    u64 = 0xc000_7000;
+pub const PACC_IOC_GET_INFO: u64 = 0xc000_7000;
 pub const PACC_IOC_GET_INFO_EX: u64 = 0xc001_0001;
-pub const PACC_IOC_MEM_ALLOC:   u64 = 0xc000_8002;
-pub const PACC_IOC_BO_SUBMIT:   u64 = 0x4000_8003;
+pub const PACC_IOC_MEM_ALLOC: u64 = 0xc000_8002;
+pub const PACC_IOC_BO_SUBMIT: u64 = 0x4000_8003;
 
 // Proper encoding: _IOWR(type, nr, size) = (3<<30)|(size<<16)|(type<<8)|nr
 const fn _iowr(ty: u64, nr: u64, size: u64) -> u64 {
@@ -39,10 +40,10 @@ const fn _iow(ty: u64, nr: u64, size: u64) -> u64 {
 }
 
 pub const PACC_MAGIC: u64 = 0x70; // 'p'
-pub const IOC_GET_INFO:   u64 = _iowr(PACC_MAGIC, 0,  8);
+pub const IOC_GET_INFO: u64 = _iowr(PACC_MAGIC, 0, 8);
 pub const IOC_GET_INFO_EX: u64 = _iowr(PACC_MAGIC, 1, 16);
-pub const IOC_MEM_ALLOC:  u64 = _iowr(PACC_MAGIC, 2,  8);
-pub const IOC_BO_SUBMIT:  u64 = _iow (PACC_MAGIC, 3,  8);
+pub const IOC_MEM_ALLOC: u64 = _iowr(PACC_MAGIC, 2, 8);
+pub const IOC_BO_SUBMIT: u64 = _iow(PACC_MAGIC, 3, 8);
 
 // ─── kernel struct mirrors ─────────────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ pub const IOC_BO_SUBMIT:  u64 = _iow (PACC_MAGIC, 3,  8);
 #[derive(Debug, Default, Copy, Clone)]
 pub struct pacc_info_size {
     pub opcode: u32,
-    pub size:   u32,
+    pub size: u32,
 }
 
 /// pacc_jobs_addr — arg for legacy nr=1 driver probes (16 bytes)
@@ -69,7 +70,7 @@ pub struct pacc_jobs_addr {
 #[derive(Debug, Default, Copy, Clone)]
 pub struct pacc_mbox_job_desc {
     pub addr: u64,
-    pub len:  u64,
+    pub len: u64,
     pub rsvd: u64,
     pub buf_info: u64,
 }
@@ -78,19 +79,19 @@ pub struct pacc_mbox_job_desc {
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaccReduceOp {
-    Sum  = 0,
+    Sum = 0,
     Prod = 1,
-    Max  = 2,
-    Min  = 3,
+    Max = 2,
+    Min = 3,
 }
 
 /// Data format for reduce
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaccDataType {
-    Int8    = 0,
-    Uint8   = 1,
-    Int32   = 2,
+    Int8 = 0,
+    Uint8 = 1,
+    Int32 = 2,
     Float16 = 3,
     Float32 = 4,
     Bfloat16 = 5,
@@ -112,11 +113,14 @@ pub const PACC_BASE: [u64; 4] = [0x3810_0000, 0x3850_0000, 0x3910_0000, 0x3950_0
 pub const PACC_DDR_BASE: u64 = 0x8000_0000;
 /// PACC DDR extended base (PACC-side high address)
 pub const PACC_DDR_EXT_BASE: u64 = 0x80_8000_0000;
+/// PACC-visible reduce scratch base. Prefer the mailbox helper's allocated
+/// window exported in `/sys/module/hetgpu_pacc_mbox/parameters/shared_ddr_base`.
+pub const HETGPU_PACC_SHARED_DDR_BASE: u64 = 0;
+pub const HETGPU_PACC_SHARED_DDR_BYTES: usize = 0x0100_0000;
+pub const HETGPU_PACC_SHARED_DDR_HELPER_OFF: u64 = 0x0010_0000;
 
 /// Per-PACC local SRAM bases
-pub const PACC_SRAM_BASE: [u64; 4] = [
-    0x6000_0000, 0x6010_0000, 0x6020_0000, 0x6030_0000,
-];
+pub const PACC_SRAM_BASE: [u64; 4] = [0x6000_0000, 0x6010_0000, 0x6020_0000, 0x6030_0000];
 pub const PACC_SRAM_SIZE: usize = 0x0004_0000; // 256 KB each
 
 /// Register offsets from /home/ubuntu/to_fckj/pacc_boot.c.
@@ -247,10 +251,11 @@ pub struct HetgpuPaccRuntimeJobTable {
     pub have_gemm: u32,
     pub have_softmax: u32,
     pub have_rmsnorm: u32,
-    pub reserved: u32,
+    pub have_allreduce: u32,
     pub gemm: HetgpuPaccGemmJob,
     pub softmax: HetgpuPaccSoftmaxJob,
     pub rmsnorm: HetgpuPaccRmsNormJob,
+    pub allreduce: HetgpuPaccAllReduceJob,
 }
 
 #[repr(C)]
@@ -290,7 +295,7 @@ pub struct PaccJobImageHeader {
 #[derive(Debug, Default, Copy, Clone)]
 pub struct MboxMsg {
     /// Command opcode
-    pub cmd:    u32,
+    pub cmd: u32,
     /// Payload length (bytes following header in SRAM)
     pub length: u16,
     /// Status / sequence number
@@ -298,15 +303,15 @@ pub struct MboxMsg {
 }
 
 pub mod mbox_cmd {
-    pub const NOOP:         u32 = 0x0000;
-    pub const PING:         u32 = 0x0001;
-    pub const REDUCE_SUM:   u32 = 0x0010;
-    pub const REDUCE_PROD:  u32 = 0x0011;
-    pub const REDUCE_MAX:   u32 = 0x0012;
-    pub const REDUCE_MIN:   u32 = 0x0013;
-    pub const ALLREDUCE:    u32 = 0x0020;
-    pub const BARRIER:      u32 = 0x0030;
-    pub const DONE:         u32 = 0x00FF;
+    pub const NOOP: u32 = 0x0000;
+    pub const PING: u32 = 0x0001;
+    pub const REDUCE_SUM: u32 = 0x0010;
+    pub const REDUCE_PROD: u32 = 0x0011;
+    pub const REDUCE_MAX: u32 = 0x0012;
+    pub const REDUCE_MIN: u32 = 0x0013;
+    pub const ALLREDUCE: u32 = 0x0020;
+    pub const BARRIER: u32 = 0x0030;
+    pub const DONE: u32 = 0x00FF;
 }
 
 fn strict_pacc() -> bool {
@@ -330,7 +335,11 @@ fn align_up(value: usize, align: usize) -> usize {
 
 fn page_size() -> usize {
     let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    if value <= 0 { 4096 } else { value as usize }
+    if value <= 0 {
+        4096
+    } else {
+        value as usize
+    }
 }
 
 pub struct PhysMap {
@@ -345,7 +354,10 @@ pub struct PhysMap {
 impl PhysMap {
     pub fn map_rw(phys: u64, len: usize) -> std::io::Result<Self> {
         if len == 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "zero-length physical map"));
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "zero-length physical map",
+            ));
         }
         let page = page_size() as u64;
         let map_base = phys & !(page - 1);
@@ -402,7 +414,11 @@ impl PhysMap {
 
     pub fn flush(&mut self) -> std::io::Result<()> {
         let ret = unsafe { libc::msync(self.ptr.cast(), self.map_len, libc::MS_SYNC) };
-        if ret < 0 { Err(Error::last_os_error()) } else { Ok(()) }
+        if ret < 0 {
+            Err(Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -414,19 +430,30 @@ impl Drop for PhysMap {
 }
 
 pub struct PaccBoMap {
+    phys: u64,
     ptr: *mut u8,
     map_len: usize,
     len: usize,
 }
 
+unsafe impl Send for PaccBoMap {}
+
 impl PaccBoMap {
+    pub fn phys(&self) -> u64 {
+        self.phys
+    }
+
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 
     pub fn flush(&mut self) -> std::io::Result<()> {
         let ret = unsafe { libc::msync(self.ptr.cast(), self.map_len, libc::MS_SYNC) };
-        if ret < 0 { Err(Error::last_os_error()) } else { Ok(()) }
+        if ret < 0 {
+            Err(Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -439,9 +466,9 @@ impl Drop for PaccBoMap {
 // ─── Device handle ─────────────────────────────────────────────────────────────
 
 pub struct PaccDevice {
-    pub id:  usize,
-    pub fd:  RawFd,
-    file:    File,
+    pub id: usize,
+    pub fd: RawFd,
+    file: File,
 }
 
 impl PaccDevice {
@@ -458,7 +485,9 @@ impl PaccDevice {
                 .ok()
                 .and_then(|v| {
                     let trimmed = v.trim_start_matches("0x");
-                    u32::from_str_radix(trimmed, 16).ok().or_else(|| v.parse().ok())
+                    u32::from_str_radix(trimmed, 16)
+                        .ok()
+                        .or_else(|| v.parse().ok())
                 })
                 .unwrap_or(PACC_RESET_VEC_VAL);
             dev.boot_from_reset_vector(reset_vec)?;
@@ -469,9 +498,7 @@ impl PaccDevice {
     /// PACC_IOC_GET_INFO — query firmware version / core count
     pub fn get_info(&self) -> std::io::Result<pacc_info_size> {
         let mut info = pacc_info_size { opcode: 0, size: 0 };
-        let ret = unsafe {
-            libc::ioctl(self.fd, IOC_GET_INFO, &mut info as *mut _)
-        };
+        let ret = unsafe { libc::ioctl(self.fd, IOC_GET_INFO, &mut info as *mut _) };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -481,9 +508,7 @@ impl PaccDevice {
     /// PACC_IOC_MEM_ALLOC — allocate DMA-coherent memory, returns physical addr
     pub fn mem_alloc(&self, size: u64) -> std::io::Result<u64> {
         let mut request = self.mem_alloc_request(size as usize)?;
-        let ret = unsafe {
-            libc::ioctl(self.fd, IOC_MEM_ALLOC, request.as_mut_ptr())
-        };
+        let ret = unsafe { libc::ioctl(self.fd, IOC_MEM_ALLOC, request.as_mut_ptr()) };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -505,12 +530,13 @@ impl PaccDevice {
             return Err(Error::new(ErrorKind::InvalidInput, "zero-length PACC BO"));
         }
         let mut request = self.mem_alloc_request(len)?;
-        let ret = unsafe {
-            libc::ioctl(self.fd, IOC_MEM_ALLOC, request.as_mut_ptr())
-        };
+        let ret = unsafe { libc::ioctl(self.fd, IOC_MEM_ALLOC, request.as_mut_ptr()) };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
         }
+        let mut phys_bytes = [0u8; 8];
+        phys_bytes.copy_from_slice(&request[..8]);
+        let phys = u64::from_ne_bytes(phys_bytes);
 
         let map_len = align_up(len, page_size());
         let ptr = unsafe {
@@ -527,16 +553,24 @@ impl PaccDevice {
             return Err(Error::last_os_error());
         }
 
-        Ok(PaccBoMap { ptr: ptr.cast(), map_len, len })
+        Ok(PaccBoMap {
+            phys,
+            ptr: ptr.cast(),
+            map_len,
+            len,
+        })
     }
 
     fn mem_alloc_request(&self, len: usize) -> std::io::Result<Vec<u8>> {
         if len == 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "zero-length PACC allocation"));
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "zero-length PACC allocation",
+            ));
         }
         let map_len = align_up(len, page_size());
         let mut request = vec![0u8; map_len.max(8)];
-        request[..8].copy_from_slice(&(len as u64).to_ne_bytes());
+        request[..8].copy_from_slice(&(map_len as u64).to_ne_bytes());
         Ok(request)
     }
 
@@ -556,9 +590,7 @@ impl PaccDevice {
         }
 
         let mut unused: u64 = 0;
-        let ret = unsafe {
-            libc::ioctl(self.fd, IOC_BO_SUBMIT, &mut unused as *mut u64)
-        };
+        let ret = unsafe { libc::ioctl(self.fd, IOC_BO_SUBMIT, &mut unused as *mut u64) };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -567,7 +599,11 @@ impl PaccDevice {
 
     /// Legacy nr=1 probe path. This is not the hardware launch path.
     pub fn job_submit(&self, phys_addr: u64, size: u64) -> std::io::Result<()> {
-        if std::env::var("HETGPU_PACC_UNSAFE_LEGACY_JOB_SUBMIT").ok().as_deref() != Some("1") {
+        if std::env::var("HETGPU_PACC_UNSAFE_LEGACY_JOB_SUBMIT")
+            .ok()
+            .as_deref()
+            != Some("1")
+        {
             return Err(Error::new(
                 ErrorKind::Unsupported,
                 format!(
@@ -577,10 +613,11 @@ impl PaccDevice {
                 ),
             ));
         }
-        let mut arg = pacc_jobs_addr { addr: phys_addr, size };
-        let ret = unsafe {
-            libc::ioctl(self.fd, IOC_GET_INFO_EX, &mut arg as *mut _)
+        let mut arg = pacc_jobs_addr {
+            addr: phys_addr,
+            size,
         };
+        let ret = unsafe { libc::ioctl(self.fd, IOC_GET_INFO_EX, &mut arg as *mut _) };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -597,9 +634,16 @@ impl PaccDevice {
         self.job_submit_user_buffer_with_len(buf, buf.len())
     }
 
-    pub fn job_submit_user_buffer_with_len(&self, buf: &[u8], submit_len: usize) -> std::io::Result<()> {
+    pub fn job_submit_user_buffer_with_len(
+        &self,
+        buf: &[u8],
+        submit_len: usize,
+    ) -> std::io::Result<()> {
         if buf.is_empty() || submit_len == 0 || submit_len > buf.len() {
-            return Err(Error::new(ErrorKind::InvalidInput, "invalid PACC job buffer length"));
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "invalid PACC job buffer length",
+            ));
         }
         let mut bo = self.bo_alloc_map(submit_len)?;
         bo.as_mut_slice().copy_from_slice(&buf[..submit_len]);
@@ -608,10 +652,7 @@ impl PaccDevice {
 
     pub fn submit_runtime_job<T: Copy>(&self, job_id: u32, args: &T) -> std::io::Result<()> {
         let arg_bytes = unsafe {
-            std::slice::from_raw_parts(
-                (args as *const T).cast::<u8>(),
-                std::mem::size_of::<T>(),
-            )
+            std::slice::from_raw_parts((args as *const T).cast::<u8>(), std::mem::size_of::<T>())
         };
         self.submit_preloaded_job_bytes(job_id, arg_bytes)
     }
@@ -619,7 +660,7 @@ impl PaccDevice {
     pub fn submit_preloaded_job_bytes(&self, job_id: u32, arg_bytes: &[u8]) -> std::io::Result<()> {
         require_runtime_ready()?;
 
-        let seq = NEXT_RUNTIME_JOB_SEQ.fetch_add(1, Ordering::Relaxed);
+        let seq = next_runtime_job_seq();
 
         let doorbell = HetgpuPaccDoorbell {
             magic: HETGPU_PACC_JOB_MAGIC,
@@ -630,7 +671,11 @@ impl PaccDevice {
             seq,
         };
 
-        if std::env::var("HETGPU_PACC_USE_DRIVER_JOB_IOCTL").ok().as_deref() != Some("1") {
+        if std::env::var("HETGPU_PACC_USE_DRIVER_JOB_IOCTL")
+            .ok()
+            .as_deref()
+            != Some("1")
+        {
             return self.submit_preloaded_job_mailbox(job_id, seq, &doorbell, arg_bytes);
         }
 
@@ -670,11 +715,18 @@ impl PaccDevice {
                 e
             }
         })?;
-        self.wait_preloaded_job_status(job_id, seq)
+        nvtop_record_submit(self.id as usize, job_id, seq, None, 0);
+        let result = self.wait_preloaded_job_status(job_id, seq);
+        nvtop_record_complete(self.id as usize, job_id, seq, &result);
+        result
     }
 
     fn stage_preloaded_doorbell(&self, doorbell: &HetgpuPaccDoorbell) -> std::io::Result<()> {
-        if std::env::var("HETGPU_PACC_IOCTL_ONLY_DOORBELL").ok().as_deref() == Some("1") {
+        if std::env::var("HETGPU_PACC_IOCTL_ONLY_DOORBELL")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
             return Ok(());
         }
         let bytes = unsafe {
@@ -692,13 +744,26 @@ impl PaccDevice {
         map.flush()
     }
 
-    fn stage_preloaded_job_args(&self, job_id: u32, seq: u64, arg_bytes: &[u8]) -> std::io::Result<()> {
-        if std::env::var("HETGPU_PACC_FIRMWARE_ARGS_PRELOADED").ok().as_deref() == Some("1") {
-            if !arg_bytes.is_empty()
-                && std::env::var("HETGPU_PACC_STATIC_FIRMWARE_TABLE").ok().as_deref() != Some("1")
-            {
-                return self.stage_runtime_job_table(job_id, seq, arg_bytes);
-            }
+    fn stage_preloaded_job_args(
+        &self,
+        job_id: u32,
+        seq: u64,
+        arg_bytes: &[u8],
+    ) -> std::io::Result<()> {
+        if !arg_bytes.is_empty()
+            && std::env::var("HETGPU_PACC_STATIC_FIRMWARE_TABLE")
+                .ok()
+                .as_deref()
+                != Some("1")
+            && preloaded_arg_slot(job_id).is_some()
+        {
+            return self.stage_runtime_job_table(job_id, seq, arg_bytes);
+        }
+        if std::env::var("HETGPU_PACC_FIRMWARE_ARGS_PRELOADED")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
             return Ok(());
         }
         let slot = match preloaded_arg_slot(job_id) {
@@ -735,7 +800,8 @@ impl PaccDevice {
         };
         let mut helper_payload = vec![0u8; HETGPU_PACC_ARG_SLOT_BYTES];
         helper_payload[..HETGPU_PACC_ARG_HEADER_BYTES].copy_from_slice(header_bytes);
-        helper_payload[HETGPU_PACC_ARG_HEADER_BYTES..HETGPU_PACC_ARG_HEADER_BYTES + arg_bytes.len()]
+        helper_payload
+            [HETGPU_PACC_ARG_HEADER_BYTES..HETGPU_PACC_ARG_HEADER_BYTES + arg_bytes.len()]
             .copy_from_slice(arg_bytes);
         if write_ap2pacc_mailbox(
             self.id as usize,
@@ -756,7 +822,12 @@ impl PaccDevice {
         map.flush()
     }
 
-    fn stage_runtime_job_table(&self, job_id: u32, seq: u64, arg_bytes: &[u8]) -> std::io::Result<()> {
+    fn stage_runtime_job_table(
+        &self,
+        job_id: u32,
+        seq: u64,
+        arg_bytes: &[u8],
+    ) -> std::io::Result<()> {
         let mut table = HetgpuPaccRuntimeJobTable {
             magic: HETGPU_PACC_RUNTIME_TABLE_MAGIC,
             version: HETGPU_PACC_RUNTIME_TABLE_VERSION,
@@ -770,7 +841,10 @@ impl PaccDevice {
                 hetgpu_pacc_job_id::GEMM => {
                     let want = std::mem::size_of::<HetgpuPaccGemmJob>();
                     if arg_bytes.len() < want {
-                        return Err(Error::new(ErrorKind::InvalidInput, "short PACC GEMM runtime table payload"));
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "short PACC GEMM runtime table payload",
+                        ));
                     }
                     std::ptr::copy_nonoverlapping(
                         arg_bytes.as_ptr(),
@@ -782,7 +856,10 @@ impl PaccDevice {
                 hetgpu_pacc_job_id::SOFTMAX => {
                     let want = std::mem::size_of::<HetgpuPaccSoftmaxJob>();
                     if arg_bytes.len() < want {
-                        return Err(Error::new(ErrorKind::InvalidInput, "short PACC softmax runtime table payload"));
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "short PACC softmax runtime table payload",
+                        ));
                     }
                     std::ptr::copy_nonoverlapping(
                         arg_bytes.as_ptr(),
@@ -794,7 +871,10 @@ impl PaccDevice {
                 hetgpu_pacc_job_id::RMSNORM => {
                     let want = std::mem::size_of::<HetgpuPaccRmsNormJob>();
                     if arg_bytes.len() < want {
-                        return Err(Error::new(ErrorKind::InvalidInput, "short PACC RMSNorm runtime table payload"));
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "short PACC RMSNorm runtime table payload",
+                        ));
                     }
                     std::ptr::copy_nonoverlapping(
                         arg_bytes.as_ptr(),
@@ -802,6 +882,21 @@ impl PaccDevice {
                         want,
                     );
                     table.have_rmsnorm = 1;
+                }
+                hetgpu_pacc_job_id::ALLREDUCE => {
+                    let want = std::mem::size_of::<HetgpuPaccAllReduceJob>();
+                    if arg_bytes.len() < want {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "short PACC allreduce runtime table payload",
+                        ));
+                    }
+                    std::ptr::copy_nonoverlapping(
+                        arg_bytes.as_ptr(),
+                        (&mut table.allreduce as *mut HetgpuPaccAllReduceJob).cast::<u8>(),
+                        want,
+                    );
+                    table.have_allreduce = 1;
                 }
                 _ => {
                     return Err(Error::new(
@@ -821,7 +916,10 @@ impl PaccDevice {
         if write_ap2pacc_mailbox(self.id as usize, HETGPU_PACC_RUNTIME_TABLE_OFF, bytes)? {
             return Ok(());
         }
-        let mut map = PhysMap::map_rw(AP2PACC_MBOX_PHYS + HETGPU_PACC_RUNTIME_TABLE_OFF, bytes.len())?;
+        let mut map = PhysMap::map_rw(
+            AP2PACC_MBOX_PHYS + HETGPU_PACC_RUNTIME_TABLE_OFF,
+            bytes.len(),
+        )?;
         map.as_mut_slice().copy_from_slice(bytes);
         map.flush()
     }
@@ -854,7 +952,10 @@ impl PaccDevice {
                     if status != 1 {
                         return Err(Error::new(
                             ErrorKind::Other,
-                            format!("PACC job_id {} seq {} failed with firmware status 0x{:x}", job_id, seq, status),
+                            format!(
+                                "PACC job_id {} seq {} failed with firmware status 0x{:x}",
+                                job_id, seq, status
+                            ),
                         ));
                     }
                 }
@@ -862,7 +963,10 @@ impl PaccDevice {
             if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
                 return Err(Error::new(
                     ErrorKind::TimedOut,
-                    format!("timed out waiting for PACC job_id {} seq {} completion", job_id, seq),
+                    format!(
+                        "timed out waiting for PACC job_id {} seq {} completion",
+                        job_id, seq
+                    ),
                 ));
             }
             std::thread::sleep(std::time::Duration::from_micros(500));
@@ -888,9 +992,9 @@ impl PaccDevice {
             ));
         }
 
-        let mut guard = runtime_boot_state().lock().map_err(|_| {
-            Error::new(ErrorKind::Other, "PACC runtime boot state lock poisoned")
-        })?;
+        let mut guard = runtime_boot_state()
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Other, "PACC runtime boot state lock poisoned"))?;
         if guard[self.id] {
             return Ok(());
         }
@@ -938,7 +1042,319 @@ impl PaccDevice {
 
 static NEXT_RUNTIME_JOB_SEQ: AtomicU64 = AtomicU64::new(1);
 static NEXT_GEMM_DEVICE: AtomicUsize = AtomicUsize::new(0);
+
+fn next_gemm_device() -> usize {
+    std::env::var("HETGPU_PACC_GEMM_DEVICE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&id| id < PACC_CORE_NUM)
+        .unwrap_or_else(|| {
+            1 + (NEXT_GEMM_DEVICE.fetch_add(1, Ordering::Relaxed) % (PACC_CORE_NUM - 1))
+        })
+}
 static RUNTIME_BOOTED: OnceLock<Mutex<[bool; 4]>> = OnceLock::new();
+static SHARED_DDR_REDUCE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SHARED_DDR_GEMM_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static NVTOP_STATE: OnceLock<Mutex<NvtopProcessState>> = OnceLock::new();
+
+#[derive(Debug, Clone, Default)]
+struct NvtopGemmShape {
+    m: u64,
+    n: u64,
+    k: u64,
+    lda: i64,
+    ldb: i64,
+    ldc: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct NvtopDeviceState {
+    jobs_submitted: u64,
+    jobs_completed: u64,
+    jobs_failed: u64,
+    timeouts: u64,
+    inflight: u64,
+    last_seq: u64,
+    last_job_id: u32,
+    last_status: String,
+    last_error: String,
+    last_submit_ms: u64,
+    last_complete_ms: u64,
+    last_latency_ms: u64,
+    last_bytes: u64,
+    last_gemm: Option<NvtopGemmShape>,
+}
+
+#[derive(Debug)]
+struct NvtopProcessState {
+    pid: u32,
+    comm: String,
+    cmdline: String,
+    update_ms: u64,
+    last_flush_ms: u64,
+    devices: std::collections::BTreeMap<usize, NvtopDeviceState>,
+}
+
+fn nvtop_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn nvtop_enabled() -> bool {
+    std::env::var("HETGPU_PACC_NVTOP").ok().as_deref() != Some("0")
+}
+
+fn nvtop_flush_ms() -> u64 {
+    parse_env_usize("HETGPU_PACC_NVTOP_FLUSH_MS", 250) as u64
+}
+
+fn nvtop_dir() -> Option<std::path::PathBuf> {
+    if !nvtop_enabled() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(
+        std::env::var("HETGPU_PACC_NVTOP_DIR")
+            .unwrap_or_else(|_| "/dev/shm/hetgpu_pacc_nvtop".to_string()),
+    ))
+}
+
+fn nvtop_read_comm() -> String {
+    std::fs::read_to_string("/proc/self/comm")
+        .map(|s| s.trim().to_string())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn nvtop_read_cmdline(default_comm: &str) -> String {
+    std::fs::read("/proc/self/cmdline")
+        .ok()
+        .map(|bytes| {
+            let mut out = String::from_utf8_lossy(&bytes).replace('\0', " ");
+            out = out.trim().to_string();
+            if out.is_empty() {
+                default_comm.to_string()
+            } else {
+                out
+            }
+        })
+        .unwrap_or_else(|| default_comm.to_string())
+}
+
+fn nvtop_state() -> Option<&'static Mutex<NvtopProcessState>> {
+    if nvtop_dir().is_none() {
+        return None;
+    }
+    Some(NVTOP_STATE.get_or_init(|| {
+        let comm = nvtop_read_comm();
+        Mutex::new(NvtopProcessState {
+            pid: std::process::id(),
+            comm: comm.clone(),
+            cmdline: nvtop_read_cmdline(&comm),
+            update_ms: nvtop_now_ms(),
+            last_flush_ms: 0,
+            devices: std::collections::BTreeMap::new(),
+        })
+    }))
+}
+
+fn nvtop_job_name(job_id: u32) -> &'static str {
+    match job_id {
+        hetgpu_pacc_job_id::GEMM => "GEMM",
+        hetgpu_pacc_job_id::SOFTMAX => "SOFTMAX",
+        hetgpu_pacc_job_id::RMSNORM => "RMSNORM",
+        hetgpu_pacc_job_id::ALLREDUCE => "ALLREDUCE",
+        _ => "UNKNOWN",
+    }
+}
+
+fn nvtop_json_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 8);
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\\\"),
+            '\n' => out.push_str("\\\\n"),
+            '\r' => out.push_str("\\\\r"),
+            '\t' => out.push_str("\\\\t"),
+            c if c.is_control() => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn nvtop_write_snapshot(state: &NvtopProcessState) -> std::io::Result<()> {
+    let Some(dir) = nvtop_dir() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(&dir)?;
+    let tmp = dir.join(format!("{}.json.tmp", state.pid));
+    let dst = dir.join(format!("{}.json", state.pid));
+
+    let mut json = String::new();
+    json.push('{');
+    json.push_str(&format!("\"pid\":{},", state.pid));
+    json.push_str(&format!("\"comm\":\"{}\",", nvtop_json_escape(&state.comm)));
+    json.push_str(&format!(
+        "\"cmdline\":\"{}\",",
+        nvtop_json_escape(&state.cmdline)
+    ));
+    json.push_str(&format!("\"update_ms\":{},", state.update_ms));
+    json.push_str("\"devices\":{");
+    for (index, (dev_id, dev)) in state.devices.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!("\"{}\":{{", dev_id));
+        json.push_str(&format!("\"jobs_submitted\":{},", dev.jobs_submitted));
+        json.push_str(&format!("\"jobs_completed\":{},", dev.jobs_completed));
+        json.push_str(&format!("\"jobs_failed\":{},", dev.jobs_failed));
+        json.push_str(&format!("\"timeouts\":{},", dev.timeouts));
+        json.push_str(&format!("\"inflight\":{},", dev.inflight));
+        json.push_str(&format!("\"last_seq\":{},", dev.last_seq));
+        json.push_str(&format!("\"last_job_id\":{},", dev.last_job_id));
+        json.push_str(&format!(
+            "\"last_job\":\"{}\",",
+            nvtop_job_name(dev.last_job_id)
+        ));
+        json.push_str(&format!(
+            "\"last_status\":\"{}\",",
+            nvtop_json_escape(&dev.last_status)
+        ));
+        json.push_str(&format!(
+            "\"last_error\":\"{}\",",
+            nvtop_json_escape(&dev.last_error)
+        ));
+        json.push_str(&format!("\"last_submit_ms\":{},", dev.last_submit_ms));
+        json.push_str(&format!("\"last_complete_ms\":{},", dev.last_complete_ms));
+        json.push_str(&format!("\"last_latency_ms\":{},", dev.last_latency_ms));
+        json.push_str(&format!("\"last_bytes\":{},", dev.last_bytes));
+        if let Some(gemm) = &dev.last_gemm {
+            json.push_str("\"last_gemm\":{");
+            json.push_str(&format!(
+                "\"m\":{},\"n\":{},\"k\":{},",
+                gemm.m, gemm.n, gemm.k
+            ));
+            json.push_str(&format!(
+                "\"lda\":{},\"ldb\":{},\"ldc\":{}",
+                gemm.lda, gemm.ldb, gemm.ldc
+            ));
+            json.push('}');
+        } else {
+            json.push_str("\"last_gemm\":null");
+        }
+        json.push('}');
+    }
+    json.push_str("}}");
+
+    std::fs::write(&tmp, json.as_bytes())?;
+    std::fs::rename(tmp, dst)?;
+    Ok(())
+}
+
+fn nvtop_flush_locked(state: &mut NvtopProcessState, force: bool) {
+    let now = nvtop_now_ms();
+    state.update_ms = now;
+    if !force && now.saturating_sub(state.last_flush_ms) < nvtop_flush_ms() {
+        return;
+    }
+    if nvtop_write_snapshot(state).is_ok() {
+        state.last_flush_ms = now;
+    }
+}
+
+fn nvtop_record_submit(
+    pacc_id: usize,
+    job_id: u32,
+    seq: u64,
+    gemm: Option<&HetgpuPaccGemmJob>,
+    last_bytes: u64,
+) {
+    let Some(state_lock) = nvtop_state() else {
+        return;
+    };
+    let Ok(mut state) = state_lock.lock() else {
+        return;
+    };
+    let now = nvtop_now_ms();
+    let dev = state.devices.entry(pacc_id).or_default();
+    dev.jobs_submitted = dev.jobs_submitted.saturating_add(1);
+    dev.inflight = dev.inflight.saturating_add(1);
+    dev.last_seq = seq;
+    dev.last_job_id = job_id;
+    dev.last_status.clear();
+    dev.last_status.push_str("inflight");
+    dev.last_error.clear();
+    dev.last_submit_ms = now;
+    if last_bytes > 0 {
+        dev.last_bytes = last_bytes;
+    }
+    if let Some(job) = gemm {
+        dev.last_gemm = Some(NvtopGemmShape {
+            m: job.m,
+            n: job.n,
+            k: job.k,
+            lda: job.lda,
+            ldb: job.ldb,
+            ldc: job.ldc,
+        });
+    } else {
+        dev.last_gemm = None;
+    }
+    nvtop_flush_locked(&mut state, false);
+}
+
+fn nvtop_record_complete(pacc_id: usize, job_id: u32, seq: u64, result: &std::io::Result<()>) {
+    let Some(state_lock) = nvtop_state() else {
+        return;
+    };
+    let Ok(mut state) = state_lock.lock() else {
+        return;
+    };
+    let now = nvtop_now_ms();
+    let dev = state.devices.entry(pacc_id).or_default();
+    dev.inflight = dev.inflight.saturating_sub(1);
+    dev.last_seq = seq;
+    dev.last_job_id = job_id;
+    dev.last_complete_ms = now;
+    dev.last_latency_ms = now.saturating_sub(dev.last_submit_ms);
+    match result {
+        Ok(()) => {
+            dev.jobs_completed = dev.jobs_completed.saturating_add(1);
+            dev.last_status.clear();
+            dev.last_status.push_str("ok");
+            dev.last_error.clear();
+        }
+        Err(err) => {
+            dev.jobs_failed = dev.jobs_failed.saturating_add(1);
+            if err.kind() == ErrorKind::TimedOut {
+                dev.timeouts = dev.timeouts.saturating_add(1);
+                dev.last_status.clear();
+                dev.last_status.push_str("timeout");
+            } else {
+                dev.last_status.clear();
+                dev.last_status.push_str("error");
+            }
+            dev.last_error = err.to_string();
+        }
+    }
+    nvtop_flush_locked(&mut state, true);
+}
+
+fn next_runtime_job_seq() -> u64 {
+    let counter = NEXT_RUNTIME_JOB_SEQ.fetch_add(1, Ordering::Relaxed);
+    let micros = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(0);
+    (micros << 12) ^ counter
+}
 
 fn runtime_boot_state() -> &'static Mutex<[bool; 4]> {
     RUNTIME_BOOTED.get_or_init(|| Mutex::new([false; 4]))
@@ -1012,27 +1428,324 @@ fn read_pacc2ap_mailbox(pacc_id: usize, offset: u64, bytes: &mut [u8]) -> std::i
     Ok(false)
 }
 
+fn shared_ddr_reduce_lock() -> &'static Mutex<()> {
+    SHARED_DDR_REDUCE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn shared_ddr_gemm_lock() -> &'static Mutex<()> {
+    SHARED_DDR_GEMM_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn shared_ddr_base() -> u64 {
+    std::env::var("HETGPU_PACC_SHARED_DDR_BASE")
+        .ok()
+        .and_then(|v| {
+            let trimmed = v.trim_start_matches("0x");
+            u64::from_str_radix(trimmed, 16)
+                .ok()
+                .or_else(|| v.parse().ok())
+        })
+        .or_else(|| {
+            std::fs::read_to_string("/sys/module/hetgpu_pacc_mbox/parameters/shared_ddr_base")
+                .ok()
+                .and_then(|v| {
+                    let value = v.trim();
+                    let trimmed = value.trim_start_matches("0x");
+                    u64::from_str_radix(trimmed, 16)
+                        .ok()
+                        .or_else(|| value.parse().ok())
+                })
+        })
+        .unwrap_or(HETGPU_PACC_SHARED_DDR_BASE)
+}
+
+fn shared_ddr_bytes() -> usize {
+    std::env::var("HETGPU_PACC_SHARED_DDR_BYTES")
+        .ok()
+        .and_then(|v| {
+            let trimmed = v.trim_start_matches("0x");
+            usize::from_str_radix(trimmed, 16)
+                .ok()
+                .or_else(|| v.parse().ok())
+        })
+        .unwrap_or(HETGPU_PACC_SHARED_DDR_BYTES)
+}
+
+fn helper_path_for_pacc(pacc_id: usize) -> String {
+    std::env::var("HETGPU_PACC_MBOX_DEVICE").unwrap_or_else(|_| {
+        let per_pacc = format!("/dev/hetgpu_pacc_mbox{}", pacc_id);
+        if std::path::Path::new(&per_pacc).exists() {
+            per_pacc
+        } else {
+            "/dev/hetgpu_pacc_mbox".to_string()
+        }
+    })
+}
+
+fn write_shared_ddr_window(offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+    let dev = helper_path_for_pacc(0);
+    if std::path::Path::new(&dev).exists() {
+        let helper_result = (|| -> std::io::Result<()> {
+            let mut file = OpenOptions::new().write(true).open(&dev)?;
+            file.seek(SeekFrom::Start(HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset))?;
+            file.write_all(bytes)?;
+            file.flush()
+        })();
+        if helper_result.is_ok() {
+            return helper_result;
+        }
+    }
+
+    let phys = shared_ddr_base()
+        .checked_add(offset)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "shared DDR offset overflow"))?;
+    let mut map = PhysMap::map_rw(phys, bytes.len())?;
+    map.as_mut_slice().copy_from_slice(bytes);
+    map.flush()
+}
+
+fn read_shared_ddr_window(offset: u64, bytes: &mut [u8]) -> std::io::Result<()> {
+    let dev = helper_path_for_pacc(0);
+    if std::path::Path::new(&dev).exists() {
+        let helper_result = (|| -> std::io::Result<()> {
+            let mut file = OpenOptions::new().read(true).open(&dev)?;
+            file.seek(SeekFrom::Start(HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset))?;
+            file.read_exact(bytes)
+        })();
+        if helper_result.is_ok() {
+            return helper_result;
+        }
+    }
+
+    let phys = shared_ddr_base()
+        .checked_add(offset)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "shared DDR offset overflow"))?;
+    let mut map = PhysMap::map_rw(phys, bytes.len())?;
+    bytes.copy_from_slice(map.as_mut_slice());
+    Ok(())
+}
+
+fn open_shared_ddr_window_file(pacc_id: usize) -> Option<File> {
+    let dev = helper_path_for_pacc(pacc_id);
+    if std::path::Path::new(&dev).exists() {
+        OpenOptions::new().read(true).write(true).open(&dev).ok()
+    } else {
+        None
+    }
+}
+
+fn write_shared_ddr_window_cached(
+    file: &mut Option<File>,
+    offset: u64,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    if let Some(file) = file.as_mut() {
+        file.seek(SeekFrom::Start(HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset))?;
+        file.write_all(bytes)?;
+        return Ok(());
+    }
+    write_shared_ddr_window(offset, bytes)
+}
+
+fn read_shared_ddr_window_cached(
+    file: &mut Option<File>,
+    offset: u64,
+    bytes: &mut [u8],
+) -> std::io::Result<()> {
+    if let Some(file) = file.as_mut() {
+        file.seek(SeekFrom::Start(HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset))?;
+        file.read_exact(bytes)?;
+        return Ok(());
+    }
+    read_shared_ddr_window(offset, bytes)
+}
+
+fn pacc_gemm_trace_enabled() -> bool {
+    std::env::var("HETGPU_PACC_GEMM_TRACE").ok().as_deref() == Some("1")
+}
+
+fn open_pacc_mailbox_file(pacc_id: usize) -> Option<File> {
+    let dev = helper_path_for_pacc(pacc_id);
+    if std::path::Path::new(&dev).exists() {
+        OpenOptions::new().read(true).write(true).open(&dev).ok()
+    } else {
+        None
+    }
+}
+
+fn write_ap2pacc_mailbox_cached(
+    file: &mut Option<File>,
+    pacc_id: usize,
+    offset: u64,
+    bytes: &[u8],
+) -> std::io::Result<bool> {
+    if let Some(file) = file.as_mut() {
+        file.seek(SeekFrom::Start(offset))?;
+        file.write_all(bytes)?;
+        return Ok(true);
+    }
+    write_ap2pacc_mailbox(pacc_id, offset, bytes)
+}
+
+fn read_pacc2ap_mailbox_cached(
+    file: &mut Option<File>,
+    pacc_id: usize,
+    offset: u64,
+    bytes: &mut [u8],
+) -> std::io::Result<bool> {
+    if let Some(file) = file.as_mut() {
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(bytes)?;
+        return Ok(true);
+    }
+    read_pacc2ap_mailbox(pacc_id, offset, bytes)
+}
+
+fn wait_preloaded_gemm_status_cached(
+    pacc_id: usize,
+    seq: u64,
+    mailbox_file: &mut Option<File>,
+) -> std::io::Result<()> {
+    if std::env::var("HETGPU_PACC_SKIP_JOB_WAIT").ok().as_deref() == Some("1") {
+        return Ok(());
+    }
+    let timeout_ms = std::env::var("HETGPU_PACC_JOB_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(30_000);
+    let poll_us = parse_env_usize("HETGPU_PACC_JOB_POLL_US", 50).min(500);
+    let start = std::time::Instant::now();
+    let mut buf = [0u8; 32];
+    loop {
+        if read_pacc2ap_mailbox_cached(mailbox_file, pacc_id, 0, &mut buf)? {
+            let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+            let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
+            let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+            let status = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+            let status_seq = u64::from_le_bytes(buf[24..32].try_into().unwrap());
+            if magic == HETGPU_PACC_JOB_MAGIC
+                && version == HETGPU_PACC_JOB_VERSION
+                && status_job_id == hetgpu_pacc_job_id::GEMM
+                && status_seq == seq
+            {
+                if status == 0 {
+                    return Ok(());
+                }
+                if status != 1 {
+                    return Err(Error::new(
+                        ErrorKind::Other,
+                        format!(
+                            "PACC job_id {} seq {} failed with firmware status 0x{:x}",
+                            hetgpu_pacc_job_id::GEMM,
+                            seq,
+                            status
+                        ),
+                    ));
+                }
+            }
+        }
+        if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                format!(
+                    "timed out waiting for PACC job_id {} seq {} completion",
+                    hetgpu_pacc_job_id::GEMM,
+                    seq
+                ),
+            ));
+        }
+        if poll_us > 0 {
+            std::thread::sleep(std::time::Duration::from_micros(poll_us as u64));
+        } else {
+            std::hint::spin_loop();
+        }
+    }
+}
+
+fn submit_gemm_runtime_job_cached(
+    dev: &PaccDevice,
+    job: &HetgpuPaccGemmJob,
+    staged_bytes: u64,
+    mailbox_file: &mut Option<File>,
+) -> std::io::Result<()> {
+    require_runtime_ready()?;
+    let seq = next_runtime_job_seq();
+    let table = HetgpuPaccRuntimeJobTable {
+        magic: HETGPU_PACC_RUNTIME_TABLE_MAGIC,
+        version: HETGPU_PACC_RUNTIME_TABLE_VERSION,
+        flags: 0,
+        seq,
+        have_gemm: 1,
+        gemm: *job,
+        ..Default::default()
+    };
+    let table_bytes = unsafe {
+        std::slice::from_raw_parts(
+            (&table as *const HetgpuPaccRuntimeJobTable).cast::<u8>(),
+            std::mem::size_of::<HetgpuPaccRuntimeJobTable>(),
+        )
+    };
+    write_ap2pacc_mailbox_cached(
+        mailbox_file,
+        dev.id,
+        HETGPU_PACC_RUNTIME_TABLE_OFF,
+        table_bytes,
+    )?;
+
+    let doorbell = HetgpuPaccDoorbell {
+        magic: HETGPU_PACC_JOB_MAGIC,
+        version: HETGPU_PACC_JOB_VERSION,
+        job_id: hetgpu_pacc_job_id::GEMM,
+        flags: 0,
+        status: 0,
+        seq,
+    };
+    let doorbell_bytes = unsafe {
+        std::slice::from_raw_parts(
+            (&doorbell as *const HetgpuPaccDoorbell).cast::<u8>(),
+            HETGPU_PACC_DOORBELL_BYTES,
+        )
+    };
+    write_ap2pacc_mailbox_cached(mailbox_file, dev.id, 0, doorbell_bytes)?;
+    nvtop_record_submit(
+        dev.id,
+        hetgpu_pacc_job_id::GEMM,
+        seq,
+        Some(job),
+        staged_bytes,
+    );
+    let result = wait_preloaded_gemm_status_cached(dev.id, seq, mailbox_file);
+    nvtop_record_complete(dev.id, hetgpu_pacc_job_id::GEMM, seq, &result);
+    result
+}
+
 fn read_u16_le(buf: &[u8], off: usize) -> std::io::Result<u16> {
-    let bytes = buf.get(off..off + 2)
+    let bytes = buf
+        .get(off..off + 2)
         .ok_or_else(|| Error::new(ErrorKind::InvalidData, "truncated ELF u16"))?;
     Ok(u16::from_le_bytes(bytes.try_into().unwrap()))
 }
 
 fn read_u32_le(buf: &[u8], off: usize) -> std::io::Result<u32> {
-    let bytes = buf.get(off..off + 4)
+    let bytes = buf
+        .get(off..off + 4)
         .ok_or_else(|| Error::new(ErrorKind::InvalidData, "truncated ELF u32"))?;
     Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
 }
 
 fn read_u64_le(buf: &[u8], off: usize) -> std::io::Result<u64> {
-    let bytes = buf.get(off..off + 8)
+    let bytes = buf
+        .get(off..off + 8)
         .ok_or_else(|| Error::new(ErrorKind::InvalidData, "truncated ELF u64"))?;
     Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
 }
 
 fn load_elf64_load_segments_to_phys(elf: &[u8]) -> std::io::Result<u64> {
     if elf.len() < 64 || &elf[0..4] != b"\x7fELF" || elf[4] != 2 || elf[5] != 1 {
-        return Err(Error::new(ErrorKind::InvalidData, "expected little-endian ELF64"));
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "expected little-endian ELF64",
+        ));
     }
 
     let entry = read_u64_le(elf, 0x18)?;
@@ -1040,7 +1753,10 @@ fn load_elf64_load_segments_to_phys(elf: &[u8]) -> std::io::Result<u64> {
     let phentsize = read_u16_le(elf, 0x36)? as usize;
     let phnum = read_u16_le(elf, 0x38)? as usize;
     if phentsize < 56 {
-        return Err(Error::new(ErrorKind::InvalidData, "ELF64 program header too small"));
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "ELF64 program header too small",
+        ));
     }
 
     for i in 0..phnum {
@@ -1055,9 +1771,13 @@ fn load_elf64_load_segments_to_phys(elf: &[u8]) -> std::io::Result<u64> {
         let p_filesz = read_u64_le(elf, off + 0x20)? as usize;
         let p_memsz = read_u64_le(elf, off + 0x28)? as usize;
         if p_filesz > p_memsz {
-            return Err(Error::new(ErrorKind::InvalidData, "ELF PT_LOAD filesz > memsz"));
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "ELF PT_LOAD filesz > memsz",
+            ));
         }
-        let segment = elf.get(p_offset..p_offset + p_filesz)
+        let segment = elf
+            .get(p_offset..p_offset + p_filesz)
             .ok_or_else(|| Error::new(ErrorKind::InvalidData, "ELF PT_LOAD outside file"))?;
         let phys = if p_paddr != 0 { p_paddr } else { p_vaddr };
         let mut map = PhysMap::map_rw(phys, p_memsz.max(1))?;
@@ -1145,7 +1865,9 @@ pub enum PaccError {
 }
 
 impl From<std::io::Error> for PaccError {
-    fn from(e: std::io::Error) -> Self { PaccError::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        PaccError::Io(e)
+    }
 }
 
 impl std::fmt::Display for PaccError {
@@ -1177,7 +1899,10 @@ impl PaccComm {
                 }
             }
         }
-        Ok(PaccComm { num_devices: devices.len(), devices })
+        Ok(PaccComm {
+            num_devices: devices.len(),
+            devices,
+        })
     }
 
     /// AllReduce using driver-side reduce via job submission.
@@ -1197,11 +1922,191 @@ impl PaccComm {
         let n = src.len();
         assert_eq!(dst.len(), n);
 
-        let _ = (src, dst, op);
-        Err(PaccError::Io(Error::new(
-            ErrorKind::Unsupported,
-            "PACC all_reduce has no host fallback: a real PACC reduce kernel/job ABI is required",
-        )))
+        if op != PaccReduceOp::Sum {
+            return Err(PaccError::Io(Error::new(
+                ErrorKind::Unsupported,
+                "PACC all_reduce currently supports f32 sum only",
+            )));
+        }
+        if n == 0 {
+            return Ok(());
+        }
+
+        let nranks = if n % self.num_devices == 0 {
+            self.num_devices
+        } else {
+            1
+        };
+        let per_rank_count = n / nranks;
+        let input_bytes = src.len() * std::mem::size_of::<f32>();
+        let output_bytes = per_rank_count * std::mem::size_of::<f32>();
+        let output_off = align_up(input_bytes, 64);
+        let total_bytes = output_off + output_bytes;
+        let shared_base = shared_ddr_base();
+        let shared_bytes = shared_ddr_bytes();
+        if total_bytes > shared_bytes {
+            return Err(PaccError::Io(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "PACC all_reduce needs {total_bytes} bytes, shared DDR helper window is {shared_bytes} bytes"
+                ),
+            )));
+        }
+        let _shared_guard = shared_ddr_reduce_lock().lock().map_err(|_| {
+            PaccError::Io(Error::new(
+                ErrorKind::Other,
+                "PACC shared DDR reduce mutex poisoned",
+            ))
+        })?;
+
+        let reduce_device = std::env::var("HETGPU_PACC_REDUCE_DEVICE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&id| id < self.devices.len())
+            .unwrap_or_else(|| if self.devices.len() > 1 { 1 } else { 0 });
+        let dev_guard = self.devices[reduce_device].lock().map_err(|_| {
+            PaccError::Io(Error::new(ErrorKind::Other, "PACC device mutex poisoned"))
+        })?;
+
+        if std::env::var("HETGPU_PACC_REDUCE_MAILBOX").ok().as_deref() == Some("1") {
+            const REDUCE_SRC_OFF: u64 = 0x1800;
+            const REDUCE_DST_OFF: u64 = 0x1000;
+            const REDUCE_SRC_BYTES: usize = 0x0800;
+            let max_chunk = (REDUCE_SRC_BYTES / (nranks * std::mem::size_of::<f32>())).max(1);
+            let mut reduced = vec![0.0f32; per_rank_count];
+
+            for start in (0..per_rank_count).step_by(max_chunk) {
+                let chunk = std::cmp::min(max_chunk, per_rank_count - start);
+                let mut in_storage = vec![0u8; chunk * nranks * std::mem::size_of::<f32>()];
+                for rank in 0..nranks {
+                    let rank_base = rank * per_rank_count + start;
+                    let rank_slice = &src[rank_base..rank_base + chunk];
+                    let rank_bytes = unsafe {
+                        std::slice::from_raw_parts(
+                            rank_slice.as_ptr().cast::<u8>(),
+                            chunk * std::mem::size_of::<f32>(),
+                        )
+                    };
+                    let dst_off = rank * chunk * std::mem::size_of::<f32>();
+                    in_storage[dst_off..dst_off + rank_bytes.len()].copy_from_slice(rank_bytes);
+                }
+                write_ap2pacc_mailbox(reduce_device, REDUCE_SRC_OFF, &in_storage)
+                    .and_then(|ok| {
+                        if ok {
+                            Ok(())
+                        } else {
+                            Err(Error::new(
+                                ErrorKind::NotFound,
+                                "PACC mailbox helper is not loaded",
+                            ))
+                        }
+                    })
+                    .map_err(|e| {
+                        PaccError::Io(Error::new(
+                            e.kind(),
+                            format!("PACC mailbox reduce write failed: {e}"),
+                        ))
+                    })?;
+
+                let job = HetgpuPaccAllReduceJob {
+                    src_addr: AP2PACC_MBOX_PHYS + REDUCE_SRC_OFF,
+                    dst_addr: PACC2AP_MBOX_PHYS + REDUCE_DST_OFF,
+                    count: chunk as u64,
+                    nranks: nranks as u32,
+                    reduce_op: PaccReduceOp::Sum as u32,
+                    dtype: PaccDataType::Float32 as u32,
+                    reserved: 0,
+                };
+                dev_guard
+                    .submit_runtime_job(hetgpu_pacc_job_id::ALLREDUCE, &job)
+                    .map_err(|e| {
+                        PaccError::Io(Error::new(
+                            e.kind(),
+                            format!("PACC mailbox all_reduce job submit failed: {e}"),
+                        ))
+                    })?;
+
+                let mut out_storage = vec![0u8; chunk * std::mem::size_of::<f32>()];
+                read_pacc2ap_mailbox(reduce_device, REDUCE_DST_OFF, &mut out_storage)
+                    .and_then(|ok| {
+                        if ok {
+                            Ok(())
+                        } else {
+                            Err(Error::new(
+                                ErrorKind::NotFound,
+                                "PACC mailbox helper is not loaded",
+                            ))
+                        }
+                    })
+                    .map_err(|e| {
+                        PaccError::Io(Error::new(
+                            e.kind(),
+                            format!("PACC mailbox reduce read failed: {e}"),
+                        ))
+                    })?;
+                let chunk_result = unsafe {
+                    std::slice::from_raw_parts(out_storage.as_ptr().cast::<f32>(), chunk)
+                };
+                reduced[start..start + chunk].copy_from_slice(chunk_result);
+            }
+
+            if nranks == 1 {
+                dst.copy_from_slice(&reduced);
+            } else {
+                for chunk in dst.chunks_mut(per_rank_count) {
+                    chunk.copy_from_slice(&reduced);
+                }
+            }
+            return Ok(());
+        }
+
+        let src_bytes =
+            unsafe { std::slice::from_raw_parts(src.as_ptr().cast::<u8>(), input_bytes) };
+        let mut payload = vec![0u8; total_bytes];
+        payload[..input_bytes].copy_from_slice(src_bytes);
+        write_shared_ddr_window(0, &payload).map_err(|e| {
+            PaccError::Io(Error::new(
+                e.kind(),
+                format!("PACC all_reduce shared DDR write failed: {e}"),
+            ))
+        })?;
+
+        let job = HetgpuPaccAllReduceJob {
+            src_addr: shared_base,
+            dst_addr: shared_base + output_off as u64,
+            count: per_rank_count as u64,
+            nranks: nranks as u32,
+            reduce_op: PaccReduceOp::Sum as u32,
+            dtype: PaccDataType::Float32 as u32,
+            reserved: 0,
+        };
+        dev_guard
+            .submit_runtime_job(hetgpu_pacc_job_id::ALLREDUCE, &job)
+            .map_err(|e| {
+                PaccError::Io(Error::new(
+                    e.kind(),
+                    format!("PACC all_reduce job submit failed: {e}"),
+                ))
+            })?;
+
+        let mut out_storage = vec![0u8; output_bytes];
+        read_shared_ddr_window(output_off as u64, &mut out_storage).map_err(|e| {
+            PaccError::Io(Error::new(
+                e.kind(),
+                format!("PACC all_reduce shared DDR read failed: {e}"),
+            ))
+        })?;
+        let out_bytes = out_storage.as_slice();
+        let result =
+            unsafe { std::slice::from_raw_parts(out_bytes.as_ptr().cast::<f32>(), per_rank_count) };
+        if nranks == 1 {
+            dst.copy_from_slice(result);
+        } else {
+            for chunk in dst.chunks_mut(per_rank_count) {
+                chunk.copy_from_slice(result);
+            }
+        }
+        Ok(())
     }
 
     /// Broadcast: device 0 → all other devices via mailbox signaling
@@ -1243,29 +2148,41 @@ pub unsafe extern "C" fn pacc_close_device(dev: *mut PaccDevice) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pacc_get_info_ffi(
-    dev: *mut PaccDevice,
-    out: *mut pacc_info_size,
-) -> i32 {
-    if dev.is_null() || out.is_null() { return -1; }
+pub unsafe extern "C" fn pacc_get_info_ffi(dev: *mut PaccDevice, out: *mut pacc_info_size) -> i32 {
+    if dev.is_null() || out.is_null() {
+        return -1;
+    }
     match (*dev).get_info() {
-        Ok(info) => { *out = info; 0 }
-        Err(e) => { eprintln!("pacc_get_info: {}", e); -1 }
+        Ok(info) => {
+            *out = info;
+            0
+        }
+        Err(e) => {
+            eprintln!("pacc_get_info: {}", e);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn pacc_mem_alloc_ffi(dev: *mut PaccDevice, size: u64) -> u64 {
-    if dev.is_null() { return 0; }
+    if dev.is_null() {
+        return 0;
+    }
     (*dev).mem_alloc(size).unwrap_or(0)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn pacc_mem_free_ffi(dev: *mut PaccDevice, addr: u64) -> i32 {
-    if dev.is_null() { return -1; }
+    if dev.is_null() {
+        return -1;
+    }
     match (*dev).mem_free(addr) {
         Ok(()) => 0,
-        Err(e) => { eprintln!("pacc_mem_free: {}", e); -1 }
+        Err(e) => {
+            eprintln!("pacc_mem_free: {}", e);
+            -1
+        }
     }
 }
 
@@ -1275,10 +2192,1756 @@ pub unsafe extern "C" fn pacc_job_submit_ffi(
     phys_addr: u64,
     size: u64,
 ) -> i32 {
-    if dev.is_null() { return -1; }
+    if dev.is_null() {
+        return -1;
+    }
     match (*dev).job_submit(phys_addr, size) {
         Ok(()) => 0,
-        Err(e) => { eprintln!("pacc_job_submit: {}", e); -1 }
+        Err(e) => {
+            eprintln!("pacc_job_submit: {}", e);
+            -1
+        }
+    }
+}
+
+fn gemm_span(rows: u64, cols: u64, ld: i64) -> Option<usize> {
+    if rows == 0 || cols == 0 {
+        return Some(0);
+    }
+    let lead = if ld > 0 { ld as u64 } else { rows };
+    cols.checked_sub(1)?
+        .checked_mul(lead)?
+        .checked_add(rows)?
+        .try_into()
+        .ok()
+}
+
+fn pacc_dtype_size(dtype: i32) -> Option<usize> {
+    match dtype as u32 {
+        x if x == PaccDataType::Float32 as u32 => Some(std::mem::size_of::<f32>()),
+        x if x == PaccDataType::Bfloat16 as u32 => Some(std::mem::size_of::<u16>()),
+        _ => None,
+    }
+}
+
+fn align_up_u64(value: u64, align: u64) -> Option<u64> {
+    value
+        .checked_add(align.checked_sub(1)?)?
+        .checked_div(align)?
+        .checked_mul(align)
+}
+
+fn read_f32_arg(ptr: *const std::ffi::c_void, default: f32) -> f32 {
+    if ptr.is_null() {
+        default
+    } else {
+        unsafe { std::ptr::read_unaligned(ptr.cast::<f32>()) }
+    }
+}
+
+fn bf16_to_f32_bits(value: u16) -> f32 {
+    f32::from_bits((value as u32) << 16)
+}
+
+fn f32_to_bf16_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let lsb = (bits >> 16) & 1;
+    ((bits + 0x7fff + lsb) >> 16) as u16
+}
+
+fn gemm_storage_to_f32_bytes(src: &[u8], dtype: i32, elems: usize) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(elems * std::mem::size_of::<f32>());
+    match dtype as u32 {
+        x if x == PaccDataType::Float32 as u32 => {
+            let want = elems * std::mem::size_of::<f32>();
+            out.extend_from_slice(&src[..want]);
+        }
+        x if x == PaccDataType::Bfloat16 as u32 => {
+            for i in 0..elems {
+                let off = i * std::mem::size_of::<u16>();
+                let v = u16::from_ne_bytes(src[off..off + 2].try_into().unwrap());
+                out.extend_from_slice(&bf16_to_f32_bits(v).to_ne_bytes());
+            }
+        }
+        _ => {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "unsupported staged GEMM dtype conversion",
+            ))
+        }
+    }
+    Ok(out)
+}
+
+fn f32_bytes_to_gemm_storage(src: &[u8], dtype: i32, elems: usize) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(elems * pacc_dtype_size(dtype).unwrap_or(0));
+    match dtype as u32 {
+        x if x == PaccDataType::Float32 as u32 => {
+            let want = elems * std::mem::size_of::<f32>();
+            out.extend_from_slice(&src[..want]);
+        }
+        x if x == PaccDataType::Bfloat16 as u32 => {
+            for i in 0..elems {
+                let off = i * std::mem::size_of::<f32>();
+                let v = f32::from_ne_bytes(src[off..off + 4].try_into().unwrap());
+                out.extend_from_slice(&f32_to_bf16_bits(v).to_ne_bytes());
+            }
+        }
+        _ => {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "unsupported staged GEMM dtype conversion",
+            ))
+        }
+    }
+    Ok(out)
+}
+
+unsafe fn gemm_read_f32(
+    base: *const std::ffi::c_void,
+    dtype: i32,
+    index: usize,
+) -> std::io::Result<f32> {
+    match dtype as u32 {
+        x if x == PaccDataType::Float32 as u32 => {
+            Ok(std::ptr::read_unaligned(base.cast::<f32>().add(index)))
+        }
+        x if x == PaccDataType::Bfloat16 as u32 => Ok(bf16_to_f32_bits(std::ptr::read_unaligned(
+            base.cast::<u16>().add(index),
+        ))),
+        _ => Err(Error::new(
+            ErrorKind::Unsupported,
+            "unsupported staged GEMM dtype conversion",
+        )),
+    }
+}
+
+unsafe fn gemm_write_from_f32(
+    base: *mut std::ffi::c_void,
+    dtype: i32,
+    index: usize,
+    value: f32,
+) -> std::io::Result<()> {
+    match dtype as u32 {
+        x if x == PaccDataType::Float32 as u32 => {
+            std::ptr::write_unaligned(base.cast::<f32>().add(index), value);
+            Ok(())
+        }
+        x if x == PaccDataType::Bfloat16 as u32 => {
+            std::ptr::write_unaligned(base.cast::<u16>().add(index), f32_to_bf16_bits(value));
+            Ok(())
+        }
+        _ => Err(Error::new(
+            ErrorKind::Unsupported,
+            "unsupported staged GEMM dtype conversion",
+        )),
+    }
+}
+
+unsafe fn pack_gemm_operand_to_f32_bytes(
+    base: *const std::ffi::c_void,
+    dtype: i32,
+    rows: usize,
+    cols: usize,
+    ld: usize,
+    transposed_source: bool,
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(rows * cols * std::mem::size_of::<f32>());
+    for col in 0..cols {
+        for row in 0..rows {
+            let src_index = if transposed_source {
+                col + row * ld
+            } else {
+                row + col * ld
+            };
+            out.extend_from_slice(&gemm_read_f32(base, dtype, src_index)?.to_ne_bytes());
+        }
+    }
+    Ok(out)
+}
+
+unsafe fn pack_gemm_c_to_f32_bytes(
+    base: *const std::ffi::c_void,
+    dtype: i32,
+    rows: usize,
+    cols: usize,
+    ld: usize,
+) -> std::io::Result<Vec<u8>> {
+    pack_gemm_operand_to_f32_bytes(base, dtype, rows, cols, ld, false)
+}
+
+unsafe fn unpack_gemm_c_from_f32_bytes(
+    src: &[u8],
+    dst: *mut std::ffi::c_void,
+    dtype: i32,
+    rows: usize,
+    cols: usize,
+    ld: usize,
+) -> std::io::Result<()> {
+    for col in 0..cols {
+        for row in 0..rows {
+            let off = (row + col * rows) * std::mem::size_of::<f32>();
+            let value = f32::from_ne_bytes(src[off..off + 4].try_into().unwrap());
+            gemm_write_from_f32(dst, dtype, row + col * ld, value)?;
+        }
+    }
+    Ok(())
+}
+
+unsafe fn pack_gemm_a_block_rowmajor_f32_bytes(
+    base: *const std::ffi::c_void,
+    dtype: i32,
+    row0: usize,
+    rows: usize,
+    k: usize,
+    lda: usize,
+    transposed_source: bool,
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(rows * k * std::mem::size_of::<f32>());
+    for row in 0..rows {
+        for kk in 0..k {
+            let src_index = if transposed_source {
+                kk + (row0 + row) * lda
+            } else {
+                (row0 + row) + kk * lda
+            };
+            out.extend_from_slice(&gemm_read_f32(base, dtype, src_index)?.to_ne_bytes());
+        }
+    }
+    Ok(out)
+}
+
+unsafe fn pack_gemm_b_rowmajor_f32_bytes(
+    base: *const std::ffi::c_void,
+    dtype: i32,
+    k: usize,
+    n: usize,
+    ldb: usize,
+    transposed_source: bool,
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(k * n * std::mem::size_of::<f32>());
+    for kk in 0..k {
+        for col in 0..n {
+            let src_index = if transposed_source {
+                col + kk * ldb
+            } else {
+                kk + col * ldb
+            };
+            out.extend_from_slice(&gemm_read_f32(base, dtype, src_index)?.to_ne_bytes());
+        }
+    }
+    Ok(out)
+}
+
+unsafe fn pack_gemm_c_block_rowmajor_f32_bytes(
+    base: *const std::ffi::c_void,
+    dtype: i32,
+    row0: usize,
+    rows: usize,
+    n: usize,
+    ldc: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(rows * n * std::mem::size_of::<f32>());
+    for row in 0..rows {
+        for col in 0..n {
+            let src_index = (row0 + row) + col * ldc;
+            out.extend_from_slice(&gemm_read_f32(base, dtype, src_index)?.to_ne_bytes());
+        }
+    }
+    Ok(out)
+}
+
+unsafe fn unpack_gemm_c_block_rowmajor_f32_bytes(
+    src: &[u8],
+    dst: *mut std::ffi::c_void,
+    dtype: i32,
+    row0: usize,
+    rows: usize,
+    n: usize,
+    ldc: usize,
+) -> std::io::Result<()> {
+    for row in 0..rows {
+        for col in 0..n {
+            let off = (row * n + col) * std::mem::size_of::<f32>();
+            let value = f32::from_ne_bytes(src[off..off + 4].try_into().unwrap());
+            gemm_write_from_f32(dst, dtype, (row0 + row) + col * ldc, value)?;
+        }
+    }
+    Ok(())
+}
+
+unsafe fn pack_gemm_a_block_colmajor_f32_bytes(
+    base: *const std::ffi::c_void,
+    dtype: i32,
+    row0: usize,
+    rows: usize,
+    k: usize,
+    lda: usize,
+    transposed_source: bool,
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(rows * k * std::mem::size_of::<f32>());
+    for kk in 0..k {
+        for row in 0..rows {
+            let src_index = if transposed_source {
+                kk + (row0 + row) * lda
+            } else {
+                (row0 + row) + kk * lda
+            };
+            out.extend_from_slice(&gemm_read_f32(base, dtype, src_index)?.to_ne_bytes());
+        }
+    }
+    Ok(out)
+}
+
+unsafe fn pack_gemm_c_block_colmajor_f32_bytes(
+    base: *const std::ffi::c_void,
+    dtype: i32,
+    row0: usize,
+    rows: usize,
+    n: usize,
+    ldc: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(rows * n * std::mem::size_of::<f32>());
+    for col in 0..n {
+        for row in 0..rows {
+            let src_index = (row0 + row) + col * ldc;
+            out.extend_from_slice(&gemm_read_f32(base, dtype, src_index)?.to_ne_bytes());
+        }
+    }
+    Ok(out)
+}
+
+unsafe fn unpack_gemm_c_block_colmajor_f32_bytes(
+    src: &[u8],
+    dst: *mut std::ffi::c_void,
+    dtype: i32,
+    row0: usize,
+    rows: usize,
+    n: usize,
+    ldc: usize,
+) -> std::io::Result<()> {
+    for col in 0..n {
+        for row in 0..rows {
+            let off = (row + col * rows) * std::mem::size_of::<f32>();
+            let value = f32::from_ne_bytes(src[off..off + 4].try_into().unwrap());
+            gemm_write_from_f32(dst, dtype, (row0 + row) + col * ldc, value)?;
+        }
+    }
+    Ok(())
+}
+
+unsafe fn pack_gemm_b_colmajor_padded_f32_bytes(
+    base: *const std::ffi::c_void,
+    dtype: i32,
+    k: usize,
+    n: usize,
+    padded_n: usize,
+    ldb: usize,
+    transposed_source: bool,
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(k * padded_n * std::mem::size_of::<f32>());
+    for col in 0..padded_n {
+        for kk in 0..k {
+            let value = if col < n {
+                let src_index = if transposed_source {
+                    col + kk * ldb
+                } else {
+                    kk + col * ldb
+                };
+                gemm_read_f32(base, dtype, src_index)?
+            } else {
+                0.0
+            };
+            out.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    Ok(out)
+}
+
+unsafe fn pack_gemm_c_block_colmajor_padded_f32_bytes(
+    base: *const std::ffi::c_void,
+    dtype: i32,
+    row0: usize,
+    rows: usize,
+    n: usize,
+    padded_n: usize,
+    ldc: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(rows * padded_n * std::mem::size_of::<f32>());
+    for col in 0..padded_n {
+        for row in 0..rows {
+            let value = if col < n {
+                gemm_read_f32(base, dtype, (row0 + row) + col * ldc)?
+            } else {
+                0.0
+            };
+            out.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    Ok(out)
+}
+
+fn parse_env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| {
+            let value = v.trim();
+            value
+                .strip_prefix("0x")
+                .or_else(|| value.strip_prefix("0X"))
+                .map(|hex| usize::from_str_radix(hex, 16).ok())
+                .unwrap_or_else(|| value.parse().ok())
+        })
+        .unwrap_or(default)
+}
+
+fn append_aligned_region(cursor: &mut u64, len: usize, align: u64) -> std::io::Result<u64> {
+    let off = align_up_u64(*cursor, align)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "PACC staging offset overflow"))?;
+    *cursor = off
+        .checked_add(len as u64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "PACC staging offset overflow"))?;
+    Ok(off)
+}
+
+fn copy_gemm_a_k_chunk(
+    dst: &mut [u8],
+    src: &[u8],
+    m: usize,
+    k_start: usize,
+    k_len: usize,
+    lda: usize,
+    elem_size: usize,
+) -> std::io::Result<()> {
+    for row in 0..m {
+        let src_elem = row
+            .checked_mul(lda)
+            .and_then(|v| v.checked_add(k_start))
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "A chunk source offset overflow"))?;
+        let src_off = src_elem
+            .checked_mul(elem_size)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "A chunk byte offset overflow"))?;
+        let len = k_len
+            .checked_mul(elem_size)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "A chunk byte length overflow"))?;
+        let dst_off = row
+            .checked_mul(k_len)
+            .and_then(|v| v.checked_mul(elem_size))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    "A chunk destination offset overflow",
+                )
+            })?;
+        dst[dst_off..dst_off + len].copy_from_slice(&src[src_off..src_off + len]);
+    }
+    Ok(())
+}
+
+fn copy_gemm_b_k_chunk(
+    dst: &mut [u8],
+    src: &[u8],
+    n: usize,
+    k_start: usize,
+    k_len: usize,
+    ldb: usize,
+    elem_size: usize,
+) -> std::io::Result<()> {
+    for kk in 0..k_len {
+        let src_elem = (k_start + kk)
+            .checked_mul(ldb)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B chunk source offset overflow"))?;
+        let src_off = src_elem
+            .checked_mul(elem_size)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B chunk byte offset overflow"))?;
+        let len = n
+            .checked_mul(elem_size)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B chunk byte length overflow"))?;
+        let dst_off = kk
+            .checked_mul(n)
+            .and_then(|v| v.checked_mul(elem_size))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    "B chunk destination offset overflow",
+                )
+            })?;
+        dst[dst_off..dst_off + len].copy_from_slice(&src[src_off..src_off + len]);
+    }
+    Ok(())
+}
+
+unsafe fn submit_gemm_staged_single_shared_ddr(
+    dev_override: Option<usize>,
+    slot_override: Option<usize>,
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: *const std::ffi::c_void,
+    a: *const std::ffi::c_void,
+    atype: i32,
+    lda: i32,
+    stride_a: i64,
+    b: *const std::ffi::c_void,
+    btype: i32,
+    ldb: i32,
+    stride_b: i64,
+    beta: *const std::ffi::c_void,
+    c: *mut std::ffi::c_void,
+    ctype: i32,
+    ldc: i32,
+    stride_c: i64,
+    batch_count: i32,
+    compute_type: i32,
+) -> std::io::Result<()> {
+    let _gemm_guard = shared_ddr_gemm_lock()
+        .lock()
+        .map_err(|_| Error::new(ErrorKind::Other, "PACC GEMM staging lock poisoned"))?;
+    let a_dtype_size = pacc_dtype_size(atype).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Unsupported,
+            format!("unsupported staged GEMM A dtype {}", atype),
+        )
+    })?;
+    let b_dtype_size = pacc_dtype_size(btype).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Unsupported,
+            format!("unsupported staged GEMM B dtype {}", btype),
+        )
+    })?;
+    let c_dtype_size = pacc_dtype_size(ctype).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Unsupported,
+            format!("unsupported staged GEMM C dtype {}", ctype),
+        )
+    })?;
+
+    let m = m as u64;
+    let n = n as u64;
+    let k = k as u64;
+    let batch_count = batch_count as u64;
+    let lda = lda as i64;
+    let ldb = ldb as i64;
+    let ldc = ldc as i64;
+    let a_matrix_elems = if transa != 0 {
+        gemm_span(k, m, lda)
+    } else {
+        gemm_span(m, k, lda)
+    }
+    .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "A GEMM matrix span overflow"))?;
+    let b_matrix_elems = if transb != 0 {
+        gemm_span(n, k, ldb)
+    } else {
+        gemm_span(k, n, ldb)
+    }
+    .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B GEMM matrix span overflow"))?;
+    let c_matrix_elems = gemm_span(m, n, ldc)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "C GEMM matrix span overflow"))?;
+    let a_batch_stride = if stride_a > 0 {
+        stride_a as usize
+    } else {
+        a_matrix_elems
+    };
+    let b_batch_stride = if stride_b > 0 {
+        stride_b as usize
+    } else {
+        b_matrix_elems
+    };
+    let c_batch_stride = if stride_c > 0 {
+        stride_c as usize
+    } else {
+        c_matrix_elems
+    };
+    let batches = batch_count as usize;
+    let a_elems = a_batch_stride
+        .checked_mul(batches.saturating_sub(1))
+        .and_then(|v| v.checked_add(a_matrix_elems))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "A GEMM span overflow"))?;
+    let b_elems = b_batch_stride
+        .checked_mul(batches.saturating_sub(1))
+        .and_then(|v| v.checked_add(b_matrix_elems))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B GEMM span overflow"))?;
+    let c_elems = c_batch_stride
+        .checked_mul(batches.saturating_sub(1))
+        .and_then(|v| v.checked_add(c_matrix_elems))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "C GEMM span overflow"))?;
+    let a_bytes = a_elems
+        .checked_mul(a_dtype_size)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "A GEMM byte span overflow"))?;
+    let b_bytes = b_elems
+        .checked_mul(b_dtype_size)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B GEMM byte span overflow"))?;
+    let c_bytes = c_elems
+        .checked_mul(c_dtype_size)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "C GEMM byte span overflow"))?;
+
+    let firmware_f32_only = std::env::var("HETGPU_PACC_GEMM_FW_F32_ONLY")
+        .ok()
+        .as_deref()
+        != Some("0");
+    let stage_as_f32 = firmware_f32_only
+        && (atype as u32 != PaccDataType::Float32 as u32
+            || btype as u32 != PaccDataType::Float32 as u32
+            || ctype as u32 != PaccDataType::Float32 as u32);
+    let pacc_atype = if stage_as_f32 {
+        PaccDataType::Float32 as i32
+    } else {
+        atype
+    };
+    let pacc_btype = if stage_as_f32 {
+        PaccDataType::Float32 as i32
+    } else {
+        btype
+    };
+    let pacc_ctype = if stage_as_f32 {
+        PaccDataType::Float32 as i32
+    } else {
+        ctype
+    };
+    let compact_stage = stage_as_f32
+        && std::env::var("HETGPU_PACC_GEMM_PACK_COMPACT")
+            .ok()
+            .as_deref()
+            != Some("0");
+    let compact_a_elems = (m as usize)
+        .checked_mul(k as usize)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "compact A GEMM span overflow"))?;
+    let compact_b_elems = (k as usize)
+        .checked_mul(n as usize)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "compact B GEMM span overflow"))?;
+    let compact_c_elems = (m as usize)
+        .checked_mul(n as usize)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "compact C GEMM span overflow"))?;
+    let pacc_a_bytes = if compact_stage {
+        compact_a_elems * std::mem::size_of::<f32>()
+    } else if stage_as_f32 {
+        a_elems * std::mem::size_of::<f32>()
+    } else {
+        a_bytes
+    };
+    let pacc_b_bytes = if compact_stage {
+        compact_b_elems * std::mem::size_of::<f32>()
+    } else if stage_as_f32 {
+        b_elems * std::mem::size_of::<f32>()
+    } else {
+        b_bytes
+    };
+    let pacc_c_bytes = if compact_stage {
+        compact_c_elems * std::mem::size_of::<f32>()
+    } else if stage_as_f32 {
+        c_elems * std::mem::size_of::<f32>()
+    } else {
+        c_bytes
+    };
+
+    let shared_base = shared_ddr_base();
+    let shared_bytes = shared_ddr_bytes();
+    if shared_base == 0 || shared_bytes == 0 {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            "PACC shared DDR staging window is not configured",
+        ));
+    }
+    let slot_count = std::env::var("HETGPU_PACC_GEMM_SHARED_SLOTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(PACC_CORE_NUM);
+    let requested_slot = slot_override.unwrap_or(0);
+    let slot_id = requested_slot.min(slot_count.saturating_sub(1));
+    let slot_bytes = std::env::var("HETGPU_PACC_GEMM_SLOT_BYTES")
+        .ok()
+        .and_then(|v| {
+            let trimmed = v.trim_start_matches("0x");
+            usize::from_str_radix(trimmed, 16)
+                .ok()
+                .or_else(|| v.parse().ok())
+        })
+        .unwrap_or_else(|| shared_bytes / slot_count.max(1));
+    let slot_off = (slot_id as u64)
+        .checked_mul(slot_bytes as u64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "shared DDR slot offset overflow"))?;
+    if slot_bytes == 0 || slot_off as usize >= shared_bytes {
+        return Err(Error::new(
+            ErrorKind::OutOfMemory,
+            "PACC shared DDR slot is outside the configured window",
+        ));
+    }
+    let slot_available = shared_bytes - slot_off as usize;
+    let slot_bytes = slot_bytes.min(slot_available);
+
+    let a_off = 0u64;
+    let b_off = align_up_u64(pacc_a_bytes as u64, 64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B staging offset overflow"))?;
+    let c_off = align_up_u64(
+        b_off
+            .checked_add(pacc_b_bytes as u64)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "C staging offset overflow"))?,
+        64,
+    )
+    .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "C staging offset overflow"))?;
+    let alpha_off = align_up_u64(
+        c_off
+            .checked_add(pacc_c_bytes as u64)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "alpha staging offset overflow"))?,
+        64,
+    )
+    .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "alpha staging offset overflow"))?;
+    let beta_off = alpha_off
+        .checked_add(std::mem::size_of::<f32>() as u64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "beta staging offset overflow"))?;
+    let total = beta_off
+        .checked_add(std::mem::size_of::<f32>() as u64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM staging window overflow"))?;
+    let old_total = c_off
+        .checked_add(pacc_c_bytes as u64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM staging window overflow"))?;
+    if total as usize > slot_bytes {
+        return Err(Error::new(
+            ErrorKind::OutOfMemory,
+            format!(
+                "PACC staged GEMM needs {} bytes, shared DDR slot has {}",
+                total, slot_bytes
+            ),
+        ));
+    }
+
+    let a_src = std::slice::from_raw_parts(a.cast::<u8>(), a_bytes);
+    let b_src = std::slice::from_raw_parts(b.cast::<u8>(), b_bytes);
+    let a_stage;
+    let b_stage;
+    let c_stage;
+    let (a_payload, b_payload, c_payload): (&[u8], &[u8], Option<&[u8]>) = if compact_stage {
+        a_stage = pack_gemm_operand_to_f32_bytes(
+            a,
+            atype,
+            m as usize,
+            k as usize,
+            lda as usize,
+            transa != 0,
+        )?;
+        b_stage = pack_gemm_operand_to_f32_bytes(
+            b,
+            btype,
+            k as usize,
+            n as usize,
+            ldb as usize,
+            transb != 0,
+        )?;
+        c_stage =
+            pack_gemm_c_to_f32_bytes(c.cast_const(), ctype, m as usize, n as usize, ldc as usize)?;
+        (&a_stage, &b_stage, Some(&c_stage))
+    } else if stage_as_f32 {
+        a_stage = gemm_storage_to_f32_bytes(a_src, atype, a_elems)?;
+        b_stage = gemm_storage_to_f32_bytes(b_src, btype, b_elems)?;
+        (&a_stage, &b_stage, None)
+    } else {
+        (a_src, b_src, None)
+    };
+    write_shared_ddr_window(slot_off + a_off, a_payload)?;
+    write_shared_ddr_window(slot_off + b_off, b_payload)?;
+    if let Some(c_payload) = c_payload {
+        write_shared_ddr_window(slot_off + c_off, c_payload)?;
+    } else if pacc_c_bytes != 0 {
+        let zero = vec![0u8; pacc_c_bytes];
+        write_shared_ddr_window(slot_off + c_off, &zero)?;
+    }
+    let alpha_value = read_f32_arg(alpha, 1.0);
+    let beta_value = read_f32_arg(beta, 0.0);
+    write_shared_ddr_window(slot_off + alpha_off, &alpha_value.to_ne_bytes())?;
+    write_shared_ddr_window(slot_off + beta_off, &beta_value.to_ne_bytes())?;
+
+    let job = HetgpuPaccGemmJob {
+        transa: if compact_stage { 0 } else { transa as u32 },
+        transb: if compact_stage { 0 } else { transb as u32 },
+        atype: pacc_atype as u32,
+        btype: pacc_btype as u32,
+        ctype: pacc_ctype as u32,
+        compute_type: compute_type as u32,
+        m,
+        n,
+        k,
+        a_addr: shared_base + slot_off + a_off,
+        b_addr: shared_base + slot_off + b_off,
+        c_addr: shared_base + slot_off + c_off,
+        alpha_addr: shared_base + slot_off + alpha_off,
+        beta_addr: shared_base + slot_off + beta_off,
+        lda: if compact_stage { m as i64 } else { lda },
+        ldb: if compact_stage { k as i64 } else { ldb },
+        ldc: if compact_stage { m as i64 } else { ldc },
+        stride_a,
+        stride_b,
+        stride_c,
+        batch_count,
+    };
+    let dev_id = dev_override.unwrap_or_else(next_gemm_device);
+    eprintln!(
+        "hetgpu_pacc_submit_gemm_staged: submit dev={} slot={} dtype A/B/C={}/{}/{} m={} n={} k={}",
+        dev_id, slot_id, job.atype, job.btype, job.ctype, job.m, job.n, job.k
+    );
+    PaccDevice::open(dev_id)?.submit_runtime_job(hetgpu_pacc_job_id::GEMM, &job)?;
+
+    let mut c_storage = vec![0u8; pacc_c_bytes];
+    read_shared_ddr_window(slot_off + c_off, &mut c_storage)?;
+    if compact_stage {
+        unpack_gemm_c_from_f32_bytes(&c_storage, c, ctype, m as usize, n as usize, ldc as usize)?;
+    } else if stage_as_f32 {
+        let converted = f32_bytes_to_gemm_storage(&c_storage, ctype, c_elems)?;
+        std::ptr::copy_nonoverlapping(converted.as_ptr(), c.cast::<u8>(), c_bytes);
+    } else {
+        std::ptr::copy_nonoverlapping(c_storage.as_ptr(), c.cast::<u8>(), c_bytes);
+    }
+    eprintln!(
+        "hetgpu_pacc_submit_gemm_staged: dev={} slot={} staged {}+{} -> {} bytes via shared DDR 0x{:x}{}",
+        dev_id,
+        slot_id,
+        pacc_a_bytes,
+        pacc_b_bytes,
+        old_total,
+        shared_base + slot_off,
+        if compact_stage {
+            " (fw-f32-compact)"
+        } else if stage_as_f32 {
+            " (fw-f32-converted)"
+        } else {
+            ""
+        }
+    );
+    Ok(())
+}
+
+unsafe fn submit_gemm_staged_4pacc_k_reduce_shared_ddr(
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: *const std::ffi::c_void,
+    a: *const std::ffi::c_void,
+    atype: i32,
+    lda: i32,
+    stride_a: i64,
+    b: *const std::ffi::c_void,
+    btype: i32,
+    ldb: i32,
+    stride_b: i64,
+    beta: *const std::ffi::c_void,
+    c: *mut std::ffi::c_void,
+    ctype: i32,
+    ldc: i32,
+    stride_c: i64,
+    batch_count: i32,
+    compute_type: i32,
+) -> std::io::Result<bool> {
+    if transa != 0
+        || transb != 0
+        || batch_count != 1
+        || stride_a > 0
+        || stride_b > 0
+        || stride_c > 0
+    {
+        return Ok(false);
+    }
+    if ctype as u32 != PaccDataType::Float32 as u32 {
+        return Ok(false);
+    }
+
+    let a_dtype_size = pacc_dtype_size(atype).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Unsupported,
+            format!("unsupported staged GEMM A dtype {}", atype),
+        )
+    })?;
+    let b_dtype_size = pacc_dtype_size(btype).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Unsupported,
+            format!("unsupported staged GEMM B dtype {}", btype),
+        )
+    })?;
+
+    let m_usize = m as usize;
+    let n_usize = n as usize;
+    let k_usize = k as usize;
+    let lda_usize = if lda > 0 { lda as usize } else { k_usize };
+    let ldb_usize = if ldb > 0 { ldb as usize } else { n_usize };
+    let ldc_usize = if ldc > 0 { ldc as usize } else { n_usize };
+    if lda_usize < k_usize || ldb_usize < n_usize || ldc_usize < n_usize {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "invalid GEMM leading dimension for 4-PACC split",
+        ));
+    }
+
+    let a_elems = gemm_span(m as u64, k as u64, lda_usize as i64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "A GEMM span overflow"))?;
+    let b_elems = gemm_span(k as u64, n as u64, ldb_usize as i64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B GEMM span overflow"))?;
+    let c_elems = gemm_span(m as u64, n as u64, ldc_usize as i64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "C GEMM span overflow"))?;
+    let c_bytes = c_elems
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "C GEMM byte span overflow"))?;
+
+    if k_usize < 2 || c_elems == 0 {
+        return Ok(false);
+    }
+
+    let shared_base = shared_ddr_base();
+    let shared_bytes = shared_ddr_bytes();
+    if shared_base == 0 || shared_bytes == 0 {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            "PACC shared DDR staging window is not configured",
+        ));
+    }
+
+    let a_src = std::slice::from_raw_parts(a.cast::<u8>(), a_elems * a_dtype_size);
+    let b_src = std::slice::from_raw_parts(b.cast::<u8>(), b_elems * b_dtype_size);
+    let old_c = std::slice::from_raw_parts(c.cast::<f32>(), c_elems).to_vec();
+
+    let mut cursor = 0u64;
+    let mut jobs = Vec::with_capacity(PACC_CORE_NUM);
+    let alpha_off = append_aligned_region(&mut cursor, std::mem::size_of::<f32>(), 64)?;
+    let beta_off = append_aligned_region(&mut cursor, std::mem::size_of::<f32>(), 64)?;
+
+    for dev_id in 0..PACC_CORE_NUM {
+        let k0 = k_usize * dev_id / PACC_CORE_NUM;
+        let k1 = k_usize * (dev_id + 1) / PACC_CORE_NUM;
+        let k_len = k1 - k0;
+        if k_len == 0 {
+            jobs.push(None);
+            continue;
+        }
+        let a_chunk_bytes = m_usize
+            .checked_mul(k_len)
+            .and_then(|v| v.checked_mul(a_dtype_size))
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "A chunk size overflow"))?;
+        let b_chunk_bytes = k_len
+            .checked_mul(n_usize)
+            .and_then(|v| v.checked_mul(b_dtype_size))
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B chunk size overflow"))?;
+        let a_off = append_aligned_region(&mut cursor, a_chunk_bytes, 64)?;
+        let b_off = append_aligned_region(&mut cursor, b_chunk_bytes, 64)?;
+        let c_off = append_aligned_region(&mut cursor, c_bytes, 64)?;
+        jobs.push(Some((
+            dev_id,
+            k0,
+            k_len,
+            a_off,
+            b_off,
+            c_off,
+            a_chunk_bytes,
+            b_chunk_bytes,
+        )));
+    }
+
+    if cursor as usize > shared_bytes {
+        return Ok(false);
+    }
+
+    let alpha_value = read_f32_arg(alpha, 1.0);
+    let zero_beta = 0.0f32;
+    write_shared_ddr_window(alpha_off, &alpha_value.to_ne_bytes())?;
+    write_shared_ddr_window(beta_off, &zero_beta.to_ne_bytes())?;
+
+    let zero_c = vec![0u8; c_bytes];
+    for job in &jobs {
+        let Some((dev_id, k0, k_len, a_off, b_off, c_off, a_chunk_bytes, b_chunk_bytes)) = *job
+        else {
+            continue;
+        };
+        let mut a_chunk = vec![0u8; a_chunk_bytes];
+        let mut b_chunk = vec![0u8; b_chunk_bytes];
+        copy_gemm_a_k_chunk(
+            &mut a_chunk,
+            a_src,
+            m_usize,
+            k0,
+            k_len,
+            lda_usize,
+            a_dtype_size,
+        )?;
+        copy_gemm_b_k_chunk(
+            &mut b_chunk,
+            b_src,
+            n_usize,
+            k0,
+            k_len,
+            ldb_usize,
+            b_dtype_size,
+        )?;
+        write_shared_ddr_window(a_off, &a_chunk)?;
+        write_shared_ddr_window(b_off, &b_chunk)?;
+        write_shared_ddr_window(c_off, &zero_c)?;
+
+        let gemm = HetgpuPaccGemmJob {
+            transa: 0,
+            transb: 0,
+            atype: atype as u32,
+            btype: btype as u32,
+            ctype: ctype as u32,
+            compute_type: compute_type as u32,
+            m: m as u64,
+            n: n as u64,
+            k: k_len as u64,
+            a_addr: shared_base + a_off,
+            b_addr: shared_base + b_off,
+            c_addr: shared_base + c_off,
+            alpha_addr: shared_base + alpha_off,
+            beta_addr: shared_base + beta_off,
+            lda: k_len as i64,
+            ldb: n as i64,
+            ldc: ldc_usize as i64,
+            stride_a: 0,
+            stride_b: 0,
+            stride_c: 0,
+            batch_count: 1,
+        };
+        eprintln!(
+            "hetgpu_pacc_submit_gemm_staged: split submit dev={} dtype A/B/C={}/{}/{} m={} n={} k={}",
+            dev_id, gemm.atype, gemm.btype, gemm.ctype, gemm.m, gemm.n, gemm.k
+        );
+        PaccDevice::open(dev_id)?.submit_runtime_job(hetgpu_pacc_job_id::GEMM, &gemm)?;
+    }
+
+    let mut reduce_input = vec![0.0f32; c_elems * PACC_CORE_NUM];
+    for (rank, job) in jobs.iter().enumerate() {
+        let rank_dst = &mut reduce_input[rank * c_elems..(rank + 1) * c_elems];
+        if let Some((_, _, _, _, _, c_off, _, _)) = *job {
+            let rank_bytes =
+                std::slice::from_raw_parts_mut(rank_dst.as_mut_ptr().cast::<u8>(), c_bytes);
+            read_shared_ddr_window(c_off, rank_bytes)?;
+        }
+    }
+
+    let mut reduce_output = vec![0.0f32; c_elems * PACC_CORE_NUM];
+    PaccComm::init_all()
+        .map_err(|e| {
+            Error::new(
+                ErrorKind::Other,
+                format!("PACC communicator init failed: {e}"),
+            )
+        })?
+        .all_reduce(&reduce_input, &mut reduce_output, PaccReduceOp::Sum)
+        .map_err(|e| Error::new(ErrorKind::Other, format!("PACC all_reduce failed: {e}")))?;
+
+    let beta_value = read_f32_arg(beta, 0.0);
+    let c_out = std::slice::from_raw_parts_mut(c.cast::<f32>(), c_elems);
+    c_out.copy_from_slice(&reduce_output[..c_elems]);
+    if beta_value != 0.0 {
+        for (dst, old) in c_out.iter_mut().zip(old_c.iter()) {
+            *dst += beta_value * *old;
+        }
+    }
+
+    eprintln!(
+        "hetgpu_pacc_submit_gemm_staged: 4-PACC split-k reduce m={} n={} k={} c_elems={} shared=0x{:x}",
+        m, n, k, c_elems, shared_base
+    );
+    Ok(true)
+}
+
+unsafe fn submit_gemm_staged_shared_ddr(
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: *const std::ffi::c_void,
+    a: *const std::ffi::c_void,
+    atype: i32,
+    lda: i32,
+    stride_a: i64,
+    b: *const std::ffi::c_void,
+    btype: i32,
+    ldb: i32,
+    stride_b: i64,
+    beta: *const std::ffi::c_void,
+    c: *mut std::ffi::c_void,
+    ctype: i32,
+    ldc: i32,
+    stride_c: i64,
+    batch_count: i32,
+    compute_type: i32,
+) -> std::io::Result<()> {
+    if std::env::var("HETGPU_PACC_GEMM_SPLIT_K").ok().as_deref() == Some("1") {
+        if submit_gemm_staged_4pacc_k_reduce_shared_ddr(
+            transa,
+            transb,
+            m,
+            n,
+            k,
+            alpha,
+            a,
+            atype,
+            lda,
+            stride_a,
+            b,
+            btype,
+            ldb,
+            stride_b,
+            beta,
+            c,
+            ctype,
+            ldc,
+            stride_c,
+            batch_count,
+            compute_type,
+        )? {
+            return Ok(());
+        }
+    }
+
+    submit_gemm_staged_single_shared_ddr(
+        None,
+        None,
+        transa,
+        transb,
+        m,
+        n,
+        k,
+        alpha,
+        a,
+        atype,
+        lda,
+        stride_a,
+        b,
+        btype,
+        ldb,
+        stride_b,
+        beta,
+        c,
+        ctype,
+        ldc,
+        stride_c,
+        batch_count,
+        compute_type,
+    )
+}
+
+unsafe fn submit_gemm_staged_c_tile_on_device(
+    trace_gemm: bool,
+    shared_base: u64,
+    slot_off: u64,
+    slot_bytes: usize,
+    dev: &PaccDevice,
+    transa: i32,
+    transb: i32,
+    row0: usize,
+    col0: usize,
+    chunk_m: usize,
+    chunk_n: usize,
+    k: usize,
+    max_k: usize,
+    alpha_value: f32,
+    beta_value: f32,
+    one_value: f32,
+    a_batch: *const std::ffi::c_void,
+    b_batch: *const std::ffi::c_void,
+    c_batch: *mut std::ffi::c_void,
+    atype: i32,
+    btype: i32,
+    ctype: i32,
+    compute_type: i32,
+    lda: usize,
+    ldb: usize,
+    ldc: usize,
+    a_dtype_size: usize,
+    b_dtype_size: usize,
+    c_dtype_size: usize,
+) -> std::io::Result<()> {
+    let mut shared_file = open_shared_ddr_window_file(0);
+    let mut mailbox_file = open_pacc_mailbox_file(dev.id);
+    let c_ptr = (c_batch as *mut u8)
+        .add((row0 + col0 * ldc) * c_dtype_size)
+        .cast::<std::ffi::c_void>();
+    let mut c_stage =
+        pack_gemm_c_block_rowmajor_f32_bytes(c_ptr.cast_const(), ctype, 0, chunk_m, chunk_n, ldc)?;
+    let a_bytes = chunk_m
+        .checked_mul(max_k)
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "A tile size overflow"))?;
+    let b_bytes = max_k
+        .checked_mul(chunk_n)
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B tile size overflow"))?;
+    let c_bytes = c_stage.len();
+    let a_off = 0u64;
+    let b_off = align_up_u64(a_bytes as u64, 64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B coarse offset overflow"))?;
+    let c_off = align_up_u64(b_off + b_bytes as u64, 64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "C coarse offset overflow"))?;
+    let alpha_off = align_up_u64(c_off + c_bytes as u64, 64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "alpha coarse offset overflow"))?;
+    let beta_off = alpha_off + std::mem::size_of::<f32>() as u64;
+    let one_off = beta_off + std::mem::size_of::<f32>() as u64;
+    let total = one_off + std::mem::size_of::<f32>() as u64;
+    if total as usize > slot_bytes {
+        return Err(Error::new(
+            ErrorKind::OutOfMemory,
+            format!(
+                "PACC coarse GEMM needs {} bytes, shared DDR slot has {}",
+                total, slot_bytes
+            ),
+        ));
+    }
+
+    write_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, &c_stage)?;
+    write_shared_ddr_window_cached(
+        &mut shared_file,
+        slot_off + alpha_off,
+        &alpha_value.to_ne_bytes(),
+    )?;
+    write_shared_ddr_window_cached(
+        &mut shared_file,
+        slot_off + beta_off,
+        &beta_value.to_ne_bytes(),
+    )?;
+    write_shared_ddr_window_cached(
+        &mut shared_file,
+        slot_off + one_off,
+        &one_value.to_ne_bytes(),
+    )?;
+
+    let tile_max_k = if chunk_m < 64 || chunk_n < 16 {
+        max_k.min(parse_env_usize("HETGPU_PACC_GEMM_TAIL_MAX_K", 80).max(1))
+    } else {
+        max_k.max(1)
+    };
+
+    for kk in (0..k).step_by(tile_max_k) {
+        let chunk_k = (k - kk).min(tile_max_k);
+        let a_index = if transa == 0 {
+            row0 + kk * lda
+        } else {
+            kk + row0 * lda
+        };
+        let b_index = if transb == 0 {
+            kk + col0 * ldb
+        } else {
+            col0 + kk * ldb
+        };
+        let a_ptr = (a_batch as *const u8)
+            .add(a_index * a_dtype_size)
+            .cast::<std::ffi::c_void>();
+        let b_ptr = (b_batch as *const u8)
+            .add(b_index * b_dtype_size)
+            .cast::<std::ffi::c_void>();
+        let a_stage = pack_gemm_a_block_rowmajor_f32_bytes(
+            a_ptr,
+            atype,
+            0,
+            chunk_m,
+            chunk_k,
+            lda,
+            transa != 0,
+        )?;
+        let b_stage =
+            pack_gemm_b_rowmajor_f32_bytes(b_ptr, btype, chunk_k, chunk_n, ldb, transb != 0)?;
+        write_shared_ddr_window_cached(&mut shared_file, slot_off + a_off, &a_stage)?;
+        write_shared_ddr_window_cached(&mut shared_file, slot_off + b_off, &b_stage)?;
+
+        let job = HetgpuPaccGemmJob {
+            transa: 0,
+            transb: 0,
+            atype: PaccDataType::Float32 as u32,
+            btype: PaccDataType::Float32 as u32,
+            ctype: PaccDataType::Float32 as u32,
+            compute_type: compute_type as u32,
+            m: chunk_m as u64,
+            n: chunk_n as u64,
+            k: chunk_k as u64,
+            a_addr: shared_base + slot_off + a_off,
+            b_addr: shared_base + slot_off + b_off,
+            c_addr: shared_base + slot_off + c_off,
+            alpha_addr: shared_base + slot_off + alpha_off,
+            beta_addr: shared_base + slot_off + if kk == 0 { beta_off } else { one_off },
+            lda: chunk_k as i64,
+            ldb: chunk_n as i64,
+            ldc: chunk_n as i64,
+            stride_a: 0,
+            stride_b: 0,
+            stride_c: 0,
+            batch_count: 1,
+        };
+        if trace_gemm {
+            eprintln!(
+                "hetgpu_pacc_submit_gemm_staged_tiled: submit dev={} slot=0x{:x} row={} col={} k={} m={} n={} k={}",
+                dev.id, slot_off, row0, col0, kk, job.m, job.n, job.k
+            );
+        }
+        submit_gemm_runtime_job_cached(dev, &job, total, &mut mailbox_file).map_err(|e| {
+            Error::new(
+                e.kind(),
+                format!(
+                    "PACC coarse GEMM tile failed dev={} slot=0x{:x} row={} col={} kk={} m={} n={} k={} lda={} ldb={} ldc={}: {}",
+                    dev.id, slot_off, row0, col0, kk, job.m, job.n, job.k, job.lda, job.ldb, job.ldc, e
+                ),
+            )
+        })?;
+    }
+
+    read_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, &mut c_stage)?;
+    unpack_gemm_c_block_rowmajor_f32_bytes(&c_stage, c_ptr, ctype, 0, chunk_m, chunk_n, ldc)?;
+    if trace_gemm {
+        eprintln!(
+            "hetgpu_pacc_submit_gemm_staged_tiled: tile dev={} slot=0x{:x} row={} col={} m={} n={} staged C-once={} total={} via shared DDR 0x{:x}",
+            dev.id, slot_off, row0, col0, chunk_m, chunk_n, c_bytes, total, shared_base + slot_off
+        );
+    }
+    Ok(())
+}
+
+unsafe fn submit_gemm_staged_tiled_shared_ddr(
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: *const std::ffi::c_void,
+    a: *const std::ffi::c_void,
+    atype: i32,
+    lda: i32,
+    stride_a: i64,
+    b: *const std::ffi::c_void,
+    btype: i32,
+    ldb: i32,
+    stride_b: i64,
+    beta: *const std::ffi::c_void,
+    c: *mut std::ffi::c_void,
+    ctype: i32,
+    ldc: i32,
+    stride_c: i64,
+    batch_count: i32,
+    compute_type: i32,
+    max_m: i32,
+    max_n: i32,
+    max_k: i32,
+) -> std::io::Result<()> {
+    let _gemm_guard = shared_ddr_gemm_lock()
+        .lock()
+        .map_err(|_| Error::new(ErrorKind::Other, "PACC GEMM staging lock poisoned"))?;
+    if atype as u32 != PaccDataType::Float32 as u32 && atype as u32 != PaccDataType::Bfloat16 as u32
+    {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "unsupported coarse staged GEMM A dtype",
+        ));
+    }
+    if btype as u32 != PaccDataType::Float32 as u32 && btype as u32 != PaccDataType::Bfloat16 as u32
+    {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "unsupported coarse staged GEMM B dtype",
+        ));
+    }
+    if ctype as u32 != PaccDataType::Float32 as u32 && ctype as u32 != PaccDataType::Bfloat16 as u32
+    {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "unsupported coarse staged GEMM C dtype",
+        ));
+    }
+    let m = m as usize;
+    let n = n as usize;
+    let k = k as usize;
+    let max_m = if max_m > 0 { max_m as usize } else { m };
+    let max_n = if max_n > 0 { max_n as usize } else { n };
+    let max_k = if max_k > 0 { max_k as usize } else { k };
+    let lda = lda as usize;
+    let ldb = ldb as usize;
+    let ldc = ldc as usize;
+    let a_dtype_size =
+        pacc_dtype_size(atype).ok_or_else(|| Error::new(ErrorKind::Unsupported, "bad A dtype"))?;
+    let b_dtype_size =
+        pacc_dtype_size(btype).ok_or_else(|| Error::new(ErrorKind::Unsupported, "bad B dtype"))?;
+    let c_dtype_size =
+        pacc_dtype_size(ctype).ok_or_else(|| Error::new(ErrorKind::Unsupported, "bad C dtype"))?;
+    let shared_base = shared_ddr_base();
+    let shared_bytes = shared_ddr_bytes();
+    if shared_base == 0 || shared_bytes == 0 {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            "PACC shared DDR staging window is not configured",
+        ));
+    }
+    let slot_count = parse_env_usize("HETGPU_PACC_GEMM_SHARED_SLOTS", PACC_CORE_NUM).max(1);
+    let slot_bytes =
+        parse_env_usize("HETGPU_PACC_GEMM_SLOT_BYTES", shared_bytes / slot_count).max(1);
+    let alpha_value = read_f32_arg(alpha, 1.0);
+    let beta_value = read_f32_arg(beta, 0.0);
+    let one_value = 1.0f32;
+    let batches = batch_count as usize;
+    let trace_gemm = pacc_gemm_trace_enabled();
+
+    let row_tiles = (m + max_m - 1) / max_m;
+    let col_tiles = (n + max_n - 1) / max_n;
+    let tile_count = row_tiles
+        .checked_mul(col_tiles)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM tile count overflow"))?;
+    let parallel_workers =
+        if std::env::var("HETGPU_PACC_GEMM_PARALLEL").ok().as_deref() == Some("1") {
+            parse_env_usize("HETGPU_PACC_GEMM_WORKERS", 3)
+                .max(1)
+                .min(PACC_CORE_NUM.saturating_sub(1).max(1))
+                .min(tile_count.max(1))
+        } else {
+            1
+        };
+
+    for batch in 0..batches {
+        let a_batch_addr = (a as *const u8).add(if stride_a > 0 {
+            batch * stride_a as usize * a_dtype_size
+        } else {
+            0
+        }) as usize;
+        let b_batch_addr = (b as *const u8).add(if stride_b > 0 {
+            batch * stride_b as usize * b_dtype_size
+        } else {
+            0
+        }) as usize;
+        let c_batch_addr = (c as *mut u8).add(if stride_c > 0 {
+            batch * stride_c as usize * c_dtype_size
+        } else {
+            0
+        }) as usize;
+
+        if parallel_workers <= 1 || tile_count <= 1 {
+            let dev = PaccDevice::open(1.min(PACC_CORE_NUM - 1))?;
+            for tile_idx in 0..tile_count {
+                let col_tile = tile_idx / row_tiles;
+                let row_tile = tile_idx % row_tiles;
+                let row0 = row_tile * max_m;
+                let col0 = col_tile * max_n;
+                let chunk_m = (m - row0).min(max_m);
+                let chunk_n = (n - col0).min(max_n);
+                submit_gemm_staged_c_tile_on_device(
+                    trace_gemm,
+                    shared_base,
+                    0,
+                    slot_bytes.min(shared_bytes),
+                    &dev,
+                    transa,
+                    transb,
+                    row0,
+                    col0,
+                    chunk_m,
+                    chunk_n,
+                    k,
+                    max_k,
+                    alpha_value,
+                    beta_value,
+                    one_value,
+                    a_batch_addr as *const std::ffi::c_void,
+                    b_batch_addr as *const std::ffi::c_void,
+                    c_batch_addr as *mut std::ffi::c_void,
+                    atype,
+                    btype,
+                    ctype,
+                    compute_type,
+                    lda,
+                    ldb,
+                    ldc,
+                    a_dtype_size,
+                    b_dtype_size,
+                    c_dtype_size,
+                )?;
+            }
+            continue;
+        }
+
+        let mut scoped_result: std::io::Result<()> = Ok(());
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(parallel_workers);
+            for worker in 0..parallel_workers {
+                handles.push(scope.spawn(move || -> std::io::Result<()> {
+                    let dev_id = 1 + (worker % PACC_CORE_NUM.saturating_sub(1).max(1));
+                    let dev = PaccDevice::open(dev_id)?;
+                    let slot_id = worker.min(slot_count.saturating_sub(1));
+                    let slot_off =
+                        (slot_id as u64)
+                            .checked_mul(slot_bytes as u64)
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::InvalidInput,
+                                    "shared DDR slot offset overflow",
+                                )
+                            })?;
+                    if slot_off as usize >= shared_bytes {
+                        return Err(Error::new(
+                            ErrorKind::OutOfMemory,
+                            "PACC shared DDR worker slot is outside the configured window",
+                        ));
+                    }
+                    let available = shared_bytes - slot_off as usize;
+                    let worker_slot_bytes = slot_bytes.min(available);
+                    for tile_idx in (worker..tile_count).step_by(parallel_workers) {
+                        let col_tile = tile_idx / row_tiles;
+                        let row_tile = tile_idx % row_tiles;
+                        let row0 = row_tile * max_m;
+                        let col0 = col_tile * max_n;
+                        let chunk_m = (m - row0).min(max_m);
+                        let chunk_n = (n - col0).min(max_n);
+                        submit_gemm_staged_c_tile_on_device(
+                            trace_gemm,
+                            shared_base,
+                            slot_off,
+                            worker_slot_bytes,
+                            &dev,
+                            transa,
+                            transb,
+                            row0,
+                            col0,
+                            chunk_m,
+                            chunk_n,
+                            k,
+                            max_k,
+                            alpha_value,
+                            beta_value,
+                            one_value,
+                            a_batch_addr as *const std::ffi::c_void,
+                            b_batch_addr as *const std::ffi::c_void,
+                            c_batch_addr as *mut std::ffi::c_void,
+                            atype,
+                            btype,
+                            ctype,
+                            compute_type,
+                            lda,
+                            ldb,
+                            ldc,
+                            a_dtype_size,
+                            b_dtype_size,
+                            c_dtype_size,
+                        )?;
+                    }
+                    Ok(())
+                }));
+            }
+            for handle in handles {
+                match handle.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        if scoped_result.is_ok() {
+                            scoped_result = Err(e);
+                        }
+                    }
+                    Err(_) => {
+                        if scoped_result.is_ok() {
+                            scoped_result =
+                                Err(Error::new(ErrorKind::Other, "PACC GEMM worker panicked"));
+                        }
+                    }
+                }
+            }
+        });
+        scoped_result?;
+    }
+    Ok(())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_pacc_submit_gemm_staged_tiled(
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: *const std::ffi::c_void,
+    a: *const std::ffi::c_void,
+    atype: i32,
+    lda: i32,
+    stride_a: i64,
+    b: *const std::ffi::c_void,
+    btype: i32,
+    ldb: i32,
+    stride_b: i64,
+    beta: *const std::ffi::c_void,
+    c: *mut std::ffi::c_void,
+    ctype: i32,
+    ldc: i32,
+    stride_c: i64,
+    batch_count: i32,
+    compute_type: i32,
+    max_m: i32,
+    max_n: i32,
+    max_k: i32,
+) -> i32 {
+    if a.is_null() || b.is_null() || c.is_null() || m <= 0 || n <= 0 || k <= 0 || batch_count <= 0 {
+        eprintln!("hetgpu_pacc_submit_gemm_staged_tiled: invalid argument");
+        return -1;
+    }
+    match submit_gemm_staged_tiled_shared_ddr(
+        transa,
+        transb,
+        m,
+        n,
+        k,
+        alpha,
+        a,
+        atype,
+        lda,
+        stride_a,
+        b,
+        btype,
+        ldb,
+        stride_b,
+        beta,
+        c,
+        ctype,
+        ldc,
+        stride_c,
+        batch_count,
+        compute_type,
+        max_m,
+        max_n,
+        max_k,
+    ) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("hetgpu_pacc_submit_gemm_staged_tiled: {}", e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_pacc_submit_gemm_staged_on(
+    dev_id: i32,
+    slot_id: i32,
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: *const std::ffi::c_void,
+    a: *const std::ffi::c_void,
+    atype: i32,
+    lda: i32,
+    stride_a: i64,
+    b: *const std::ffi::c_void,
+    btype: i32,
+    ldb: i32,
+    stride_b: i64,
+    beta: *const std::ffi::c_void,
+    c: *mut std::ffi::c_void,
+    ctype: i32,
+    ldc: i32,
+    stride_c: i64,
+    batch_count: i32,
+    compute_type: i32,
+) -> i32 {
+    if a.is_null() || b.is_null() || c.is_null() || m <= 0 || n <= 0 || k <= 0 || batch_count <= 0 {
+        eprintln!("hetgpu_pacc_submit_gemm_staged_on: invalid argument");
+        return -1;
+    }
+    let dev_override = if dev_id >= 0 && (dev_id as usize) < PACC_CORE_NUM {
+        Some(dev_id as usize)
+    } else {
+        None
+    };
+    let slot_override = if slot_id >= 0 {
+        Some(slot_id as usize)
+    } else {
+        None
+    };
+    match submit_gemm_staged_single_shared_ddr(
+        dev_override,
+        slot_override,
+        transa,
+        transb,
+        m,
+        n,
+        k,
+        alpha,
+        a,
+        atype,
+        lda,
+        stride_a,
+        b,
+        btype,
+        ldb,
+        stride_b,
+        beta,
+        c,
+        ctype,
+        ldc,
+        stride_c,
+        batch_count,
+        compute_type,
+    ) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!(
+                "hetgpu_pacc_submit_gemm_staged_on: PACC staged GEMM submit failed: {}",
+                e
+            );
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_pacc_submit_gemm_staged(
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: *const std::ffi::c_void,
+    a: *const std::ffi::c_void,
+    atype: i32,
+    lda: i32,
+    stride_a: i64,
+    b: *const std::ffi::c_void,
+    btype: i32,
+    ldb: i32,
+    stride_b: i64,
+    beta: *const std::ffi::c_void,
+    c: *mut std::ffi::c_void,
+    ctype: i32,
+    ldc: i32,
+    stride_c: i64,
+    batch_count: i32,
+    compute_type: i32,
+) -> i32 {
+    let _ = (alpha, beta);
+    if a.is_null() || b.is_null() || c.is_null() || m <= 0 || n <= 0 || k <= 0 || batch_count <= 0 {
+        eprintln!("hetgpu_pacc_submit_gemm_staged: invalid argument");
+        return -1;
+    }
+    match submit_gemm_staged_shared_ddr(
+        transa,
+        transb,
+        m,
+        n,
+        k,
+        alpha,
+        a,
+        atype,
+        lda,
+        stride_a,
+        b,
+        btype,
+        ldb,
+        stride_b,
+        beta,
+        c,
+        ctype,
+        ldc,
+        stride_c,
+        batch_count,
+        compute_type,
+    ) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!(
+                "hetgpu_pacc_submit_gemm_staged: PACC staged GEMM submit failed: {}",
+                e
+            );
+            -1
+        }
     }
 }
 
@@ -1335,8 +3998,14 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_gemm(
         batch_count: batch_count as u64,
     };
 
-    let dev_id = NEXT_GEMM_DEVICE.fetch_add(1, Ordering::Relaxed) % 4;
-    match PaccDevice::open(dev_id).and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::GEMM, &job)) {
+    let dev_id = next_gemm_device();
+    eprintln!(
+        "hetgpu_pacc_submit_gemm: submit dev={} dtype A/B/C={}/{}/{} m={} n={} k={}",
+        dev_id, job.atype, job.btype, job.ctype, job.m, job.n, job.k
+    );
+    match PaccDevice::open(dev_id)
+        .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::GEMM, &job))
+    {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("hetgpu_pacc_submit_gemm: PACC GEMM submit failed: {}", e);
@@ -1366,10 +4035,15 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_softmax_f32(
         dtype: PaccDataType::Float32 as u32,
         reserved: 0,
     };
-    match PaccDevice::open(0).and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::SOFTMAX, &job)) {
+    match PaccDevice::open(0)
+        .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::SOFTMAX, &job))
+    {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("hetgpu_pacc_submit_softmax_f32: PACC softmax submit failed: {}", e);
+            eprintln!(
+                "hetgpu_pacc_submit_softmax_f32: PACC softmax submit failed: {}",
+                e
+            );
             -1
         }
     }
@@ -1397,10 +4071,15 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_rmsnorm_f32(
         eps,
         dtype: PaccDataType::Float32 as u32,
     };
-    match PaccDevice::open(0).and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::RMSNORM, &job)) {
+    match PaccDevice::open(0)
+        .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::RMSNORM, &job))
+    {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("hetgpu_pacc_submit_rmsnorm_f32: PACC RMSNorm submit failed: {}", e);
+            eprintln!(
+                "hetgpu_pacc_submit_rmsnorm_f32: PACC RMSNorm submit failed: {}",
+                e
+            );
             -1
         }
     }
@@ -1420,7 +4099,10 @@ pub unsafe extern "C" fn hetgpu_pacc_nccl_all_reduce_f32(
         return -1;
     }
     if op != 0 {
-        eprintln!("hetgpu_pacc_nccl_all_reduce_f32: unsupported op {}, expected ncclSum=0", op);
+        eprintln!(
+            "hetgpu_pacc_nccl_all_reduce_f32: unsupported op {}, expected ncclSum=0",
+            op
+        );
         return -1;
     }
 
@@ -1437,7 +4119,10 @@ pub unsafe extern "C" fn hetgpu_pacc_nccl_all_reduce_f32(
             0
         }
         Err(e) => {
-            eprintln!("hetgpu_pacc_nccl_all_reduce_f32: PACC all_reduce failed: {}", e);
+            eprintln!(
+                "hetgpu_pacc_nccl_all_reduce_f32: PACC all_reduce failed: {}",
+                e
+            );
             -1
         }
     }
@@ -1472,19 +4157,49 @@ pub unsafe extern "C" fn hetgpu_pacc_nccl_reduce_sum_f32(
 
     reduced.copy_from_slice(inputs);
 
+    let max_count = std::env::var("HETGPU_PACC_ALLREDUCE_MAX_COUNT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(16);
     let mut pacc_out = vec![0.0f32; total];
-    match PaccComm::init_all().and_then(|comm| comm.all_reduce(&reduced, &mut pacc_out, PaccReduceOp::Sum)) {
-        Ok(()) => {
-            std::ptr::copy_nonoverlapping(pacc_out.as_ptr(), recvbuff, count);
-            0
-        }
+    let comm = match PaccComm::init_all() {
+        Ok(comm) => comm,
         Err(e) => {
-            eprintln!("hetgpu_pacc_nccl_reduce_sum_f32: PACC reduce failed: {}", e);
-            -1
+            eprintln!("hetgpu_pacc_nccl_reduce_sum_f32: PACC init failed: {}", e);
+            return -1;
+        }
+    };
+
+    for start in (0..count).step_by(max_count) {
+        let chunk = std::cmp::min(max_count, count - start);
+        let mut chunk_in = vec![0.0f32; chunk * nranks_usize];
+        for rank in 0..nranks_usize {
+            let src_off = rank * count + start;
+            let dst_off = rank * chunk;
+            chunk_in[dst_off..dst_off + chunk].copy_from_slice(&reduced[src_off..src_off + chunk]);
+        }
+
+        let mut chunk_out = vec![0.0f32; chunk * nranks_usize];
+        if let Err(e) = comm.all_reduce(&chunk_in, &mut chunk_out, PaccReduceOp::Sum) {
+            eprintln!(
+                "hetgpu_pacc_nccl_reduce_sum_f32: PACC reduce failed at start={} chunk={}: {}",
+                start, chunk, e
+            );
+            return -1;
+        }
+
+        for rank in 0..nranks_usize {
+            let src_off = rank * chunk;
+            let dst_off = rank * count + start;
+            pacc_out[dst_off..dst_off + chunk]
+                .copy_from_slice(&chunk_out[src_off..src_off + chunk]);
         }
     }
-}
 
+    std::ptr::copy_nonoverlapping(pacc_out.as_ptr(), recvbuff, count);
+    0
+}
 
 // ─── CUDA-like high-level API (used by zluda/src/impl/module.rs, function.rs) ─
 
@@ -1506,7 +4221,7 @@ pub struct pacc_Kernel {
 /// Result code
 pub type pacc_Result = i32;
 pub const pacc_Result_Success: pacc_Result = 0;
-pub const pacc_Result_Error:   pacc_Result = -1;
+pub const pacc_Result_Error: pacc_Result = -1;
 
 /// Create a PACC device handle for device_id (0-3).
 /// Returns null on failure.
@@ -1529,7 +4244,9 @@ pub unsafe fn pacc_DestroyDevice(dev: *mut pacc_Device) {
 
 /// Create a PACC program (initially empty — load ELF via pacc_LoadProgram).
 pub unsafe fn pacc_CreateProgram() -> *mut pacc_Program {
-    Box::into_raw(Box::new(pacc_Program { elf_bytes: Vec::new() }))
+    Box::into_raw(Box::new(pacc_Program {
+        elf_bytes: Vec::new(),
+    }))
 }
 
 /// Load ELF binary into a PACC program.
@@ -1564,9 +4281,15 @@ pub unsafe fn pacc_CreateKernelOnDevice(
     let name_str = if name.is_null() {
         String::new()
     } else {
-        std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned()
+        std::ffi::CStr::from_ptr(name)
+            .to_string_lossy()
+            .into_owned()
     };
-    Box::into_raw(Box::new(pacc_Kernel { name: name_str, program, device }))
+    Box::into_raw(Box::new(pacc_Kernel {
+        name: name_str,
+        program,
+        device,
+    }))
 }
 
 /// Destroy a kernel handle.
@@ -1594,7 +4317,10 @@ pub unsafe fn pacc_LaunchKernel(
     let k = &*kernel;
     let prog = &*k.program;
 
-    let log_launches = std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES").ok().as_deref() == Some("1");
+    let log_launches = std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+        .ok()
+        .as_deref()
+        == Some("1");
     if log_launches {
         eprintln!(
             "pacc_LaunchKernel: kernel='{}' grid=({},{},{}) block=({},{},{})",
@@ -1603,7 +4329,13 @@ pub unsafe fn pacc_LaunchKernel(
     }
 
     if prog.elf_bytes.is_empty() {
-        eprintln!("pacc_LaunchKernel: no ELF loaded; refusing to stub kernel execution");
+        if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            eprintln!("pacc_LaunchKernel: no ELF loaded; refusing to stub kernel execution");
+        }
         return pacc_Result_Error;
     }
 
@@ -1623,19 +4355,17 @@ pub unsafe fn pacc_LaunchKernel(
 
     // Compatibility path for kernels created without a bound device.
     match PaccDevice::open(0) {
-        Ok(dev) => {
-            pacc_launch_on_device(
-                &dev,
-                &k.name,
-                &prog.elf_bytes,
-                grid_x,
-                grid_y,
-                grid_z,
-                block_x,
-                block_y,
-                block_z,
-            )
-        }
+        Ok(dev) => pacc_launch_on_device(
+            &dev,
+            &k.name,
+            &prog.elf_bytes,
+            grid_x,
+            grid_y,
+            grid_z,
+            block_x,
+            block_y,
+            block_z,
+        ),
         Err(e) => {
             eprintln!("pacc_LaunchKernel: open device failed: {}", e);
             pacc_Result_Error
@@ -1674,7 +4404,10 @@ fn pacc_launch_on_device(
         Some(job_id) => match dev.submit_preloaded_job_bytes(job_id, &[]) {
             Ok(()) => pacc_Result_Success,
             Err(e) => {
-                eprintln!("pacc_LaunchKernel: preloaded firmware job_id {} submit failed: {}", job_id, e);
+                eprintln!(
+                    "pacc_LaunchKernel: preloaded firmware job_id {} submit failed: {}",
+                    job_id, e
+                );
                 pacc_Result_Error
             }
         },
@@ -1716,7 +4449,10 @@ fn fill_pacc_kernel_image(
 ) -> std::io::Result<()> {
     let image_size = PACC_JOB_HEADER_BYTES + elf_bytes.len();
     if buf.len() < image_size {
-        return Err(Error::new(ErrorKind::InvalidInput, "PACC job image buffer too small"));
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "PACC job image buffer too small",
+        ));
     }
 
     let header = PaccJobImageHeader {
@@ -1813,16 +4549,15 @@ fn stage_pacc_job_image(
     map.flush()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_ioctl_encoding() {
-        assert_eq!(IOC_GET_INFO,   0xc000_7000u64 & 0xffff_ffff);
+        assert_eq!(IOC_GET_INFO, 0xc000_7000u64 & 0xffff_ffff);
         assert_eq!(IOC_GET_INFO_EX, 0xc001_0001u64 & 0xffff_ffff);
-        assert_eq!(IOC_MEM_ALLOC,  0xc000_8002u64 & 0xffff_ffff);
-        assert_eq!(IOC_BO_SUBMIT,  0x4000_8003u64 & 0xffff_ffff);
+        assert_eq!(IOC_MEM_ALLOC, 0xc000_8002u64 & 0xffff_ffff);
+        assert_eq!(IOC_BO_SUBMIT, 0x4000_8003u64 & 0xffff_ffff);
     }
 }

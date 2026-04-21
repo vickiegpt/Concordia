@@ -3,16 +3,14 @@ use std::process::Command;
 
 fn main() {
     // Detect SiFive spike (riscv-isa-sim-zvfbfa-plus) installation
-    let spike_path = env::var("SPIKE_PATH")
-        .ok()
-        .or_else(|| {
-            Command::new("which")
-                .arg("spike")
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        });
+    let spike_path = env::var("SPIKE_PATH").ok().or_else(|| {
+        Command::new("which")
+            .arg("spike")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    });
 
     if let Some(path) = &spike_path {
         println!("cargo:rustc-cfg=has_spike");
@@ -47,7 +45,12 @@ fn main() {
     }
 
     // Detect LLC
-    if Command::new("llc").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+    if Command::new("llc")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
         println!("cargo:rustc-cfg=has_llc");
     }
 

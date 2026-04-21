@@ -7,8 +7,11 @@ src="${repo_root}/pacc_linux_jobd/hetgpu_pacc_jobd.c"
 out="${1:-${repo_root}/target/hetgpu_pacc_jobd}"
 
 mkdir -p "$(dirname "${out}")"
-if ! "${cc}" -O2 -Wall -Wextra -static -o "${out}" "${src}" -lm; then
-  "${cc}" -O2 -Wall -Wextra -o "${out}" "${src}" -lm
+common_flags=(-O2 -Wall -Wextra -fno-tree-vectorize -march=rv64gcv -mabi=lp64d -pthread)
+if ! "${cc}" "${common_flags[@]}" -static -o "${out}" "${src}" -lm; then
+  if ! "${cc}" "${common_flags[@]}" -o "${out}" "${src}" -lm; then
+    "${cc}" -O2 -Wall -Wextra -pthread -o "${out}" "${src}" -lm
+  fi
 fi
 
 printf '%s\n' "${out}"

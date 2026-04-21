@@ -123,6 +123,38 @@ static cudaError_t hetgpu_set_last_error(cudaError_t error) {
     return error;
 }
 
+extern CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void* srcHost, size_t ByteCount);
+extern CUresult cuMemcpyDtoH_v2(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount);
+extern int hetgpu_pacc_is_device_ptr(const void* ptr);
+
+static cudaError_t hetgpu_cuda_from_cu(CUresult result) {
+    return result == 0 ? HETGPU_CUDA_SUCCESS : HETGPU_CUDA_ERROR_UNKNOWN;
+}
+
+static int hetgpu_likely_device_ptr(const void* ptr) {
+    if (hetgpu_pacc_is_device_ptr(ptr)) {
+        return 1;
+    }
+    uintptr_t value = (uintptr_t)ptr;
+    // Real PACC CUDA pointers are PACC-visible physical addresses. Host
+    // userspace pointers are high virtual addresses on the target Linux ABI.
+    return value >= 0x1000ULL && value < 0x100000000ULL;
+}
+
+static cudaError_t hetgpu_cuda_memcpy_d2d(void* dst, const void* src, size_t count) {
+    void* tmp = malloc(count);
+    if (!tmp) {
+        return HETGPU_CUDA_ERROR_UNKNOWN;
+    }
+
+    CUresult result = cuMemcpyDtoH_v2(tmp, (CUdeviceptr)src, count);
+    if (result == 0) {
+        result = cuMemcpyHtoD_v2((CUdeviceptr)dst, tmp, count);
+    }
+    free(tmp);
+    return hetgpu_cuda_from_cu(result);
+}
+
 static int hetgpu_pacc_kernel_has_handle(CUfunction func) {
     if (!func) return 0;
     // PaccKernel is #[repr(C)] with `device` followed by `kernel_ptr`.
@@ -170,6 +202,14 @@ typedef struct { unsigned int x, y, z; } dim3;
 typedef void (*cudaStreamCallback_t)(cudaStream_t stream, cudaError_t status, void* userData);
 typedef void (*cudaHostFn_t)(void* userData);
 typedef int cudaMemcpyKind; // use int placeholder
+
+enum {
+    HETGPU_CUDA_MEMCPY_HOST_TO_HOST = 0,
+    HETGPU_CUDA_MEMCPY_HOST_TO_DEVICE = 1,
+    HETGPU_CUDA_MEMCPY_DEVICE_TO_HOST = 2,
+    HETGPU_CUDA_MEMCPY_DEVICE_TO_DEVICE = 3,
+    HETGPU_CUDA_MEMCPY_DEFAULT = 4,
+};
 
 typedef struct {
     void* payload;
@@ -585,20 +625,20 @@ cudaError_t cudaGetDeviceProperties_v2(cudaDeviceProp_t prop, int device) {
 static int current_device = 0;
 
 cudaError_t cudaSetDevice(int device) {
-    fprintf(stderr, "[hetGPU] cudaSetDevice(%d) called\n", device);
+    HETGPU_LOG("[hetGPU] cudaSetDevice(%d) called\n", device);
     // For virtual device support, be permissive
     if (device < 0) {
-        fprintf(stderr, "[hetGPU] cudaSetDevice: invalid device\n");
+        HETGPU_LOG("[hetGPU] cudaSetDevice: invalid device\n");
         return 1; // cudaErrorInvalidDevice
     }
 
     // Get the CUDA device handle
     CUdevice cu_device;
     CUresult result = cuDeviceGet(&cu_device, device);
-    fprintf(stderr, "[hetGPU] cudaSetDevice: cuDeviceGet returned %d, cu_device=%d\n", result, cu_device);
+    HETGPU_LOG("[hetGPU] cudaSetDevice: cuDeviceGet returned %d, cu_device=%d\n", result, cu_device);
     if (result != 0) {
         // For virtual device, still set current_device and succeed
-        fprintf(stderr, "[hetGPU] cudaSetDevice(%d): cuDeviceGet failed (%d), continuing with virtual device\n", device, result);
+        HETGPU_LOG("[hetGPU] cudaSetDevice(%d): cuDeviceGet failed (%d), continuing with virtual device\n", device, result);
         current_device = device;
         return 0; // Success for virtual device
     }
@@ -606,31 +646,31 @@ cudaError_t cudaSetDevice(int device) {
     // Retain the primary context for this device
     CUcontext ctx;
     result = cuDevicePrimaryCtxRetain(&ctx, cu_device);
-    fprintf(stderr, "[hetGPU] cudaSetDevice: cuDevicePrimaryCtxRetain returned %d, ctx=%p\n", result, ctx);
+    HETGPU_LOG("[hetGPU] cudaSetDevice: cuDevicePrimaryCtxRetain returned %d, ctx=%p\n", result, ctx);
     if (result != 0) {
         // For virtual device, still set current_device and succeed
-        fprintf(stderr, "[hetGPU] cudaSetDevice(%d): cuDevicePrimaryCtxRetain failed (%d), continuing with virtual device\n", device, result);
+        HETGPU_LOG("[hetGPU] cudaSetDevice(%d): cuDevicePrimaryCtxRetain failed (%d), continuing with virtual device\n", device, result);
         current_device = device;
         return 0; // Success for virtual device
     }
 
     // Set it as the current context
     result = cuCtxSetCurrent(ctx);
-    fprintf(stderr, "[hetGPU] cudaSetDevice: cuCtxSetCurrent returned %d\n", result);
+    HETGPU_LOG("[hetGPU] cudaSetDevice: cuCtxSetCurrent returned %d\n", result);
     if (result != 0) {
         // For virtual device, still set current_device and succeed
-        fprintf(stderr, "[hetGPU] cudaSetDevice(%d): cuCtxSetCurrent failed (%d), continuing with virtual device\n", device, result);
+        HETGPU_LOG("[hetGPU] cudaSetDevice(%d): cuCtxSetCurrent failed (%d), continuing with virtual device\n", device, result);
         current_device = device;
         return 0; // Success for virtual device
     }
 
     current_device = device;
-    fprintf(stderr, "[hetGPU] cudaSetDevice: success\n");
+    HETGPU_LOG("[hetGPU] cudaSetDevice: success\n");
     return 0;
 }
 
 cudaError_t cudaGetDevice(int* device) {
-    fprintf(stderr, "[hetGPU] cudaGetDevice called, returning device %d\n", current_device);
+    HETGPU_LOG("[hetGPU] cudaGetDevice called, returning device %d\n", current_device);
     if (device) *device = current_device;
     return 0;
 }
@@ -1204,7 +1244,7 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
         if (g_functions[i].hostFun == func || registered_normalized == func_normalized) {
             cuFunc = g_functions[i].cuFunc;
             funcName = g_functions[i].name;
-            fprintf(stderr, "[cudart_shim] Found registered function '%s': %p -> %p\n",
+            HETGPU_LOG("[cudart_shim] Found registered function '%s': %p -> %p\n",
                     funcName, func, cuFunc);
             break;
         }
@@ -1778,7 +1818,7 @@ void __cudaRegisterFunction(void** fatCubinHandle, const char* hostFun, char* de
     }
 
     CUmodule module = (CUmodule)(*fatCubinHandle);
-    fprintf(stderr, "[cudart_shim] __cudaRegisterFunction: hostFun=%p, name='%s', module=%p\n",
+    HETGPU_LOG("[cudart_shim] __cudaRegisterFunction: hostFun=%p, name='%s', module=%p\n",
             hostFun, deviceName, module);
 
     // Get the function from the module
@@ -1789,7 +1829,7 @@ void __cudaRegisterFunction(void** fatCubinHandle, const char* hostFun, char* de
         fprintf(stderr, "[cudart_shim] cuModuleGetFunction('%s') failed: %d\n", deviceName, result);
         // Continue anyway - func will be NULL, which we handle in launch
     } else {
-        fprintf(stderr, "[cudart_shim] Got function '%s': %p\n", deviceName, func);
+        HETGPU_LOG("[cudart_shim] Got function '%s': %p\n", deviceName, func);
     }
 
     // Store the mapping
@@ -1800,7 +1840,7 @@ void __cudaRegisterFunction(void** fatCubinHandle, const char* hostFun, char* de
         strncpy(g_functions[g_function_count].name, deviceName, 255);
         g_functions[g_function_count].name[255] = '\0';
 
-        fprintf(stderr, "[cudart_shim] Registered function %d: %p -> %p ('%s')\n",
+        HETGPU_LOG("[cudart_shim] Registered function %d: %p -> %p ('%s')\n",
                 g_function_count, hostFun, func, deviceName);
 
         g_function_count++;
@@ -1970,6 +2010,10 @@ cudaError_t cudaMalloc(void** devPtr, size_t size) {
     CUdeviceptr dptr = 0;
     CUresult result = cuMemAlloc_v2(&dptr, size);
     if (result != 0) {
+        const char* real_mem = getenv("HETGPU_PACC_REAL_DEVICE_MEM");
+        if (hetgpu_strict_pacc() || (real_mem && strcmp(real_mem, "1") == 0)) {
+            return hetgpu_set_last_error(2); // cudaErrorMemoryAllocation
+        }
         // Fallback: host allocation (zeroed)
         void* ptr = NULL;
         if (size > 0) {
@@ -2000,10 +2044,40 @@ cudaError_t cudaFree(void* devPtr) {
 
 cudaError_t cudaMemcpy(void* dst, const void* src, size_t count, cudaMemcpyKind kind) {
     if (!dst || !src || count == 0) return 0;
-    // Treat all kinds as host memcpy in virtual backend
-    // This covers H2D/D2H by virtue of using host-backed "device" pointers
-    memcpy(dst, src, count);
-    return 0;
+
+    cudaError_t err = HETGPU_CUDA_SUCCESS;
+    switch (kind) {
+        case HETGPU_CUDA_MEMCPY_HOST_TO_HOST:
+            memcpy(dst, src, count);
+            break;
+        case HETGPU_CUDA_MEMCPY_HOST_TO_DEVICE:
+            err = hetgpu_cuda_from_cu(cuMemcpyHtoD_v2((CUdeviceptr)dst, src, count));
+            break;
+        case HETGPU_CUDA_MEMCPY_DEVICE_TO_HOST:
+            err = hetgpu_cuda_from_cu(cuMemcpyDtoH_v2(dst, (CUdeviceptr)src, count));
+            break;
+        case HETGPU_CUDA_MEMCPY_DEVICE_TO_DEVICE:
+            err = hetgpu_cuda_memcpy_d2d(dst, src, count);
+            break;
+        case HETGPU_CUDA_MEMCPY_DEFAULT: {
+            int dst_dev = hetgpu_likely_device_ptr(dst);
+            int src_dev = hetgpu_likely_device_ptr(src);
+            if (dst_dev && src_dev) {
+                err = hetgpu_cuda_memcpy_d2d(dst, src, count);
+            } else if (dst_dev) {
+                err = hetgpu_cuda_from_cu(cuMemcpyHtoD_v2((CUdeviceptr)dst, src, count));
+            } else if (src_dev) {
+                err = hetgpu_cuda_from_cu(cuMemcpyDtoH_v2(dst, (CUdeviceptr)src, count));
+            } else {
+                memcpy(dst, src, count);
+            }
+            break;
+        }
+        default:
+            err = HETGPU_CUDA_ERROR_INVALID_VALUE;
+            break;
+    }
+    return hetgpu_set_last_error(err);
 }
 
 cudaError_t cudaMemcpyAsync(void* dst, const void* src, size_t count, cudaMemcpyKind kind, cudaStream_t stream) {
@@ -2022,11 +2096,18 @@ cudaError_t cudaMemcpyBatchAsync(void* opList, size_t numOps, cudaStream_t strea
     (void)stream;
     if (!opList || numOps == 0) return 0;
 
-    // Each operation in the batch is a memcpy
     cudaMemcpyBatchOp* ops = (cudaMemcpyBatchOp*)opList;
     for (size_t i = 0; i < numOps; i++) {
         if (ops[i].dst && ops[i].src && ops[i].count > 0) {
-            memcpy(ops[i].dst, ops[i].src, ops[i].count);
+            cudaError_t err = cudaMemcpy(
+                ops[i].dst,
+                ops[i].src,
+                ops[i].count,
+                HETGPU_CUDA_MEMCPY_DEFAULT
+            );
+            if (err != HETGPU_CUDA_SUCCESS) {
+                return err;
+            }
         }
     }
     return 0;
@@ -2034,10 +2115,8 @@ cudaError_t cudaMemcpyBatchAsync(void* opList, size_t numOps, cudaStream_t strea
 
 cudaError_t cudaMemcpyPeerAsync(void* dst, int dstDevice, const void* src, int srcDevice, size_t count, cudaStream_t stream) {
     (void)dstDevice; (void)srcDevice; (void)stream;
-    if (dst && src && count > 0) {
-        memcpy(dst, src, count);
-    }
-    return 0;
+    if (!dst || !src || count == 0) return 0;
+    return cudaMemcpy(dst, src, count, HETGPU_CUDA_MEMCPY_DEVICE_TO_DEVICE);
 }
 
 cudaError_t cudaMemcpyToSymbol(const void* symbol,
@@ -2122,8 +2201,9 @@ cudaError_t cudaFreeAsync(void* devPtr, cudaStream_t stream) {
 
 cudaError_t cudaMemset(void* devPtr, int value, size_t count) {
     if (!devPtr || devPtr == (void*)0x1 || count == 0) return 0;
-    memset(devPtr, (unsigned char)value, count);
-    return 0;
+    return hetgpu_set_last_error(
+        hetgpu_cuda_from_cu(cuMemsetD8_v2((CUdeviceptr)devPtr, (unsigned char)value, count))
+    );
 }
 
 cudaError_t cudaMemsetAsync(void* devPtr, int value, size_t count, cudaStream_t stream) {

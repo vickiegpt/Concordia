@@ -1,6 +1,6 @@
 use pacc_runtime_sys::{
     pacc_CreateDevice, pacc_CreateKernelOnDevice, pacc_CreateProgram, pacc_DestroyDevice,
-    pacc_DestroyKernel, pacc_LoadProgram, pacc_LaunchKernel, PaccComm, PaccReduceOp,
+    pacc_DestroyKernel, pacc_LaunchKernel, pacc_LoadProgram, PaccComm, PaccReduceOp,
 };
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -44,7 +44,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let input = [1.0f32, 2.0, 3.0, 4.0];
     let mut output = [0.0f32; 4];
-    match PaccComm::init_all().and_then(|comm| comm.all_reduce(&input, &mut output, PaccReduceOp::Sum)) {
+    match PaccComm::init_all()
+        .and_then(|comm| comm.all_reduce(&input, &mut output, PaccReduceOp::Sum))
+    {
         Ok(()) => println!("PACC communicator reduce smoke: {:?}", output),
         Err(e) => {
             eprintln!("PACC communicator reduce failed: {}", e);
@@ -54,7 +56,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("four-PACC GEMM/reduce smoke complete: {} launch attempts succeeded", launched);
+    println!(
+        "four-PACC GEMM/reduce smoke complete: {} launch attempts succeeded",
+        launched
+    );
     Ok(())
 }
 
@@ -96,11 +101,8 @@ fn launch_on_device(device_id: u32, elf_bytes: &[u8]) -> Result<(), Box<dyn std:
             return Err("pacc_CreateProgram returned null".into());
         }
 
-        let load_result = pacc_LoadProgram(
-            program,
-            elf_bytes.as_ptr().cast(),
-            elf_bytes.len() as u64,
-        );
+        let load_result =
+            pacc_LoadProgram(program, elf_bytes.as_ptr().cast(), elf_bytes.len() as u64);
         if load_result != 0 {
             pacc_DestroyDevice(dev);
             return Err(format!("pacc_LoadProgram failed: {}", load_result).into());

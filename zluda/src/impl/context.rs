@@ -16,7 +16,12 @@ use ze_runtime_sys::*;
 #[cfg(feature = "tenstorrent")]
 use tt_runtime_sys::*;
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 use nvidia_runtime_sys;
 
 // Result conversion traits
@@ -68,7 +73,12 @@ thread_local! {
     pub(crate) static CONTEXT_STACK: RefCell<Vec<(CUcontext, i32)>> = RefCell::new(Vec::new());
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 thread_local! {
     pub(crate) static CONTEXT_STACK: RefCell<Vec<(CUcontext, CUdevice)>> = RefCell::new(Vec::new());
 }
@@ -379,20 +389,40 @@ impl ZludaObject for Context {
 }
 
 // NVIDIA implementation - direct passthrough to real libcuda.so
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) struct Context {
     pub(crate) device: CUdevice,
-    pub(crate) cuda_ctx: CUcontext,  // Real CUDA context from libcuda.so
+    pub(crate) cuda_ctx: CUcontext, // Real CUDA context from libcuda.so
     pub(crate) mutable: Mutex<OwnedByContext>,
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe impl Send for Context {}
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe impl Sync for Context {}
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 impl Clone for Context {
     fn clone(&self) -> Self {
         let guard = self.mutable.lock().unwrap();
@@ -409,7 +439,12 @@ impl Clone for Context {
     }
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) struct OwnedByContext {
     pub(crate) ref_count: usize,
     pub(crate) _memory: FxHashSet<u64>,
@@ -417,7 +452,12 @@ pub(crate) struct OwnedByContext {
     pub(crate) _modules: FxHashSet<usize>,
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 impl Context {
     pub(crate) fn new(device: CUdevice, cuda_ctx: CUcontext) -> Self {
         Self {
@@ -451,7 +491,12 @@ impl Context {
     }
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 impl ZludaObject for Context {
     const COOKIE: usize = 0x1c9a63e0bfb35ca4;
     type CudaHandle = CUcontext;
@@ -819,7 +864,10 @@ pub(crate) fn get_device(device_out: *mut CUdevice) -> CUresult {
             let (_, raw_ctx) = dev.primary_context();
             // Push it as current
             if let Err(e) = set_current(raw_ctx) {
-                eprintln!("[hetGPU] cuCtxGetDevice: failed to set current context: {:?}", e);
+                eprintln!(
+                    "[hetGPU] cuCtxGetDevice: failed to set current context: {:?}",
+                    e
+                );
                 return Err(e);
             }
             // Now return device 0
@@ -878,7 +926,9 @@ pub(crate) fn create_v2(pctx: *mut CUcontext, _flags: u32, _dev: CUdevice) -> CU
     push(raw_ctx, device);
 
     if !pctx.is_null() {
-        unsafe { *pctx = raw_ctx; }
+        unsafe {
+            *pctx = raw_ctx;
+        }
     }
     Ok(())
 }
@@ -915,10 +965,14 @@ pub(crate) fn pop_current_v2(pctx: *mut CUcontext) -> CUresult {
 
     if let Some((ctx, _)) = popped {
         if !pctx.is_null() {
-            unsafe { *pctx = ctx; }
+            unsafe {
+                *pctx = ctx;
+            }
         }
     } else if !pctx.is_null() {
-        unsafe { *pctx = CUcontext(ptr::null_mut()); }
+        unsafe {
+            *pctx = CUcontext(ptr::null_mut());
+        }
     }
 
     Ok(())
@@ -1008,21 +1062,32 @@ pub(crate) fn get_primary_tt(device_id: i32) -> Result<(&'static Context, CUcont
 }
 
 // NVIDIA functions
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn synchronize() -> CUresult {
     eprintln!("[hetGPU context] synchronize called");
 
     // Ensure we have a valid context (thread-local) before synchronizing
     let mut current_ctx: CUcontext = CUcontext(ptr::null_mut());
     let ctx_result = nvidia_runtime_sys::cuCtxGetCurrent(&mut current_ctx);
-    eprintln!("[hetGPU context] cuCtxGetCurrent returned {}, ctx={:?}", ctx_result, current_ctx.0);
+    eprintln!(
+        "[hetGPU context] cuCtxGetCurrent returned {}, ctx={:?}",
+        ctx_result, current_ctx.0
+    );
 
     if ctx_result != 0 || current_ctx.0.is_null() {
         eprintln!("[hetGPU context] No current context, getting primary context for device 0");
         // Try to retain and set primary context for device 0
         let mut pctx: CUcontext = CUcontext(ptr::null_mut());
         let retain_result = nvidia_runtime_sys::cuDevicePrimaryCtxRetain(&mut pctx, 0);
-        eprintln!("[hetGPU context] cuDevicePrimaryCtxRetain returned {}, ctx={:?}", retain_result, pctx.0);
+        eprintln!(
+            "[hetGPU context] cuDevicePrimaryCtxRetain returned {}, ctx={:?}",
+            retain_result, pctx.0
+        );
         if retain_result == 0 && !pctx.0.is_null() {
             let set_result = nvidia_runtime_sys::cuCtxSetCurrent(pctx);
             eprintln!("[hetGPU context] cuCtxSetCurrent returned {}", set_result);
@@ -1032,7 +1097,10 @@ pub(crate) fn synchronize() -> CUresult {
     let result = nvidia_runtime_sys::cuCtxSynchronize();
     eprintln!("[hetGPU context] cuCtxSynchronize returned {}", result);
     if result != 0 {
-        eprintln!("[hetGPU context] cuCtxSynchronize FAILED with error {}", result);
+        eprintln!(
+            "[hetGPU context] cuCtxSynchronize FAILED with error {}",
+            result
+        );
         return Err(CUerror::UNKNOWN);
     }
 
@@ -1043,7 +1111,12 @@ pub(crate) fn synchronize() -> CUresult {
     Ok(())
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
     if raw_ctx.0 == ptr::null_mut() {
         CONTEXT_STACK.with(|stack| {
@@ -1066,7 +1139,12 @@ pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
     Ok(())
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn push(ctx: CUcontext, device: CUdevice) {
     CONTEXT_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
@@ -1074,13 +1152,25 @@ pub(crate) fn push(ctx: CUcontext, device: CUdevice) {
     });
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
-pub(crate) fn get_primary_nvidia(device: CUdevice) -> Result<(&'static Context, CUcontext), CUerror> {
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn get_primary_nvidia(
+    device: CUdevice,
+) -> Result<(&'static Context, CUcontext), CUerror> {
     let dev = driver::device_nvidia(device)?;
     Ok(dev.primary_context())
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn get_current_nvidia() -> Result<&'static Context, CUerror> {
     let current = peek_current().ok_or(CUerror::INVALID_CONTEXT)?;
     let context: &Context = FromCuda::from_cuda(&current)?;
@@ -1110,7 +1200,12 @@ pub(crate) fn peek_current() -> Option<CUcontext> {
             stack.last().map(|(ctx, _)| *ctx)
         })
     }
-    #[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+    #[cfg(all(
+        feature = "nvidia",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent")
+    ))]
     {
         CONTEXT_STACK.with(|stack| {
             let stack = stack.borrow();
@@ -1145,7 +1240,12 @@ pub(crate) fn peek_current() -> Option<CUcontext> {
 }
 
 // Additional NVIDIA context functions
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn get_device(device_out: *mut CUdevice) -> CUresult {
     let result = nvidia_runtime_sys::cuCtxGetDevice(device_out);
     if result != 0 {
@@ -1154,7 +1254,12 @@ pub(crate) fn get_device(device_out: *mut CUdevice) -> CUresult {
     Ok(())
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn set_limit(limit: CUlimit, value: usize) -> CUresult {
     let result = nvidia_runtime_sys::cuCtxSetLimit(limit, value);
     if result != 0 {
@@ -1163,7 +1268,12 @@ pub(crate) fn set_limit(limit: CUlimit, value: usize) -> CUresult {
     Ok(())
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn get_limit(pvalue: &mut usize, limit: CUlimit) -> CUresult {
     let result = nvidia_runtime_sys::cuCtxGetLimit(pvalue, limit);
     if result != 0 {
@@ -1172,17 +1282,28 @@ pub(crate) fn get_limit(pvalue: &mut usize, limit: CUlimit) -> CUresult {
     Ok(())
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn create_v2(pctx: *mut CUcontext, flags: u32, dev: CUdevice) -> CUresult {
     use super::ZludaObject;
 
-    eprintln!("[hetGPU context] create_v2 called: flags={}, dev={:?}", flags, dev);
+    eprintln!(
+        "[hetGPU context] create_v2 called: flags={}, dev={:?}",
+        flags, dev
+    );
 
     // Create real CUDA context
     let mut cuda_ctx: CUcontext = CUcontext(ptr::null_mut());
     let result = nvidia_runtime_sys::cuCtxCreate_v2(&mut cuda_ctx, flags, dev);
 
-    eprintln!("[hetGPU context] cuCtxCreate_v2 returned {}, ctx={:?}", result, cuda_ctx);
+    eprintln!(
+        "[hetGPU context] cuCtxCreate_v2 returned {}, ctx={:?}",
+        result, cuda_ctx
+    );
 
     if result != 0 {
         return Err(CUerror::UNKNOWN);
@@ -1199,11 +1320,19 @@ pub(crate) fn create_v2(pctx: *mut CUcontext, flags: u32, dev: CUdevice) -> CUre
         *pctx = raw_ctx;
     }
 
-    eprintln!("[hetGPU context] create_v2 success: returned ctx={:?}", raw_ctx);
+    eprintln!(
+        "[hetGPU context] create_v2 success: returned ctx={:?}",
+        raw_ctx
+    );
     Ok(())
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn destroy_v2(ctx: CUcontext) -> CUresult {
     if ctx.0.is_null() {
         return Err(CUerror::INVALID_CONTEXT);
@@ -1227,7 +1356,12 @@ pub(crate) fn destroy_v2(ctx: CUcontext) -> CUresult {
     Ok(())
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn push_current_v2(ctx: CUcontext) -> CUresult {
     if ctx.0.is_null() {
         return Err(CUerror::INVALID_CONTEXT);
@@ -1247,7 +1381,12 @@ pub(crate) fn push_current_v2(ctx: CUcontext) -> CUresult {
     Ok(())
 }
 
-#[cfg(all(feature = "nvidia", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn pop_current_v2(pctx: *mut CUcontext) -> CUresult {
     // Pop from real CUDA
     let mut cuda_ctx: CUcontext = CUcontext(ptr::null_mut());
@@ -1264,41 +1403,68 @@ pub(crate) fn pop_current_v2(pctx: *mut CUcontext) -> CUresult {
 
     if let Some((ctx, _)) = popped {
         if !pctx.is_null() {
-            unsafe { *pctx = ctx; }
+            unsafe {
+                *pctx = ctx;
+            }
         }
     } else if !pctx.is_null() {
-        unsafe { *pctx = CUcontext(ptr::null_mut()); }
+        unsafe {
+            *pctx = CUcontext(ptr::null_mut());
+        }
     }
 
     Ok(())
 }
 
-
-
 // ============================================================================
 // PACC context implementation (SiFive Intelligence XM / RISC-V IME)
 // ============================================================================
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) struct Context {
     pub(crate) device_id: i32,
     pub(crate) mutable: std::sync::Mutex<PaccOwnedByContext>,
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) struct PaccOwnedByContext {
     pub(crate) ref_count: usize,
     pub(crate) _memory: rustc_hash::FxHashSet<usize>,
     pub(crate) _modules: rustc_hash::FxHashSet<usize>,
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe impl Send for Context {}
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe impl Sync for Context {}
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 impl Clone for Context {
     fn clone(&self) -> Self {
         let guard = self.mutable.lock().unwrap();
@@ -1313,7 +1479,12 @@ impl Clone for Context {
     }
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 impl Context {
     pub(crate) fn new(device_id: i32) -> Self {
         Self {
@@ -1352,7 +1523,12 @@ impl Context {
     }
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 impl ZludaObject for Context {
     const COOKIE: usize = 0x1c9a63e0bfb35ca4;
     type CudaHandle = CUcontext;
@@ -1362,19 +1538,34 @@ impl ZludaObject for Context {
     }
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn get_primary_pacc(device_id: i32) -> Result<(&'static Context, CUcontext), CUerror> {
     let dev = driver::device_pacc(device_id)?;
     Ok(dev.primary_context())
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn synchronize() -> Result<(), String> {
     super::checkpoint::process_pending_checkpoint();
     Ok(())
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
     let _new_device_id = if raw_ctx.0 == ptr::null_mut() {
         CONTEXT_STACK.with(|stack| {
@@ -1397,7 +1588,12 @@ pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
     Ok(())
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn push(ctx: CUcontext, device_id: i32) {
     CONTEXT_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
@@ -1405,14 +1601,24 @@ pub(crate) fn push(ctx: CUcontext, device_id: i32) {
     });
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn get_current_pacc() -> Result<&'static Context, CUerror> {
     let current = peek_current().ok_or(CUerror::INVALID_CONTEXT)?;
     let context: &Context = FromCuda::from_cuda(&current)?;
     Ok(unsafe { std::mem::transmute(context) })
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn get_limit(_pvalue: *mut usize, _limit: std::ffi::c_uint) -> Result<(), String> {
     if !_pvalue.is_null() {
         unsafe { *_pvalue = 0 };
@@ -1420,26 +1626,48 @@ pub(crate) fn get_limit(_pvalue: *mut usize, _limit: std::ffi::c_uint) -> Result
     Ok(())
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn set_limit(_limit: std::ffi::c_uint, _value: usize) -> Result<(), String> {
     Ok(())
 }
 
-
 // ─── PACC context API functions ───────────────────────────────────────────────
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
-pub(crate) fn get_device(device_out: *mut cuda_types::cuda::CUdevice) -> cuda_types::cuda::CUresult {
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn get_device(
+    device_out: *mut cuda_types::cuda::CUdevice,
+) -> cuda_types::cuda::CUresult {
     use cuda_types::cuda::*;
     let current = peek_current().ok_or(CUerror::INVALID_CONTEXT)?;
     let ctx: &Context = crate::r#impl::FromCuda::from_cuda(&current)?;
     if !device_out.is_null() {
-        unsafe { *device_out = ctx.device_id; }
+        unsafe {
+            *device_out = ctx.device_id;
+        }
     }
     Ok(())
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
-pub(crate) fn create_v2(pctx: *mut cuda_types::cuda::CUcontext, _flags: u32, dev: cuda_types::cuda::CUdevice) -> cuda_types::cuda::CUresult {
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn create_v2(
+    pctx: *mut cuda_types::cuda::CUcontext,
+    _flags: u32,
+    dev: cuda_types::cuda::CUdevice,
+) -> cuda_types::cuda::CUresult {
     use crate::r#impl::ZludaObject;
     use cuda_types::cuda::*;
     let ctx = Context::new(dev);
@@ -1447,12 +1675,19 @@ pub(crate) fn create_v2(pctx: *mut cuda_types::cuda::CUcontext, _flags: u32, dev
     let raw_ctx = ctx.wrap();
     push(raw_ctx, dev);
     if !pctx.is_null() {
-        unsafe { *pctx = raw_ctx; }
+        unsafe {
+            *pctx = raw_ctx;
+        }
     }
     Ok(())
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn destroy_v2(ctx: cuda_types::cuda::CUcontext) -> cuda_types::cuda::CUresult {
     use cuda_types::cuda::*;
     if ctx.0 == std::ptr::null_mut() {
@@ -1465,7 +1700,12 @@ pub(crate) fn destroy_v2(ctx: cuda_types::cuda::CUcontext) -> cuda_types::cuda::
     Ok(())
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn push_current_v2(ctx: cuda_types::cuda::CUcontext) -> cuda_types::cuda::CUresult {
     use crate::r#impl::FromCuda;
     use cuda_types::cuda::*;
@@ -1477,7 +1717,12 @@ pub(crate) fn push_current_v2(ctx: cuda_types::cuda::CUcontext) -> cuda_types::c
     Ok(())
 }
 
-#[cfg(all(feature = "pacc", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn pop_current_v2(pctx: *mut cuda_types::cuda::CUcontext) -> cuda_types::cuda::CUresult {
     use cuda_types::cuda::*;
     let popped = CONTEXT_STACK.with(|stack| {
@@ -1486,10 +1731,14 @@ pub(crate) fn pop_current_v2(pctx: *mut cuda_types::cuda::CUcontext) -> cuda_typ
     });
     if let Some((ctx, _)) = popped {
         if !pctx.is_null() {
-            unsafe { *pctx = ctx; }
+            unsafe {
+                *pctx = ctx;
+            }
         }
     } else if !pctx.is_null() {
-        unsafe { *pctx = CUcontext(std::ptr::null_mut()); }
+        unsafe {
+            *pctx = CUcontext(std::ptr::null_mut());
+        }
     }
     Ok(())
 }
