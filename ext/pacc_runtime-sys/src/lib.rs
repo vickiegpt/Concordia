@@ -167,6 +167,7 @@ const HETGPU_PACC_RUNTIME_TABLE_MAGIC: u64 = 0x4847_5055_5442_4c31;
 const HETGPU_PACC_RUNTIME_TABLE_VERSION: u32 = 1;
 
 pub mod hetgpu_pacc_job_id {
+    pub const KERNEL: u32 = 0;
     pub const GEMM: u32 = 1;
     pub const SOFTMAX: u32 = 2;
     pub const RMSNORM: u32 = 3;
@@ -1114,6 +1115,7 @@ fn next_gemm_device() -> usize {
 static RUNTIME_BOOTED: OnceLock<Mutex<[bool; 4]>> = OnceLock::new();
 static SHARED_DDR_REDUCE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static SHARED_DDR_GEMM_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SHARED_DDR_KERNEL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static NVTOP_STATE: OnceLock<Mutex<NvtopProcessState>> = OnceLock::new();
 
 #[derive(Debug, Clone, Default)]
@@ -1495,6 +1497,10 @@ fn shared_ddr_gemm_lock() -> &'static Mutex<()> {
     SHARED_DDR_GEMM_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn shared_ddr_kernel_lock() -> &'static Mutex<()> {
+    SHARED_DDR_KERNEL_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn shared_ddr_base() -> u64 {
     std::env::var("HETGPU_PACC_SHARED_DDR_BASE")
         .ok()
@@ -1660,8 +1666,9 @@ fn read_pacc2ap_mailbox_cached(
     read_pacc2ap_mailbox(pacc_id, offset, bytes)
 }
 
-fn wait_preloaded_gemm_status_cached(
+fn wait_mailbox_job_status_cached(
     pacc_id: usize,
+    expected_job_id: u32,
     seq: u64,
     mailbox_file: &mut Option<File>,
 ) -> std::io::Result<()> {
@@ -1684,7 +1691,7 @@ fn wait_preloaded_gemm_status_cached(
             let status_seq = u64::from_le_bytes(buf[24..32].try_into().unwrap());
             if magic == HETGPU_PACC_JOB_MAGIC
                 && version == HETGPU_PACC_JOB_VERSION
-                && status_job_id == hetgpu_pacc_job_id::GEMM
+                && status_job_id == expected_job_id
                 && status_seq == seq
             {
                 if status == 0 {
@@ -1695,9 +1702,7 @@ fn wait_preloaded_gemm_status_cached(
                         ErrorKind::Other,
                         format!(
                             "PACC job_id {} seq {} failed with firmware status 0x{:x}",
-                            hetgpu_pacc_job_id::GEMM,
-                            seq,
-                            status
+                            expected_job_id, seq, status
                         ),
                     ));
                 }
@@ -1708,8 +1713,7 @@ fn wait_preloaded_gemm_status_cached(
                 ErrorKind::TimedOut,
                 format!(
                     "timed out waiting for PACC job_id {} seq {} completion",
-                    hetgpu_pacc_job_id::GEMM,
-                    seq
+                    expected_job_id, seq
                 ),
             ));
         }
@@ -1719,6 +1723,14 @@ fn wait_preloaded_gemm_status_cached(
             std::hint::spin_loop();
         }
     }
+}
+
+fn wait_preloaded_gemm_status_cached(
+    pacc_id: usize,
+    seq: u64,
+    mailbox_file: &mut Option<File>,
+) -> std::io::Result<()> {
+    wait_mailbox_job_status_cached(pacc_id, hetgpu_pacc_job_id::GEMM, seq, mailbox_file)
 }
 
 fn submit_gemm_runtime_job_cached(
@@ -4784,11 +4796,9 @@ fn compute_pacc_kernel_image_layout(
     } else {
         let offset = cursor;
         cursor = align_up(
-            cursor
-                .checked_add(binding_bytes)
-                .ok_or_else(|| {
-                    Error::new(ErrorKind::InvalidInput, "PACC binding section too large")
-                })?,
+            cursor.checked_add(binding_bytes).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "PACC binding section too large")
+            })?,
             8,
         );
         offset
@@ -4855,6 +4865,154 @@ fn build_pacc_kernel_submit_buffer(
     Ok((buf, submit_len))
 }
 
+fn helper_kernel_submit_enabled(dev_id: usize) -> bool {
+    if std::env::var("HETGPU_PACC_KERNEL_MBOX_SUBMIT")
+        .ok()
+        .as_deref()
+        == Some("0")
+    {
+        return false;
+    }
+    std::path::Path::new(&helper_path_for_pacc(dev_id)).exists()
+}
+
+fn kernel_launch_wait_enabled() -> bool {
+    std::env::var("HETGPU_PACC_WAIT_KERNEL_LAUNCH")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+fn kernel_submit_slot_layout(dev_id: usize) -> std::io::Result<(u64, usize)> {
+    let shared_bytes = shared_ddr_bytes();
+    let slot_count = std::env::var("HETGPU_PACC_KERNEL_SLOT_COUNT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(PACC_CORE_NUM.max(1));
+    let slot_bytes = std::env::var("HETGPU_PACC_KERNEL_SLOT_BYTES")
+        .ok()
+        .and_then(|v| {
+            let trimmed = v.trim_start_matches("0x");
+            usize::from_str_radix(trimmed, 16)
+                .ok()
+                .or_else(|| v.parse().ok())
+        })
+        .filter(|&v| v > 0)
+        .unwrap_or(0x0020_0000);
+    let reserved = slot_bytes
+        .checked_mul(slot_count)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "kernel slot reservation overflow"))?;
+    if reserved > shared_bytes {
+        return Err(Error::new(
+            ErrorKind::OutOfMemory,
+            format!(
+                "kernel helper slots need {} bytes, shared DDR window has {}",
+                reserved, shared_bytes
+            ),
+        ));
+    }
+    let base_off = (shared_bytes - reserved) as u64;
+    let slot_off = base_off
+        .checked_add((dev_id % slot_count) as u64 * slot_bytes as u64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "kernel slot offset overflow"))?;
+    Ok((slot_off, slot_bytes))
+}
+
+fn submit_pacc_kernel_image_via_helper(
+    dev: &PaccDevice,
+    kernel_name: &str,
+    elf_bytes: &[u8],
+    launch_state: &PaccKernelLaunchState,
+    grid_x: u32,
+    grid_y: u32,
+    grid_z: u32,
+    block_x: u32,
+    block_y: u32,
+    block_z: u32,
+) -> std::io::Result<usize> {
+    let _guard = shared_ddr_kernel_lock()
+        .lock()
+        .map_err(|_| Error::new(ErrorKind::Other, "PACC kernel helper mutex poisoned"))?;
+    let shared_base = shared_ddr_base();
+    if shared_base == 0 || shared_ddr_bytes() == 0 {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            "PACC shared DDR helper window is not configured",
+        ));
+    }
+
+    let (buf, submit_len) = build_pacc_kernel_submit_buffer(
+        kernel_name,
+        elf_bytes,
+        launch_state,
+        grid_x,
+        grid_y,
+        grid_z,
+        block_x,
+        block_y,
+        block_z,
+    )?;
+    let (slot_off, slot_bytes) = kernel_submit_slot_layout(dev.id)?;
+    if submit_len > slot_bytes {
+        return Err(Error::new(
+            ErrorKind::OutOfMemory,
+            format!(
+                "kernel image needs {} bytes, helper slot has {}",
+                submit_len, slot_bytes
+            ),
+        ));
+    }
+
+    let seq = next_runtime_job_seq();
+    let desc = pacc_mbox_job_desc {
+        addr: shared_base + slot_off,
+        len: submit_len as u64,
+        rsvd: seq,
+        buf_info: PACC_JOB_MAGIC,
+    };
+    let desc_bytes = unsafe {
+        std::slice::from_raw_parts(
+            (&desc as *const pacc_mbox_job_desc).cast::<u8>(),
+            std::mem::size_of::<pacc_mbox_job_desc>(),
+        )
+    };
+
+    let mut shared_file = open_shared_ddr_window_file(dev.id);
+    let mut mailbox_file = open_pacc_mailbox_file(dev.id);
+    write_shared_ddr_window_cached(&mut shared_file, slot_off, &buf[..submit_len])?;
+    write_ap2pacc_mailbox_cached(&mut mailbox_file, dev.id, 0, desc_bytes).and_then(|ok| {
+        if ok {
+            Ok(())
+        } else {
+            Err(Error::new(
+                ErrorKind::NotFound,
+                "PACC mailbox helper is not loaded for kernel submit",
+            ))
+        }
+    })?;
+
+    if kernel_launch_wait_enabled() {
+        wait_mailbox_job_status_cached(dev.id, hetgpu_pacc_job_id::KERNEL, seq, &mut mailbox_file)?;
+    }
+
+    if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "pacc_LaunchKernel: helper-submit kernel='{}' seq={} shared=0x{:x} submit={} bytes on pacc{}",
+            kernel_name,
+            seq,
+            shared_base + slot_off,
+            submit_len,
+            dev.id
+        );
+    }
+    Ok(submit_len)
+}
+
 fn submit_pacc_kernel_image(
     dev: &PaccDevice,
     kernel_name: &str,
@@ -4867,6 +5025,34 @@ fn submit_pacc_kernel_image(
     block_y: u32,
     block_z: u32,
 ) -> std::io::Result<usize> {
+    if helper_kernel_submit_enabled(dev.id) {
+        match submit_pacc_kernel_image_via_helper(
+            dev,
+            kernel_name,
+            elf_bytes,
+            launch_state,
+            grid_x,
+            grid_y,
+            grid_z,
+            block_x,
+            block_y,
+            block_z,
+        ) {
+            Ok(submit_len) => return Ok(submit_len),
+            Err(e) => {
+                if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+                    .ok()
+                    .as_deref()
+                    == Some("1")
+                {
+                    eprintln!(
+                        "pacc_LaunchKernel: helper submit unavailable for '{}' on pacc{}: {}; falling back to driver submit",
+                        kernel_name, dev.id, e
+                    );
+                }
+            }
+        }
+    }
     let (buf, submit_len) = build_pacc_kernel_submit_buffer(
         kernel_name,
         elf_bytes,
@@ -5099,8 +5285,7 @@ fn fill_pacc_kernel_image(
             let binding_bytes = unsafe {
                 std::slice::from_raw_parts(
                     launch_state.bindings.as_ptr().cast::<u8>(),
-                    launch_state.bindings.len()
-                        * std::mem::size_of::<PaccKernelBufferBinding>(),
+                    launch_state.bindings.len() * std::mem::size_of::<PaccKernelBufferBinding>(),
                 )
             };
             let end = layout.bindings_offset + binding_bytes.len();
