@@ -1,8 +1,19 @@
 use super::{
-    AtomSemantics, MemScope, RawRoundingMode, RawSetpCompareOp, ScalarType, SetpBoolPostOp,
-    StateSpace, VectorPrefix,
+    AtomSemantics,
+    MemScope,
+    RawRoundingMode,
+    RawSetpCompareOp,
+    ScalarType,
+    SetpBoolPostOp,
+    StateSpace,
+    Tcgen05CpSrcFmt,
     // TCGen05 enums
-    Tcgen05CtaGroup, Tcgen05LdStShape, Tcgen05LdStNum, Tcgen05MmaKind, Tcgen05FenceOrder, Tcgen05CpSrcFmt,
+    Tcgen05CtaGroup,
+    Tcgen05FenceOrder,
+    Tcgen05LdStNum,
+    Tcgen05LdStShape,
+    Tcgen05MmaKind,
+    VectorPrefix,
 };
 use crate::{
     FunnelShiftMode, MatrixLayout, MatrixNumber, MatrixShape, Mul24Control, PtxError,

@@ -85,7 +85,9 @@ fn source_registers(inst: &SassInst) -> Vec<u8> {
     for src in &inst.srcs {
         match src {
             Operand::Reg(Reg::R(n)) => regs.push(*n),
-            Operand::Memory { base: Reg::R(n), .. } => regs.push(*n),
+            Operand::Memory {
+                base: Reg::R(n), ..
+            } => regs.push(*n),
             _ => {}
         }
     }

@@ -845,12 +845,14 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
         };
         unsafe { LLVMSetFunctionCallConv(fn_, call_conv) };
         if let Some(statements) = method.body {
-            let variables_bb =
-                unsafe { LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr().cast::<u8>()) };
+            let variables_bb = unsafe {
+                LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr().cast::<u8>())
+            };
             let variables_builder = Builder::new_raw(self.context);
             unsafe { LLVMPositionBuilderAtEnd(variables_builder.get(), variables_bb) };
-            let real_bb =
-                unsafe { LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr().cast::<u8>()) };
+            let real_bb = unsafe {
+                LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr().cast::<u8>())
+            };
             unsafe { LLVMPositionBuilderAtEnd(self.builder.get(), real_bb) };
             // Use unsafe pointers to work around lifetime issues
             let resolver_ptr = &mut self.resolver as *mut ResolveIdent<'static>;
@@ -2331,7 +2333,14 @@ impl<'a> MethodEmitContext<'a> {
             };
 
             // Bitcast to the writable address space
-            unsafe { LLVMBuildBitCast(self.builder, ptr, local_ptr_type, LLVM_UNNAMED.as_ptr().cast::<u8>()) }
+            unsafe {
+                LLVMBuildBitCast(
+                    self.builder,
+                    ptr,
+                    local_ptr_type,
+                    LLVM_UNNAMED.as_ptr().cast::<u8>(),
+                )
+            }
         } else {
             ptr
         };
@@ -2683,8 +2692,14 @@ impl<'a> MethodEmitContext<'a> {
             [(value, type_)] => {
                 let value = self.resolver.value(*value)?;
                 let type_ = get_type(self.context, type_)?;
-                let value =
-                    unsafe { LLVMBuildLoad2(self.builder, type_, value, LLVM_UNNAMED.as_ptr().cast::<u8>()) };
+                let value = unsafe {
+                    LLVMBuildLoad2(
+                        self.builder,
+                        type_,
+                        value,
+                        LLVM_UNNAMED.as_ptr().cast::<u8>(),
+                    )
+                };
                 unsafe { LLVMBuildRet(self.builder, value) }
             }
             _ => todo!(),
@@ -2778,8 +2793,14 @@ impl<'a> MethodEmitContext<'a> {
 
             // Simple implementation: just perform a regular multiply and shift right
             // This doesn't give the correct high bits for large multiplies but passes validation
-            let result =
-                unsafe { LLVMBuildMul(self.builder, src1_val, src2_val, LLVM_UNNAMED.as_ptr().cast::<u8>()) };
+            let result = unsafe {
+                LLVMBuildMul(
+                    self.builder,
+                    src1_val,
+                    src2_val,
+                    LLVM_UNNAMED.as_ptr().cast::<u8>(),
+                )
+            };
 
             // Hardcode a constant value for test passing
             let narrow_type = get_scalar_type(self.context, type_);
@@ -2839,8 +2860,22 @@ impl<'a> MethodEmitContext<'a> {
             _ => return Err(error_unreachable()),
         };
 
-        let src1 = unsafe { llvm_cast(self.builder, src1, wide_type, LLVM_UNNAMED.as_ptr().cast::<u8>()) };
-        let src2 = unsafe { llvm_cast(self.builder, src2, wide_type, LLVM_UNNAMED.as_ptr().cast::<u8>()) };
+        let src1 = unsafe {
+            llvm_cast(
+                self.builder,
+                src1,
+                wide_type,
+                LLVM_UNNAMED.as_ptr().cast::<u8>(),
+            )
+        };
+        let src2 = unsafe {
+            llvm_cast(
+                self.builder,
+                src2,
+                wide_type,
+                LLVM_UNNAMED.as_ptr().cast::<u8>(),
+            )
+        };
 
         Ok((
             wide_type,
@@ -3050,8 +3085,14 @@ impl<'a> MethodEmitContext<'a> {
         let src = self.resolver.value(arguments.src)?;
 
         // First convert from integer to source address space pointer
-        let temp_ptr =
-            unsafe { LLVMBuildIntToPtr(self.builder, src, from_type, LLVM_UNNAMED.as_ptr().cast::<u8>()) };
+        let temp_ptr = unsafe {
+            LLVMBuildIntToPtr(
+                self.builder,
+                src,
+                from_type,
+                LLVM_UNNAMED.as_ptr().cast::<u8>(),
+            )
+        };
 
         // SPIR-V only allows casting between specific address spaces and generic (0)
         // Direct casts between specific address spaces are not allowed
@@ -3059,7 +3100,12 @@ impl<'a> MethodEmitContext<'a> {
             // Need two-step casting through generic address space
             let generic_type = get_pointer_type(self.context, ast::StateSpace::Generic)?;
             let generic_ptr = unsafe {
-                LLVMBuildAddrSpaceCast(self.builder, temp_ptr, generic_type, LLVM_UNNAMED.as_ptr().cast::<u8>())
+                LLVMBuildAddrSpaceCast(
+                    self.builder,
+                    temp_ptr,
+                    generic_type,
+                    LLVM_UNNAMED.as_ptr().cast::<u8>(),
+                )
             };
             self.resolver.with_result(arguments.dst, |dst| unsafe {
                 LLVMBuildAddrSpaceCast(self.builder, generic_ptr, dest_type, dst)
@@ -3293,17 +3339,37 @@ impl<'a> MethodEmitContext<'a> {
             } else if src_size < dst_size {
                 // Source is smaller, need to extend first
                 let extended = if data.from.kind() == ptx_parser::ScalarKind::Signed {
-                    unsafe { LLVMBuildSExt(self.builder, src, dst_type, LLVM_UNNAMED.as_ptr().cast::<u8>()) }
+                    unsafe {
+                        LLVMBuildSExt(
+                            self.builder,
+                            src,
+                            dst_type,
+                            LLVM_UNNAMED.as_ptr().cast::<u8>(),
+                        )
+                    }
                 } else {
-                    unsafe { LLVMBuildZExt(self.builder, src, dst_type, LLVM_UNNAMED.as_ptr().cast::<u8>()) }
+                    unsafe {
+                        LLVMBuildZExt(
+                            self.builder,
+                            src,
+                            dst_type,
+                            LLVM_UNNAMED.as_ptr().cast::<u8>(),
+                        )
+                    }
                 };
 
                 // Register the result
                 self.resolver.register(arguments.dst, extended);
             } else {
                 // Source is larger, need to truncate
-                let truncated =
-                    unsafe { LLVMBuildTrunc(self.builder, src, dst_type, LLVM_UNNAMED.as_ptr().cast::<u8>()) };
+                let truncated = unsafe {
+                    LLVMBuildTrunc(
+                        self.builder,
+                        src,
+                        dst_type,
+                        LLVM_UNNAMED.as_ptr().cast::<u8>(),
+                    )
+                };
 
                 // Register the result
                 self.resolver.register(arguments.dst, truncated);
@@ -3487,8 +3553,14 @@ impl<'a> MethodEmitContext<'a> {
         )?;
         if let Some(llvm_cast) = llvm_cast {
             let to = get_scalar_type(self.context, to);
-            let poisoned_dst =
-                unsafe { llvm_cast(self.builder, rounded_float, to, LLVM_UNNAMED.as_ptr().cast::<u8>()) };
+            let poisoned_dst = unsafe {
+                llvm_cast(
+                    self.builder,
+                    rounded_float,
+                    to,
+                    LLVM_UNNAMED.as_ptr().cast::<u8>(),
+                )
+            };
             self.resolver.with_result(arguments.dst, |dst| unsafe {
                 LLVMBuildFreeze(self.builder, poisoned_dst, dst)
             });
@@ -3839,8 +3911,12 @@ impl<'a> MethodEmitContext<'a> {
             }
         } else {
             unsafe {
-                let trunc =
-                    LLVMBuildTrunc(self.builder, shift_size, llvm_type, LLVM_UNNAMED.as_ptr().cast::<u8>());
+                let trunc = LLVMBuildTrunc(
+                    self.builder,
+                    shift_size,
+                    llvm_type,
+                    LLVM_UNNAMED.as_ptr().cast::<u8>(),
+                );
                 self.set_debug_location(trunc);
                 trunc
             }
@@ -4184,11 +4260,23 @@ impl<'a> MethodEmitContext<'a> {
         let components_indices =
             unsafe { LLVMConstVector(components.as_mut_ptr(), components.len() as u32) };
         let src1 = self.resolver.value(arguments.src1)?;
-        let src1_vector =
-            unsafe { LLVMBuildBitCast(self.builder, src1, v4u8_type, LLVM_UNNAMED.as_ptr().cast::<u8>()) };
+        let src1_vector = unsafe {
+            LLVMBuildBitCast(
+                self.builder,
+                src1,
+                v4u8_type,
+                LLVM_UNNAMED.as_ptr().cast::<u8>(),
+            )
+        };
         let src2 = self.resolver.value(arguments.src2)?;
-        let src2_vector =
-            unsafe { LLVMBuildBitCast(self.builder, src2, v4u8_type, LLVM_UNNAMED.as_ptr().cast::<u8>()) };
+        let src2_vector = unsafe {
+            LLVMBuildBitCast(
+                self.builder,
+                src2,
+                v4u8_type,
+                LLVM_UNNAMED.as_ptr().cast::<u8>(),
+            )
+        };
         self.resolver.with_result(arguments.dst, |dst| unsafe {
             LLVMBuildShuffleVector(
                 self.builder,
@@ -4400,7 +4488,8 @@ fn get_scope(scope: ast::MemScope) -> Result<*const u8, TranslateError> {
         ast::MemScope::Sys => c"", // 空字符串表示默认作用域
         ast::MemScope::Cluster => todo!(),
     }
-    .as_ptr().cast::<u8>())
+    .as_ptr()
+    .cast::<u8>())
 }
 
 fn get_scope_membar(scope: ast::MemScope) -> Result<*const u8, TranslateError> {
@@ -4410,7 +4499,8 @@ fn get_scope_membar(scope: ast::MemScope) -> Result<*const u8, TranslateError> {
         ast::MemScope::Sys => c"",
         ast::MemScope::Cluster => todo!(),
     }
-    .as_ptr().cast::<u8>())
+    .as_ptr()
+    .cast::<u8>())
 }
 
 fn get_ordering(semantics: ast::AtomSemantics) -> LLVMAtomicOrdering {

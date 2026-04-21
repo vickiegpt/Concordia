@@ -1,5 +1,5 @@
-use crate::types::*;
 use crate::encoding;
+use crate::types::*;
 
 pub fn validate_roundtrip(inst: &SassInst, sm_version: u32) -> Result<(), NvSassError> {
     let encoded = encoding::encode(inst, sm_version)?;
@@ -11,7 +11,10 @@ pub fn validate_roundtrip(inst: &SassInst, sm_version: u32) -> Result<(), NvSass
     if decoded_cc != inst.control {
         return Err(NvSassError::EncodingError {
             opcode: inst.opcode.mnemonic.to_string(),
-            msg: format!("control code mismatch: encoded {:?}, decoded {:?}", inst.control, decoded_cc),
+            msg: format!(
+                "control code mismatch: encoded {:?}, decoded {:?}",
+                inst.control, decoded_cc
+            ),
         });
     }
 
@@ -21,7 +24,10 @@ pub fn validate_roundtrip(inst: &SassInst, sm_version: u32) -> Result<(), NvSass
     if opcode_bits != expected_bits {
         return Err(NvSassError::EncodingError {
             opcode: inst.opcode.mnemonic.to_string(),
-            msg: format!("opcode bits mismatch: got 0x{:03x}, expected 0x{:03x}", opcode_bits, expected_bits),
+            msg: format!(
+                "opcode bits mismatch: got 0x{:03x}, expected 0x{:03x}",
+                opcode_bits, expected_bits
+            ),
         });
     }
 
@@ -34,7 +40,10 @@ pub fn validate_roundtrip(inst: &SassInst, sm_version: u32) -> Result<(), NvSass
                 if dst_bits != expected_dst {
                     return Err(NvSassError::EncodingError {
                         opcode: inst.opcode.mnemonic.to_string(),
-                        msg: format!("dst register mismatch: got {}, expected {}", dst_bits, expected_dst),
+                        msg: format!(
+                            "dst register mismatch: got {}, expected {}",
+                            dst_bits, expected_dst
+                        ),
                     });
                 }
             }
@@ -55,7 +64,8 @@ pub fn validate_roundtrip(inst: &SassInst, sm_version: u32) -> Result<(), NvSass
             }
         }
         None => {
-            if pred_reg != 7 { // PT = 7
+            if pred_reg != 7 {
+                // PT = 7
                 return Err(NvSassError::EncodingError {
                     opcode: inst.opcode.mnemonic.to_string(),
                     msg: format!("expected PT (7), got {}", pred_reg),

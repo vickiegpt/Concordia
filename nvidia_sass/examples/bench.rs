@@ -12,12 +12,12 @@
 // Usage:
 //   cargo run -p nvidia_sass --example bench
 
-use nvidia_sass::types::*;
+use nvidia_sass::cubin_builder;
+use nvidia_sass::encoding;
 use nvidia_sass::isel;
 use nvidia_sass::regalloc;
 use nvidia_sass::scheduler;
-use nvidia_sass::encoding;
-use nvidia_sass::cubin_builder;
+use nvidia_sass::types::*;
 use std::time::Instant;
 
 fn main() {
@@ -27,8 +27,11 @@ fn main() {
 
     // Build a representative vector_add kernel (virtual regs)
     let virtual_insts = build_vector_add_virtual();
-    println!("Kernel: vector_add ({} instructions, {} iterations per bench)\n",
-        virtual_insts.len(), iterations);
+    println!(
+        "Kernel: vector_add ({} instructions, {} iterations per bench)\n",
+        virtual_insts.len(),
+        iterations
+    );
 
     // --- Bench 1: Instruction selection ---
     bench_isel(iterations);
@@ -82,7 +85,10 @@ fn build_scaled_kernel(n: usize) -> Vec<SassInst> {
         let dst = (202 + i as u16).min(254) as u8;
         let src1 = (201 + i as u16).min(254) as u8;
         insts.push(SassInst {
-            opcode: Opcode { mnemonic: "FADD", class: OpcodeClass::Alu3 },
+            opcode: Opcode {
+                mnemonic: "FADD",
+                class: OpcodeClass::Alu3,
+            },
             dst: Some(Reg::R(dst)),
             srcs: vec![Operand::Reg(Reg::R(src1)), Operand::Reg(Reg::R(200))],
             pred: None,
@@ -103,7 +109,8 @@ fn bench_isel(iterations: usize) {
         let _ = build_vector_add_virtual();
     }
     let elapsed = start.elapsed();
-    println!("[1] Instruction selection (vector_add, {}x): {:.2}ms total, {:.2}us/iter",
+    println!(
+        "[1] Instruction selection (vector_add, {}x): {:.2}ms total, {:.2}us/iter",
         iterations,
         elapsed.as_secs_f64() * 1000.0,
         elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64,
@@ -117,7 +124,8 @@ fn bench_regalloc(virtual_insts: &[SassInst], iterations: usize) -> (Vec<SassIns
         result = regalloc::allocate(virtual_insts).unwrap();
     }
     let elapsed = start.elapsed();
-    println!("[2] Register allocation ({}x): {:.2}ms total, {:.2}us/iter, {} regs used",
+    println!(
+        "[2] Register allocation ({}x): {:.2}ms total, {:.2}us/iter, {} regs used",
         iterations,
         elapsed.as_secs_f64() * 1000.0,
         elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64,
@@ -133,7 +141,8 @@ fn bench_scheduler(physical_insts: &[SassInst], iterations: usize) -> Vec<SassIn
         result = scheduler::schedule(physical_insts);
     }
     let elapsed = start.elapsed();
-    println!("[3] Instruction scheduling ({}x): {:.2}ms total, {:.2}us/iter",
+    println!(
+        "[3] Instruction scheduling ({}x): {:.2}ms total, {:.2}us/iter",
         iterations,
         elapsed.as_secs_f64() * 1000.0,
         elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64,
@@ -150,7 +159,8 @@ fn bench_encoding(scheduled_insts: &[SassInst], iterations: usize) {
     }
     let elapsed = start.elapsed();
     let total_insts = scheduled_insts.len() * iterations;
-    println!("[4] Instruction encoding ({}x, {} insts total): {:.2}ms total, {:.0}ns/inst",
+    println!(
+        "[4] Instruction encoding ({}x, {} insts total): {:.2}ms total, {:.0}ns/inst",
         iterations,
         total_insts,
         elapsed.as_secs_f64() * 1000.0,
@@ -186,7 +196,8 @@ fn bench_cubin_generation(scheduled_insts: &[SassInst], num_regs: u32, iteration
         cubin_size = cubin.len();
     }
     let elapsed = start.elapsed();
-    println!("[5] CUBIN ELF generation ({}x): {:.2}ms total, {:.2}us/iter, {} bytes output",
+    println!(
+        "[5] CUBIN ELF generation ({}x): {:.2}ms total, {:.2}us/iter, {} bytes output",
         iterations,
         elapsed.as_secs_f64() * 1000.0,
         elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64,
@@ -228,7 +239,8 @@ fn bench_full_pipeline(iterations: usize) {
         cubin_size = cubin.len();
     }
     let elapsed = start.elapsed();
-    println!("[6] Full pipeline isel→regalloc→sched→cubin ({}x): {:.2}ms total, {:.2}us/iter",
+    println!(
+        "[6] Full pipeline isel→regalloc→sched→cubin ({}x): {:.2}ms total, {:.2}us/iter",
         iterations,
         elapsed.as_secs_f64() * 1000.0,
         elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64,
@@ -260,7 +272,8 @@ fn bench_scaling(n_insts: usize, iterations: usize) {
         let _ = cubin_builder::build_cubin_from_module(&module).unwrap();
     }
     let elapsed = start.elapsed();
-    println!("  {} instructions ({}x): {:.2}ms total, {:.2}us/iter, {:.0}ns/inst",
+    println!(
+        "  {} instructions ({}x): {:.2}ms total, {:.2}us/iter, {:.0}ns/inst",
         n_insts,
         iterations,
         elapsed.as_secs_f64() * 1000.0,

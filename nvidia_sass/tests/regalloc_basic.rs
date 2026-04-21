@@ -34,10 +34,7 @@ fn make_virtual_sequence() -> Vec<SassInst> {
                 class: OpcodeClass::Alu3,
             },
             dst: Some(Reg::R(202)),
-            srcs: vec![
-                Operand::Reg(Reg::R(201)),
-                Operand::Reg(Reg::R(201)),
-            ],
+            srcs: vec![Operand::Reg(Reg::R(201)), Operand::Reg(Reg::R(201))],
             pred: None,
             modifiers: vec![],
             control: ControlCodes::default(),
@@ -106,10 +103,6 @@ fn test_regalloc_preserves_instruction_count() {
 fn test_regalloc_reports_register_count() {
     let virtual_insts = make_virtual_sequence();
     let (_, num_regs) = regalloc::allocate(&virtual_insts).unwrap();
-    assert!(
-        num_regs >= 3,
-        "need at least 3 registers, got {}",
-        num_regs
-    );
+    assert!(num_regs >= 3, "need at least 3 registers, got {}", num_regs);
     assert!(num_regs <= 255);
 }

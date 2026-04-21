@@ -224,7 +224,12 @@ fn build_constant0_for_kernel(kernel: &SassKernel) -> Vec<u8> {
     // The constant0 section holds kernel parameters.
     // Layout: parameter data at their declared offsets.
     // We allocate const_mem_bytes or at least enough to hold all params.
-    let min_size = kernel.params.iter().map(|(_, off, sz)| (off + sz) as usize).max().unwrap_or(0);
+    let min_size = kernel
+        .params
+        .iter()
+        .map(|(_, off, sz)| (off + sz) as usize)
+        .max()
+        .unwrap_or(0);
     let size = std::cmp::max(kernel.const_mem_bytes as usize, min_size);
     if size == 0 {
         // Even if no params, provide a minimal constant0 section (NVIDIA does 160 bytes min).
@@ -482,8 +487,8 @@ pub fn build_cubin_from_module(module: &SassModule) -> Result<Vec<u8>, NvSassErr
         sh_addr: 0,
         sh_offset: symtab_offset,
         sh_size: symtab_size,
-        sh_link: strtab_idx as u32,    // link to .strtab
-        sh_info: first_global,          // index of first global symbol
+        sh_link: strtab_idx as u32, // link to .strtab
+        sh_info: first_global,      // index of first global symbol
         sh_addralign: 8,
         sh_entsize: ELF64_SYM_SIZE as u64,
     });

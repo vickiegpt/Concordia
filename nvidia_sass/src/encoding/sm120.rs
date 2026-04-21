@@ -499,7 +499,10 @@ mod tests {
     #[test]
     fn test_nop_encoding() {
         let inst = SassInst {
-            opcode: Opcode { mnemonic: "NOP", class: OpcodeClass::Nop },
+            opcode: Opcode {
+                mnemonic: "NOP",
+                class: OpcodeClass::Nop,
+            },
             dst: None,
             srcs: vec![],
             pred: None,
@@ -519,12 +522,15 @@ mod tests {
     fn test_predicate_encoding_pt() {
         let bits = encode_predicate(&None);
         assert_eq!((bits >> 16) & 0x7, 7); // PT
-        assert_eq!((bits >> 19) & 1, 0);   // not negated
+        assert_eq!((bits >> 19) & 1, 0); // not negated
     }
 
     #[test]
     fn test_predicate_encoding_p2() {
-        let p = Some(Predicate { reg: Reg::P(2), negated: false });
+        let p = Some(Predicate {
+            reg: Reg::P(2),
+            negated: false,
+        });
         let bits = encode_predicate(&p);
         assert_eq!((bits >> 16) & 0x7, 2);
         assert_eq!((bits >> 19) & 1, 0);
@@ -532,7 +538,10 @@ mod tests {
 
     #[test]
     fn test_predicate_encoding_negated() {
-        let p = Some(Predicate { reg: Reg::P(3), negated: true });
+        let p = Some(Predicate {
+            reg: Reg::P(3),
+            negated: true,
+        });
         let bits = encode_predicate(&p);
         assert_eq!((bits >> 16) & 0x7, 3);
         assert_eq!((bits >> 19) & 1, 1);

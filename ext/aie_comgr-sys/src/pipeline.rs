@@ -12,12 +12,9 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use crate::{find_toolchain_binary, AieCompileConfig, AieComgrError};
+use crate::{find_toolchain_binary, AieComgrError, AieCompileConfig};
 
-pub(crate) fn run(
-    tosa_mlir: &str,
-    config: &AieCompileConfig,
-) -> Result<Vec<u8>, AieComgrError> {
+pub(crate) fn run(tosa_mlir: &str, config: &AieCompileConfig) -> Result<Vec<u8>, AieComgrError> {
     if tosa_mlir.trim().is_empty() {
         return Err(AieComgrError::InvalidInput("empty MLIR input".to_string()));
     }

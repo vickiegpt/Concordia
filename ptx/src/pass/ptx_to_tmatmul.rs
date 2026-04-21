@@ -281,7 +281,8 @@ impl PtxToTMatmulCompiler {
         for (idx, var) in function.func_directive.input_arguments.iter().enumerate() {
             let param_name = var.name.to_string();
             self.param_name_to_index.insert(param_name.clone(), idx);
-            self.codegen.add_comment(&format!("BIND PARAM_{} {}", idx, param_name));
+            self.codegen
+                .add_comment(&format!("BIND PARAM_{} {}", idx, param_name));
         }
         if !function.func_directive.input_arguments.is_empty() {
             self.codegen.add_comment("END_BINDINGS");
@@ -331,7 +332,9 @@ impl PtxToTMatmulCompiler {
 
         match inst {
             // Arithmetic instructions - only emit for float types (skip integer index/address math)
-            ast::Instruction::Add { data, arguments, .. } => {
+            ast::Instruction::Add {
+                data, arguments, ..
+            } => {
                 let dst_name = Self::operand_to_string(&arguments.dst);
                 let src1_name = Self::operand_to_string(&arguments.src1);
                 let src2_name = Self::operand_to_string(&arguments.src2);
@@ -346,56 +349,78 @@ impl PtxToTMatmulCompiler {
                     if let Some(mem_region) = self.ptx_to_memory.get(ptr_name).cloned() {
                         self.ptx_to_memory.insert(dst_name.clone(), mem_region);
                     }
-                    self.codegen.add_comment(&format!("PTX add (pointer arithmetic, propagating {})", ptr_name));
-                    let src_ssa = self.map_ptx_to_ssa(if src1_is_ptr { &src1_name } else { &src2_name });
+                    self.codegen.add_comment(&format!(
+                        "PTX add (pointer arithmetic, propagating {})",
+                        ptr_name
+                    ));
+                    let src_ssa =
+                        self.map_ptx_to_ssa(if src1_is_ptr { &src1_name } else { &src2_name });
                     self.ptx_to_ssa.insert(dst_name, src_ssa);
                 } else if matches!(data, ast::ArithDetails::Float(_)) {
                     // Float data add - emit tmatmul instruction
                     let dst_ssa = self.map_ptx_to_ssa(&dst_name);
                     let src1_ssa = self.handle_operand_with_immediate(&arguments.src1)?;
                     let src2_ssa = self.handle_operand_with_immediate(&arguments.src2)?;
-                    self.codegen
-                        .emit_operation("tmatmul.add", &[&src1_ssa, &src2_ssa], &[&dst_ssa])?;
+                    self.codegen.emit_operation(
+                        "tmatmul.add",
+                        &[&src1_ssa, &src2_ssa],
+                        &[&dst_ssa],
+                    )?;
                 } else {
                     // Integer add (index/address computation) - just track SSA, don't emit
                     let dst_ssa = self.map_ptx_to_ssa(&dst_name);
                 }
             }
-            ast::Instruction::Sub { data, arguments, .. } => {
+            ast::Instruction::Sub {
+                data, arguments, ..
+            } => {
                 if matches!(data, ast::ArithDetails::Float(_)) {
                     let dst_name = Self::operand_to_string(&arguments.dst);
                     let dst_ssa = self.map_ptx_to_ssa(&dst_name);
                     let src1_ssa = self.handle_operand_with_immediate(&arguments.src1)?;
                     let src2_ssa = self.handle_operand_with_immediate(&arguments.src2)?;
-                    self.codegen
-                        .emit_operation("tmatmul.sub", &[&src1_ssa, &src2_ssa], &[&dst_ssa])?;
+                    self.codegen.emit_operation(
+                        "tmatmul.sub",
+                        &[&src1_ssa, &src2_ssa],
+                        &[&dst_ssa],
+                    )?;
                 } else {
                     let dst_name = Self::operand_to_string(&arguments.dst);
                     let _dst_ssa = self.map_ptx_to_ssa(&dst_name);
                 }
             }
-            ast::Instruction::Mul { data, arguments, .. } => {
+            ast::Instruction::Mul {
+                data, arguments, ..
+            } => {
                 let is_float = matches!(data, ast::MulDetails::Float(_));
                 if is_float {
                     let dst_name = Self::operand_to_string(&arguments.dst);
                     let dst_ssa = self.map_ptx_to_ssa(&dst_name);
                     let src1_ssa = self.handle_operand_with_immediate(&arguments.src1)?;
                     let src2_ssa = self.handle_operand_with_immediate(&arguments.src2)?;
-                    self.codegen
-                        .emit_operation("tmatmul.mul", &[&src1_ssa, &src2_ssa], &[&dst_ssa])?;
+                    self.codegen.emit_operation(
+                        "tmatmul.mul",
+                        &[&src1_ssa, &src2_ssa],
+                        &[&dst_ssa],
+                    )?;
                 } else {
                     let dst_name = Self::operand_to_string(&arguments.dst);
                     let _dst_ssa = self.map_ptx_to_ssa(&dst_name);
                 }
             }
-            ast::Instruction::Div { data, arguments, .. } => {
+            ast::Instruction::Div {
+                data, arguments, ..
+            } => {
                 if matches!(data, ast::DivDetails::Float(_)) {
                     let dst_name = Self::operand_to_string(&arguments.dst);
                     let dst_ssa = self.map_ptx_to_ssa(&dst_name);
                     let src1_ssa = self.handle_operand_with_immediate(&arguments.src1)?;
                     let src2_ssa = self.handle_operand_with_immediate(&arguments.src2)?;
-                    self.codegen
-                        .emit_operation("tmatmul.div", &[&src1_ssa, &src2_ssa], &[&dst_ssa])?;
+                    self.codegen.emit_operation(
+                        "tmatmul.div",
+                        &[&src1_ssa, &src2_ssa],
+                        &[&dst_ssa],
+                    )?;
                 } else {
                     let dst_name = Self::operand_to_string(&arguments.dst);
                     let _dst_ssa = self.map_ptx_to_ssa(&dst_name);
@@ -403,7 +428,9 @@ impl PtxToTMatmulCompiler {
             }
 
             // Fused multiply-add - only emit for float
-            ast::Instruction::Mad { data, arguments, .. } => {
+            ast::Instruction::Mad {
+                data, arguments, ..
+            } => {
                 let is_float = matches!(data, ast::MadDetails::Float(_));
                 if is_float {
                     let dst_name = Self::operand_to_string(&arguments.dst);
@@ -417,8 +444,11 @@ impl PtxToTMatmulCompiler {
                         &[&src1_ssa, &src2_ssa],
                         &[&temp_ssa],
                     )?;
-                    self.codegen
-                        .emit_operation("tmatmul.add", &[&temp_ssa, &src3_ssa], &[&dst_ssa])?;
+                    self.codegen.emit_operation(
+                        "tmatmul.add",
+                        &[&temp_ssa, &src3_ssa],
+                        &[&dst_ssa],
+                    )?;
                 } else {
                     let dst_name = Self::operand_to_string(&arguments.dst);
                     let _dst_ssa = self.map_ptx_to_ssa(&dst_name);
@@ -457,13 +487,18 @@ impl PtxToTMatmulCompiler {
                 if let Some(&param_idx) = self.param_name_to_index.get(&base_name) {
                     // This is loading a kernel parameter address - just record the binding
                     let param_ref = format!("PARAM_{}", param_idx);
-                    self.ptx_to_memory.insert(dst_name.clone(), param_ref.clone());
-                    self.codegen.add_comment(&format!("ld.param {} = {} (PARAM_{})", dst_name, base_name, param_idx));
+                    self.ptx_to_memory
+                        .insert(dst_name.clone(), param_ref.clone());
+                    self.codegen.add_comment(&format!(
+                        "ld.param {} = {} (PARAM_{})",
+                        dst_name, base_name, param_idx
+                    ));
                     // Map the SSA value too so it can be used in later instructions
                     let _dst_ssa = self.map_ptx_to_ssa(&dst_name);
                 } else {
                     // This is a global/generic memory load - resolve base to PARAM_N
-                    let resolved_mem = if let Some(mem_region) = self.ptx_to_memory.get(&base_name) {
+                    let resolved_mem = if let Some(mem_region) = self.ptx_to_memory.get(&base_name)
+                    {
                         mem_region.clone()
                     } else {
                         // Fallback: check named mappings
@@ -507,7 +542,9 @@ impl PtxToTMatmulCompiler {
             }
 
             // Move operations
-            ast::Instruction::Mov { data, arguments, .. } => {
+            ast::Instruction::Mov {
+                data, arguments, ..
+            } => {
                 let dst_name = Self::operand_to_string(&arguments.dst);
                 let src_name = Self::operand_to_string(&arguments.src);
 
@@ -520,7 +557,11 @@ impl PtxToTMatmulCompiler {
                     if is_float_type {
                         // Float immediate - emit load (e.g., mov.f32 %f1, 0.0)
                         let dst_ssa = self.map_ptx_to_ssa(&dst_name);
-                        self.codegen.emit_operation("tmatmul.ldv", &[&format!("CONST_{}", src_name)], &[&dst_ssa])?;
+                        self.codegen.emit_operation(
+                            "tmatmul.ldv",
+                            &[&format!("CONST_{}", src_name)],
+                            &[&dst_ssa],
+                        )?;
                     } else {
                         // Integer immediate (thread index, constant) - just track SSA, no emission
                         let _dst_ssa = self.map_ptx_to_ssa(&dst_name);
@@ -548,7 +589,8 @@ impl PtxToTMatmulCompiler {
                 let dst_ssa = self.map_ptx_to_ssa(&dst_name);
                 let src_ssa = self.map_ptx_to_ssa(&src_name);
                 // Emit as a pass-through for now (abs not directly supported)
-                self.codegen.add_comment(&format!("PTX abs: {} = |{}|", dst_name, src_name));
+                self.codegen
+                    .add_comment(&format!("PTX abs: {} = |{}|", dst_name, src_name));
                 // Copy src to dst (approximation - real abs would need special handling)
                 self.ptx_to_ssa.insert(dst_name, src_ssa);
             }
@@ -557,10 +599,12 @@ impl PtxToTMatmulCompiler {
                 let src_name = Self::operand_to_string(&arguments.src);
                 let dst_ssa = self.map_ptx_to_ssa(&dst_name);
                 let src_ssa = self.map_ptx_to_ssa(&src_name);
-                self.codegen.add_comment(&format!("PTX neg: {} = -{}", dst_name, src_name));
+                self.codegen
+                    .add_comment(&format!("PTX neg: {} = -{}", dst_name, src_name));
                 // For tmatmul, implement as 0 - src
                 let zero_ssa = self.new_ssa();
-                self.codegen.emit_operation("tmatmul.ldv", &["CONST_0"], &[&zero_ssa])?;
+                self.codegen
+                    .emit_operation("tmatmul.ldv", &["CONST_0"], &[&zero_ssa])?;
                 self.codegen
                     .emit_operation("tmatmul.sub", &[&zero_ssa, &src_ssa], &[&dst_ssa])?;
             }
@@ -569,7 +613,10 @@ impl PtxToTMatmulCompiler {
                 let src_name = Self::operand_to_string(&arguments.src);
                 let dst_ssa = self.map_ptx_to_ssa(&dst_name);
                 let src_ssa = self.map_ptx_to_ssa(&src_name);
-                self.codegen.add_comment(&format!("PTX not: {} = ~{} (passthrough)", dst_name, src_name));
+                self.codegen.add_comment(&format!(
+                    "PTX not: {} = ~{} (passthrough)",
+                    dst_name, src_name
+                ));
                 self.ptx_to_ssa.insert(dst_name, src_ssa);
             }
 
@@ -620,7 +667,8 @@ impl PtxToTMatmulCompiler {
             ast::Instruction::Setp { arguments, .. } => {
                 let dst_name = Self::operand_to_string(&arguments.dst1);
                 let dst_ssa = self.map_ptx_to_ssa(&dst_name);
-                self.codegen.add_comment(&format!("PTX setp (predicate set)"));
+                self.codegen
+                    .add_comment(&format!("PTX setp (predicate set)"));
                 // Predicates don't need actual values for control flow in tmatmul
             }
 
@@ -647,7 +695,8 @@ impl PtxToTMatmulCompiler {
                 let dst_name = Self::operand_to_string(&arguments.dst);
                 let src_name = Self::operand_to_string(&arguments.src);
                 let src_ssa = self.map_ptx_to_ssa(&src_name);
-                self.codegen.add_comment(&format!("PTX cvt: {} = convert({})", dst_name, src_name));
+                self.codegen
+                    .add_comment(&format!("PTX cvt: {} = convert({})", dst_name, src_name));
                 // Pass through for now
                 self.ptx_to_ssa.insert(dst_name.clone(), src_ssa);
                 // Propagate memory bindings through type conversions
@@ -666,16 +715,23 @@ impl PtxToTMatmulCompiler {
                 // Check if predicate is a constant
                 let result_ssa = if pred_str == "0" {
                     // Predicate is false, select src2
-                    self.codegen.add_comment(&format!("PTX selp: pred=0, selecting second operand"));
+                    self.codegen
+                        .add_comment(&format!("PTX selp: pred=0, selecting second operand"));
                     src2_ssa
                 } else if pred_str.parse::<i64>().is_ok() {
                     // Predicate is a non-zero constant, select src1
-                    self.codegen.add_comment(&format!("PTX selp: pred={}, selecting first operand", pred_str));
+                    self.codegen.add_comment(&format!(
+                        "PTX selp: pred={}, selecting first operand",
+                        pred_str
+                    ));
                     src1_ssa
                 } else {
                     // Predicate is a register - for single-thread, check if it's mapped to a known value
                     // Default to src1 (true path) for single-threaded simulation
-                    self.codegen.add_comment(&format!("PTX selp: pred={} (runtime), defaulting to first operand", pred_str));
+                    self.codegen.add_comment(&format!(
+                        "PTX selp: pred={} (runtime), defaulting to first operand",
+                        pred_str
+                    ));
                     src1_ssa
                 };
                 self.ptx_to_ssa.insert(dst_name, result_ssa);
@@ -694,7 +750,9 @@ impl PtxToTMatmulCompiler {
             // ============================================================
             // ATOMIC OPERATIONS - Emulated as load-modify-store sequences
             // ============================================================
-            ast::Instruction::Atom { data, arguments, .. } => {
+            ast::Instruction::Atom {
+                data, arguments, ..
+            } => {
                 let dst_name = Self::operand_to_string(&arguments.dst);
                 let addr_name = Self::operand_to_string(&arguments.src1);
 
@@ -707,16 +765,22 @@ impl PtxToTMatmulCompiler {
                 let old_ssa = self.new_ssa();
                 let new_ssa = self.new_ssa();
 
-                self.codegen.add_comment(&format!("PTX atom: {} (emulated)", dst_name));
+                self.codegen
+                    .add_comment(&format!("PTX atom: {} (emulated)", dst_name));
 
                 // Load old value from address
-                self.codegen.emit_operation("tmatmul.ldv", &[&addr_name], &[&old_ssa])?;
+                self.codegen
+                    .emit_operation("tmatmul.ldv", &[&addr_name], &[&old_ssa])?;
 
                 // Perform the atomic operation based on type
                 let op_name = format!("{:?}", data.op).to_lowercase();
                 match op_name.as_str() {
                     "add" => {
-                        self.codegen.emit_operation("tmatmul.add", &[&old_ssa, &val_ssa], &[&new_ssa])?;
+                        self.codegen.emit_operation(
+                            "tmatmul.add",
+                            &[&old_ssa, &val_ssa],
+                            &[&new_ssa],
+                        )?;
                     }
                     "min" => {
                         // Emulate min: use old value (approximation)
@@ -730,14 +794,24 @@ impl PtxToTMatmulCompiler {
                     "inc" => {
                         // Increment: old + 1
                         let one_ssa = self.new_ssa();
-                        self.codegen.emit_operation("tmatmul.ldv", &["CONST_1"], &[&one_ssa])?;
-                        self.codegen.emit_operation("tmatmul.add", &[&old_ssa, &one_ssa], &[&new_ssa])?;
+                        self.codegen
+                            .emit_operation("tmatmul.ldv", &["CONST_1"], &[&one_ssa])?;
+                        self.codegen.emit_operation(
+                            "tmatmul.add",
+                            &[&old_ssa, &one_ssa],
+                            &[&new_ssa],
+                        )?;
                     }
                     "dec" => {
                         // Decrement: old - 1
                         let one_ssa = self.new_ssa();
-                        self.codegen.emit_operation("tmatmul.ldv", &["CONST_1"], &[&one_ssa])?;
-                        self.codegen.emit_operation("tmatmul.sub", &[&old_ssa, &one_ssa], &[&new_ssa])?;
+                        self.codegen
+                            .emit_operation("tmatmul.ldv", &["CONST_1"], &[&one_ssa])?;
+                        self.codegen.emit_operation(
+                            "tmatmul.sub",
+                            &[&old_ssa, &one_ssa],
+                            &[&new_ssa],
+                        )?;
                     }
                     "and" => {
                         self.codegen.add_comment("atom.and emulated as passthrough");
@@ -756,13 +830,19 @@ impl PtxToTMatmulCompiler {
                         self.ptx_to_ssa.insert(new_ssa.clone(), val_ssa.clone());
                     }
                     _ => {
-                        self.codegen.add_comment(&format!("atom.{} emulated as add", op_name));
-                        self.codegen.emit_operation("tmatmul.add", &[&old_ssa, &val_ssa], &[&new_ssa])?;
+                        self.codegen
+                            .add_comment(&format!("atom.{} emulated as add", op_name));
+                        self.codegen.emit_operation(
+                            "tmatmul.add",
+                            &[&old_ssa, &val_ssa],
+                            &[&new_ssa],
+                        )?;
                     }
                 }
 
                 // Store new value back
-                self.codegen.emit_operation("tmatmul.sv", &[&new_ssa, &addr_name], &[])?;
+                self.codegen
+                    .emit_operation("tmatmul.sv", &[&new_ssa, &addr_name], &[])?;
 
                 // Return old value
                 self.ptx_to_ssa.insert(dst_name, old_ssa);
@@ -777,13 +857,16 @@ impl PtxToTMatmulCompiler {
                 let val_ssa = self.handle_operand_with_immediate(&arguments.src3)?;
                 let old_ssa = self.new_ssa();
 
-                self.codegen.add_comment(&format!("PTX atom.cas: {} (emulated)", dst_name));
+                self.codegen
+                    .add_comment(&format!("PTX atom.cas: {} (emulated)", dst_name));
 
                 // Load old value
-                self.codegen.emit_operation("tmatmul.ldv", &[&addr_name], &[&old_ssa])?;
+                self.codegen
+                    .emit_operation("tmatmul.ldv", &[&addr_name], &[&old_ssa])?;
 
                 // For single-threaded: if old == cmp, store val (assume comparison succeeds)
-                self.codegen.emit_operation("tmatmul.sv", &[&val_ssa, &addr_name], &[])?;
+                self.codegen
+                    .emit_operation("tmatmul.sv", &[&val_ssa, &addr_name], &[])?;
 
                 // Return old value
                 self.ptx_to_ssa.insert(dst_name, old_ssa);
@@ -793,7 +876,8 @@ impl PtxToTMatmulCompiler {
             // THREAD SYNCHRONIZATION - No-ops for single-threaded tmatmul
             // ============================================================
             ast::Instruction::Bar { .. } => {
-                self.codegen.add_comment("PTX: bar.sync (no-op for single-threaded)");
+                self.codegen
+                    .add_comment("PTX: bar.sync (no-op for single-threaded)");
             }
 
             ast::Instruction::BarRed { arguments, .. } => {
@@ -802,16 +886,19 @@ impl PtxToTMatmulCompiler {
                 let pred_name = Self::operand_to_string(&arguments.src_predicate);
                 let pred_ssa = self.map_ptx_to_ssa(&pred_name);
 
-                self.codegen.add_comment("PTX: bar.red (single-thread: result = input predicate)");
+                self.codegen
+                    .add_comment("PTX: bar.red (single-thread: result = input predicate)");
                 self.ptx_to_ssa.insert(dst_name, pred_ssa);
             }
 
             ast::Instruction::BarWarp { .. } => {
-                self.codegen.add_comment("PTX: bar.warp (no-op for single-threaded)");
+                self.codegen
+                    .add_comment("PTX: bar.warp (no-op for single-threaded)");
             }
 
             ast::Instruction::Membar { .. } => {
-                self.codegen.add_comment("PTX: membar (no-op for single-threaded)");
+                self.codegen
+                    .add_comment("PTX: membar (no-op for single-threaded)");
             }
 
             // ============================================================
@@ -823,8 +910,10 @@ impl PtxToTMatmulCompiler {
                 let dst_name = Self::operand_to_string(&arguments.dst);
                 let dst_ssa = self.map_ptx_to_ssa(&dst_name);
 
-                self.codegen.add_comment("PTX: activemask (single-thread: 0x1)");
-                self.codegen.emit_operation("tmatmul.ldv", &["CONST_1"], &[&dst_ssa])?;
+                self.codegen
+                    .add_comment("PTX: activemask (single-thread: 0x1)");
+                self.codegen
+                    .emit_operation("tmatmul.ldv", &["CONST_1"], &[&dst_ssa])?;
             }
 
             // Vote instructions - warp-level collective operations
@@ -833,7 +922,8 @@ impl PtxToTMatmulCompiler {
                 let src_name = Self::operand_to_string(&arguments.src1);
                 let src_ssa = self.map_ptx_to_ssa(&src_name);
 
-                self.codegen.add_comment("PTX: vote (single-thread: result = input)");
+                self.codegen
+                    .add_comment("PTX: vote (single-thread: result = input)");
                 self.ptx_to_ssa.insert(dst_name, src_ssa);
             }
 
@@ -851,10 +941,23 @@ impl PtxToTMatmulCompiler {
                 let quotient_ssa = self.new_ssa();
                 let product_ssa = self.new_ssa();
 
-                self.codegen.add_comment("PTX: rem (emulated as a - (a/b)*b)");
-                self.codegen.emit_operation("tmatmul.div", &[&src1_ssa, &src2_ssa], &[&quotient_ssa])?;
-                self.codegen.emit_operation("tmatmul.mul", &[&quotient_ssa, &src2_ssa], &[&product_ssa])?;
-                self.codegen.emit_operation("tmatmul.sub", &[&src1_ssa, &product_ssa], &[&dst_ssa])?;
+                self.codegen
+                    .add_comment("PTX: rem (emulated as a - (a/b)*b)");
+                self.codegen.emit_operation(
+                    "tmatmul.div",
+                    &[&src1_ssa, &src2_ssa],
+                    &[&quotient_ssa],
+                )?;
+                self.codegen.emit_operation(
+                    "tmatmul.mul",
+                    &[&quotient_ssa, &src2_ssa],
+                    &[&product_ssa],
+                )?;
+                self.codegen.emit_operation(
+                    "tmatmul.sub",
+                    &[&src1_ssa, &product_ssa],
+                    &[&dst_ssa],
+                )?;
             }
 
             ast::Instruction::Rcp { arguments, .. } => {
@@ -866,8 +969,10 @@ impl PtxToTMatmulCompiler {
 
                 let one_ssa = self.new_ssa();
                 self.codegen.add_comment("PTX: rcp (1/x)");
-                self.codegen.emit_operation("tmatmul.ldv", &["CONST_1"], &[&one_ssa])?;
-                self.codegen.emit_operation("tmatmul.div", &[&one_ssa, &src_ssa], &[&dst_ssa])?;
+                self.codegen
+                    .emit_operation("tmatmul.ldv", &["CONST_1"], &[&one_ssa])?;
+                self.codegen
+                    .emit_operation("tmatmul.div", &[&one_ssa, &src_ssa], &[&dst_ssa])?;
             }
 
             ast::Instruction::Rsqrt { arguments, .. } => {
@@ -877,7 +982,8 @@ impl PtxToTMatmulCompiler {
                 let src_ssa = self.map_ptx_to_ssa(&src_name);
                 let dst_ssa = self.map_ptx_to_ssa(&dst_name);
 
-                self.codegen.add_comment("PTX: rsqrt (passthrough - needs sqrt support)");
+                self.codegen
+                    .add_comment("PTX: rsqrt (passthrough - needs sqrt support)");
                 self.ptx_to_ssa.insert(dst_name, src_ssa);
             }
 
@@ -1011,13 +1117,17 @@ impl PtxToTMatmulCompiler {
                 let src_to_name = Self::operand_to_string(&arguments.src_to);
 
                 let src_ssa = self.new_ssa();
-                self.codegen.add_comment("PTX: cp.async (emulated as load+store)");
-                self.codegen.emit_operation("tmatmul.ldv", &[&src_from_name], &[&src_ssa])?;
-                self.codegen.emit_operation("tmatmul.sv", &[&src_ssa, &src_to_name], &[])?;
+                self.codegen
+                    .add_comment("PTX: cp.async (emulated as load+store)");
+                self.codegen
+                    .emit_operation("tmatmul.ldv", &[&src_from_name], &[&src_ssa])?;
+                self.codegen
+                    .emit_operation("tmatmul.sv", &[&src_ssa, &src_to_name], &[])?;
             }
 
             ast::Instruction::CpAsyncCommitGroup { .. } => {
-                self.codegen.add_comment("PTX: cp.async.commit_group (no-op)");
+                self.codegen
+                    .add_comment("PTX: cp.async.commit_group (no-op)");
             }
 
             ast::Instruction::CpAsyncWaitGroup { .. } => {
@@ -1037,7 +1147,8 @@ impl PtxToTMatmulCompiler {
 
                 self.codegen.add_comment("PTX: set (comparison to value)");
                 // Set result to 0 or 1 based on comparison - default to 1
-                self.codegen.emit_operation("tmatmul.ldv", &["CONST_1"], &[&dst_ssa])?;
+                self.codegen
+                    .emit_operation("tmatmul.ldv", &["CONST_1"], &[&dst_ssa])?;
             }
 
             // ============================================================
@@ -1053,7 +1164,8 @@ impl PtxToTMatmulCompiler {
 
             // Matrix multiply-accumulate (tensor core)
             ast::Instruction::Mma { .. } => {
-                self.codegen.add_comment("PTX: mma (tensor core - needs special handling)");
+                self.codegen
+                    .add_comment("PTX: mma (tensor core - needs special handling)");
             }
 
             // Other instructions - passthrough with comment
@@ -1091,7 +1203,8 @@ impl PtxToTMatmulCompiler {
             let imm_name = Self::operand_to_string(op);
             let imm_ssa = self.new_ssa();
             // Load immediate as constant (use CONST memory location)
-            self.codegen.add_comment(&format!("Load immediate: {}", imm_name));
+            self.codegen
+                .add_comment(&format!("Load immediate: {}", imm_name));
             self.codegen.emit_operation(
                 "tmatmul.ldv",
                 &[&format!("CONST_{}", imm_name)],
@@ -1578,7 +1691,7 @@ fn sanitize_ptx_source(src: &str) -> String {
                 let parts: Vec<&str> = t.split_whitespace().collect();
                 if parts.len() >= 3 {
                     let instr = parts[0]; // e.g., "redux.sync.add.u32"
-                    // Extract type from instruction (last part after dots)
+                                          // Extract type from instruction (last part after dots)
                     let instr_parts: Vec<&str> = instr.split('.').collect();
                     let type_part = instr_parts.last().unwrap_or(&"u32");
 
@@ -1676,12 +1789,14 @@ fn sanitize_ptx_source(src: &str) -> String {
         // This is a simplification - use first element for all
         if cur.contains(".x") && !cur.contains("%") {
             // Be careful not to replace .x in instruction names or labels
-            let has_member_access = cur.split_whitespace()
-                .any(|word| word.contains(".x") && !word.starts_with('.') && !word.starts_with('%'));
+            let has_member_access = cur.split_whitespace().any(|word| {
+                word.contains(".x") && !word.starts_with('.') && !word.starts_with('%')
+            });
             if has_member_access {
                 // Replace variable.x with just variable
                 let parts: Vec<&str> = cur.split_whitespace().collect();
-                let new_parts: Vec<String> = parts.iter()
+                let new_parts: Vec<String> = parts
+                    .iter()
                     .map(|p| {
                         if p.contains(".x") && !p.starts_with('.') && !p.starts_with('%') {
                             p.replace(".x", "").replace(",", ",")
@@ -1694,11 +1809,13 @@ fn sanitize_ptx_source(src: &str) -> String {
             }
         }
         if cur.contains(".y") && !cur.contains("%") {
-            let has_member_access = cur.split_whitespace()
-                .any(|word| word.contains(".y") && !word.starts_with('.') && !word.starts_with('%'));
+            let has_member_access = cur.split_whitespace().any(|word| {
+                word.contains(".y") && !word.starts_with('.') && !word.starts_with('%')
+            });
             if has_member_access {
                 let parts: Vec<&str> = cur.split_whitespace().collect();
-                let new_parts: Vec<String> = parts.iter()
+                let new_parts: Vec<String> = parts
+                    .iter()
                     .map(|p| {
                         if p.contains(".y") && !p.starts_with('.') && !p.starts_with('%') {
                             p.replace(".y", "")
@@ -1711,11 +1828,13 @@ fn sanitize_ptx_source(src: &str) -> String {
             }
         }
         if cur.contains(".z") && !cur.contains("%") {
-            let has_member_access = cur.split_whitespace()
-                .any(|word| word.contains(".z") && !word.starts_with('.') && !word.starts_with('%'));
+            let has_member_access = cur.split_whitespace().any(|word| {
+                word.contains(".z") && !word.starts_with('.') && !word.starts_with('%')
+            });
             if has_member_access {
                 let parts: Vec<&str> = cur.split_whitespace().collect();
-                let new_parts: Vec<String> = parts.iter()
+                let new_parts: Vec<String> = parts
+                    .iter()
                     .map(|p| {
                         if p.contains(".z") && !p.starts_with('.') && !p.starts_with('%') {
                             p.replace(".z", "")
@@ -1728,11 +1847,13 @@ fn sanitize_ptx_source(src: &str) -> String {
             }
         }
         if cur.contains(".w") && !cur.contains("%") {
-            let has_member_access = cur.split_whitespace()
-                .any(|word| word.contains(".w") && !word.starts_with('.') && !word.starts_with('%'));
+            let has_member_access = cur.split_whitespace().any(|word| {
+                word.contains(".w") && !word.starts_with('.') && !word.starts_with('%')
+            });
             if has_member_access {
                 let parts: Vec<&str> = cur.split_whitespace().collect();
-                let new_parts: Vec<String> = parts.iter()
+                let new_parts: Vec<String> = parts
+                    .iter()
                     .map(|p| {
                         if p.contains(".w") && !p.starts_with('.') && !p.starts_with('%') {
                             p.replace(".w", "")
@@ -1763,7 +1884,8 @@ fn sanitize_ptx_source(src: &str) -> String {
             let t = cur.trim_start();
             if t.starts_with("shf.l.") {
                 // Left funnel shift: use low word shifted left
-                let new_instr = t.replace("shf.l.clamp.", "shl.")
+                let new_instr = t
+                    .replace("shf.l.clamp.", "shl.")
                     .replace("shf.l.wrap.", "shl.");
                 // Need to remove the 'hi' operand (third operand)
                 let parts: Vec<&str> = new_instr.split_whitespace().collect();
@@ -1776,12 +1898,16 @@ fn sanitize_ptx_source(src: &str) -> String {
                         .collect();
                     if operands.len() >= 4 {
                         // shf.l dst, lo, hi, shift -> shl dst, lo, shift
-                        cur = format!("    {} {}, {}, {};", instr, operands[0], operands[1], operands[3]);
+                        cur = format!(
+                            "    {} {}, {}, {};",
+                            instr, operands[0], operands[1], operands[3]
+                        );
                     }
                 }
             } else if t.starts_with("shf.r.") {
                 // Right funnel shift: use high word shifted right
-                let new_instr = t.replace("shf.r.clamp.", "shr.")
+                let new_instr = t
+                    .replace("shf.r.clamp.", "shr.")
                     .replace("shf.r.wrap.", "shr.");
                 let parts: Vec<&str> = new_instr.split_whitespace().collect();
                 if parts.len() >= 2 {
@@ -1793,7 +1919,10 @@ fn sanitize_ptx_source(src: &str) -> String {
                         .collect();
                     if operands.len() >= 4 {
                         // shf.r dst, lo, hi, shift -> shr dst, hi, shift
-                        cur = format!("    {} {}, {}, {};", instr, operands[0], operands[2], operands[3]);
+                        cur = format!(
+                            "    {} {}, {}, {};",
+                            instr, operands[0], operands[2], operands[3]
+                        );
                     }
                 }
             }
@@ -1822,7 +1951,11 @@ fn sanitize_ptx_source(src: &str) -> String {
                     if operands.len() >= 3 {
                         let dst = operands[0];
                         let pred = if operands.len() >= 2 { operands[1] } else { "" };
-                        let src = if operands.len() >= 3 { operands[2] } else { operands[1] };
+                        let src = if operands.len() >= 3 {
+                            operands[2]
+                        } else {
+                            operands[1]
+                        };
 
                         // For single thread, shuffled value equals input
                         cur = format!("    mov.{} {}, {};", type_part, dst, src);
@@ -1857,7 +1990,8 @@ fn sanitize_ptx_source(src: &str) -> String {
             let t = cur.trim_start();
             if t.starts_with("dp4a.") {
                 // Approximate as multiply-add
-                cur = cur.replace("dp4a.u32.u32", "mad.lo.u32")
+                cur = cur
+                    .replace("dp4a.u32.u32", "mad.lo.u32")
                     .replace("dp4a.s32.s32", "mad.lo.s32")
                     .replace("dp4a.u32.s32", "mad.lo.s32")
                     .replace("dp4a.s32.u32", "mad.lo.s32");

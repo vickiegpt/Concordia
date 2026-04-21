@@ -17,17 +17,26 @@ pub struct Opcode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OpcodeClass {
-    Alu3, Alu2, Fma, Load, Store, Branch, Comparison, Sync, Special, Nop,
+    Alu3,
+    Alu2,
+    Fma,
+    Load,
+    Store,
+    Branch,
+    Comparison,
+    Sync,
+    Special,
+    Nop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reg {
-    R(u8),    // General purpose R0-R255
-    RZ,       // Zero register (255)
-    P(u8),    // Predicate P0-P6
-    PT,       // True predicate (7)
-    UR(u8),   // Uniform register
-    UP(u8),   // Uniform predicate
+    R(u8),  // General purpose R0-R255
+    RZ,     // Zero register (255)
+    P(u8),  // Predicate P0-P6
+    PT,     // True predicate (7)
+    UR(u8), // Uniform register
+    UP(u8), // Uniform predicate
 }
 
 impl Reg {
@@ -81,33 +90,91 @@ pub enum Modifier {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DataType {
-    U8, U16, U32, U64, U128,
-    S8, S16, S32, S64,
-    F16, F32, F64,
-    BF16, TF32, FP8E4M3, FP8E5M2,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    S8,
+    S16,
+    S32,
+    S64,
+    F16,
+    F32,
+    F64,
+    BF16,
+    TF32,
+    FP8E4M3,
+    FP8E5M2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MemScope { E, Strong, Cta, Gpu, Sys }
+pub enum MemScope {
+    E,
+    Strong,
+    Cta,
+    Gpu,
+    Sys,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CacheOp { Ef, El, Lu, Eu, Na }
+pub enum CacheOp {
+    Ef,
+    El,
+    Lu,
+    Eu,
+    Na,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CmpOp { Lt, Eq, Le, Gt, Ne, Ge, Ltu, Equ, Leu, Gtu, Neu, Geu }
+pub enum CmpOp {
+    Lt,
+    Eq,
+    Le,
+    Gt,
+    Ne,
+    Ge,
+    Ltu,
+    Equ,
+    Leu,
+    Gtu,
+    Neu,
+    Geu,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MufuOp { Rcp, Rsq, Sin, Cos, Ex2, Lg2, Rcp64h, Rsq64h }
+pub enum MufuOp {
+    Rcp,
+    Rsq,
+    Sin,
+    Cos,
+    Ex2,
+    Lg2,
+    Rcp64h,
+    Rsq64h,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpecialReg {
-    TidX, TidY, TidZ,
-    CtaidX, CtaidY, CtaidZ,
-    NctaidX, NctaidY, NctaidZ,
-    NtidX, NtidY, NtidZ,
-    LaneId, WarpId, SmId,
-    ClockLo, ClockHi,
-    GlobalTimerLo, GlobalTimerHi,
+    TidX,
+    TidY,
+    TidZ,
+    CtaidX,
+    CtaidY,
+    CtaidZ,
+    NctaidX,
+    NctaidY,
+    NctaidZ,
+    NtidX,
+    NtidY,
+    NtidZ,
+    LaneId,
+    WarpId,
+    SmId,
+    ClockLo,
+    ClockHi,
+    GlobalTimerLo,
+    GlobalTimerHi,
 }
 
 impl SpecialReg {

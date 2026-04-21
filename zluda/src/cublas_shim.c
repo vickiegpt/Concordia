@@ -91,18 +91,29 @@ typedef enum {
 } cublasMath_t;
 
 typedef enum {
-    CUDA_R_16F = 2,
     CUDA_R_32F = 0,
     CUDA_R_64F = 1,
+    CUDA_R_16F = 2,
+    CUDA_R_8I = 3,
+    CUDA_R_8U = 8,
     CUDA_R_32I = 10,
     CUDA_R_16BF = 14
 } cudaDataType;
 
+#define HETGPU_PACC_DTYPE_INT8 0
+#define HETGPU_PACC_DTYPE_UINT8 1
+#define HETGPU_PACC_DTYPE_INT32 2
 #define HETGPU_PACC_DTYPE_F32 4
 #define HETGPU_PACC_DTYPE_BF16 5
 
 static int hetgpu_pacc_dtype(cudaDataType type) {
     switch (type) {
+        case CUDA_R_8I:
+            return HETGPU_PACC_DTYPE_INT8;
+        case CUDA_R_8U:
+            return HETGPU_PACC_DTYPE_UINT8;
+        case CUDA_R_32I:
+            return HETGPU_PACC_DTYPE_INT32;
         case CUDA_R_32F:
             return HETGPU_PACC_DTYPE_F32;
         case CUDA_R_16BF:
@@ -197,8 +208,39 @@ static uint16_t host_float_to_bf16(float value) {
     return (uint16_t)((conv.u + rounding_bias) >> 16);
 }
 
+static int8_t host_float_to_i8(float value) {
+    if (value >= 127.0f) return 127;
+    if (value <= -128.0f) return -128;
+    return (int8_t)(value >= 0.0f ? value + 0.5f : value - 0.5f);
+}
+
+static uint8_t host_float_to_u8(float value) {
+    if (value >= 255.0f) return 255;
+    if (value <= 0.0f) return 0;
+    return (uint8_t)(value + 0.5f);
+}
+
+static int32_t host_float_to_i32(float value) {
+    if (value >= 2147483647.0f) return 2147483647;
+    if (value <= -2147483648.0f) return (-2147483647 - 1);
+    return (int32_t)(value >= 0.0f ? value + 0.5f : value - 0.5f);
+}
+
+static float host_read_scale(const void *scale, cublasComputeType_t computeType, float default_value) {
+    if (!scale) {
+        return default_value;
+    }
+    if (computeType == CUBLAS_COMPUTE_32I) {
+        return (float)(*(const int32_t *)scale);
+    }
+    return *(const float *)scale;
+}
+
 static size_t host_dtype_size(cudaDataType type) {
     switch (type) {
+        case CUDA_R_8I: return sizeof(int8_t);
+        case CUDA_R_8U: return sizeof(uint8_t);
+        case CUDA_R_32I: return sizeof(int32_t);
         case CUDA_R_32F: return sizeof(float);
         case CUDA_R_16BF: return sizeof(uint16_t);
         default: return 0;
@@ -213,6 +255,15 @@ static float host_gemm_load(const void *base, cudaDataType type, int row, int co
         c = row;
     }
     size_t idx = (size_t)r + (size_t)c * (size_t)ld;
+    if (type == CUDA_R_8I) {
+        return ((const int8_t *)base)[idx];
+    }
+    if (type == CUDA_R_8U) {
+        return ((const uint8_t *)base)[idx];
+    }
+    if (type == CUDA_R_32I) {
+        return ((const int32_t *)base)[idx];
+    }
     if (type == CUDA_R_32F) {
         return ((const float *)base)[idx];
     }
@@ -223,6 +274,15 @@ static float host_gemm_load(const void *base, cudaDataType type, int row, int co
 }
 
 static float host_gemm_load_c(const void *base, cudaDataType type, size_t idx) {
+    if (type == CUDA_R_8I) {
+        return ((const int8_t *)base)[idx];
+    }
+    if (type == CUDA_R_8U) {
+        return ((const uint8_t *)base)[idx];
+    }
+    if (type == CUDA_R_32I) {
+        return ((const int32_t *)base)[idx];
+    }
     if (type == CUDA_R_32F) {
         return ((const float *)base)[idx];
     }
@@ -233,7 +293,13 @@ static float host_gemm_load_c(const void *base, cudaDataType type, size_t idx) {
 }
 
 static void host_gemm_store_c(void *base, cudaDataType type, size_t idx, float value) {
-    if (type == CUDA_R_32F) {
+    if (type == CUDA_R_8I) {
+        ((int8_t *)base)[idx] = host_float_to_i8(value);
+    } else if (type == CUDA_R_8U) {
+        ((uint8_t *)base)[idx] = host_float_to_u8(value);
+    } else if (type == CUDA_R_32I) {
+        ((int32_t *)base)[idx] = host_float_to_i32(value);
+    } else if (type == CUDA_R_32F) {
         ((float *)base)[idx] = value;
     } else if (type == CUDA_R_16BF) {
         ((uint16_t *)base)[idx] = host_float_to_bf16(value);
@@ -258,7 +324,7 @@ static cublasStatus_t host_gemm_fallback(
         return CUBLAS_STATUS_NOT_SUPPORTED;
     }
     if (host_dtype_size(Atype) == 0 || host_dtype_size(Btype) == 0 || host_dtype_size(Ctype) == 0 ||
-        computeType != CUBLAS_COMPUTE_32F) {
+        (computeType != CUBLAS_COMPUTE_32F && computeType != CUBLAS_COMPUTE_32I)) {
         return CUBLAS_STATUS_NOT_SUPPORTED;
     }
     if (transa != CUBLAS_OP_N && transa != CUBLAS_OP_T && transa != CUBLAS_OP_C) {
@@ -271,8 +337,8 @@ static cublasStatus_t host_gemm_fallback(
         return CUBLAS_STATUS_INVALID_VALUE;
     }
 
-    const float a_scale = *(const float *)alpha;
-    const float b_scale = *(const float *)beta;
+    const float a_scale = host_read_scale(alpha, computeType, 1.0f);
+    const float b_scale = host_read_scale(beta, computeType, 0.0f);
     const size_t a_elem_size = host_dtype_size(Atype);
     const size_t b_elem_size = host_dtype_size(Btype);
     const size_t c_elem_size = host_dtype_size(Ctype);
@@ -416,24 +482,29 @@ static cublasStatus_t submit_pacc_gemm(
     const void *beta,
     void *C, cudaDataType Ctype, int ldc, long long strideC,
     int batchCount, cublasComputeType_t computeType) {
+    float alpha_f32 = host_read_scale(alpha, computeType, 1.0f);
+    float beta_f32 = host_read_scale(beta, computeType, 0.0f);
+    const void *alpha_arg = alpha ? (const void *)&alpha_f32 : NULL;
+    const void *beta_arg = beta ? (const void *)&beta_f32 : NULL;
+
     if (hetgpu_env_is_one("HETGPU_PACC_GEMM_DISABLE_AFTER_FAILURE") &&
         g_pacc_gemm_disabled_after_failure) {
         return host_gemm_fallback(
             name, transa, transb, m, n, k,
-            alpha, A, Atype, lda, strideA,
+            alpha_arg, A, Atype, lda, strideA,
             B, Btype, ldb, strideB,
-            beta, C, Ctype, ldc, strideC,
+            beta_arg, C, Ctype, ldc, strideC,
             batchCount, computeType);
     }
 
     const void *pacc_A = (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(A);
     const void *pacc_B = (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(B);
     void *pacc_C = (void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(C);
-    const void *pacc_alpha = hetgpu_pacc_is_device_ptr(alpha)
-        ? (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(alpha)
+    const void *pacc_alpha = hetgpu_pacc_is_device_ptr(alpha_arg)
+        ? (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(alpha_arg)
         : NULL;
-    const void *pacc_beta = hetgpu_pacc_is_device_ptr(beta)
-        ? (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(beta)
+    const void *pacc_beta = hetgpu_pacc_is_device_ptr(beta_arg)
+        ? (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(beta_arg)
         : NULL;
 
     int rc = -1;
@@ -480,10 +551,10 @@ static cublasStatus_t submit_pacc_gemm(
         if (!coarse_env || strcmp(coarse_env, "0") != 0) {
             rc = hetgpu_pacc_submit_gemm_staged_tiled(
                 (int)transa, (int)transb, m, n, k,
-                alpha,
+                alpha_arg,
                 A, hetgpu_pacc_dtype(Atype), lda, strideA,
                 B, hetgpu_pacc_dtype(Btype), ldb, strideB,
-                beta,
+                beta_arg,
                 C, hetgpu_pacc_dtype(Ctype), ldc, strideC,
                 batchCount, (int)computeType,
                 max_m, max_n, max_k);
@@ -496,9 +567,9 @@ static cublasStatus_t submit_pacc_gemm(
         if (parallel_workers > 1 && row_tiles * col_tiles * batchCount > 1) {
             hetgpu_parallel_gemm_ctx_t ctx = {
                 name, transa, transb, m, n, k,
-                alpha, A, Atype, lda, strideA,
+                alpha_arg, A, Atype, lda, strideA,
                 B, Btype, ldb, strideB,
-                beta, C, Ctype, ldc, strideC,
+                beta_arg, C, Ctype, ldc, strideC,
                 batchCount, computeType,
                 max_m, max_n, max_k,
                 a_size, b_size, c_size,
@@ -554,7 +625,7 @@ static cublasStatus_t submit_pacc_gemm(
                             const void *chunk_beta = (kk == 0) ? beta : &one_beta;
                             int chunk_rc = hetgpu_pacc_submit_gemm_staged(
                                 (int)transa, (int)transb, chunk_m, chunk_n, chunk_k,
-                                alpha,
+                                alpha_arg,
                                 chunk_A, hetgpu_pacc_dtype(Atype), lda, 0,
                                 chunk_B, hetgpu_pacc_dtype(Btype), ldb, 0,
                                 chunk_beta,
@@ -587,9 +658,9 @@ static cublasStatus_t submit_pacc_gemm(
     }
     cublasStatus_t fallback = host_gemm_fallback(
         name, transa, transb, m, n, k,
-        alpha, A, Atype, lda, strideA,
+        alpha_arg, A, Atype, lda, strideA,
         B, Btype, ldb, strideB,
-        beta, C, Ctype, ldc, strideC,
+        beta_arg, C, Ctype, ldc, strideC,
         batchCount, computeType);
     if (fallback == CUBLAS_STATUS_SUCCESS) {
         return fallback;

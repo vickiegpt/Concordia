@@ -155,6 +155,9 @@ const HETGPU_PACC_JOB_MAGIC: u64 = 0x4847_5055_5041_4343; // "HGPUPACC"
 const HETGPU_PACC_JOB_VERSION: u32 = 1;
 const PACC_JOB_DESC_BYTES: usize = std::mem::size_of::<pacc_mbox_job_desc>();
 const PACC_JOB_HEADER_BYTES: usize = std::mem::size_of::<PaccJobImageHeader>();
+const PACC_JOB_FLAG_HAS_LAUNCH_ABI: u32 = 1 << 0;
+const PACC_KERNEL_LAUNCH_ABI_MAGIC: u64 = 0x5041_4343_4152_4731; // "PACCARG1"
+const PACC_KERNEL_LAUNCH_ABI_VERSION: u32 = 1;
 const HETGPU_PACC_DOORBELL_BYTES: usize = std::mem::size_of::<HetgpuPaccDoorbell>();
 const HETGPU_PACC_ARG_HEADER_BYTES: usize = std::mem::size_of::<HetgpuPaccArgSlotHeader>();
 pub const HETGPU_PACC_ARG_BASE: u64 = AP2PACC_MBOX_PHYS + 0x100;
@@ -286,6 +289,62 @@ pub struct PaccJobImageHeader {
     pub block_y: u32,
     pub block_z: u32,
     pub reserved: u32,
+}
+
+pub const PACC_KERNEL_ARG_KIND_SCALAR: u32 = 0;
+pub const PACC_KERNEL_ARG_KIND_POINTER: u32 = 1;
+pub const PACC_KERNEL_ARG_FLAG_SIGNED: u32 = 1 << 0;
+pub const PACC_KERNEL_ARG_FLAG_FLOAT: u32 = 1 << 1;
+pub const PACC_KERNEL_ARG_FLAG_BUFFER_INPUT: u32 = 1 << 8;
+pub const PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT: u32 = 1 << 9;
+pub const PACC_KERNEL_ARG_FLAG_BUFFER_INOUT: u32 =
+    PACC_KERNEL_ARG_FLAG_BUFFER_INPUT | PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT;
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct PaccKernelLaunchAbiHeader {
+    pub magic: u64,
+    pub version: u32,
+    pub flags: u32,
+    pub arg_records_offset: u32,
+    pub arg_record_count: u32,
+    pub bindings_offset: u32,
+    pub binding_count: u32,
+    pub raw_param_offset: u32,
+    pub raw_param_size: u32,
+    pub reserved: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct PaccKernelArgRecord {
+    pub kind: u32,
+    pub size: u32,
+    pub flags: u32,
+    pub reserved: u32,
+    pub value: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct PaccKernelBufferBinding {
+    pub arg_index: u32,
+    pub flags: u32,
+    pub addr: u64,
+    pub size: u64,
+}
+
+#[derive(Debug, Default, Clone)]
+struct PaccKernelLaunchState {
+    raw_param_blob: Vec<u8>,
+    arg_records: Vec<PaccKernelArgRecord>,
+    bindings: Vec<PaccKernelBufferBinding>,
+}
+
+impl PaccKernelLaunchState {
+    fn is_empty(&self) -> bool {
+        self.raw_param_blob.is_empty() && self.arg_records.is_empty() && self.bindings.is_empty()
+    }
 }
 
 // ─── Mailbox message layout ────────────────────────────────────────────────────
@@ -2218,10 +2277,17 @@ fn gemm_span(rows: u64, cols: u64, ld: i64) -> Option<usize> {
 
 fn pacc_dtype_size(dtype: i32) -> Option<usize> {
     match dtype as u32 {
+        x if x == PaccDataType::Int8 as u32 => Some(std::mem::size_of::<i8>()),
+        x if x == PaccDataType::Uint8 as u32 => Some(std::mem::size_of::<u8>()),
+        x if x == PaccDataType::Int32 as u32 => Some(std::mem::size_of::<i32>()),
         x if x == PaccDataType::Float32 as u32 => Some(std::mem::size_of::<f32>()),
         x if x == PaccDataType::Bfloat16 as u32 => Some(std::mem::size_of::<u16>()),
         _ => None,
     }
+}
+
+fn pacc_tensor_dtype_supported(dtype: i32) -> bool {
+    pacc_dtype_size(dtype).is_some()
 }
 
 fn align_up_u64(value: u64, align: u64) -> Option<u64> {
@@ -2249,9 +2315,38 @@ fn f32_to_bf16_bits(value: f32) -> u16 {
     ((bits + 0x7fff + lsb) >> 16) as u16
 }
 
+fn f32_to_i8_bits(value: f32) -> i8 {
+    value.round().clamp(i8::MIN as f32, i8::MAX as f32) as i8
+}
+
+fn f32_to_u8_bits(value: f32) -> u8 {
+    value.round().clamp(u8::MIN as f32, u8::MAX as f32) as u8
+}
+
+fn f32_to_i32_bits(value: f32) -> i32 {
+    value.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32
+}
+
 fn gemm_storage_to_f32_bytes(src: &[u8], dtype: i32, elems: usize) -> std::io::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(elems * std::mem::size_of::<f32>());
     match dtype as u32 {
+        x if x == PaccDataType::Int8 as u32 => {
+            for i in 0..elems {
+                out.extend_from_slice(&(src[i] as i8 as f32).to_ne_bytes());
+            }
+        }
+        x if x == PaccDataType::Uint8 as u32 => {
+            for i in 0..elems {
+                out.extend_from_slice(&(src[i] as f32).to_ne_bytes());
+            }
+        }
+        x if x == PaccDataType::Int32 as u32 => {
+            for i in 0..elems {
+                let off = i * std::mem::size_of::<i32>();
+                let v = i32::from_ne_bytes(src[off..off + 4].try_into().unwrap());
+                out.extend_from_slice(&(v as f32).to_ne_bytes());
+            }
+        }
         x if x == PaccDataType::Float32 as u32 => {
             let want = elems * std::mem::size_of::<f32>();
             out.extend_from_slice(&src[..want]);
@@ -2276,6 +2371,27 @@ fn gemm_storage_to_f32_bytes(src: &[u8], dtype: i32, elems: usize) -> std::io::R
 fn f32_bytes_to_gemm_storage(src: &[u8], dtype: i32, elems: usize) -> std::io::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(elems * pacc_dtype_size(dtype).unwrap_or(0));
     match dtype as u32 {
+        x if x == PaccDataType::Int8 as u32 => {
+            for i in 0..elems {
+                let off = i * std::mem::size_of::<f32>();
+                let v = f32::from_ne_bytes(src[off..off + 4].try_into().unwrap());
+                out.extend_from_slice(&f32_to_i8_bits(v).to_ne_bytes());
+            }
+        }
+        x if x == PaccDataType::Uint8 as u32 => {
+            for i in 0..elems {
+                let off = i * std::mem::size_of::<f32>();
+                let v = f32::from_ne_bytes(src[off..off + 4].try_into().unwrap());
+                out.extend_from_slice(&f32_to_u8_bits(v).to_ne_bytes());
+            }
+        }
+        x if x == PaccDataType::Int32 as u32 => {
+            for i in 0..elems {
+                let off = i * std::mem::size_of::<f32>();
+                let v = f32::from_ne_bytes(src[off..off + 4].try_into().unwrap());
+                out.extend_from_slice(&f32_to_i32_bits(v).to_ne_bytes());
+            }
+        }
         x if x == PaccDataType::Float32 as u32 => {
             let want = elems * std::mem::size_of::<f32>();
             out.extend_from_slice(&src[..want]);
@@ -2303,6 +2419,15 @@ unsafe fn gemm_read_f32(
     index: usize,
 ) -> std::io::Result<f32> {
     match dtype as u32 {
+        x if x == PaccDataType::Int8 as u32 => {
+            Ok(std::ptr::read_unaligned(base.cast::<i8>().add(index)) as f32)
+        }
+        x if x == PaccDataType::Uint8 as u32 => {
+            Ok(std::ptr::read_unaligned(base.cast::<u8>().add(index)) as f32)
+        }
+        x if x == PaccDataType::Int32 as u32 => {
+            Ok(std::ptr::read_unaligned(base.cast::<i32>().add(index)) as f32)
+        }
         x if x == PaccDataType::Float32 as u32 => {
             Ok(std::ptr::read_unaligned(base.cast::<f32>().add(index)))
         }
@@ -2323,6 +2448,18 @@ unsafe fn gemm_write_from_f32(
     value: f32,
 ) -> std::io::Result<()> {
     match dtype as u32 {
+        x if x == PaccDataType::Int8 as u32 => {
+            std::ptr::write_unaligned(base.cast::<i8>().add(index), f32_to_i8_bits(value));
+            Ok(())
+        }
+        x if x == PaccDataType::Uint8 as u32 => {
+            std::ptr::write_unaligned(base.cast::<u8>().add(index), f32_to_u8_bits(value));
+            Ok(())
+        }
+        x if x == PaccDataType::Int32 as u32 => {
+            std::ptr::write_unaligned(base.cast::<i32>().add(index), f32_to_i32_bits(value));
+            Ok(())
+        }
         x if x == PaccDataType::Float32 as u32 => {
             std::ptr::write_unaligned(base.cast::<f32>().add(index), value);
             Ok(())
@@ -3523,22 +3660,19 @@ unsafe fn submit_gemm_staged_tiled_shared_ddr(
     let _gemm_guard = shared_ddr_gemm_lock()
         .lock()
         .map_err(|_| Error::new(ErrorKind::Other, "PACC GEMM staging lock poisoned"))?;
-    if atype as u32 != PaccDataType::Float32 as u32 && atype as u32 != PaccDataType::Bfloat16 as u32
-    {
+    if !pacc_tensor_dtype_supported(atype) {
         return Err(Error::new(
             ErrorKind::Unsupported,
             "unsupported coarse staged GEMM A dtype",
         ));
     }
-    if btype as u32 != PaccDataType::Float32 as u32 && btype as u32 != PaccDataType::Bfloat16 as u32
-    {
+    if !pacc_tensor_dtype_supported(btype) {
         return Err(Error::new(
             ErrorKind::Unsupported,
             "unsupported coarse staged GEMM B dtype",
         ));
     }
-    if ctype as u32 != PaccDataType::Float32 as u32 && ctype as u32 != PaccDataType::Bfloat16 as u32
-    {
+    if !pacc_tensor_dtype_supported(ctype) {
         return Err(Error::new(
             ErrorKind::Unsupported,
             "unsupported coarse staged GEMM C dtype",
@@ -4014,6 +4148,64 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_gemm(
     }
 }
 
+unsafe fn submit_softmax_typed_impl(
+    src: *const std::ffi::c_void,
+    dst: *mut std::ffi::c_void,
+    rows: u64,
+    cols: u64,
+    stride: u64,
+    dtype: u32,
+    label: &str,
+) -> i32 {
+    let job = HetgpuPaccSoftmaxJob {
+        src_addr: src as u64,
+        dst_addr: dst as u64,
+        rows,
+        cols,
+        stride: if stride == 0 { cols } else { stride },
+        dtype,
+        reserved: 0,
+    };
+    match PaccDevice::open(0)
+        .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::SOFTMAX, &job))
+    {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{}: PACC softmax submit failed: {}", label, e);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_pacc_submit_softmax(
+    src: *const std::ffi::c_void,
+    dst: *mut std::ffi::c_void,
+    rows: u64,
+    cols: u64,
+    stride: u64,
+    dtype: i32,
+) -> i32 {
+    if src.is_null()
+        || dst.is_null()
+        || rows == 0
+        || cols == 0
+        || !pacc_tensor_dtype_supported(dtype)
+    {
+        eprintln!("hetgpu_pacc_submit_softmax: invalid argument");
+        return -1;
+    }
+    submit_softmax_typed_impl(
+        src,
+        dst,
+        rows,
+        cols,
+        stride,
+        dtype as u32,
+        "hetgpu_pacc_submit_softmax",
+    )
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn hetgpu_pacc_submit_softmax_f32(
     src: *const std::ffi::c_void,
@@ -4022,31 +4214,75 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_softmax_f32(
     cols: u64,
     stride: u64,
 ) -> i32 {
-    if src.is_null() || dst.is_null() || rows == 0 || cols == 0 {
-        eprintln!("hetgpu_pacc_submit_softmax_f32: invalid argument");
-        return -1;
-    }
-    let job = HetgpuPaccSoftmaxJob {
-        src_addr: src as u64,
-        dst_addr: dst as u64,
+    hetgpu_pacc_submit_softmax(src, dst, rows, cols, stride, PaccDataType::Float32 as i32)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_pacc_submit_softmax_bf16(
+    src: *const std::ffi::c_void,
+    dst: *mut std::ffi::c_void,
+    rows: u64,
+    cols: u64,
+    stride: u64,
+) -> i32 {
+    hetgpu_pacc_submit_softmax(src, dst, rows, cols, stride, PaccDataType::Bfloat16 as i32)
+}
+
+unsafe fn submit_rmsnorm_typed_impl(
+    x: *const std::ffi::c_void,
+    weight: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    rows: u64,
+    hidden: u64,
+    eps: f32,
+    dtype: u32,
+    label: &str,
+) -> i32 {
+    let job = HetgpuPaccRmsNormJob {
+        x_addr: x as u64,
+        weight_addr: weight as u64,
+        y_addr: y as u64,
         rows,
-        cols,
-        stride: if stride == 0 { cols } else { stride },
-        dtype: PaccDataType::Float32 as u32,
-        reserved: 0,
+        hidden,
+        eps,
+        dtype,
     };
     match PaccDevice::open(0)
-        .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::SOFTMAX, &job))
+        .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::RMSNORM, &job))
     {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!(
-                "hetgpu_pacc_submit_softmax_f32: PACC softmax submit failed: {}",
-                e
-            );
+            eprintln!("{}: PACC RMSNorm submit failed: {}", label, e);
             -1
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_pacc_submit_rmsnorm(
+    x: *const std::ffi::c_void,
+    weight: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    rows: u64,
+    hidden: u64,
+    eps: f32,
+    dtype: i32,
+) -> i32 {
+    if x.is_null() || y.is_null() || rows == 0 || hidden == 0 || !pacc_tensor_dtype_supported(dtype)
+    {
+        eprintln!("hetgpu_pacc_submit_rmsnorm: invalid argument");
+        return -1;
+    }
+    submit_rmsnorm_typed_impl(
+        x,
+        weight,
+        y,
+        rows,
+        hidden,
+        eps,
+        dtype as u32,
+        "hetgpu_pacc_submit_rmsnorm",
+    )
 }
 
 #[no_mangle]
@@ -4058,31 +4294,35 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_rmsnorm_f32(
     hidden: u64,
     eps: f32,
 ) -> i32 {
-    if x.is_null() || y.is_null() || rows == 0 || hidden == 0 {
-        eprintln!("hetgpu_pacc_submit_rmsnorm_f32: invalid argument");
-        return -1;
-    }
-    let job = HetgpuPaccRmsNormJob {
-        x_addr: x as u64,
-        weight_addr: weight as u64,
-        y_addr: y as u64,
+    hetgpu_pacc_submit_rmsnorm(
+        x,
+        weight,
+        y,
         rows,
         hidden,
         eps,
-        dtype: PaccDataType::Float32 as u32,
-    };
-    match PaccDevice::open(0)
-        .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::RMSNORM, &job))
-    {
-        Ok(()) => 0,
-        Err(e) => {
-            eprintln!(
-                "hetgpu_pacc_submit_rmsnorm_f32: PACC RMSNorm submit failed: {}",
-                e
-            );
-            -1
-        }
-    }
+        PaccDataType::Float32 as i32,
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_pacc_submit_rmsnorm_bf16(
+    x: *const std::ffi::c_void,
+    weight: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    rows: u64,
+    hidden: u64,
+    eps: f32,
+) -> i32 {
+    hetgpu_pacc_submit_rmsnorm(
+        x,
+        weight,
+        y,
+        rows,
+        hidden,
+        eps,
+        PaccDataType::Bfloat16 as i32,
+    )
 }
 
 #[no_mangle]
@@ -4216,6 +4456,7 @@ pub struct pacc_Kernel {
     pub name: String,
     pub program: *mut pacc_Program,
     pub device: *mut pacc_Device,
+    launch_state: PaccKernelLaunchState,
 }
 
 /// Result code
@@ -4225,7 +4466,8 @@ pub const pacc_Result_Error: pacc_Result = -1;
 
 /// Create a PACC device handle for device_id (0-3).
 /// Returns null on failure.
-pub unsafe fn pacc_CreateDevice(device_id: u32) -> *mut pacc_Device {
+#[no_mangle]
+pub unsafe extern "C" fn pacc_CreateDevice(device_id: u32) -> *mut pacc_Device {
     match PaccDevice::open(device_id as usize) {
         Ok(dev) => Box::into_raw(Box::new(pacc_Device(dev))),
         Err(e) => {
@@ -4236,22 +4478,33 @@ pub unsafe fn pacc_CreateDevice(device_id: u32) -> *mut pacc_Device {
 }
 
 /// Destroy a PACC device handle.
-pub unsafe fn pacc_DestroyDevice(dev: *mut pacc_Device) {
+#[no_mangle]
+pub unsafe extern "C" fn pacc_DestroyDevice(dev: *mut pacc_Device) {
     if !dev.is_null() {
         drop(Box::from_raw(dev));
     }
 }
 
 /// Create a PACC program (initially empty — load ELF via pacc_LoadProgram).
-pub unsafe fn pacc_CreateProgram() -> *mut pacc_Program {
+#[no_mangle]
+pub unsafe extern "C" fn pacc_CreateProgram() -> *mut pacc_Program {
     Box::into_raw(Box::new(pacc_Program {
         elf_bytes: Vec::new(),
     }))
 }
 
+/// Destroy a PACC program handle.
+#[no_mangle]
+pub unsafe extern "C" fn pacc_DestroyProgram(program: *mut pacc_Program) {
+    if !program.is_null() {
+        drop(Box::from_raw(program));
+    }
+}
+
 /// Load ELF binary into a PACC program.
 /// data: pointer to ELF bytes, size: byte length.
-pub unsafe fn pacc_LoadProgram(
+#[no_mangle]
+pub unsafe extern "C" fn pacc_LoadProgram(
     program: *mut pacc_Program,
     data: *const std::ffi::c_void,
     size: u64,
@@ -4265,7 +4518,8 @@ pub unsafe fn pacc_LoadProgram(
 }
 
 /// Create a named kernel handle from a program.
-pub unsafe fn pacc_CreateKernel(
+#[no_mangle]
+pub unsafe extern "C" fn pacc_CreateKernel(
     program: *mut pacc_Program,
     name: *const std::ffi::c_char,
 ) -> *mut pacc_Kernel {
@@ -4273,7 +4527,8 @@ pub unsafe fn pacc_CreateKernel(
 }
 
 /// Create a named kernel handle tied to an already opened PACC device.
-pub unsafe fn pacc_CreateKernelOnDevice(
+#[no_mangle]
+pub unsafe extern "C" fn pacc_CreateKernelOnDevice(
     program: *mut pacc_Program,
     device: *mut pacc_Device,
     name: *const std::ffi::c_char,
@@ -4289,20 +4544,85 @@ pub unsafe fn pacc_CreateKernelOnDevice(
         name: name_str,
         program,
         device,
+        launch_state: PaccKernelLaunchState::default(),
     }))
 }
 
 /// Destroy a kernel handle.
-pub unsafe fn pacc_DestroyKernel(kernel: *mut pacc_Kernel) {
+#[no_mangle]
+pub unsafe extern "C" fn pacc_DestroyKernel(kernel: *mut pacc_Kernel) {
     if !kernel.is_null() {
         drop(Box::from_raw(kernel));
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn pacc_KernelClearLaunchState(kernel: *mut pacc_Kernel) -> pacc_Result {
+    if kernel.is_null() {
+        return pacc_Result_Error;
+    }
+    (*kernel).launch_state = PaccKernelLaunchState::default();
+    pacc_Result_Success
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pacc_KernelSetRawParamBlob(
+    kernel: *mut pacc_Kernel,
+    data: *const std::ffi::c_void,
+    size: u64,
+) -> pacc_Result {
+    if kernel.is_null() || (size != 0 && data.is_null()) {
+        return pacc_Result_Error;
+    }
+    let bytes = if size == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(data as *const u8, size as usize)
+    };
+    (*kernel).launch_state.raw_param_blob = bytes.to_vec();
+    pacc_Result_Success
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pacc_KernelPushArgRecord(
+    kernel: *mut pacc_Kernel,
+    record: *const PaccKernelArgRecord,
+) -> pacc_Result {
+    if kernel.is_null() || record.is_null() {
+        return pacc_Result_Error;
+    }
+    let record = *record;
+    if record.size == 0 || record.size > 8 {
+        return pacc_Result_Error;
+    }
+    if record.kind != PACC_KERNEL_ARG_KIND_SCALAR && record.kind != PACC_KERNEL_ARG_KIND_POINTER {
+        return pacc_Result_Error;
+    }
+    (*kernel).launch_state.arg_records.push(record);
+    pacc_Result_Success
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pacc_KernelAddBufferBinding(
+    kernel: *mut pacc_Kernel,
+    binding: *const PaccKernelBufferBinding,
+) -> pacc_Result {
+    if kernel.is_null() || binding.is_null() {
+        return pacc_Result_Error;
+    }
+    let binding = *binding;
+    if binding.arg_index as usize >= (*kernel).launch_state.arg_records.len() {
+        return pacc_Result_Error;
+    }
+    (*kernel).launch_state.bindings.push(binding);
+    pacc_Result_Success
+}
+
 /// Launch a PACC kernel via job_submit.
 /// Submits the ELF binary to the device using the physical address of a
 /// staging buffer. For now writes ELF bytes to a driver-allocated buffer.
-pub unsafe fn pacc_LaunchKernel(
+#[no_mangle]
+pub unsafe extern "C" fn pacc_LaunchKernel(
     kernel: *mut pacc_Kernel,
     grid_x: u32,
     grid_y: u32,
@@ -4344,6 +4664,7 @@ pub unsafe fn pacc_LaunchKernel(
             &(*k.device).0,
             &k.name,
             &prog.elf_bytes,
+            &k.launch_state,
             grid_x,
             grid_y,
             grid_z,
@@ -4359,6 +4680,7 @@ pub unsafe fn pacc_LaunchKernel(
             &dev,
             &k.name,
             &prog.elf_bytes,
+            &k.launch_state,
             grid_x,
             grid_y,
             grid_z,
@@ -4373,10 +4695,198 @@ pub unsafe fn pacc_LaunchKernel(
     }
 }
 
+fn allow_preloaded_kernel_fallback() -> bool {
+    std::env::var("HETGPU_PACC_ALLOW_PRELOADED_KERNEL_FALLBACK")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+fn validate_pacc_kernel_elf(elf_bytes: &[u8]) -> std::io::Result<()> {
+    if elf_bytes.len() < 64 || &elf_bytes[0..4] != b"\x7fELF" {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "PACC kernel image must be a non-empty ELF64 payload",
+        ));
+    }
+    if elf_bytes[4] != 2 || elf_bytes[5] != 1 {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "PACC kernel image must be little-endian ELF64",
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+struct PaccKernelImageLayout {
+    flags: u32,
+    launch_header_offset: usize,
+    arg_records_offset: usize,
+    bindings_offset: usize,
+    raw_param_offset: usize,
+    elf_offset: usize,
+    image_len: usize,
+    submit_len: usize,
+}
+
+fn compute_pacc_kernel_image_layout(
+    elf_bytes: &[u8],
+    launch_state: &PaccKernelLaunchState,
+) -> std::io::Result<PaccKernelImageLayout> {
+    validate_pacc_kernel_elf(elf_bytes)?;
+
+    if launch_state.is_empty() {
+        let image_len = PACC_JOB_HEADER_BYTES
+            .checked_add(elf_bytes.len())
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "PACC kernel image too large"))?;
+        return Ok(PaccKernelImageLayout {
+            flags: 0,
+            launch_header_offset: 0,
+            arg_records_offset: 0,
+            bindings_offset: 0,
+            raw_param_offset: 0,
+            elf_offset: PACC_JOB_HEADER_BYTES,
+            image_len,
+            submit_len: align_up(image_len, 64),
+        });
+    }
+
+    let launch_header_offset = PACC_JOB_HEADER_BYTES;
+    let launch_header_bytes = std::mem::size_of::<PaccKernelLaunchAbiHeader>();
+    let arg_record_bytes = launch_state
+        .arg_records
+        .len()
+        .checked_mul(std::mem::size_of::<PaccKernelArgRecord>())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "too many PACC arg records"))?;
+    let binding_bytes = launch_state
+        .bindings
+        .len()
+        .checked_mul(std::mem::size_of::<PaccKernelBufferBinding>())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "too many PACC buffer bindings"))?;
+    let mut cursor = align_up(launch_header_offset + launch_header_bytes, 8);
+
+    let arg_records_offset = if arg_record_bytes == 0 {
+        0
+    } else {
+        let offset = cursor;
+        cursor = align_up(
+            cursor
+                .checked_add(arg_record_bytes)
+                .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "PACC arg section too large"))?,
+            8,
+        );
+        offset
+    };
+
+    let bindings_offset = if binding_bytes == 0 {
+        0
+    } else {
+        let offset = cursor;
+        cursor = align_up(
+            cursor
+                .checked_add(binding_bytes)
+                .ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidInput, "PACC binding section too large")
+                })?,
+            8,
+        );
+        offset
+    };
+
+    let raw_param_offset = if launch_state.raw_param_blob.is_empty() {
+        0
+    } else {
+        let offset = cursor;
+        cursor = align_up(
+            cursor
+                .checked_add(launch_state.raw_param_blob.len())
+                .ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidInput, "PACC raw param section too large")
+                })?,
+            8,
+        );
+        offset
+    };
+
+    let elf_offset = cursor;
+    let image_len = elf_offset
+        .checked_add(elf_bytes.len())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "PACC kernel image too large"))?;
+
+    Ok(PaccKernelImageLayout {
+        flags: PACC_JOB_FLAG_HAS_LAUNCH_ABI,
+        launch_header_offset,
+        arg_records_offset,
+        bindings_offset,
+        raw_param_offset,
+        elf_offset,
+        image_len,
+        submit_len: align_up(image_len, 64),
+    })
+}
+
+fn build_pacc_kernel_submit_buffer(
+    kernel_name: &str,
+    elf_bytes: &[u8],
+    launch_state: &PaccKernelLaunchState,
+    grid_x: u32,
+    grid_y: u32,
+    grid_z: u32,
+    block_x: u32,
+    block_y: u32,
+    block_z: u32,
+) -> std::io::Result<(Vec<u8>, usize)> {
+    let layout = compute_pacc_kernel_image_layout(elf_bytes, launch_state)?;
+    let submit_len = layout.submit_len;
+    let mut buf = vec![0u8; submit_len];
+    fill_pacc_kernel_image(
+        &mut buf,
+        kernel_name,
+        elf_bytes,
+        launch_state,
+        grid_x,
+        grid_y,
+        grid_z,
+        block_x,
+        block_y,
+        block_z,
+    )?;
+    Ok((buf, submit_len))
+}
+
+fn submit_pacc_kernel_image(
+    dev: &PaccDevice,
+    kernel_name: &str,
+    elf_bytes: &[u8],
+    launch_state: &PaccKernelLaunchState,
+    grid_x: u32,
+    grid_y: u32,
+    grid_z: u32,
+    block_x: u32,
+    block_y: u32,
+    block_z: u32,
+) -> std::io::Result<usize> {
+    let (buf, submit_len) = build_pacc_kernel_submit_buffer(
+        kernel_name,
+        elf_bytes,
+        launch_state,
+        grid_x,
+        grid_y,
+        grid_z,
+        block_x,
+        block_y,
+        block_z,
+    )?;
+    dev.job_submit_user_buffer_with_len(&buf, submit_len)?;
+    Ok(submit_len)
+}
+
 fn pacc_launch_on_device(
     dev: &PaccDevice,
     kernel_name: &str,
     elf_bytes: &[u8],
+    launch_state: &PaccKernelLaunchState,
     grid_x: u32,
     grid_y: u32,
     grid_z: u32,
@@ -4385,39 +4895,110 @@ fn pacc_launch_on_device(
     block_z: u32,
 ) -> pacc_Result {
     if std::env::var("HETGPU_PACC_DRY_RUN").ok().as_deref() == Some("1") {
-        eprintln!(
-            "pacc_LaunchKernel: dry-run accepted preloaded kernel='{}' elf={} bytes grid=({},{},{}) block=({},{},{})",
+        match build_pacc_kernel_submit_buffer(
             kernel_name,
-            elf_bytes.len(),
+            elf_bytes,
+            launch_state,
             grid_x,
             grid_y,
             grid_z,
             block_x,
             block_y,
             block_z,
-        );
-        return pacc_Result_Success;
-    }
-
-    let _ = (elf_bytes, grid_x, grid_y, grid_z, block_x, block_y, block_z);
-    match preloaded_kernel_job_id(kernel_name) {
-        Some(job_id) => match dev.submit_preloaded_job_bytes(job_id, &[]) {
-            Ok(()) => pacc_Result_Success,
+        ) {
+            Ok((_buf, submit_len)) => {
+                eprintln!(
+                    "pacc_LaunchKernel: dry-run accepted ELF kernel='{}' elf={} bytes submit={} bytes args={} bindings={} raw={} bytes grid=({},{},{}) block=({},{},{})",
+                    kernel_name,
+                    elf_bytes.len(),
+                    submit_len,
+                    launch_state.arg_records.len(),
+                    launch_state.bindings.len(),
+                    launch_state.raw_param_blob.len(),
+                    grid_x,
+                    grid_y,
+                    grid_z,
+                    block_x,
+                    block_y,
+                    block_z,
+                );
+                return pacc_Result_Success;
+            }
             Err(e) => {
                 eprintln!(
-                    "pacc_LaunchKernel: preloaded firmware job_id {} submit failed: {}",
-                    job_id, e
+                    "pacc_LaunchKernel: dry-run rejected ELF kernel '{}' : {}",
+                    kernel_name, e
+                );
+                return pacc_Result_Error;
+            }
+        }
+    }
+
+    match submit_pacc_kernel_image(
+        dev,
+        kernel_name,
+        elf_bytes,
+        launch_state,
+        grid_x,
+        grid_y,
+        grid_z,
+        block_x,
+        block_y,
+        block_z,
+    ) {
+        Ok(submit_len) => {
+            if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                eprintln!(
+                    "pacc_LaunchKernel: submitted ELF kernel='{}' elf={} bytes submit={} bytes args={} bindings={} raw={} bytes on pacc{}",
+                    kernel_name,
+                    elf_bytes.len(),
+                    submit_len,
+                    launch_state.arg_records.len(),
+                    launch_state.bindings.len(),
+                    launch_state.raw_param_blob.len(),
+                    dev.id,
+                );
+            }
+            pacc_Result_Success
+        }
+        Err(primary_err) => {
+            if allow_preloaded_kernel_fallback() {
+                match preloaded_kernel_job_id(kernel_name) {
+                    Some(job_id) => match dev.submit_preloaded_job_bytes(job_id, &[]) {
+                        Ok(()) => {
+                            eprintln!(
+                                "pacc_LaunchKernel: ELF submit failed for '{}' ({}) ; fell back to preloaded firmware job_id {}",
+                                kernel_name, primary_err, job_id
+                            );
+                            pacc_Result_Success
+                        }
+                        Err(fallback_err) => {
+                            eprintln!(
+                                "pacc_LaunchKernel: ELF submit failed for '{}' ({}) and preloaded fallback job_id {} also failed: {}",
+                                kernel_name, primary_err, job_id, fallback_err
+                            );
+                            pacc_Result_Error
+                        }
+                    },
+                    None => {
+                        eprintln!(
+                            "pacc_LaunchKernel: ELF submit failed for '{}' ({}) and no preloaded fallback exists",
+                            kernel_name, primary_err
+                        );
+                        pacc_Result_Error
+                    }
+                }
+            } else {
+                eprintln!(
+                    "pacc_LaunchKernel: ELF submit failed for '{}' : {}",
+                    kernel_name, primary_err
                 );
                 pacc_Result_Error
             }
-        },
-        None => {
-            eprintln!(
-                "pacc_LaunchKernel: kernel '{}' has no preloaded firmware job_id; \
-                 refusing to send ELF/payload to PACC",
-                kernel_name
-            );
-            pacc_Result_Error
         }
     }
 }
@@ -4440,6 +5021,7 @@ fn fill_pacc_kernel_image(
     buf: &mut [u8],
     kernel_name: &str,
     elf_bytes: &[u8],
+    launch_state: &PaccKernelLaunchState,
     grid_x: u32,
     grid_y: u32,
     grid_z: u32,
@@ -4447,8 +5029,8 @@ fn fill_pacc_kernel_image(
     block_y: u32,
     block_z: u32,
 ) -> std::io::Result<()> {
-    let image_size = PACC_JOB_HEADER_BYTES + elf_bytes.len();
-    if buf.len() < image_size {
+    let layout = compute_pacc_kernel_image_layout(elf_bytes, launch_state)?;
+    if buf.len() < layout.image_len {
         return Err(Error::new(
             ErrorKind::InvalidInput,
             "PACC job image buffer too small",
@@ -4458,8 +5040,8 @@ fn fill_pacc_kernel_image(
     let header = PaccJobImageHeader {
         magic: PACC_JOB_MAGIC,
         version: 1,
-        flags: 0,
-        entry_offset: PACC_JOB_HEADER_BYTES as u64,
+        flags: layout.flags,
+        entry_offset: layout.elf_offset as u64,
         image_size: elf_bytes.len() as u64,
         kernel_name_hash: hash_kernel_name(kernel_name),
         grid_x,
@@ -4471,17 +5053,68 @@ fn fill_pacc_kernel_image(
         reserved: 0,
     };
 
-    buf[..image_size].fill(0);
+    buf[..layout.image_len].fill(0);
     let header_bytes = unsafe {
         std::slice::from_raw_parts(
             (&header as *const PaccJobImageHeader).cast::<u8>(),
             PACC_JOB_HEADER_BYTES,
         )
     };
-    let header_start = 0;
-    let elf_start = header_start + PACC_JOB_HEADER_BYTES;
-    buf[header_start..elf_start].copy_from_slice(header_bytes);
-    buf[elf_start..elf_start + elf_bytes.len()].copy_from_slice(elf_bytes);
+    buf[..PACC_JOB_HEADER_BYTES].copy_from_slice(header_bytes);
+
+    if layout.flags & PACC_JOB_FLAG_HAS_LAUNCH_ABI != 0 {
+        let abi = PaccKernelLaunchAbiHeader {
+            magic: PACC_KERNEL_LAUNCH_ABI_MAGIC,
+            version: PACC_KERNEL_LAUNCH_ABI_VERSION,
+            flags: 0,
+            arg_records_offset: layout.arg_records_offset as u32,
+            arg_record_count: launch_state.arg_records.len() as u32,
+            bindings_offset: layout.bindings_offset as u32,
+            binding_count: launch_state.bindings.len() as u32,
+            raw_param_offset: layout.raw_param_offset as u32,
+            raw_param_size: launch_state.raw_param_blob.len() as u32,
+            reserved: 0,
+        };
+        let abi_bytes = unsafe {
+            std::slice::from_raw_parts(
+                (&abi as *const PaccKernelLaunchAbiHeader).cast::<u8>(),
+                std::mem::size_of::<PaccKernelLaunchAbiHeader>(),
+            )
+        };
+        let abi_end = layout.launch_header_offset + abi_bytes.len();
+        buf[layout.launch_header_offset..abi_end].copy_from_slice(abi_bytes);
+
+        if !launch_state.arg_records.is_empty() {
+            let arg_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    launch_state.arg_records.as_ptr().cast::<u8>(),
+                    launch_state.arg_records.len() * std::mem::size_of::<PaccKernelArgRecord>(),
+                )
+            };
+            let end = layout.arg_records_offset + arg_bytes.len();
+            buf[layout.arg_records_offset..end].copy_from_slice(arg_bytes);
+        }
+
+        if !launch_state.bindings.is_empty() {
+            let binding_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    launch_state.bindings.as_ptr().cast::<u8>(),
+                    launch_state.bindings.len()
+                        * std::mem::size_of::<PaccKernelBufferBinding>(),
+                )
+            };
+            let end = layout.bindings_offset + binding_bytes.len();
+            buf[layout.bindings_offset..end].copy_from_slice(binding_bytes);
+        }
+
+        if !launch_state.raw_param_blob.is_empty() {
+            let end = layout.raw_param_offset + launch_state.raw_param_blob.len();
+            buf[layout.raw_param_offset..end].copy_from_slice(&launch_state.raw_param_blob);
+        }
+    }
+
+    let elf_end = layout.elf_offset + elf_bytes.len();
+    buf[layout.elf_offset..elf_end].copy_from_slice(elf_bytes);
     Ok(())
 }
 

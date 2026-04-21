@@ -15,6 +15,7 @@ pacc = []
 nvidia = ["dep:nvidia_sass"]
 
 [lib]
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 amd_comgr_sys = { path = "../ext/amd_comgr-sys"  }
@@ -26,3 +27,7 @@ pacc_comgr_sys = { path = "../ext/pacc_comgr-sys" }
 nvidia_sass = { path = "../nvidia_sass", optional = true }
 hip_runtime_sys = { path = "../ext/hip_runtime-sys"  }
 ze_runtime_sys = { path = "../ext/ze_runtime-sys"  }
+libc = "0.2"
+
+[dev-dependencies]
+pacc_runtime_sys = { path = "../ext/pacc_runtime-sys" }

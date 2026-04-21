@@ -1,21 +1,20 @@
 use lazy_static::lazy_static;
 use std::collections::HashMap;
-use std::ffi::{CStr, CString};
-use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::ffi::CString;
+use std::fs;
+use std::io;
 use std::mem;
-use std::os::raw::{c_uint, c_void};
+use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
-use tempfile::tempdir;
+use std::sync::Mutex;
+use tempfile::{tempdir, Builder, TempDir};
 
 use crate::{
-    pacc_comgr_action_info_t, pacc_comgr_action_kind_s,
-    pacc_comgr_create_data, pacc_comgr_data_kind_s, pacc_comgr_data_set_add,
-    pacc_comgr_data_set_bytes, pacc_comgr_data_set_name, pacc_comgr_data_set_t,
-    pacc_comgr_data_t, pacc_comgr_language_s, pacc_comgr_release_data,
-    pacc_comgr_status_s, pacc_comgr_status_t,
+    pacc_comgr_action_info_t, pacc_comgr_action_kind_s, pacc_comgr_create_data,
+    pacc_comgr_data_kind_s, pacc_comgr_data_set_add, pacc_comgr_data_set_bytes,
+    pacc_comgr_data_set_name, pacc_comgr_data_set_t, pacc_comgr_language_s,
+    pacc_comgr_release_data, pacc_comgr_status_s, pacc_comgr_status_t,
 };
 
 pub(crate) struct DataContent {
@@ -55,8 +54,68 @@ struct ActionContext {
     options: Vec<String>,
     language: pacc_comgr_language_s,
     input_files: Vec<(PathBuf, pacc_comgr_data_kind_s)>,
+    working_directory: Option<PathBuf>,
     target: Option<String>,
     action_kind: pacc_comgr_action_kind_s,
+}
+
+fn preferred_temp_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    for key in ["HETGPU_PACC_TMPDIR", "TMPDIR", "TEMP", "TMP"] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.is_empty() {
+                let path = PathBuf::from(value);
+                if !roots.iter().any(|existing| existing == &path) {
+                    roots.push(path);
+                }
+            }
+        }
+    }
+
+    for candidate in ["/mnt/usb/hetgpu_tmp", "/dev/shm/hetgpu_tmp"] {
+        let path = PathBuf::from(candidate);
+        if !roots.iter().any(|existing| existing == &path) {
+            roots.push(path);
+        }
+    }
+
+    let system_tmp = std::env::temp_dir();
+    if !roots.iter().any(|existing| existing == &system_tmp) {
+        roots.push(system_tmp);
+    }
+
+    roots
+}
+
+fn create_action_tempdir() -> io::Result<TempDir> {
+    let mut last_error: Option<io::Error> = None;
+
+    for root in preferred_temp_roots() {
+        if let Err(err) = fs::create_dir_all(&root) {
+            last_error = Some(io::Error::new(
+                err.kind(),
+                format!("{}: {}", root.display(), err),
+            ));
+            continue;
+        }
+
+        match Builder::new().prefix(".tmp").tempdir_in(&root) {
+            Ok(dir) => return Ok(dir),
+            Err(err) => {
+                last_error = Some(io::Error::new(
+                    err.kind(),
+                    format!("{}: {}", root.display(), err),
+                ));
+            }
+        }
+    }
+
+    if let Some(err) = last_error {
+        Err(err)
+    } else {
+        tempdir()
+    }
 }
 
 pub fn perform_action(
@@ -65,7 +124,7 @@ pub fn perform_action(
     input_set: pacc_comgr_data_set_t,
     output_set: pacc_comgr_data_set_t,
 ) -> pacc_comgr_status_t {
-    let dir = match tempdir() {
+    let dir = match create_action_tempdir() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("PACC: Failed to create temporary directory: {}", e);
@@ -87,6 +146,7 @@ pub fn perform_action(
     };
     drop(data_set_lock);
 
+    let working_directory = action_data.working_directory.as_ref().map(PathBuf::from);
     let data_store_lock = DATA_STORE.lock().unwrap();
     let mut input_files = Vec::new();
 
@@ -102,7 +162,23 @@ pub fn perform_action(
                 },
             };
 
+            if let Some(original_path) =
+                resolve_original_input_path(&file_name, working_directory.as_deref())
+            {
+                input_files.push((original_path, data.kind));
+                continue;
+            }
+
             let file_path = dir.path().join(&file_name);
+            if let Some(parent) = file_path.parent() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    eprintln!(
+                        "PACC: Warning: Could not create parent directories for {}: {}",
+                        file_path.display(),
+                        e
+                    );
+                }
+            }
             if let Err(e) = fs::write(&file_path, &data.content) {
                 eprintln!("PACC: Warning: Could not write input file: {}", e);
             }
@@ -118,6 +194,7 @@ pub fn perform_action(
             .language
             .unwrap_or(pacc_comgr_language_s::PACC_COMGR_LANGUAGE_NONE),
         input_files,
+        working_directory,
         target: action_data.target,
         action_kind,
     };
@@ -188,6 +265,13 @@ fn add_outputs_to_set(
                         output_set,
                     )?;
                     added_files = true;
+                } else if ext == "fatbin" {
+                    add_file_to_set(
+                        &path,
+                        pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_FATBIN,
+                        output_set,
+                    )?;
+                    added_files = true;
                 }
             }
         }
@@ -207,11 +291,7 @@ fn add_outputs_to_set(
             &mut data,
         )?;
         pacc_comgr_data_set_name(data, c"pacc_output.elf".as_ptr())?;
-        pacc_comgr_data_set_bytes(
-            data,
-            dummy.as_ptr() as *const c_void,
-            dummy.len(),
-        )?;
+        pacc_comgr_data_set_bytes(data, dummy.as_ptr() as *const c_void, dummy.len())?;
         pacc_comgr_data_set_add(output_set, data)?;
         pacc_comgr_release_data(data)?;
     }
@@ -234,8 +314,7 @@ fn add_file_to_set(
         .unwrap_or_else(|| CString::new("output").unwrap());
     pacc_comgr_data_set_name(data, name.as_ptr())?;
 
-    let content = fs::read(file_path)
-        .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
+    let content = fs::read(file_path).map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
     pacc_comgr_data_set_bytes(data, content.as_ptr() as *const c_void, content.len())?;
     pacc_comgr_data_set_add(data_set, data)?;
     pacc_comgr_release_data(data)?;
@@ -284,9 +363,21 @@ fn compile_source_to_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
             .unwrap_or("input");
         let output_file = ctx.temp_dir.join(format!("{}.bc", file_stem));
 
-        let llvm_ir = create_pacc_llvm_ir(&input_file);
-        fs::write(&output_file, llvm_ir)
-            .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
+        let compile_result = if is_cxx_source(&input_file) || is_c_source(&input_file) {
+            compile_c_family_source_to_bitcode(ctx, &input_file, &output_file)
+        } else {
+            compile_ptx_to_bitcode(ctx, &input_file, &output_file)
+        };
+
+        if let Err(e) = compile_result {
+            eprintln!(
+                "PACC: source -> LLVM bitcode failed for {}: {}",
+                input_file.display(),
+                e
+            );
+            return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR);
+        }
+
         eprintln!("PACC: Created LLVM bitcode: {}", output_file.display());
     }
 
@@ -312,7 +403,7 @@ fn link_bc_to_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
 
     let output_file = ctx.temp_dir.join("linked.bc");
 
-    let mut cmd = Command::new("llvm-link");
+    let mut cmd = Command::new(llvm_link_tool());
     for bc_file in &bc_files {
         cmd.arg(bc_file);
     }
@@ -324,7 +415,6 @@ fn link_bc_to_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
             Ok(())
         }
         _ => {
-            // Fallback: copy first file
             fs::copy(&bc_files[0], &output_file)
                 .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
             Ok(())
@@ -351,8 +441,7 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
             .unwrap_or("input");
         let output_file = ctx.temp_dir.join(format!("{}_optimized.bc", file_stem));
 
-        // Try opt with RISC-V target
-        let mut cmd = Command::new("opt");
+        let mut cmd = Command::new(opt_tool());
         cmd.arg(&input_file).arg("-o").arg(&output_file).arg("-O3");
 
         match cmd.output() {
@@ -360,7 +449,6 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
                 eprintln!("PACC: Optimized bitcode: {}", output_file.display());
             }
             _ => {
-                // Fallback: copy
                 fs::copy(&input_file, &output_file)
                     .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
             }
@@ -382,47 +470,31 @@ fn codegen_to_riscv_pacc(ctx: &ActionContext) -> pacc_comgr_status_t {
         return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
-    let config = crate::PaccConfig::default(); // X390 simulation config
-
     for input_file in bc_files {
         let file_stem = input_file
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("input");
-        let output_file = ctx.temp_dir.join(format!("{}_pacc.elf", file_stem));
+        let output_file = ctx.temp_dir.join(format!("{}_pacc.o", file_stem));
 
-        // Use llc to generate RISC-V object code for X390 target
-        let mut cmd = Command::new("llc");
-        cmd.arg(&input_file)
-            .arg("-o")
-            .arg(&output_file)
-            .arg("-march=riscv64")
-            .arg(format!("-mattr={}", config.mattr))
-            .arg("-filetype=obj");
+        let used_config = match compile_bc_to_pacc_object(&input_file, &output_file) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!(
+                    "PACC/XM: failed to generate RISC-V object from {}: {}",
+                    input_file.display(),
+                    e
+                );
+                return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR);
+            }
+        };
 
-        match cmd.output() {
-            Ok(output) if output.status.success() => {
-                eprintln!(
-                    "PACC/X390: Generated RISC-V object code: {}",
-                    output_file.display()
-                );
-            }
-            Ok(output) => {
-                eprintln!(
-                    "PACC/X390: llc failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                let dummy = create_dummy_riscv_elf();
-                fs::write(&output_file, dummy)
-                    .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
-            }
-            Err(_) => {
-                eprintln!("PACC/X390: llc not available, creating dummy ELF");
-                let dummy = create_dummy_riscv_elf();
-                fs::write(&output_file, dummy)
-                    .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
-            }
-        }
+        eprintln!(
+            "PACC/XM: Generated RISC-V object code with target={} march={}: {}",
+            used_config.target_triple,
+            used_config.march,
+            output_file.display()
+        );
     }
 
     Ok(())
@@ -440,6 +512,8 @@ fn codegen_to_assembly(ctx: &ActionContext) -> pacc_comgr_status_t {
         return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
 
+    let config = crate::PaccConfig::xm_hardware();
+
     for input_file in bc_files {
         let file_stem = input_file
             .file_stem()
@@ -447,29 +521,19 @@ fn codegen_to_assembly(ctx: &ActionContext) -> pacc_comgr_status_t {
             .unwrap_or("input");
         let output_file = ctx.temp_dir.join(format!("{}.s", file_stem));
 
-        let config = crate::PaccConfig::default();
-        let mut cmd = Command::new("llc");
-        cmd.arg(&input_file)
-            .arg("-o")
-            .arg(&output_file)
-            .arg("-march=riscv64")
-            .arg(format!("-mattr={}", config.mattr))
-            .arg("-filetype=asm");
-
-        match cmd.output() {
-            Ok(output) if output.status.success() => {
-                eprintln!(
-                    "PACC: Generated RISC-V+VCIX assembly: {}",
-                    output_file.display()
-                );
-            }
-            _ => {
-                // Fallback: create stub assembly
-                let asm = create_pacc_stub_assembly(&input_file);
-                fs::write(&output_file, asm)
-                    .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
-            }
+        if let Err(e) = compile_bc_to_xm_assembly(&input_file, &output_file, &config) {
+            eprintln!(
+                "PACC/XM: failed to generate assembly from {}: {}",
+                input_file.display(),
+                e
+            );
+            return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR);
         }
+
+        eprintln!(
+            "PACC/XM: Generated RISC-V+VCIX assembly: {}",
+            output_file.display()
+        );
     }
 
     Ok(())
@@ -493,18 +557,36 @@ fn compile_to_fatbin(ctx: &ActionContext) -> pacc_comgr_status_t {
             .and_then(|s| s.to_str())
             .unwrap_or("input");
         let output_file = ctx.temp_dir.join(format!("{}_pacc.fatbin", file_stem));
+        let bc_file = ctx.temp_dir.join(format!("{}_fatbin.bc", file_stem));
+        let elf_file = ctx.temp_dir.join(format!("{}_fatbin.o", file_stem));
 
-        let mut fatbin_content = Vec::new();
-        fatbin_content.extend_from_slice(b"PACC_BIN\0");
-        fatbin_content.extend_from_slice(b"VERSION=1.0\0");
-        fatbin_content.extend_from_slice(b"ARCH=RISCV64_IME_VCIX\0");
-        fatbin_content.extend_from_slice(b"TARGET=sifive-xm\0");
+        let compile_result = if is_cxx_source(&input_file) || is_c_source(&input_file) {
+            compile_c_family_source_to_bitcode(ctx, &input_file, &bc_file)
+        } else {
+            compile_ptx_to_bitcode(ctx, &input_file, &bc_file)
+        };
 
-        if let Ok(input_content) = fs::read(&input_file) {
-            fatbin_content.extend_from_slice(b"SOURCE_START\0");
-            fatbin_content.extend_from_slice(&input_content);
-            fatbin_content.extend_from_slice(b"SOURCE_END\0");
+        if let Err(e) = compile_result {
+            eprintln!(
+                "PACC: source -> LLVM bitcode failed for fatbin input {}: {}",
+                input_file.display(),
+                e
+            );
+            return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR);
         }
+
+        if let Err(e) = compile_bc_to_pacc_object(&bc_file, &elf_file) {
+            eprintln!(
+                "PACC/XM: bitcode -> object failed for fatbin input {}: {}",
+                input_file.display(),
+                e
+            );
+            return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR);
+        }
+
+        let elf_bytes =
+            fs::read(&elf_file).map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
+        let fatbin_content = create_cuda_fatbin_with_elf(&elf_bytes);
 
         fs::write(&output_file, fatbin_content)
             .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
@@ -514,71 +596,372 @@ fn compile_to_fatbin(ctx: &ActionContext) -> pacc_comgr_status_t {
     Ok(())
 }
 
-// --- Helper functions ---
-
-fn create_pacc_llvm_ir(input_file: &PathBuf) -> Vec<u8> {
-    // LLVM IR targeting RISC-V with VCIX intrinsic declarations
-    let llvm_ir = format!(
-        "; ModuleID = '{}'\n\
-         source_filename = \"{}\"\n\
-         target datalayout = \"e-m:e-p:64:64-i64:64-i128:128-n64-S128\"\n\
-         target triple = \"riscv64-unknown-elf\"\n\
-         \n\
-         ; VCIX intrinsics for PACC matrix operations\n\
-         ; sf.vc.v.vvv: C = matmul_acc(C, A, B) -- 3 vector operands, accumulate\n\
-         declare <vscale x 16 x i8> @llvm.riscv.sf.vc.v.vvv.se.nxv16i8.i64.nxv16i8.nxv16i8.i64(\n\
-           i64, <vscale x 16 x i8>, <vscale x 16 x i8>, <vscale x 16 x i8>, i64)\n\
-         \n\
-         ; sf.vc.v.vvw: C_wide = matmul_acc_wide(C_wide, A, B) -- widening accumulate\n\
-         declare <vscale x 8 x i32> @llvm.riscv.sf.vc.v.vvw.se.nxv8i32.i64.nxv16i8.nxv16i8.i64(\n\
-           i64, <vscale x 8 x i32>, <vscale x 16 x i8>, <vscale x 16 x i8>, i64)\n\
-         \n\
-         ; Standard RVV vector load/store\n\
-         declare <vscale x 16 x i8> @llvm.riscv.vle.nxv16i8.i64(\n\
-           <vscale x 16 x i8>, ptr, i64)\n\
-         declare void @llvm.riscv.vse.nxv16i8.i64(\n\
-           <vscale x 16 x i8>, ptr, i64)\n\
-         \n\
-         define void @pacc_main() {{\n\
-         entry:\n\
-           ret void\n\
-         }}\n",
-        input_file.display(),
-        input_file.display()
-    );
-
-    llvm_ir.into_bytes()
+fn compile_ptx_to_bitcode(
+    ctx: &ActionContext,
+    input_file: &Path,
+    output_file: &Path,
+) -> io::Result<()> {
+    let tool = ensure_ptx_helper_tool("ptx_to_llvm_bc")?;
+    let llvm_ir_path = output_file.with_extension("ll");
+    let mut cmd = Command::new(tool);
+    cmd.arg(input_file)
+        .arg(output_file)
+        .arg("--llvm-ir")
+        .arg(&llvm_ir_path);
+    apply_action_context_to_command(ctx, &mut cmd);
+    run_command(&mut cmd, "PTX -> LLVM bitcode")
 }
 
-fn create_pacc_stub_assembly(input_file: &PathBuf) -> String {
-    format!(
-        "# Generated RISC-V assembly for PACC/X390 (Zvbdot block dot products)\n\
-         # Original bitcode file: {}\n\
-         .attribute 5, \"rv64gcv_zvl512b_zfbfmin_zvfbfmin_zvfbfwma\"\n\
-         .text\n\
-         .globl pacc_main\n\
-         .type pacc_main, @function\n\
-         pacc_main:\n\
-         # Configure vector unit for X390 block dot product operations\n\
-         # SEW=8, LMUL=1 for 8-wide block dot products on VLEN=512\n\
-         vsetivli zero, 16, e8, m1, ta, ma\n\
-         \n\
-         # Load matrix tiles into vector register groups\n\
-         # vle8.v v0, (a0)   # Load tile A row into v0\n\
-         # vle8.v v8, (a1)   # Load tile B block into v8-v15\n\
-         \n\
-         # Block dot product: C[i] += dot(A_row, B_col[j])\n\
-         # Uses 8-register groups for block-strided access\n\
-         # vqbdotu.vv v16, v0, v8  # 4-element unsigned quad dot product\n\
-         \n\
-         # Store result\n\
-         # vse32.v v16, (a2)  # Store int32 results\n\
-         \n\
-         li a0, 0\n\
-         ret\n\
-         .size pacc_main, .-pacc_main\n",
-        input_file.display()
+fn compile_c_family_source_to_bitcode(
+    ctx: &ActionContext,
+    input_file: &Path,
+    output_file: &Path,
+) -> io::Result<()> {
+    let config = crate::PaccConfig::rvv_linux_bf16();
+    let clang = preferred_tool(
+        "HETGPU_PACC_SOURCE_CLANG",
+        &["/usr/bin/clang-20", "clang-20", "clang"],
+    );
+    let target = ctx
+        .target
+        .clone()
+        .or_else(|| std::env::var("HETGPU_PACC_SOURCE_TARGET").ok())
+        .unwrap_or_else(|| config.target_triple.clone());
+    let sysroot = std::env::var("HETGPU_PACC_SOURCE_SYSROOT").unwrap_or_else(|_| "/".to_string());
+    let gcc_toolchain =
+        std::env::var("HETGPU_PACC_SOURCE_GCC_TOOLCHAIN").unwrap_or_else(|_| "/usr".to_string());
+    let march = std::env::var("HETGPU_PACC_SOURCE_MARCH").unwrap_or_else(|_| config.march.clone());
+    let mabi = std::env::var("HETGPU_PACC_SOURCE_MABI").unwrap_or_else(|_| "lp64d".to_string());
+
+    let mut cmd = Command::new(clang);
+    cmd.arg(format!("--target={}", target))
+        .arg(format!("--sysroot={}", sysroot))
+        .arg(format!("--gcc-toolchain={}", gcc_toolchain))
+        .arg("-emit-llvm")
+        .arg("-c")
+        .arg("-O3")
+        .arg("-menable-experimental-extensions")
+        .arg(format!("-march={}", march))
+        .arg(format!("-mabi={}", mabi))
+        .arg(input_file)
+        .arg("-o")
+        .arg(output_file);
+
+    if is_cxx_source(input_file) {
+        cmd.arg("-std=c++17").arg("-stdlib=libstdc++");
+    } else {
+        cmd.arg("-std=c11");
+    }
+
+    cmd.args(&ctx.options);
+    apply_action_context_to_command(ctx, &mut cmd);
+
+    run_command(&mut cmd, "C/C++ source -> LLVM bitcode")
+}
+
+fn apply_action_context_to_command(ctx: &ActionContext, cmd: &mut Command) {
+    if let Some(dir) = &ctx.working_directory {
+        cmd.current_dir(dir);
+    }
+    cmd.env("HETGPU_PACC_TMPDIR", &ctx.temp_dir)
+        .env("TMPDIR", &ctx.temp_dir)
+        .env("TEMP", &ctx.temp_dir)
+        .env("TMP", &ctx.temp_dir);
+}
+
+fn resolve_original_input_path(
+    file_name: &str,
+    working_directory: Option<&Path>,
+) -> Option<PathBuf> {
+    let path = Path::new(file_name);
+    if path.is_absolute() && path.is_file() {
+        return Some(path.to_path_buf());
+    }
+
+    let candidate = working_directory?.join(path);
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn compile_bc_to_pacc_object(
+    input_file: &Path,
+    output_file: &Path,
+) -> io::Result<crate::PaccConfig> {
+    let primary = crate::PaccConfig::xm_hardware();
+    match compile_bc_to_xm_object(input_file, output_file, &primary) {
+        Ok(()) => Ok(primary),
+        Err(primary_err) => {
+            let fallback = crate::PaccConfig::rvv_linux_bf16();
+            match compile_bc_to_xm_object(input_file, output_file, &fallback) {
+                Ok(()) => {
+                    eprintln!(
+                        "PACC: primary XM codegen failed for {} ({}); used RVV/Linux fallback",
+                        input_file.display(),
+                        primary_err
+                    );
+                    Ok(fallback)
+                }
+                Err(fallback_err) => Err(io::Error::other(format!(
+                    "primary XM codegen failed: {}; RVV/Linux fallback failed: {}",
+                    primary_err, fallback_err
+                ))),
+            }
+        }
+    }
+}
+
+fn compile_bc_to_xm_object(
+    input_file: &Path,
+    output_file: &Path,
+    config: &crate::PaccConfig,
+) -> io::Result<()> {
+    let clang = preferred_tool(
+        "HETGPU_PACC_CLANG",
+        &["/usr/bin/clang-20", "clang-20", "clang"],
+    );
+    let mut cmd = Command::new(clang);
+    cmd.arg("-target")
+        .arg(&config.target_triple)
+        .arg("-menable-experimental-extensions")
+        .arg(format!("-march={}", config.march))
+        .arg("-Wno-override-module")
+        .arg("-c")
+        .arg(input_file)
+        .arg("-o")
+        .arg(output_file);
+
+    if config.target_triple.contains("linux") {
+        let sysroot =
+            std::env::var("HETGPU_PACC_SOURCE_SYSROOT").unwrap_or_else(|_| "/".to_string());
+        let gcc_toolchain = std::env::var("HETGPU_PACC_SOURCE_GCC_TOOLCHAIN")
+            .unwrap_or_else(|_| "/usr".to_string());
+        cmd.arg(format!("--sysroot={}", sysroot))
+            .arg(format!("--gcc-toolchain={}", gcc_toolchain));
+    }
+
+    run_command(&mut cmd, "LLVM bitcode -> RISC-V object")
+}
+
+fn compile_bc_to_xm_assembly(
+    input_file: &Path,
+    output_file: &Path,
+    config: &crate::PaccConfig,
+) -> io::Result<()> {
+    let clang = preferred_tool(
+        "HETGPU_PACC_CLANG",
+        &["/usr/bin/clang-20", "clang-20", "clang"],
+    );
+    let mut cmd = Command::new(clang);
+    cmd.arg("-target")
+        .arg(&config.target_triple)
+        .arg("-menable-experimental-extensions")
+        .arg(format!("-march={}", config.march))
+        .arg("-Wno-override-module")
+        .arg("-S")
+        .arg(input_file)
+        .arg("-o")
+        .arg(output_file);
+
+    if config.target_triple.contains("linux") {
+        let sysroot =
+            std::env::var("HETGPU_PACC_SOURCE_SYSROOT").unwrap_or_else(|_| "/".to_string());
+        let gcc_toolchain = std::env::var("HETGPU_PACC_SOURCE_GCC_TOOLCHAIN")
+            .unwrap_or_else(|_| "/usr".to_string());
+        cmd.arg(format!("--sysroot={}", sysroot))
+            .arg(format!("--gcc-toolchain={}", gcc_toolchain));
+    }
+
+    run_command(&mut cmd, "LLVM bitcode -> RISC-V assembly")
+}
+
+fn source_extension(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+}
+
+fn is_c_source(path: &Path) -> bool {
+    matches!(source_extension(path).as_deref(), Some("c"))
+}
+
+fn is_cxx_source(path: &Path) -> bool {
+    matches!(
+        source_extension(path).as_deref(),
+        Some("cc" | "cp" | "cxx" | "cpp" | "c++")
     )
+}
+
+fn preferred_tool(env_var: &str, fallbacks: &[&str]) -> String {
+    if !env_var.is_empty() {
+        if let Ok(value) = std::env::var(env_var) {
+            if !value.trim().is_empty() {
+                return value;
+            }
+        }
+    }
+
+    for tool in fallbacks {
+        if tool.contains('/') {
+            if Path::new(tool).is_file() {
+                return (*tool).to_string();
+            }
+        }
+    }
+
+    fallbacks.first().copied().unwrap_or("clang").to_string()
+}
+
+fn llvm_link_tool() -> String {
+    preferred_tool(
+        "HETGPU_PACC_LLVM_LINK",
+        &["/usr/bin/llvm-link-20", "llvm-link-20", "llvm-link"],
+    )
+}
+
+fn opt_tool() -> String {
+    preferred_tool("HETGPU_PACC_OPT", &["/usr/bin/opt-20", "opt-20", "opt"])
+}
+
+fn ensure_ptx_helper_tool(tool_name: &str) -> io::Result<PathBuf> {
+    let repo_root = workspace_root()?;
+    let tool_path = repo_root.join("target/debug").join(tool_name);
+    if tool_path.is_file() {
+        return Ok(tool_path);
+    }
+
+    let status = Command::new("bash")
+        .arg("-lc")
+        .arg(format!(
+            "cd {} && cargo build -p ptx --features pacc --bin {}",
+            shell_escape_path(&repo_root),
+            tool_name
+        ))
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "cargo failed while building {}",
+            tool_name
+        )));
+    }
+
+    if !tool_path.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("expected helper binary at {}", tool_path.display()),
+        ));
+    }
+
+    Ok(tool_path)
+}
+
+fn workspace_root() -> io::Result<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .join("../..")
+        .canonicalize()
+        .map_err(|e| io::Error::other(format!("failed to locate workspace root: {}", e)))
+}
+
+fn run_command(cmd: &mut Command, what: &str) -> io::Result<()> {
+    let output = cmd.output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(io::Error::other(format!(
+        "{} failed: {}",
+        what,
+        String::from_utf8_lossy(&output.stderr)
+    )))
+}
+
+fn shell_escape_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+#[repr(C, align(8))]
+struct FatbinHeader {
+    magic: u32,
+    version: u16,
+    header_size: u16,
+    files_size: u64,
+}
+
+#[repr(C)]
+struct FatbinFileHeader {
+    kind: u16,
+    version: u16,
+    header_size: u32,
+    padded_payload_size: u32,
+    unknown0: u32,
+    payload_size: u32,
+    unknown1: u32,
+    unknown2: u32,
+    sm_version: u32,
+    bit_width: u32,
+    unknown3: u32,
+    unknown4: u64,
+    unknown5: u64,
+    uncompressed_payload: u64,
+}
+
+fn create_cuda_fatbin_with_elf(elf_bytes: &[u8]) -> Vec<u8> {
+    const FATBIN_MAGIC: u32 = 0xBA55ED50;
+    const FATBIN_VERSION: u16 = 0x0001;
+    const FATBIN_KIND_ELF: u16 = 0x0002;
+    const FATBIN_FILE_HEADER_VERSION_CURRENT: u16 = 0x0101;
+
+    let header_size = mem::size_of::<FatbinHeader>();
+    let file_header_size = mem::size_of::<FatbinFileHeader>();
+    let padded_payload_size = align_up(elf_bytes.len(), 8);
+    let file_header = FatbinFileHeader {
+        kind: FATBIN_KIND_ELF,
+        version: FATBIN_FILE_HEADER_VERSION_CURRENT,
+        header_size: file_header_size as u32,
+        padded_payload_size: padded_payload_size as u32,
+        unknown0: 0,
+        payload_size: elf_bytes.len() as u32,
+        unknown1: 0,
+        unknown2: 0,
+        sm_version: 90,
+        bit_width: 64,
+        unknown3: 0,
+        unknown4: 0,
+        unknown5: 0,
+        uncompressed_payload: 0,
+    };
+
+    let mut files = Vec::with_capacity(file_header_size + padded_payload_size);
+    files.extend_from_slice(as_bytes(&file_header));
+    files.extend_from_slice(elf_bytes);
+    files.resize(file_header_size + padded_payload_size, 0);
+
+    let header = FatbinHeader {
+        magic: FATBIN_MAGIC,
+        version: FATBIN_VERSION,
+        header_size: header_size as u16,
+        files_size: files.len() as u64,
+    };
+
+    let mut fatbin = Vec::with_capacity(header_size + files.len());
+    fatbin.extend_from_slice(as_bytes(&header));
+    fatbin.extend_from_slice(&files);
+    fatbin
+}
+
+fn align_up(value: usize, alignment: usize) -> usize {
+    if alignment == 0 {
+        return value;
+    }
+    (value + alignment - 1) & !(alignment - 1)
+}
+
+fn as_bytes<T>(value: &T) -> &[u8] {
+    unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), mem::size_of::<T>()) }
 }
 
 fn create_dummy_riscv_elf() -> Vec<u8> {

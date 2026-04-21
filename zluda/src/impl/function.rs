@@ -2721,6 +2721,23 @@ pub(crate) fn launch_kernel(
             return Err(CUerror::UNKNOWN);
         }
     } else {
+        let abi_result = unsafe {
+            configure_pacc_launch_abi(
+                kernel.kernel_ptr,
+                &kernel.kernel_name,
+                kernel_params,
+                extra,
+            )
+        };
+        if abi_result != pacc_runtime_sys::pacc_Result_Success {
+            crate::r#impl::hetgpu_debug!(
+                "[PACC Backend] configure_pacc_launch_abi failed: {}",
+                abi_result
+            );
+            if strict {
+                return Err(CUerror::UNKNOWN);
+            }
+        }
         let result = unsafe {
             pacc_runtime_sys::pacc_LaunchKernel(
                 kernel.kernel_ptr,
@@ -2742,6 +2759,172 @@ pub(crate) fn launch_kernel(
 
     let _ = (shared_mem_bytes, stream, kernel_params, extra);
     Ok(())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_max_launch_params() -> usize {
+    std::env::var("HETGPU_PACC_MAX_KERNEL_PARAMS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0 && n <= 256)
+        .unwrap_or(32)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_looks_like_pointer(value: u64) -> bool {
+    value > 0x1000 && value < 0x0000_8000_0000_0000
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn parse_pacc_launch_extra_blob(
+    extra: *mut *mut ::core::ffi::c_void,
+) -> Option<Vec<u8>> {
+    use cuda_types::cuda::{
+        CU_LAUNCH_PARAM_BUFFER_POINTER_AS_INT, CU_LAUNCH_PARAM_BUFFER_SIZE_AS_INT,
+    };
+
+    if extra.is_null() {
+        return None;
+    }
+
+    let mut raw_ptr: *const u8 = std::ptr::null();
+    let mut raw_size: usize = 0;
+    let mut i = 0usize;
+    loop {
+        let key = *extra.add(i);
+        if key.is_null() {
+            break;
+        }
+        let value = *extra.add(i + 1);
+        match key as usize {
+            CU_LAUNCH_PARAM_BUFFER_POINTER_AS_INT => {
+                raw_ptr = value as *const u8;
+            }
+            CU_LAUNCH_PARAM_BUFFER_SIZE_AS_INT => {
+                if !value.is_null() {
+                    raw_size = (value as *const usize).read_unaligned();
+                }
+            }
+            _ => {}
+        }
+        i += 2;
+    }
+
+    if raw_ptr.is_null() || raw_size == 0 {
+        return None;
+    }
+
+    Some(std::slice::from_raw_parts(raw_ptr, raw_size).to_vec())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn configure_pacc_launch_abi(
+    kernel_ptr: *mut pacc_runtime_sys::pacc_Kernel,
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    extra: *mut *mut ::core::ffi::c_void,
+) -> pacc_runtime_sys::pacc_Result {
+    if kernel_ptr.is_null() {
+        return pacc_runtime_sys::pacc_Result_Error;
+    }
+
+    let clear = pacc_runtime_sys::pacc_KernelClearLaunchState(kernel_ptr);
+    if clear != pacc_runtime_sys::pacc_Result_Success {
+        return clear;
+    }
+
+    if let Some(raw_blob) = parse_pacc_launch_extra_blob(extra) {
+        let rc = pacc_runtime_sys::pacc_KernelSetRawParamBlob(
+            kernel_ptr,
+            raw_blob.as_ptr() as *const _,
+            raw_blob.len() as u64,
+        );
+        if rc != pacc_runtime_sys::pacc_Result_Success {
+            return rc;
+        }
+    }
+
+    if kernel_params.is_null() {
+        return pacc_runtime_sys::pacc_Result_Success;
+    }
+
+    let max_params = pacc_max_launch_params();
+    let log_launches = std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+        .ok()
+        .as_deref()
+        == Some("1");
+    let mut pushed = 0usize;
+    let mut pointer_like = 0usize;
+
+    for i in 0..max_params {
+        let param = *kernel_params.add(i);
+        if param.is_null() {
+            break;
+        }
+
+        let value = (param as *const u64).read_unaligned();
+        let is_pointer = pacc_looks_like_pointer(value);
+        let record = pacc_runtime_sys::PaccKernelArgRecord {
+            kind: if is_pointer {
+                pacc_runtime_sys::PACC_KERNEL_ARG_KIND_POINTER
+            } else {
+                pacc_runtime_sys::PACC_KERNEL_ARG_KIND_SCALAR
+            },
+            size: 8,
+            flags: 0,
+            reserved: 0,
+            value,
+        };
+        let rc = pacc_runtime_sys::pacc_KernelPushArgRecord(kernel_ptr, &record);
+        if rc != pacc_runtime_sys::pacc_Result_Success {
+            return rc;
+        }
+
+        if is_pointer {
+            let binding = pacc_runtime_sys::PaccKernelBufferBinding {
+                arg_index: i as u32,
+                flags: 0,
+                addr: value,
+                size: 0,
+            };
+            let rc = pacc_runtime_sys::pacc_KernelAddBufferBinding(kernel_ptr, &binding);
+            if rc != pacc_runtime_sys::pacc_Result_Success {
+                return rc;
+            }
+            pointer_like += 1;
+        }
+
+        pushed += 1;
+    }
+
+    if log_launches {
+        eprintln!(
+            "[PACC Backend] launch ABI prepared for '{}' args={} pointer_like={}",
+            kernel_name, pushed, pointer_like
+        );
+    }
+
+    pacc_runtime_sys::pacc_Result_Success
 }
 
 #[cfg(all(
@@ -2835,11 +3018,16 @@ unsafe fn try_offload_named_pacc_kernel(
         let cols = read_param_i32(kernel_params, 4)
             .unwrap_or_else(|| if stride > 0 { stride as i32 } else { 1 })
             .max(1) as u64;
-        let rc = pacc_runtime_sys::hetgpu_pacc_submit_softmax_f32(src, dst, rows, cols, stride);
+        let dtype = if name_lower.contains("bf16") || name_lower.contains("bfloat16") {
+            pacc_runtime_sys::PaccDataType::Bfloat16 as i32
+        } else {
+            pacc_runtime_sys::PaccDataType::Float32 as i32
+        };
+        let rc = pacc_runtime_sys::hetgpu_pacc_submit_softmax(src, dst, rows, cols, stride, dtype);
         if rc == 0 {
             eprintln!(
-                "[PACC Backend] offloaded softmax '{}' rows={} cols={} stride={}",
-                kernel_name, rows, cols, stride
+                "[PACC Backend] offloaded softmax '{}' rows={} cols={} stride={} dtype={} ",
+                kernel_name, rows, cols, stride, dtype
             );
             return Some(Ok(()));
         }
@@ -2863,11 +3051,17 @@ unsafe fn try_offload_named_pacc_kernel(
             .saturating_mul(grid_dim_y.max(1) as u64)
             .saturating_mul(grid_dim_z.max(1) as u64)
             .max(1);
-        let rc = pacc_runtime_sys::hetgpu_pacc_submit_rmsnorm_f32(x, weight, y, rows, hidden, eps);
+        let dtype = if name_lower.contains("bf16") || name_lower.contains("bfloat16") {
+            pacc_runtime_sys::PaccDataType::Bfloat16 as i32
+        } else {
+            pacc_runtime_sys::PaccDataType::Float32 as i32
+        };
+        let rc =
+            pacc_runtime_sys::hetgpu_pacc_submit_rmsnorm(x, weight, y, rows, hidden, eps, dtype);
         if rc == 0 {
             eprintln!(
-                "[PACC Backend] offloaded RMSNorm '{}' rows={} hidden={} eps={}",
-                kernel_name, rows, hidden, eps
+                "[PACC Backend] offloaded RMSNorm '{}' rows={} hidden={} eps={} dtype={} ",
+                kernel_name, rows, hidden, eps, dtype
             );
             return Some(Ok(()));
         }

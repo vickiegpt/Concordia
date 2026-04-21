@@ -67,17 +67,29 @@ impl PaccElementType {
         match self {
             PaccElementType::Int4 => 4,
             PaccElementType::Int8 | PaccElementType::Uint8 => 8,
-            PaccElementType::Int16 | PaccElementType::Uint16 | PaccElementType::Float16 | PaccElementType::Bfloat16 => 16,
+            PaccElementType::Int16
+            | PaccElementType::Uint16
+            | PaccElementType::Float16
+            | PaccElementType::Bfloat16 => 16,
             PaccElementType::Float32 | PaccElementType::Int32 => 32,
         }
     }
 
     pub fn is_signed(&self) -> bool {
-        matches!(self, PaccElementType::Int4 | PaccElementType::Int8 | PaccElementType::Int16 | PaccElementType::Int32)
+        matches!(
+            self,
+            PaccElementType::Int4
+                | PaccElementType::Int8
+                | PaccElementType::Int16
+                | PaccElementType::Int32
+        )
     }
 
     pub fn is_float(&self) -> bool {
-        matches!(self, PaccElementType::Float16 | PaccElementType::Bfloat16 | PaccElementType::Float32)
+        matches!(
+            self,
+            PaccElementType::Float16 | PaccElementType::Bfloat16 | PaccElementType::Float32
+        )
     }
 
     /// LLVM IR type string for scalable vectors
@@ -321,43 +333,50 @@ pub fn emit_vcix_mma_ir(
 pub fn emit_vcix_declarations(vlen: usize) -> String {
     let mut decls = String::new();
 
-    writeln!(decls, "; PACC/VCIX intrinsic declarations for VLEN={}", vlen).unwrap();
+    writeln!(
+        decls,
+        "; PACC/VCIX intrinsic declarations for VLEN={}",
+        vlen
+    )
+    .unwrap();
     writeln!(decls).unwrap();
 
     // Integer int8 → int32 widening (most common for inference)
     writeln!(
         decls,
         "; sf.vc.v.vvw: int8 sources, int32 accumulator (widening MMA)"
-    ).unwrap();
+    )
+    .unwrap();
     writeln!(
         decls,
         "declare <vscale x 2 x i32> @llvm.riscv.sf.vc.v.vvw.se.nxv2i32.i64.nxv8i8.nxv8i8.i64(\
          i64, <vscale x 2 x i32>, <vscale x 8 x i8>, <vscale x 8 x i8>, i64)"
-    ).unwrap();
+    )
+    .unwrap();
 
     // Integer int8 → int32 widening, side-effect only (no output)
     writeln!(
         decls,
         "declare void @llvm.riscv.sf.vc.vvw.se.i64.nxv2i32.nxv8i8.nxv8i8.i64(\
          i64, <vscale x 2 x i32>, <vscale x 8 x i8>, <vscale x 8 x i8>, i64)"
-    ).unwrap();
+    )
+    .unwrap();
 
     // Float16 → float16 same-width MMA
     writeln!(
         decls,
         "\n; sf.vc.v.vvv: fp16 sources, fp16 accumulator (same-width MMA)"
-    ).unwrap();
+    )
+    .unwrap();
     writeln!(
         decls,
         "declare <vscale x 4 x half> @llvm.riscv.sf.vc.v.vvv.se.nxv4half.i64.nxv4half.nxv4half.i64(\
          i64, <vscale x 4 x half>, <vscale x 4 x half>, <vscale x 4 x half>, i64)"
-    ).unwrap();
+    )
+    .unwrap();
 
     // BFloat16 → bfloat16 same-width MMA
-    writeln!(
-        decls,
-        "\n; sf.vc.v.vvv: bf16 sources, bf16 accumulator"
-    ).unwrap();
+    writeln!(decls, "\n; sf.vc.v.vvv: bf16 sources, bf16 accumulator").unwrap();
     writeln!(
         decls,
         "declare <vscale x 4 x bfloat> @llvm.riscv.sf.vc.v.vvv.se.nxv4bfloat.i64.nxv4bfloat.nxv4bfloat.i64(\
@@ -370,22 +389,26 @@ pub fn emit_vcix_declarations(vlen: usize) -> String {
         decls,
         "declare <vscale x 8 x i8> @llvm.riscv.vle.nxv8i8.i64(\
          <vscale x 8 x i8>, ptr, i64)"
-    ).unwrap();
+    )
+    .unwrap();
     writeln!(
         decls,
         "declare void @llvm.riscv.vse.nxv8i8.i64(\
          <vscale x 8 x i8>, ptr, i64)"
-    ).unwrap();
+    )
+    .unwrap();
     writeln!(
         decls,
         "declare <vscale x 4 x half> @llvm.riscv.vle.nxv4half.i64(\
          <vscale x 4 x half>, ptr, i64)"
-    ).unwrap();
+    )
+    .unwrap();
     writeln!(
         decls,
         "declare void @llvm.riscv.vse.nxv4half.i64(\
          <vscale x 4 x half>, ptr, i64)"
-    ).unwrap();
+    )
+    .unwrap();
 
     // Strided loads for non-contiguous matrix rows
     writeln!(decls, "\n; RVV strided load for matrix row access").unwrap();
@@ -393,23 +416,25 @@ pub fn emit_vcix_declarations(vlen: usize) -> String {
         decls,
         "declare <vscale x 8 x i8> @llvm.riscv.vlse.nxv8i8.i64(\
          <vscale x 8 x i8>, ptr, i64, i64)"
-    ).unwrap();
+    )
+    .unwrap();
 
     decls
 }
 
 /// Generate a complete LLVM IR module for a PACC kernel that uses VCIX
 /// matrix operations. Used by the compile_bitcode_pacc pipeline.
-pub fn emit_pacc_kernel_module(
-    kernel_name: &str,
-    vlen: usize,
-) -> String {
+pub fn emit_pacc_kernel_module(kernel_name: &str, vlen: usize) -> String {
     let tile = PaccTileConfig::new(vlen, 8);
     let mut module = String::new();
 
     writeln!(module, "; ModuleID = 'pacc_{}'", kernel_name).unwrap();
     writeln!(module, "source_filename = \"pacc_{}\"", kernel_name).unwrap();
-    writeln!(module, "target datalayout = \"e-m:e-p:64:64-i64:64-i128:128-n64-S128\"").unwrap();
+    writeln!(
+        module,
+        "target datalayout = \"e-m:e-p:64:64-i64:64-i128:128-n64-S128\""
+    )
+    .unwrap();
     writeln!(module, "target triple = \"riscv64-unknown-elf\"").unwrap();
     writeln!(module).unwrap();
 
@@ -421,12 +446,24 @@ pub fn emit_pacc_kernel_module(
         module,
         "; PACC kernel: {}x{}x{} tile MMA (VLEN={}, SEW=8)",
         tile.m, tile.n, tile.k, vlen
-    ).unwrap();
-    writeln!(module, "define void @{}(ptr %a, ptr %b, ptr %c, i64 %M, i64 %N, i64 %K) {{", kernel_name).unwrap();
+    )
+    .unwrap();
+    writeln!(
+        module,
+        "define void @{}(ptr %a, ptr %b, ptr %c, i64 %M, i64 %N, i64 %K) {{",
+        kernel_name
+    )
+    .unwrap();
     writeln!(module, "entry:").unwrap();
 
     // Set vector length
-    writeln!(module, "  ; VL = {} elements (VLEN={}/SEW=8)", tile.vl(), vlen).unwrap();
+    writeln!(
+        module,
+        "  ; VL = {} elements (VLEN={}/SEW=8)",
+        tile.vl(),
+        vlen
+    )
+    .unwrap();
     writeln!(module, "  %vl = add i64 0, {}", tile.vl()).unwrap();
 
     // Load tiles
@@ -539,8 +576,10 @@ impl ZvbdotInstr {
     /// Destination/accumulator element type
     pub fn dst_element_type(&self) -> PaccElementType {
         match self {
-            ZvbdotInstr::Vqbdotu | ZvbdotInstr::Vqbdots
-            | ZvbdotInstr::Vqldotu | ZvbdotInstr::Vqldots => PaccElementType::Int32,
+            ZvbdotInstr::Vqbdotu
+            | ZvbdotInstr::Vqbdots
+            | ZvbdotInstr::Vqldotu
+            | ZvbdotInstr::Vqldots => PaccElementType::Int32,
             _ => PaccElementType::Float32,
         }
     }
@@ -676,40 +715,81 @@ pub fn emit_pacc_zvbdot_kernel_module(
 
     writeln!(module, "; ModuleID = 'pacc_zvbdot_{}'", kernel_name).unwrap();
     writeln!(module, "source_filename = \"pacc_zvbdot_{}\"", kernel_name).unwrap();
-    writeln!(module, "target datalayout = \"e-m:e-p:64:64-i64:64-i128:128-n64-S128\"").unwrap();
+    writeln!(
+        module,
+        "target datalayout = \"e-m:e-p:64:64-i64:64-i128:128-n64-S128\""
+    )
+    .unwrap();
     writeln!(module, "target triple = \"riscv64-unknown-elf\"").unwrap();
     writeln!(module).unwrap();
 
     // Standard RVV load/store declarations
     writeln!(module, "; RVV vector load/store").unwrap();
-    writeln!(module, "declare {} @llvm.riscv.vle.nxv{}{}.i64({}, ptr, i64)",
-        src_vec_ty, src_nxv, src_scalar, src_vec_ty).unwrap();
-    writeln!(module, "declare void @llvm.riscv.vse.nxv{}{}.i64({}, ptr, i64)",
-        dst_nxv, dst_scalar, dst_vec_ty).unwrap();
+    writeln!(
+        module,
+        "declare {} @llvm.riscv.vle.nxv{}{}.i64({}, ptr, i64)",
+        src_vec_ty, src_nxv, src_scalar, src_vec_ty
+    )
+    .unwrap();
+    writeln!(
+        module,
+        "declare void @llvm.riscv.vse.nxv{}{}.i64({}, ptr, i64)",
+        dst_nxv, dst_scalar, dst_vec_ty
+    )
+    .unwrap();
     writeln!(module).unwrap();
 
     writeln!(
         module,
         "; PACC/X390 Zvbdot kernel: {} instruction, VLEN={}, tile={}x{}x{}",
-        instr.mnemonic(), vlen, tile.m, tile.n, tile.k
-    ).unwrap();
-    writeln!(module, "define void @{}(ptr %a, ptr %b, ptr %c, i64 %vl) {{", kernel_name).unwrap();
+        instr.mnemonic(),
+        vlen,
+        tile.m,
+        tile.n,
+        tile.k
+    )
+    .unwrap();
+    writeln!(
+        module,
+        "define void @{}(ptr %a, ptr %b, ptr %c, i64 %vl) {{",
+        kernel_name
+    )
+    .unwrap();
     writeln!(module, "entry:").unwrap();
 
     // Load A and B tiles
-    writeln!(module, "  %a_tile = call {} @llvm.riscv.vle.nxv{}{}.i64({} undef, ptr %a, i64 %vl)",
-        src_vec_ty, src_nxv, src_scalar, src_vec_ty).unwrap();
-    writeln!(module, "  %b_tile = call {} @llvm.riscv.vle.nxv{}{}.i64({} undef, ptr %b, i64 %vl)",
-        src_vec_ty, src_nxv, src_scalar, src_vec_ty).unwrap();
+    writeln!(
+        module,
+        "  %a_tile = call {} @llvm.riscv.vle.nxv{}{}.i64({} undef, ptr %a, i64 %vl)",
+        src_vec_ty, src_nxv, src_scalar, src_vec_ty
+    )
+    .unwrap();
+    writeln!(
+        module,
+        "  %b_tile = call {} @llvm.riscv.vle.nxv{}{}.i64({} undef, ptr %b, i64 %vl)",
+        src_vec_ty, src_nxv, src_scalar, src_vec_ty
+    )
+    .unwrap();
 
     // Zvbdot inline asm
     writeln!(module, "  ; {} block dot product", instr.mnemonic()).unwrap();
-    writeln!(module, "  %result = call {} asm sideeffect \"{} $0, $1, $2\", \"=&v,v,v\"({} %a_tile, {} %b_tile)",
-        dst_vec_ty, instr.mnemonic(), src_vec_ty, src_vec_ty).unwrap();
+    writeln!(
+        module,
+        "  %result = call {} asm sideeffect \"{} $0, $1, $2\", \"=&v,v,v\"({} %a_tile, {} %b_tile)",
+        dst_vec_ty,
+        instr.mnemonic(),
+        src_vec_ty,
+        src_vec_ty
+    )
+    .unwrap();
 
     // Store result
-    writeln!(module, "  call void @llvm.riscv.vse.nxv{}{}.i64({} %result, ptr %c, i64 %vl)",
-        dst_nxv, dst_scalar, dst_vec_ty).unwrap();
+    writeln!(
+        module,
+        "  call void @llvm.riscv.vse.nxv{}{}.i64({} %result, ptr %c, i64 %vl)",
+        dst_nxv, dst_scalar, dst_vec_ty
+    )
+    .unwrap();
     writeln!(module, "  ret void").unwrap();
     writeln!(module, "}}").unwrap();
 
@@ -908,7 +988,8 @@ mod tests {
             PaccElementType::Int32,
             PaccElementType::Int32,
             512,
-        ).unwrap();
+        )
+        .unwrap();
         let ir = emit_zvbdot_inline_asm("%result", "%acc", "%a", "%b", &call);
         assert!(ir.contains("vqbdots.vv"));
         assert!(ir.contains("asm sideeffect"));

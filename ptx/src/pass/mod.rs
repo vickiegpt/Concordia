@@ -35,12 +35,12 @@ mod normalize_identifiers2;
 mod normalize_predicates2;
 pub mod ptx_to_tmatmul;
 mod remove_unreachable_basic_blocks;
-pub mod tmatmul_algorithm_tree;
 mod replace_instructions_with_function_calls;
 mod replace_instructions_with_functions;
 mod replace_instructions_with_functions_fp_required;
 mod replace_known_functions;
 mod resolve_function_pointers;
+pub mod tmatmul_algorithm_tree;
 
 #[cfg(test)]
 mod test;

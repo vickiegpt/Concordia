@@ -37,7 +37,10 @@ fn main() {
             println!("cargo:rustc-link-arg={lib}");
         }
         link_llvm_components(lib_names);
-        compile_cxx_lib_with_include(cxxflags, llvm_prefix.join("include").to_str().unwrap().to_string());
+        compile_cxx_lib_with_include(
+            cxxflags,
+            llvm_prefix.join("include").to_str().unwrap().to_string(),
+        );
 
         let llc_path = llvm_prefix.join("bin").join("llc");
         let llvm_dis_path = llvm_prefix.join("bin").join("llvm-dis");

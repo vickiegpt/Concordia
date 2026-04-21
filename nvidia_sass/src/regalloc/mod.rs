@@ -30,9 +30,7 @@ pub fn allocate(insts: &[SassInst]) -> Result<(Vec<SassInst>, u32), NvSassError>
     Ok((physical_insts, num_regs.max(8)))
 }
 
-fn linear_scan(
-    live_ranges: &HashMap<u8, (usize, usize)>,
-) -> Result<HashMap<u8, u8>, NvSassError> {
+fn linear_scan(live_ranges: &HashMap<u8, (usize, usize)>) -> Result<HashMap<u8, u8>, NvSassError> {
     let mut mapping: HashMap<u8, u8> = HashMap::new();
 
     let mut ranges: Vec<(u8, usize, usize)> = live_ranges
@@ -52,8 +50,7 @@ fn linear_scan(
         // Expire old intervals
         active.retain(|&(_, _, active_end)| active_end >= start);
 
-        let used: std::collections::HashSet<u8> =
-            active.iter().map(|&(_, phys, _)| phys).collect();
+        let used: std::collections::HashSet<u8> = active.iter().map(|&(_, phys, _)| phys).collect();
         let phys = (0..=254u8)
             .find(|r| !used.contains(r))
             .ok_or_else(|| NvSassError::RegAllocError("out of registers".to_string()))?;

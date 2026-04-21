@@ -104,7 +104,14 @@ fn bench_ptx_to_llvm() {
         elapsed.as_secs_f64() * 1000.0,
         elapsed.as_secs_f64() * 1000.0 / iterations as f64,
     );
-    println!("    Passes: {}", pass_times.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(" → "));
+    println!(
+        "    Passes: {}",
+        pass_times
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(" → ")
+    );
 }
 
 /// Benchmark VCIX intrinsic call planning
@@ -174,9 +181,21 @@ fn bench_zvbdot_selection() {
     let types = [
         (PaccElementType::Int8, PaccElementType::Int32, "int8→i32"),
         (PaccElementType::Uint8, PaccElementType::Int32, "uint8→i32"),
-        (PaccElementType::Bfloat16, PaccElementType::Float32, "bf16→f32"),
-        (PaccElementType::Float32, PaccElementType::Float32, "f32→f32"),
-        (PaccElementType::Float16, PaccElementType::Float32, "fp16→f32 (unsupported)"),
+        (
+            PaccElementType::Bfloat16,
+            PaccElementType::Float32,
+            "bf16→f32",
+        ),
+        (
+            PaccElementType::Float32,
+            PaccElementType::Float32,
+            "f32→f32",
+        ),
+        (
+            PaccElementType::Float16,
+            PaccElementType::Float32,
+            "fp16→f32 (unsupported)",
+        ),
     ];
 
     println!("[4] Zvbdot instruction selection ({}x each):", iterations);
@@ -235,7 +254,9 @@ fn bench_module_generation() {
 
     // Print module sizes
     let vcix_module = emit_pacc_kernel_module("bench", 512);
-    let zvbdot_module = emit_pacc_zvbdot_kernel_module("bench", 512, PaccElementType::Int8, PaccElementType::Int32).unwrap_or_default();
+    let zvbdot_module =
+        emit_pacc_zvbdot_kernel_module("bench", 512, PaccElementType::Int8, PaccElementType::Int32)
+            .unwrap_or_default();
     println!(
         "    Module sizes: VCIX: {} bytes, Zvbdot: {} bytes",
         vcix_module.len(),
@@ -276,7 +297,8 @@ fn bench_spike_simulation() {
     let start = Instant::now();
     let llc_result = Command::new("llc")
         .arg(&ir_path)
-        .arg("-o").arg(&asm_path)
+        .arg("-o")
+        .arg(&asm_path)
         .arg("-march=riscv64")
         .arg("-mattr=+v,+d,+f,+zfbfmin,+zvfbfmin,+zvfbfwma,+zvl512b")
         .arg("-filetype=asm")
@@ -301,7 +323,8 @@ fn bench_spike_simulation() {
     let start = Instant::now();
     let as_ok = Command::new("riscv64-unknown-elf-as")
         .arg(&asm_path)
-        .arg("-o").arg(&obj_path)
+        .arg("-o")
+        .arg(&obj_path)
         .arg("-march=rv64gcv_zvl512b")
         .output()
         .map(|o| o.status.success())
@@ -330,11 +353,18 @@ fn bench_spike_simulation() {
     match spike_result {
         Ok(o) if o.status.success() => {
             println!("    Spike simulation: {:.2}ms", spike_ms);
-            println!("    Total (LLC + asm + spike): {:.2}ms", llc_ms + as_ms + spike_ms);
+            println!(
+                "    Total (LLC + asm + spike): {:.2}ms",
+                llc_ms + as_ms + spike_ms
+            );
         }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
-            println!("    Spike exited with code {}: {}", o.status, &stderr[..stderr.len().min(200)]);
+            println!(
+                "    Spike exited with code {}: {}",
+                o.status,
+                &stderr[..stderr.len().min(200)]
+            );
         }
         Err(e) => {
             println!("    Spike error: {}", e);

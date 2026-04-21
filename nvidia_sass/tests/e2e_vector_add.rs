@@ -1,10 +1,10 @@
 // nvidia_sass/tests/e2e_vector_add.rs
 
-use nvidia_sass::types::*;
+use nvidia_sass::cubin_builder;
 use nvidia_sass::isel;
 use nvidia_sass::regalloc;
 use nvidia_sass::scheduler;
-use nvidia_sass::cubin_builder;
+use nvidia_sass::types::*;
 
 /// Build a vector_add kernel through the full pipeline.
 ///
@@ -16,11 +16,11 @@ fn test_e2e_vector_add_cubin() {
     // Step 1: Build instruction sequence with virtual regs (128+).
     // The register allocator treats R(n) where n >= 128 as virtual.
     let virtual_insts = vec![
-        isel::select_special_reg(200, SpecialReg::TidX),   // R200 = tid.x
-        isel::select_load_global(201, 200, 0),              // R201 = *(R200 + 0) [a[tid]]
-        isel::select_load_global(202, 200, 4),              // R202 = *(R200 + 4) [b[tid]]
-        isel::select_add_f32(203, 201, 202),                // R203 = R201 + R202
-        isel::select_store_global(200, 8, 203),             // *(R200 + 8) = R203 [c[tid]]
+        isel::select_special_reg(200, SpecialReg::TidX), // R200 = tid.x
+        isel::select_load_global(201, 200, 0),           // R201 = *(R200 + 0) [a[tid]]
+        isel::select_load_global(202, 200, 4),           // R202 = *(R200 + 4) [b[tid]]
+        isel::select_add_f32(203, 201, 202),             // R203 = R201 + R202
+        isel::select_store_global(200, 8, 203),          // *(R200 + 8) = R203 [c[tid]]
         isel::select_exit(),
     ];
 
@@ -31,7 +31,11 @@ fn test_e2e_vector_add_cubin() {
     // Verify that all virtual registers were mapped to physical registers < 128
     for inst in &physical_insts {
         if let Some(Reg::R(n)) = inst.dst {
-            assert!(n < 128, "virtual reg should be mapped to physical, got R{}", n);
+            assert!(
+                n < 128,
+                "virtual reg should be mapped to physical, got R{}",
+                n
+            );
         }
     }
 
@@ -112,12 +116,17 @@ fn test_e2e_vector_add_scheduling() {
     // FADD (idx 3) reads R1 and R2 from LDG (high latency).
     // Should have barrier waits set because LDG latency exceeds 15.
     let fadd = &scheduled[3];
-    assert!(fadd.control.wait_mask != 0 || fadd.control.stall > 1,
-        "FADD should wait for LDG results");
+    assert!(
+        fadd.control.wait_mask != 0 || fadd.control.stall > 1,
+        "FADD should wait for LDG results"
+    );
 
     // All stall counts should be valid (1-15)
     for inst in &scheduled {
-        assert!(inst.control.stall >= 1 && inst.control.stall <= 15,
-            "stall count should be 1-15, got {}", inst.control.stall);
+        assert!(
+            inst.control.stall >= 1 && inst.control.stall <= 15,
+            "stall count should be 1-15, got {}",
+            inst.control.stall
+        );
     }
 }

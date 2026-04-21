@@ -290,7 +290,8 @@ impl AlgorithmTree {
 
     /// Create a new instruction vector (internal)
     fn new_instruction_vector(&mut self, fake: bool) -> usize {
-        self.instruction_vectors.push(InstructionVectorNode { fake });
+        self.instruction_vectors
+            .push(InstructionVectorNode { fake });
         self.instruction_vectors.len() - 1
     }
 
@@ -304,10 +305,16 @@ impl AlgorithmTree {
     ) -> usize {
         // Validate vector IDs
         for id in &input_ids {
-            assert!(*id < self.instruction_vectors.len(), "Invalid input vector ID");
+            assert!(
+                *id < self.instruction_vectors.len(),
+                "Invalid input vector ID"
+            );
         }
         for id in &output_ids {
-            assert!(*id < self.instruction_vectors.len(), "Invalid output vector ID");
+            assert!(
+                *id < self.instruction_vectors.len(),
+                "Invalid output vector ID"
+            );
         }
 
         // Check for output overlap
@@ -342,10 +349,16 @@ impl AlgorithmTree {
 
         // Validate abstract vector IDs
         for id in &input_ids {
-            assert!(*id < self.abstract_vectors.len(), "Invalid abstract input vector ID");
+            assert!(
+                *id < self.abstract_vectors.len(),
+                "Invalid abstract input vector ID"
+            );
         }
         for id in &output_ids {
-            assert!(*id < self.abstract_vectors.len(), "Invalid abstract output vector ID");
+            assert!(
+                *id < self.abstract_vectors.len(),
+                "Invalid abstract output vector ID"
+            );
         }
 
         // Check for output overlap
@@ -476,7 +489,10 @@ impl AlgorithmTree {
         // Create fake RMS value
         let fake_rms_value = self.new_instruction_vector(true);
         let mut finish_info = rms_base_info.clone();
-        finish_info.insert("rms_length".to_string(), OperationInfo::Int(rms_length as i64));
+        finish_info.insert(
+            "rms_length".to_string(),
+            OperationInfo::Int(rms_length as i64),
+        );
         self.new_instruction_operation(
             InstructionOperation::RmsFinishAccumulate,
             fake_accumulate_vectors,
@@ -516,7 +532,8 @@ impl AlgorithmTree {
             .unwrap_or("matrix")
             .to_string();
 
-        self.abstract_matrix_address_labels.push(address_label.clone());
+        self.abstract_matrix_address_labels
+            .push(address_label.clone());
 
         let num_rows = info
             .get("NumRows")
@@ -531,8 +548,12 @@ impl AlgorithmTree {
         let num_column_blocks = (num_columns + self.config.d - 1) / self.config.d;
 
         // Clone instruction vector IDs to avoid borrow issues
-        let input_inst_vec_ids = self.abstract_vectors[input_ids[0]].instruction_vector_ids.clone();
-        let output_inst_vec_ids = self.abstract_vectors[output_ids[0]].instruction_vector_ids.clone();
+        let input_inst_vec_ids = self.abstract_vectors[input_ids[0]]
+            .instruction_vector_ids
+            .clone();
+        let output_inst_vec_ids = self.abstract_vectors[output_ids[0]]
+            .instruction_vector_ids
+            .clone();
 
         // Create import fake vectors
         let mut import_fakes = Vec::with_capacity(num_column_blocks);
@@ -597,10 +618,14 @@ impl AlgorithmTree {
 
             for r in 0..num_row_blocks {
                 let block_label = Self::matrix_name_to_block_name(&address_label, r, c);
-                self.instruction_matrix_address_labels.push(block_label.clone());
+                self.instruction_matrix_address_labels
+                    .push(block_label.clone());
 
                 let mut info_go = tmatmul_base_info.clone();
-                info_go.insert("address_label".to_string(), OperationInfo::String(block_label));
+                info_go.insert(
+                    "address_label".to_string(),
+                    OperationInfo::String(block_label),
+                );
 
                 // Go
                 self.new_instruction_operation(
@@ -688,7 +713,8 @@ impl AlgorithmTree {
             .unwrap_or("mem")
             .to_string();
 
-        self.abstract_vector_address_labels.push(address_label.clone());
+        self.abstract_vector_address_labels
+            .push(address_label.clone());
 
         let vector_ids = if operation == AbstractOperation::Sv {
             input_ids
@@ -705,10 +731,14 @@ impl AlgorithmTree {
         for inst_vec_ids in inst_vecs {
             for (j, iv) in inst_vec_ids.iter().enumerate() {
                 let slice_label = Self::vector_name_to_slice_name(&address_label, j);
-                self.instruction_vector_address_labels.push(slice_label.clone());
+                self.instruction_vector_address_labels
+                    .push(slice_label.clone());
 
                 let mut slice_info = HashMap::new();
-                slice_info.insert("address_label".to_string(), OperationInfo::String(slice_label));
+                slice_info.insert(
+                    "address_label".to_string(),
+                    OperationInfo::String(slice_label),
+                );
 
                 if operation == AbstractOperation::Ldv {
                     self.new_instruction_operation(
@@ -747,19 +777,22 @@ impl AlgorithmTree {
                     1
                 } else {
                     let unbounded = self.config.d * self.config.d / self.config.tmatmul_parallelism;
-                    let bounded = self.config.matrix_size_in_bytes() / self.config.max_bytes_per_cycle();
+                    let bounded =
+                        self.config.matrix_size_in_bytes() / self.config.max_bytes_per_cycle();
                     unbounded.max(bounded)
                 }
             }
             InstructionOperation::TMatmulExport => self.config.d / self.config.vector_parallelism,
             InstructionOperation::Ldv => {
                 let unbounded = self.config.d / self.config.vector_parallelism;
-                let bounded = self.config.vector_size_in_bytes() / self.config.max_bytes_per_cycle();
+                let bounded =
+                    self.config.vector_size_in_bytes() / self.config.max_bytes_per_cycle();
                 unbounded.max(bounded)
             }
             InstructionOperation::Sv => {
                 let unbounded = self.config.d / self.config.vector_parallelism;
-                let bounded = self.config.vector_size_in_bytes() / self.config.max_bytes_per_cycle();
+                let bounded =
+                    self.config.vector_size_in_bytes() / self.config.max_bytes_per_cycle();
                 unbounded.max(bounded)
             }
         }
@@ -801,7 +834,12 @@ impl AlgorithmTree {
         }
 
         for i in 0..num_ops {
-            calc_deps(i, &self.instruction_operations, &producer_map, &mut dependencies);
+            calc_deps(
+                i,
+                &self.instruction_operations,
+                &producer_map,
+                &mut dependencies,
+            );
         }
 
         dependencies
@@ -838,19 +876,24 @@ impl AlgorithmTree {
                     let op = &self.instruction_operations[op_idx];
                     match op.operation {
                         InstructionOperation::TMatmulImport => {
-                            active_tmatmul_id = op.other_info.get("tmatmul_id")
+                            active_tmatmul_id = op
+                                .other_info
+                                .get("tmatmul_id")
                                 .and_then(|v| v.as_string())
                                 .map(|s| s.to_string());
-                            tmatmul_num_row_blocks_remaining = op.other_info.get("tmatmul_num_row_blocks")
-                                .and_then(|v| v.as_int())
-                                .unwrap_or(0) as usize;
+                            tmatmul_num_row_blocks_remaining =
+                                op.other_info
+                                    .get("tmatmul_num_row_blocks")
+                                    .and_then(|v| v.as_int())
+                                    .unwrap_or(0) as usize;
                             previous_tmatmul_op = Some(InstructionOperation::TMatmulImport);
                         }
                         InstructionOperation::TMatmulGo => {
                             previous_tmatmul_op = Some(InstructionOperation::TMatmulGo);
                         }
                         InstructionOperation::TMatmulExport => {
-                            tmatmul_num_row_blocks_remaining = tmatmul_num_row_blocks_remaining.saturating_sub(1);
+                            tmatmul_num_row_blocks_remaining =
+                                tmatmul_num_row_blocks_remaining.saturating_sub(1);
                             if tmatmul_num_row_blocks_remaining == 0 {
                                 active_tmatmul_id = None;
                             }
@@ -906,12 +949,12 @@ impl AlgorithmTree {
                 match op.operation {
                     InstructionOperation::TMatmulImport
                     | InstructionOperation::TMatmulGo
-                    | InstructionOperation::TMatmulExport => {
-                        op.other_info.get("tmatmul_id")
-                            .and_then(|v| v.as_string())
-                            .map(|s| s == active_id)
-                            .unwrap_or(false)
-                    }
+                    | InstructionOperation::TMatmulExport => op
+                        .other_info
+                        .get("tmatmul_id")
+                        .and_then(|v| v.as_string())
+                        .map(|s| s == active_id)
+                        .unwrap_or(false),
                     _ => true,
                 }
             });
@@ -977,7 +1020,8 @@ impl AlgorithmTree {
     pub fn create_register_mapping(&self, ordering: &[usize]) -> Vec<RegisterAssignment> {
         let num_regs = self.config.num_vector_registers;
         let mut registers: Vec<Option<usize>> = vec![None; num_regs];
-        let mut assignments: Vec<RegisterAssignment> = self.instruction_vectors
+        let mut assignments: Vec<RegisterAssignment> = self
+            .instruction_vectors
             .iter()
             .map(|_| RegisterAssignment::new(None))
             .collect();
@@ -992,11 +1036,8 @@ impl AlgorithmTree {
                 }
                 if !registers.contains(&Some(vin_id)) {
                     // Need to swap in
-                    let (dst_reg, needs_swap_out) = self.allocate_register(
-                        &mut registers,
-                        ordering,
-                        pc,
-                    );
+                    let (dst_reg, needs_swap_out) =
+                        self.allocate_register(&mut registers, ordering, pc);
 
                     if needs_swap_out {
                         if let Some(victim_id) = registers[dst_reg] {
@@ -1024,11 +1065,8 @@ impl AlgorithmTree {
                     continue;
                 }
 
-                let (dst_reg, needs_swap_out) = self.allocate_register(
-                    &mut registers,
-                    ordering,
-                    pc,
-                );
+                let (dst_reg, needs_swap_out) =
+                    self.allocate_register(&mut registers, ordering, pc);
 
                 if needs_swap_out {
                     if let Some(victim_id) = registers[dst_reg] {
@@ -1176,13 +1214,12 @@ impl AlgorithmTree {
                     ]
                 }
                 InstructionOperation::RmsFinishAccumulate => {
-                    let rms_length = op.other_info.get("rms_length")
+                    let rms_length = op
+                        .other_info
+                        .get("rms_length")
                         .and_then(|v| v.as_int())
                         .unwrap_or(0);
-                    vec![
-                        "rms_finish_accumulate".to_string(),
-                        rms_length.to_string(),
-                    ]
+                    vec!["rms_finish_accumulate".to_string(), rms_length.to_string()]
                 }
                 InstructionOperation::TMatmulImport => {
                     vec![
@@ -1191,13 +1228,12 @@ impl AlgorithmTree {
                     ]
                 }
                 InstructionOperation::TMatmulGo => {
-                    let addr = op.other_info.get("address_label")
+                    let addr = op
+                        .other_info
+                        .get("address_label")
                         .and_then(|v| v.as_string())
                         .unwrap_or("unknown");
-                    vec![
-                        "tmatmul_go".to_string(),
-                        addr.to_string(),
-                    ]
+                    vec!["tmatmul_go".to_string(), addr.to_string()]
                 }
                 InstructionOperation::TMatmulExport => {
                     vec![
@@ -1206,7 +1242,9 @@ impl AlgorithmTree {
                     ]
                 }
                 InstructionOperation::Ldv => {
-                    let addr = op.other_info.get("address_label")
+                    let addr = op
+                        .other_info
+                        .get("address_label")
                         .and_then(|v| v.as_string())
                         .unwrap_or("unknown");
                     vec![
@@ -1216,7 +1254,9 @@ impl AlgorithmTree {
                     ]
                 }
                 InstructionOperation::Sv => {
-                    let addr = op.other_info.get("address_label")
+                    let addr = op
+                        .other_info
+                        .get("address_label")
                         .and_then(|v| v.as_string())
                         .unwrap_or("unknown");
                     vec![
@@ -1238,7 +1278,10 @@ impl AlgorithmTree {
         println!("Abstract vectors: {}", self.abstract_vectors.len());
         println!("Instruction vectors: {}", self.instruction_vectors.len());
         println!("Abstract operations: {}", self.abstract_operations.len());
-        println!("Instruction operations: {}", self.instruction_operations.len());
+        println!(
+            "Instruction operations: {}",
+            self.instruction_operations.len()
+        );
 
         println!("\nAbstract Operations:");
         for (i, op) in self.abstract_operations.iter().enumerate() {
@@ -1249,9 +1292,18 @@ impl AlgorithmTree {
         }
 
         println!("\nOperation durations:");
-        println!("  add delay = {}", self.operation_duration(InstructionOperation::Add, false));
-        println!("  tmatmul_go parallel delay = {}", self.operation_duration(InstructionOperation::TMatmulGo, true));
-        println!("  tmatmul_go nonparallel delay = {}", self.operation_duration(InstructionOperation::TMatmulGo, false));
+        println!(
+            "  add delay = {}",
+            self.operation_duration(InstructionOperation::Add, false)
+        );
+        println!(
+            "  tmatmul_go parallel delay = {}",
+            self.operation_duration(InstructionOperation::TMatmulGo, true)
+        );
+        println!(
+            "  tmatmul_go nonparallel delay = {}",
+            self.operation_duration(InstructionOperation::TMatmulGo, false)
+        );
     }
 
     /// Generate assembly code string
@@ -1328,7 +1380,11 @@ impl PtxToAlgorithmTreeConverter {
         if let Some(&id) = self.var_to_vector.get(name) {
             return id;
         }
-        let size = self.var_sizes.get(name).copied().unwrap_or(self.default_vector_size);
+        let size = self
+            .var_sizes
+            .get(name)
+            .copied()
+            .unwrap_or(self.default_vector_size);
         self.declare_vector(name, size)
     }
 
@@ -1336,16 +1392,24 @@ impl PtxToAlgorithmTreeConverter {
     pub fn emit_load(&mut self, dst: &str, address_label: &str) -> usize {
         let dst_id = self.get_or_create_vector(dst);
         let mut info = HashMap::new();
-        info.insert("address_label".to_string(), OperationInfo::String(address_label.to_string()));
-        self.tree.new_abstract_operation(AbstractOperation::Ldv, vec![], vec![dst_id], Some(info))
+        info.insert(
+            "address_label".to_string(),
+            OperationInfo::String(address_label.to_string()),
+        );
+        self.tree
+            .new_abstract_operation(AbstractOperation::Ldv, vec![], vec![dst_id], Some(info))
     }
 
     /// Store vector to memory
     pub fn emit_store(&mut self, src: &str, address_label: &str) -> usize {
         let src_id = self.get_or_create_vector(src);
         let mut info = HashMap::new();
-        info.insert("address_label".to_string(), OperationInfo::String(address_label.to_string()));
-        self.tree.new_abstract_operation(AbstractOperation::Sv, vec![src_id], vec![], Some(info))
+        info.insert(
+            "address_label".to_string(),
+            OperationInfo::String(address_label.to_string()),
+        );
+        self.tree
+            .new_abstract_operation(AbstractOperation::Sv, vec![src_id], vec![], Some(info))
     }
 
     /// Element-wise add: dst = src1 + src2
@@ -1353,7 +1417,12 @@ impl PtxToAlgorithmTreeConverter {
         let dst_id = self.get_or_create_vector(dst);
         let src1_id = self.get_or_create_vector(src1);
         let src2_id = self.get_or_create_vector(src2);
-        self.tree.new_abstract_operation(AbstractOperation::Add, vec![src1_id, src2_id], vec![dst_id], None)
+        self.tree.new_abstract_operation(
+            AbstractOperation::Add,
+            vec![src1_id, src2_id],
+            vec![dst_id],
+            None,
+        )
     }
 
     /// Element-wise subtract: dst = src1 - src2
@@ -1361,7 +1430,12 @@ impl PtxToAlgorithmTreeConverter {
         let dst_id = self.get_or_create_vector(dst);
         let src1_id = self.get_or_create_vector(src1);
         let src2_id = self.get_or_create_vector(src2);
-        self.tree.new_abstract_operation(AbstractOperation::Sub, vec![src1_id, src2_id], vec![dst_id], None)
+        self.tree.new_abstract_operation(
+            AbstractOperation::Sub,
+            vec![src1_id, src2_id],
+            vec![dst_id],
+            None,
+        )
     }
 
     /// Element-wise multiply: dst = src1 * src2
@@ -1369,21 +1443,28 @@ impl PtxToAlgorithmTreeConverter {
         let dst_id = self.get_or_create_vector(dst);
         let src1_id = self.get_or_create_vector(src1);
         let src2_id = self.get_or_create_vector(src2);
-        self.tree.new_abstract_operation(AbstractOperation::Mul, vec![src1_id, src2_id], vec![dst_id], None)
+        self.tree.new_abstract_operation(
+            AbstractOperation::Mul,
+            vec![src1_id, src2_id],
+            vec![dst_id],
+            None,
+        )
     }
 
     /// Sigmoid activation: dst = sigmoid(src)
     pub fn emit_sigmoid(&mut self, dst: &str, src: &str) -> usize {
         let dst_id = self.get_or_create_vector(dst);
         let src_id = self.get_or_create_vector(src);
-        self.tree.new_abstract_operation(AbstractOperation::Sig, vec![src_id], vec![dst_id], None)
+        self.tree
+            .new_abstract_operation(AbstractOperation::Sig, vec![src_id], vec![dst_id], None)
     }
 
     /// SiLU activation: dst = silu(src)
     pub fn emit_silu(&mut self, dst: &str, src: &str) -> usize {
         let dst_id = self.get_or_create_vector(dst);
         let src_id = self.get_or_create_vector(src);
-        self.tree.new_abstract_operation(AbstractOperation::SiLU, vec![src_id], vec![dst_id], None)
+        self.tree
+            .new_abstract_operation(AbstractOperation::SiLU, vec![src_id], vec![dst_id], None)
     }
 
     /// RMS normalization: dst = rms_norm(src)
@@ -1398,7 +1479,7 @@ impl PtxToAlgorithmTreeConverter {
             AbstractOperation::RmsNorm,
             vec![src_id],
             vec![dst_id],
-            if info.is_empty() { None } else { Some(info) }
+            if info.is_empty() { None } else { Some(info) },
         )
     }
 
@@ -1415,11 +1496,22 @@ impl PtxToAlgorithmTreeConverter {
         let src_id = self.get_or_create_vector(src);
 
         let mut info = HashMap::new();
-        info.insert("address_label".to_string(), OperationInfo::String(weight_label.to_string()));
+        info.insert(
+            "address_label".to_string(),
+            OperationInfo::String(weight_label.to_string()),
+        );
         info.insert("NumRows".to_string(), OperationInfo::Int(num_rows as i64));
-        info.insert("NumColumns".to_string(), OperationInfo::Int(num_columns as i64));
+        info.insert(
+            "NumColumns".to_string(),
+            OperationInfo::Int(num_columns as i64),
+        );
 
-        self.tree.new_abstract_operation(AbstractOperation::TMatmul, vec![src_id], vec![dst_id], Some(info))
+        self.tree.new_abstract_operation(
+            AbstractOperation::TMatmul,
+            vec![src_id],
+            vec![dst_id],
+            Some(info),
+        )
     }
 
     /// Fused multiply-add: dst = src1 * src2 + src3
@@ -1435,10 +1527,20 @@ impl PtxToAlgorithmTreeConverter {
         let dst_id = self.get_or_create_vector(dst);
 
         // mul: temp = src1 * src2
-        self.tree.new_abstract_operation(AbstractOperation::Mul, vec![src1_id, src2_id], vec![temp_id], None);
+        self.tree.new_abstract_operation(
+            AbstractOperation::Mul,
+            vec![src1_id, src2_id],
+            vec![temp_id],
+            None,
+        );
 
         // add: dst = temp + src3
-        self.tree.new_abstract_operation(AbstractOperation::Add, vec![temp_id, src3_id], vec![dst_id], None)
+        self.tree.new_abstract_operation(
+            AbstractOperation::Add,
+            vec![temp_id, src3_id],
+            vec![dst_id],
+            None,
+        )
     }
 
     /// Build an FFN layer pattern: output = down_proj(silu(gate_proj(x)) * up_proj(x))
@@ -1466,7 +1568,13 @@ impl PtxToAlgorithmTreeConverter {
         self.declare_vector(output, hidden_dim);
 
         // gate = gate_proj(x)
-        self.emit_tmatmul(&gate_name, input, gate_weights, intermediate_dim, hidden_dim);
+        self.emit_tmatmul(
+            &gate_name,
+            input,
+            gate_weights,
+            intermediate_dim,
+            hidden_dim,
+        );
 
         // up = up_proj(x)
         self.emit_tmatmul(&up_name, input, up_weights, intermediate_dim, hidden_dim);
@@ -1478,7 +1586,13 @@ impl PtxToAlgorithmTreeConverter {
         self.emit_mul(&intermediate_name, &gate_silu_name, &up_name);
 
         // output = down_proj(intermediate)
-        self.emit_tmatmul(output, &intermediate_name, down_weights, hidden_dim, intermediate_dim);
+        self.emit_tmatmul(
+            output,
+            &intermediate_name,
+            down_weights,
+            hidden_dim,
+            intermediate_dim,
+        );
     }
 
     /// Build a transformer attention layer pattern
@@ -1513,7 +1627,12 @@ impl PtxToAlgorithmTreeConverter {
         // In practice you'd need softmax(QK^T/sqrt(d)) @ V
         let v_id = self.var_to_vector[&v_name];
         let output_id = self.get_or_create_vector(output);
-        self.tree.new_abstract_operation(AbstractOperation::Add, vec![v_id, v_id], vec![output_id], None);
+        self.tree.new_abstract_operation(
+            AbstractOperation::Add,
+            vec![v_id, v_id],
+            vec![output_id],
+            None,
+        );
     }
 
     /// Generate assembly from the built tree
@@ -1684,11 +1803,17 @@ mod tests {
 
         // Load inputs
         let mut info_a = HashMap::new();
-        info_a.insert("address_label".to_string(), OperationInfo::String("A".to_string()));
+        info_a.insert(
+            "address_label".to_string(),
+            OperationInfo::String("A".to_string()),
+        );
         tree.new_abstract_operation(AbstractOperation::Ldv, vec![], vec![a], Some(info_a));
 
         let mut info_b = HashMap::new();
-        info_b.insert("address_label".to_string(), OperationInfo::String("B".to_string()));
+        info_b.insert(
+            "address_label".to_string(),
+            OperationInfo::String("B".to_string()),
+        );
         tree.new_abstract_operation(AbstractOperation::Ldv, vec![], vec![b], Some(info_b));
 
         // Add
@@ -1696,7 +1821,10 @@ mod tests {
 
         // Store output
         let mut info_c = HashMap::new();
-        info_c.insert("address_label".to_string(), OperationInfo::String("C".to_string()));
+        info_c.insert(
+            "address_label".to_string(),
+            OperationInfo::String("C".to_string()),
+        );
         tree.new_abstract_operation(AbstractOperation::Sv, vec![c], vec![], Some(info_c));
 
         tree.print_summary();
@@ -1709,7 +1837,10 @@ mod tests {
 
     #[test]
     fn test_tmatmul() {
-        let config = TMatmulConfig { d: 32, ..Default::default() };
+        let config = TMatmulConfig {
+            d: 32,
+            ..Default::default()
+        };
         let mut tree = AlgorithmTree::new(config);
 
         // Create vectors for 64-element input/output (2 blocks)
@@ -1718,19 +1849,33 @@ mod tests {
 
         // Load input
         let mut info_in = HashMap::new();
-        info_in.insert("address_label".to_string(), OperationInfo::String("X".to_string()));
+        info_in.insert(
+            "address_label".to_string(),
+            OperationInfo::String("X".to_string()),
+        );
         tree.new_abstract_operation(AbstractOperation::Ldv, vec![], vec![input], Some(info_in));
 
         // TMatmul: 64x64 matrix
         let mut info_mat = HashMap::new();
-        info_mat.insert("address_label".to_string(), OperationInfo::String("W".to_string()));
+        info_mat.insert(
+            "address_label".to_string(),
+            OperationInfo::String("W".to_string()),
+        );
         info_mat.insert("NumRows".to_string(), OperationInfo::Int(64));
         info_mat.insert("NumColumns".to_string(), OperationInfo::Int(64));
-        tree.new_abstract_operation(AbstractOperation::TMatmul, vec![input], vec![output], Some(info_mat));
+        tree.new_abstract_operation(
+            AbstractOperation::TMatmul,
+            vec![input],
+            vec![output],
+            Some(info_mat),
+        );
 
         // Store output
         let mut info_out = HashMap::new();
-        info_out.insert("address_label".to_string(), OperationInfo::String("Y".to_string()));
+        info_out.insert(
+            "address_label".to_string(),
+            OperationInfo::String("Y".to_string()),
+        );
         tree.new_abstract_operation(AbstractOperation::Sv, vec![output], vec![], Some(info_out));
 
         tree.print_summary();
@@ -1784,7 +1929,10 @@ mod tests {
 
     #[test]
     fn test_ptx_converter_tmatmul() {
-        let config = TMatmulConfig { d: 32, ..Default::default() };
+        let config = TMatmulConfig {
+            d: 32,
+            ..Default::default()
+        };
         let mut converter = PtxToAlgorithmTreeConverter::new(config);
 
         converter.declare_vector("x", 64);
@@ -1803,18 +1951,17 @@ mod tests {
 
     #[test]
     fn test_ptx_converter_ffn_layer() {
-        let config = TMatmulConfig { d: 32, ..Default::default() };
+        let config = TMatmulConfig {
+            d: 32,
+            ..Default::default()
+        };
         let mut converter = PtxToAlgorithmTreeConverter::new(config);
 
         converter.emit_load("input", "Input");
         converter.emit_ffn_layer(
-            "input",
-            "output",
-            64,  // hidden_dim
+            "input", "output", 64,  // hidden_dim
             128, // intermediate_dim
-            "W_gate",
-            "W_up",
-            "W_down",
+            "W_gate", "W_up", "W_down",
         );
         converter.emit_store("output", "Output");
 
@@ -1864,7 +2011,13 @@ mod tests {
         assert_eq!(pattern.unwrap().name, "sigmoid");
 
         // SiLU pattern
-        let silu_seq = vec!["neg", "ex2.approx.f32", "add.f32", "rcp.approx.f32", "mul.f32"];
+        let silu_seq = vec![
+            "neg",
+            "ex2.approx.f32",
+            "add.f32",
+            "rcp.approx.f32",
+            "mul.f32",
+        ];
         let pattern = matcher.match_activation(&silu_seq);
         assert!(pattern.is_some());
         assert_eq!(pattern.unwrap().name, "silu");

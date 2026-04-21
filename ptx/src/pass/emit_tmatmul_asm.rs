@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-
 /// Number of vector registers available in hardware (v0-v7)
 const NUM_REGISTERS: usize = 8;
 
@@ -61,7 +60,8 @@ impl RegisterAllocator {
             // First, get a register (may cause another spill)
             let reg = self.allocate_physical_register(ssa_value)?;
             // Queue reload operation
-            self.pending_reloads.push((slot.memory_name.clone(), reg.clone()));
+            self.pending_reloads
+                .push((slot.memory_name.clone(), reg.clone()));
             // Remove from spill slots
             self.spill_slots.remove(ssa_value);
             return Ok(reg);
@@ -92,7 +92,8 @@ impl RegisterAllocator {
         let victim_reg = format!("v{}", victim_idx);
 
         // Find which SSA value is in this register
-        let victim_ssa = self.value_to_reg
+        let victim_ssa = self
+            .value_to_reg
             .iter()
             .find(|(_, r)| **r == victim_reg)
             .map(|(s, _)| s.clone());
@@ -103,13 +104,17 @@ impl RegisterAllocator {
             self.next_spill_slot += 1;
 
             // Queue spill operation
-            self.pending_spills.push((victim_reg.clone(), spill_name.clone()));
+            self.pending_spills
+                .push((victim_reg.clone(), spill_name.clone()));
 
             // Record spill slot
-            self.spill_slots.insert(victim_ssa.clone(), SpillSlot {
-                memory_name: spill_name,
-                ssa_value: victim_ssa.clone(),
-            });
+            self.spill_slots.insert(
+                victim_ssa.clone(),
+                SpillSlot {
+                    memory_name: spill_name,
+                    ssa_value: victim_ssa.clone(),
+                },
+            );
 
             // Free the victim from register mapping
             self.value_to_reg.remove(&victim_ssa);
@@ -425,11 +430,13 @@ impl TMatmulCodegen {
     fn emit_pending_spills(&mut self) {
         let spills = self.reg_allocator.take_pending_spills();
         for (reg, mem_name) in spills {
-            self.program.add_comment(&format!("Spill {} to {}", reg, mem_name));
-            self.program.add_instruction(TMatmulInstruction::StoreVector {
-                src: reg,
-                dst: MemoryLocation::Custom(mem_name),
-            });
+            self.program
+                .add_comment(&format!("Spill {} to {}", reg, mem_name));
+            self.program
+                .add_instruction(TMatmulInstruction::StoreVector {
+                    src: reg,
+                    dst: MemoryLocation::Custom(mem_name),
+                });
         }
     }
 
@@ -437,11 +444,13 @@ impl TMatmulCodegen {
     fn emit_pending_reloads(&mut self) {
         let reloads = self.reg_allocator.take_pending_reloads();
         for (mem_name, reg) in reloads {
-            self.program.add_comment(&format!("Reload {} from {}", reg, mem_name));
-            self.program.add_instruction(TMatmulInstruction::LoadVector {
-                dst: reg,
-                src: MemoryLocation::Custom(mem_name),
-            });
+            self.program
+                .add_comment(&format!("Reload {} from {}", reg, mem_name));
+            self.program
+                .add_instruction(TMatmulInstruction::LoadVector {
+                    dst: reg,
+                    src: MemoryLocation::Custom(mem_name),
+                });
         }
     }
 

@@ -1,9 +1,8 @@
 mod command_wrapper;
 
-use std::ffi::{CStr, CString, c_char, c_int, c_uint};
+use std::ffi::{CStr, c_char, c_int, c_uint};
 use std::num::NonZeroU32;
 use std::os::raw;
-use std::process::Command;
 
 pub const PACC_COMGR_INTERFACE_VERSION_MAJOR: u32 = 1;
 pub const PACC_COMGR_INTERFACE_VERSION_MINOR: u32 = 0;
@@ -141,18 +140,13 @@ pub type pacc_comgr_symbol_type_t = pacc_comgr_symbol_type_s;
 impl pacc_comgr_symbol_type_s {
     pub const PACC_COMGR_SYMBOL_TYPE_UNKNOWN: pacc_comgr_symbol_type_s =
         pacc_comgr_symbol_type_s(-1);
-    pub const PACC_COMGR_SYMBOL_TYPE_NOTYPE: pacc_comgr_symbol_type_s =
-        pacc_comgr_symbol_type_s(0);
-    pub const PACC_COMGR_SYMBOL_TYPE_OBJECT: pacc_comgr_symbol_type_s =
-        pacc_comgr_symbol_type_s(1);
-    pub const PACC_COMGR_SYMBOL_TYPE_FUNC: pacc_comgr_symbol_type_s =
-        pacc_comgr_symbol_type_s(2);
+    pub const PACC_COMGR_SYMBOL_TYPE_NOTYPE: pacc_comgr_symbol_type_s = pacc_comgr_symbol_type_s(0);
+    pub const PACC_COMGR_SYMBOL_TYPE_OBJECT: pacc_comgr_symbol_type_s = pacc_comgr_symbol_type_s(1);
+    pub const PACC_COMGR_SYMBOL_TYPE_FUNC: pacc_comgr_symbol_type_s = pacc_comgr_symbol_type_s(2);
     pub const PACC_COMGR_SYMBOL_TYPE_SECTION: pacc_comgr_symbol_type_s =
         pacc_comgr_symbol_type_s(3);
-    pub const PACC_COMGR_SYMBOL_TYPE_FILE: pacc_comgr_symbol_type_s =
-        pacc_comgr_symbol_type_s(4);
-    pub const PACC_COMGR_SYMBOL_TYPE_COMMON: pacc_comgr_symbol_type_s =
-        pacc_comgr_symbol_type_s(5);
+    pub const PACC_COMGR_SYMBOL_TYPE_FILE: pacc_comgr_symbol_type_s = pacc_comgr_symbol_type_s(4);
+    pub const PACC_COMGR_SYMBOL_TYPE_COMMON: pacc_comgr_symbol_type_s = pacc_comgr_symbol_type_s(5);
 }
 
 pub struct pacc_comgr_symbol_info_s(pub c_uint);
@@ -161,18 +155,13 @@ pub type pacc_comgr_symbol_info_t = pacc_comgr_symbol_info_s;
 impl pacc_comgr_symbol_info_s {
     pub const PACC_COMGR_SYMBOL_INFO_NAME_LENGTH: pacc_comgr_symbol_info_s =
         pacc_comgr_symbol_info_s(0);
-    pub const PACC_COMGR_SYMBOL_INFO_NAME: pacc_comgr_symbol_info_s =
-        pacc_comgr_symbol_info_s(1);
-    pub const PACC_COMGR_SYMBOL_INFO_TYPE: pacc_comgr_symbol_info_s =
-        pacc_comgr_symbol_info_s(2);
-    pub const PACC_COMGR_SYMBOL_INFO_SIZE: pacc_comgr_symbol_info_s =
-        pacc_comgr_symbol_info_s(3);
+    pub const PACC_COMGR_SYMBOL_INFO_NAME: pacc_comgr_symbol_info_s = pacc_comgr_symbol_info_s(1);
+    pub const PACC_COMGR_SYMBOL_INFO_TYPE: pacc_comgr_symbol_info_s = pacc_comgr_symbol_info_s(2);
+    pub const PACC_COMGR_SYMBOL_INFO_SIZE: pacc_comgr_symbol_info_s = pacc_comgr_symbol_info_s(3);
     pub const PACC_COMGR_SYMBOL_INFO_IS_UNDEFINED: pacc_comgr_symbol_info_s =
         pacc_comgr_symbol_info_s(4);
-    pub const PACC_COMGR_SYMBOL_INFO_VALUE: pacc_comgr_symbol_info_s =
-        pacc_comgr_symbol_info_s(5);
-    pub const PACC_COMGR_SYMBOL_INFO_LAST: pacc_comgr_symbol_info_s =
-        pacc_comgr_symbol_info_s(5);
+    pub const PACC_COMGR_SYMBOL_INFO_VALUE: pacc_comgr_symbol_info_s = pacc_comgr_symbol_info_s(5);
+    pub const PACC_COMGR_SYMBOL_INFO_LAST: pacc_comgr_symbol_info_s = pacc_comgr_symbol_info_s(5);
 }
 
 // Code object info
@@ -241,9 +230,24 @@ impl PaccConfig {
             vlen: 512,
             default_sew: 8,
             target_triple: "riscv64-unknown-elf".to_string(),
-            march: "rv64gcv_xsfvcp_zvl512b".to_string(),
-            mattr: "+v,+d,+f,+xsfvcp,+zvl512b".to_string(),
+            march: "rv64gcv_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvfwmaccqqq_xsfvqmaccqoq".to_string(),
+            mattr: "+v,+d,+f,+zvfbfmin,+xsfvcp,+xsfvfnrclipxfqf,+xsfvfwmaccqqq,+xsfvqmaccqoq"
+                .to_string(),
             codegen_mode: PaccCodegenMode::Vcix,
+            spike_isa: String::new(),
+        }
+    }
+
+    /// Linux RISC-V RVV+BF16 configuration for source-level operator offload
+    /// compatibility with llama.cpp CPU kernels such as ggml-cpu/vec.cpp.
+    pub fn rvv_linux_bf16() -> Self {
+        Self {
+            vlen: 512,
+            default_sew: 8,
+            target_triple: "riscv64-linux-gnu".to_string(),
+            march: "rv64gcv_zfh_zvfbfmin_zvfbfwma".to_string(),
+            mattr: "+v,+d,+f,+zfh,+zvfbfmin,+zvfbfwma".to_string(),
+            codegen_mode: PaccCodegenMode::Zvbdot,
             spike_isa: String::new(),
         }
     }
@@ -292,9 +296,11 @@ pub fn pacc_comgr_create_data(
     Ok(())
 }
 
-pub fn pacc_comgr_release_data(data: pacc_comgr_data_t) -> pacc_comgr_status_t {
-    let mut data_store = command_wrapper::DATA_STORE.lock().unwrap();
-    data_store.remove(&data.handle);
+pub fn pacc_comgr_release_data(_data: pacc_comgr_data_t) -> pacc_comgr_status_t {
+    // Keep backing storage alive for the duration of this process. The current
+    // PACC COMGR shim stores bare handles inside data sets, so eagerly dropping
+    // data here makes multi-stage pipelines (SOURCE -> BC -> OPT -> CODEGEN)
+    // lose their payloads between actions.
     Ok(())
 }
 
@@ -344,9 +350,7 @@ pub fn pacc_comgr_data_set_name(
     }
 }
 
-pub fn pacc_comgr_create_data_set(
-    data_set: *mut pacc_comgr_data_set_t,
-) -> pacc_comgr_status_t {
+pub fn pacc_comgr_create_data_set(data_set: *mut pacc_comgr_data_set_t) -> pacc_comgr_status_t {
     if data_set.is_null() {
         return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
     }
@@ -362,9 +366,7 @@ pub fn pacc_comgr_create_data_set(
     Ok(())
 }
 
-pub fn pacc_comgr_release_data_set(
-    data_set: pacc_comgr_data_set_t,
-) -> pacc_comgr_status_t {
+pub fn pacc_comgr_release_data_set(data_set: pacc_comgr_data_set_t) -> pacc_comgr_status_t {
     let mut data_set_store = command_wrapper::DATA_SET_STORE.lock().unwrap();
     data_set_store.remove(&data_set.handle);
     Ok(())
@@ -422,6 +424,79 @@ pub fn pacc_comgr_action_info_set_language(
     }
 }
 
+pub fn pacc_comgr_action_info_set_option_list(
+    action_info: pacc_comgr_action_info_t,
+    options: *const *const c_char,
+    count: usize,
+) -> pacc_comgr_status_t {
+    if options.is_null() && count > 0 {
+        return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+    }
+
+    let mut option_strings = Vec::new();
+    for i in 0..count {
+        let opt_ptr = unsafe { *options.add(i) };
+        if opt_ptr.is_null() {
+            continue;
+        }
+
+        let opt_str = unsafe { CStr::from_ptr(opt_ptr) }
+            .to_string_lossy()
+            .to_string();
+        option_strings.push(opt_str);
+    }
+
+    let mut action_info_store = command_wrapper::ACTION_INFO_STORE.lock().unwrap();
+    if let Some(info) = action_info_store.get_mut(&action_info.handle) {
+        info.options = option_strings;
+        Ok(())
+    } else {
+        Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT)
+    }
+}
+
+pub fn pacc_comgr_action_info_set_working_directory(
+    action_info: pacc_comgr_action_info_t,
+    directory: *const c_char,
+) -> pacc_comgr_status_t {
+    if directory.is_null() {
+        return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+    }
+
+    let dir_str = unsafe { CStr::from_ptr(directory) }
+        .to_string_lossy()
+        .to_string();
+
+    let mut action_info_store = command_wrapper::ACTION_INFO_STORE.lock().unwrap();
+    if let Some(info) = action_info_store.get_mut(&action_info.handle) {
+        info.working_directory = Some(dir_str);
+        Ok(())
+    } else {
+        Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT)
+    }
+}
+
+pub fn pacc_comgr_action_info_set_target(
+    action_info: pacc_comgr_action_info_t,
+    target: *const c_char,
+) -> pacc_comgr_status_t {
+    if target.is_null() {
+        return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+    }
+
+    let target_str = unsafe { CStr::from_ptr(target) }
+        .to_string_lossy()
+        .to_string();
+
+    let mut action_info_store = command_wrapper::ACTION_INFO_STORE.lock().unwrap();
+    if let Some(info) = action_info_store.get_mut(&action_info.handle) {
+        info.target = Some(target_str);
+        Ok(())
+    } else {
+        Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT)
+    }
+}
+
 pub fn pacc_comgr_do_action(
     action_kind: pacc_comgr_action_kind_t,
     action_info: pacc_comgr_action_info_t,
@@ -468,6 +543,25 @@ pub fn pacc_comgr_get_data(
             *data = pacc_comgr_data_t {
                 handle: set_handles[index],
             };
+        }
+        Ok(())
+    } else {
+        Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT)
+    }
+}
+
+pub fn pacc_comgr_get_data_kind(
+    data: pacc_comgr_data_t,
+    kind: *mut pacc_comgr_data_kind_t,
+) -> pacc_comgr_status_t {
+    if kind.is_null() {
+        return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+    }
+
+    let data_store = command_wrapper::DATA_STORE.lock().unwrap();
+    if let Some(data_content) = data_store.get(&data.handle) {
+        unsafe {
+            *kind = data_content.kind;
         }
         Ok(())
     } else {

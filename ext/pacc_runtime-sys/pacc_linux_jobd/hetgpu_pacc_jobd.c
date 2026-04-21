@@ -40,6 +40,9 @@
 #define HETGPU_PACC_RUNTIME_TABLE_VERSION 1U
 #define AP2PACC_MBOX_PHYS 0x20000000ULL
 #define PACC2AP_MBOX_PHYS 0x20002000ULL
+#define PACC_DTYPE_INT8 0U
+#define PACC_DTYPE_UINT8 1U
+#define PACC_DTYPE_INT32 2U
 #define PACC_DTYPE_F32 4U
 #define PACC_DTYPE_BF16 5U
 #define PACC_GEMM_THREADS 4U
@@ -347,6 +350,12 @@ static size_t gemm_span(uint64_t rows, uint64_t cols, int64_t ld) {
 
 static size_t dtype_size(uint32_t dtype) {
     switch (dtype) {
+    case PACC_DTYPE_INT8:
+        return sizeof(int8_t);
+    case PACC_DTYPE_UINT8:
+        return sizeof(uint8_t);
+    case PACC_DTYPE_INT32:
+        return sizeof(int32_t);
     case PACC_DTYPE_F32:
         return sizeof(float);
     case PACC_DTYPE_BF16:
@@ -376,7 +385,36 @@ static uint16_t f32_to_bf16(float x) {
     return (uint16_t)((v.u + rounding_bias) >> 16);
 }
 
+static int32_t round_to_i32(float x) {
+    if (x >= 2147483647.0f) return 2147483647;
+    if (x <= -2147483648.0f) return (-2147483647 - 1);
+    return x >= 0.0f ? (int32_t)(x + 0.5f) : (int32_t)(x - 0.5f);
+}
+
+static int8_t round_to_i8(float x) {
+    int32_t v = round_to_i32(x);
+    if (v > 127) v = 127;
+    if (v < -128) v = -128;
+    return (int8_t)v;
+}
+
+static uint8_t round_to_u8(float x) {
+    int32_t v = round_to_i32(x);
+    if (v > 255) v = 255;
+    if (v < 0) v = 0;
+    return (uint8_t)v;
+}
+
 static float load_typed(const void *base, size_t idx, uint32_t dtype) {
+    if (dtype == PACC_DTYPE_INT8) {
+        return (float)((const int8_t *)base)[idx];
+    }
+    if (dtype == PACC_DTYPE_UINT8) {
+        return (float)((const uint8_t *)base)[idx];
+    }
+    if (dtype == PACC_DTYPE_INT32) {
+        return (float)((const int32_t *)base)[idx];
+    }
     if (dtype == PACC_DTYPE_F32) {
         return ((const float *)base)[idx];
     }
@@ -387,7 +425,13 @@ static float load_typed(const void *base, size_t idx, uint32_t dtype) {
 }
 
 static void store_typed(void *base, size_t idx, uint32_t dtype, float value) {
-    if (dtype == PACC_DTYPE_F32) {
+    if (dtype == PACC_DTYPE_INT8) {
+        ((int8_t *)base)[idx] = round_to_i8(value);
+    } else if (dtype == PACC_DTYPE_UINT8) {
+        ((uint8_t *)base)[idx] = round_to_u8(value);
+    } else if (dtype == PACC_DTYPE_INT32) {
+        ((int32_t *)base)[idx] = round_to_i32(value);
+    } else if (dtype == PACC_DTYPE_F32) {
         ((float *)base)[idx] = value;
     } else if (dtype == PACC_DTYPE_BF16) {
         ((uint16_t *)base)[idx] = f32_to_bf16(value);
@@ -560,31 +604,34 @@ static int run_gemm(int fd, const struct GemmJob *job) {
 
 static int run_softmax(int fd, const struct SoftmaxJob *job) {
     if (!job->src_addr || !job->dst_addr || !job->rows || !job->cols) return 0xffff2001;
-    if (job->dtype != PACC_DTYPE_F32) return 0xffff2002;
+    size_t elem_size = dtype_size(job->dtype);
+    if (!elem_size) return 0xffff2002;
     uint64_t stride = job->stride ? job->stride : job->cols;
     size_t elems = (size_t)(job->rows * stride);
     struct Map ms = {0}, md = {0};
-    if (map_phys(fd, job->src_addr, elems * sizeof(float), &ms) ||
-        map_phys(fd, job->dst_addr, elems * sizeof(float), &md)) {
+    if (map_phys(fd, job->src_addr, elems * elem_size, &ms) ||
+        map_phys(fd, job->dst_addr, elems * elem_size, &md)) {
         unmap_phys(&ms); unmap_phys(&md);
         return 0xffff2003;
     }
-    const float *src = (const float *)ms.ptr;
-    float *dst = (float *)md.ptr;
+    const void *src = ms.ptr;
+    void *dst = md.ptr;
     for (uint64_t row = 0; row < job->rows; row++) {
         uint64_t base = row * stride;
-        float max_v = src[base];
+        float max_v = load_typed(src, base, job->dtype);
         for (uint64_t col = 1; col < job->cols; col++) {
-            if (src[base + col] > max_v) max_v = src[base + col];
+            float v = load_typed(src, base + col, job->dtype);
+            if (v > max_v) max_v = v;
         }
         float sum = 0.0f;
         for (uint64_t col = 0; col < job->cols; col++) {
-            float e = expf_fast(src[base + col] - max_v);
-            dst[base + col] = e;
-            sum += e;
+            sum += expf_fast(load_typed(src, base + col, job->dtype) - max_v);
         }
         float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
-        for (uint64_t col = 0; col < job->cols; col++) dst[base + col] *= inv;
+        for (uint64_t col = 0; col < job->cols; col++) {
+            float e = expf_fast(load_typed(src, base + col, job->dtype) - max_v);
+            store_typed(dst, base + col, job->dtype, e * inv);
+        }
     }
     msync(md.base, md.map_len, MS_SYNC);
     unmap_phys(&ms); unmap_phys(&md);
@@ -593,30 +640,32 @@ static int run_softmax(int fd, const struct SoftmaxJob *job) {
 
 static int run_rmsnorm(int fd, const struct RmsNormJob *job) {
     if (!job->x_addr || !job->y_addr || !job->rows || !job->hidden) return 0xffff3001;
-    if (job->dtype != PACC_DTYPE_F32) return 0xffff3002;
+    size_t elem_size = dtype_size(job->dtype);
+    if (!elem_size) return 0xffff3002;
     size_t elems = (size_t)(job->rows * job->hidden);
     struct Map mx = {0}, mw = {0}, my = {0};
-    if (map_phys(fd, job->x_addr, elems * sizeof(float), &mx) ||
-        map_phys(fd, job->y_addr, elems * sizeof(float), &my)) {
+    if (map_phys(fd, job->x_addr, elems * elem_size, &mx) ||
+        map_phys(fd, job->y_addr, elems * elem_size, &my)) {
         unmap_phys(&mx); unmap_phys(&my);
         return 0xffff3003;
     }
-    const float *x = (const float *)mx.ptr;
-    float *y = (float *)my.ptr;
-    const float *w = NULL;
-    if (job->weight_addr && !map_phys(fd, job->weight_addr, job->hidden * sizeof(float), &mw)) {
-        w = (const float *)mw.ptr;
+    const void *x = mx.ptr;
+    void *y = my.ptr;
+    const void *w = NULL;
+    if (job->weight_addr && !map_phys(fd, job->weight_addr, job->hidden * elem_size, &mw)) {
+        w = mw.ptr;
     }
     for (uint64_t row = 0; row < job->rows; row++) {
         uint64_t base = row * job->hidden;
         float sumsq = 0.0f;
         for (uint64_t i = 0; i < job->hidden; i++) {
-            float v = x[base + i];
+            float v = load_typed(x, base + i, job->dtype);
             sumsq += v * v;
         }
         float scale = rsqrtf_newton(sumsq / (float)job->hidden + job->eps);
         for (uint64_t i = 0; i < job->hidden; i++) {
-            y[base + i] = x[base + i] * scale * (w ? w[i] : 1.0f);
+            float weight = w ? load_typed(w, i, job->dtype) : 1.0f;
+            store_typed(y, base + i, job->dtype, load_typed(x, base + i, job->dtype) * scale * weight);
         }
     }
     msync(my.base, my.map_len, MS_SYNC);

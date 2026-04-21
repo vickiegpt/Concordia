@@ -1,5 +1,5 @@
-use nvidia_sass::types::*;
 use nvidia_sass::encoding::sm120;
+use nvidia_sass::types::*;
 
 // Helper: encode an instruction and return the lower 64 instruction bits as u64
 fn encode_inst_bits(inst: &SassInst) -> u64 {
@@ -18,7 +18,10 @@ fn default_control() -> ControlCodes {
 #[test]
 fn test_ldg_encodes_base_and_offset() {
     let inst = SassInst {
-        opcode: Opcode { mnemonic: "LDG", class: OpcodeClass::Load },
+        opcode: Opcode {
+            mnemonic: "LDG",
+            class: OpcodeClass::Load,
+        },
         dst: Some(Reg::R(4)),
         srcs: vec![Operand::Memory {
             base: Reg::R(2),
@@ -40,7 +43,10 @@ fn test_ldg_encodes_base_and_offset() {
 
     // base in [15:8]
     let base = (bits >> 8) & 0xFF;
-    assert_eq!(base, 2, "base register R2 should encode as 2 in bits [15:8]");
+    assert_eq!(
+        base, 2,
+        "base register R2 should encode as 2 in bits [15:8]"
+    );
 
     // offset in bits starting at [20]
     let offset = (bits >> 20) & 0xFFFFFFFF;
@@ -54,8 +60,11 @@ fn test_ldg_encodes_base_and_offset() {
 #[test]
 fn test_stg_encodes_data_and_addr() {
     let inst = SassInst {
-        opcode: Opcode { mnemonic: "STG", class: OpcodeClass::Store },
-        dst: Some(Reg::R(6)),  // data register
+        opcode: Opcode {
+            mnemonic: "STG",
+            class: OpcodeClass::Store,
+        },
+        dst: Some(Reg::R(6)), // data register
         srcs: vec![Operand::Memory {
             base: Reg::R(2),
             offset: 0x20,
@@ -90,7 +99,10 @@ fn test_stg_encodes_data_and_addr() {
 #[test]
 fn test_s2r_tid_x() {
     let inst = SassInst {
-        opcode: Opcode { mnemonic: "S2R", class: OpcodeClass::Special },
+        opcode: Opcode {
+            mnemonic: "S2R",
+            class: OpcodeClass::Special,
+        },
         dst: Some(Reg::R(0)),
         srcs: vec![Operand::SReg(SpecialReg::TidX)],
         pred: None,
@@ -120,7 +132,10 @@ fn test_s2r_tid_x() {
 fn test_bra_encodes_target() {
     let target: u32 = 0x1234;
     let inst = SassInst {
-        opcode: Opcode { mnemonic: "BRA", class: OpcodeClass::Branch },
+        opcode: Opcode {
+            mnemonic: "BRA",
+            class: OpcodeClass::Branch,
+        },
         dst: None,
         srcs: vec![Operand::BranchTarget(target)],
         pred: None,
@@ -135,7 +150,10 @@ fn test_bra_encodes_target() {
 
     // Target in [51:20]
     let encoded_target = (bits >> 20) & 0xFFFFFFFF;
-    assert_eq!(encoded_target, 0x1234, "branch target 0x1234 should be in bits [51:20]");
+    assert_eq!(
+        encoded_target, 0x1234,
+        "branch target 0x1234 should be in bits [51:20]"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +163,10 @@ fn test_bra_encodes_target() {
 #[test]
 fn test_exit_encodes() {
     let inst = SassInst {
-        opcode: Opcode { mnemonic: "EXIT", class: OpcodeClass::Branch },
+        opcode: Opcode {
+            mnemonic: "EXIT",
+            class: OpcodeClass::Branch,
+        },
         dst: None,
         srcs: vec![],
         pred: None,

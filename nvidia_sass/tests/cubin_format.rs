@@ -1,5 +1,5 @@
-use nvidia_sass::types::*;
 use nvidia_sass::cubin_builder::build_cubin_from_module;
+use nvidia_sass::types::*;
 
 fn make_simple_kernel() -> SassModule {
     SassModule {
@@ -10,7 +10,10 @@ fn make_simple_kernel() -> SassModule {
             instructions: vec![
                 // NOP
                 SassInst {
-                    opcode: Opcode { mnemonic: "NOP", class: OpcodeClass::Nop },
+                    opcode: Opcode {
+                        mnemonic: "NOP",
+                        class: OpcodeClass::Nop,
+                    },
                     dst: None,
                     srcs: vec![],
                     pred: None,
@@ -19,7 +22,10 @@ fn make_simple_kernel() -> SassModule {
                 },
                 // EXIT
                 SassInst {
-                    opcode: Opcode { mnemonic: "EXIT", class: OpcodeClass::Branch },
+                    opcode: Opcode {
+                        mnemonic: "EXIT",
+                        class: OpcodeClass::Branch,
+                    },
                     dst: None,
                     srcs: vec![],
                     pred: None,
@@ -50,7 +56,10 @@ fn test_cubin_is_64bit_le() {
     let module = make_simple_kernel();
     let cubin = build_cubin_from_module(&module).expect("CUBIN build should succeed");
     assert_eq!(cubin[4], 2, "ELF class should be ELFCLASS64 (2)");
-    assert_eq!(cubin[5], 1, "ELF data should be ELFDATA2LSB (1) for little-endian");
+    assert_eq!(
+        cubin[5], 1,
+        "ELF data should be ELFDATA2LSB (1) for little-endian"
+    );
 }
 
 #[test]
@@ -113,7 +122,10 @@ fn test_cubin_section_header_entry_size() {
     let module = make_simple_kernel();
     let cubin = build_cubin_from_module(&module).expect("CUBIN build should succeed");
     let e_shentsize = u16::from_le_bytes([cubin[58], cubin[59]]);
-    assert_eq!(e_shentsize, 64, "Section header entry size should be 64 for ELF64");
+    assert_eq!(
+        e_shentsize, 64,
+        "Section header entry size should be 64 for ELF64"
+    );
 }
 
 #[test]
@@ -132,7 +144,10 @@ fn test_cubin_text_data_present() {
     // Two instructions at 16 bytes each = 32 bytes of text data.
     // The text section is 128-byte aligned, so find the aligned region.
     // Just verify the CUBIN is large enough to contain the text + headers.
-    assert!(cubin.len() > 64 + 32, "CUBIN should be large enough to hold ELF header + text data");
+    assert!(
+        cubin.len() > 64 + 32,
+        "CUBIN should be large enough to hold ELF header + text data"
+    );
 }
 
 #[test]
@@ -144,7 +159,10 @@ fn test_cubin_multiple_kernels() {
             SassKernel {
                 name: "kernel_a".to_string(),
                 instructions: vec![SassInst {
-                    opcode: Opcode { mnemonic: "EXIT", class: OpcodeClass::Branch },
+                    opcode: Opcode {
+                        mnemonic: "EXIT",
+                        class: OpcodeClass::Branch,
+                    },
                     dst: None,
                     srcs: vec![],
                     pred: None,
@@ -161,7 +179,10 @@ fn test_cubin_multiple_kernels() {
             SassKernel {
                 name: "kernel_b".to_string(),
                 instructions: vec![SassInst {
-                    opcode: Opcode { mnemonic: "NOP", class: OpcodeClass::Nop },
+                    opcode: Opcode {
+                        mnemonic: "NOP",
+                        class: OpcodeClass::Nop,
+                    },
                     dst: None,
                     srcs: vec![],
                     pred: None,
@@ -179,10 +200,22 @@ fn test_cubin_multiple_kernels() {
     };
     let cubin = build_cubin_from_module(&module).expect("CUBIN build should succeed");
 
-    assert!(contains_bytes(&cubin, b".text.kernel_a"), "should contain .text.kernel_a");
-    assert!(contains_bytes(&cubin, b".text.kernel_b"), "should contain .text.kernel_b");
-    assert!(contains_bytes(&cubin, b"kernel_a"), "should contain symbol kernel_a");
-    assert!(contains_bytes(&cubin, b"kernel_b"), "should contain symbol kernel_b");
+    assert!(
+        contains_bytes(&cubin, b".text.kernel_a"),
+        "should contain .text.kernel_a"
+    );
+    assert!(
+        contains_bytes(&cubin, b".text.kernel_b"),
+        "should contain .text.kernel_b"
+    );
+    assert!(
+        contains_bytes(&cubin, b"kernel_a"),
+        "should contain symbol kernel_a"
+    );
+    assert!(
+        contains_bytes(&cubin, b"kernel_b"),
+        "should contain symbol kernel_b"
+    );
 
     let e_shnum = u16::from_le_bytes([cubin[60], cubin[61]]);
     // NULL + shstrtab + strtab + symtab + nv.info_global + 3*2 kernels = 11
