@@ -251,6 +251,12 @@ struct KernelBindingMap {
     uint32_t flags;
 };
 
+enum DispatchPollResult {
+    DISPATCH_INVALID = 0,
+    DISPATCH_IDLE = 1,
+    DISPATCH_HANDLED = 2,
+};
+
 struct Map {
     void *base;
     size_t map_len;
@@ -263,6 +269,8 @@ struct ScanRange {
 };
 
 static long g_page_size = 4096;
+
+static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 
 static void log_msg(const char *fmt, ...) {
     char buf[512];
@@ -1404,6 +1412,89 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
     return 0xffff00ff;
 }
 
+static enum DispatchPollResult maybe_dispatch_kernel_job(
+    int fd,
+    volatile struct Doorbell *ctl,
+    uint64_t *last_kernel_seq) {
+    const struct PaccJobDesc *kernel_desc = (const struct PaccJobDesc *)(const void *)ctl;
+    int status;
+
+    if (!kernel_desc || kernel_desc->buf_info != PACC_JOB_MAGIC ||
+        kernel_desc->len < sizeof(struct PaccJobImageHeader)) {
+        return DISPATCH_INVALID;
+    }
+    if (kernel_desc->seq == 0 || kernel_desc->seq == *last_kernel_seq) {
+        return DISPATCH_IDLE;
+    }
+
+    *last_kernel_seq = kernel_desc->seq;
+    log_msg("new kernel doorbell: seq=%" PRIu64 " addr=0x%" PRIx64 " len=%" PRIu64,
+            kernel_desc->seq, kernel_desc->addr, kernel_desc->len);
+    status = dispatch_kernel_job(fd, kernel_desc);
+    mirror_host_status(fd, PACC_KERNEL_JOB_ID, kernel_desc->seq, (uint32_t)status);
+    log_msg("kernel dispatch done: seq=%" PRIu64 " status=0x%x",
+            kernel_desc->seq, (uint32_t)status);
+    return DISPATCH_HANDLED;
+}
+
+static enum DispatchPollResult maybe_dispatch_preloaded_job(
+    int fd,
+    volatile struct Doorbell *ctl,
+    struct PreloadedJobs *jobs,
+    bool strict,
+    uint64_t *last_seq,
+    uint64_t *last_table_seq) {
+    uint32_t job_id;
+    int status;
+
+    if (ctl->magic != HETGPU_PACC_JOB_MAGIC || ctl->version != HETGPU_PACC_JOB_VERSION) {
+        return DISPATCH_INVALID;
+    }
+    if (ctl->seq == *last_seq) {
+        return DISPATCH_IDLE;
+    }
+
+    *last_seq = ctl->seq;
+    job_id = ctl->job_id;
+    ctl->status = 1;
+    __sync_synchronize();
+    log_msg("new doorbell: job_id=%u/%s seq=%" PRIu64,
+            job_id, job_name(job_id), *last_seq);
+    refresh_runtime_table(ctl, jobs, last_table_seq);
+    log_msg("dispatch enter: job_id=%u/%s seq=%" PRIu64,
+            job_id, job_name(job_id), *last_seq);
+    status = dispatch_job(fd, ctl, jobs, strict);
+    __sync_synchronize();
+    ctl->status = (uint32_t)status;
+    mirror_host_status(fd, job_id, *last_seq, (uint32_t)status);
+    log_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+            job_id, job_name(job_id), *last_seq, (uint32_t)status);
+    return DISPATCH_HANDLED;
+}
+
+static enum DispatchPollResult dispatch_any_job(
+    int fd,
+    volatile struct Doorbell *ctl,
+    struct PreloadedJobs *jobs,
+    bool strict,
+    uint64_t *last_seq,
+    uint64_t *last_table_seq,
+    uint64_t *last_kernel_seq) {
+    enum DispatchPollResult result;
+
+    result = maybe_dispatch_preloaded_job(fd, ctl, jobs, strict, last_seq, last_table_seq);
+    if (result != DISPATCH_INVALID) {
+        return result;
+    }
+
+    result = maybe_dispatch_kernel_job(fd, ctl, last_kernel_seq);
+    if (result != DISPATCH_INVALID) {
+        return result;
+    }
+
+    return DISPATCH_INVALID;
+}
+
 static volatile struct Doorbell *scan_for_control(int fd, const struct ScanRange *ranges, size_t nranges) {
     const size_t chunk = 1UL << 20;
     for (size_t r = 0; r < nranges; r++) {
@@ -1532,6 +1623,7 @@ int main(int argc, char **argv) {
         }
     }
     for (;;) {
+        enum DispatchPollResult poll_result;
         if (!ctl) {
             ctl = scan_for_control(fd, ranges, nranges);
             if (!ctl) {
@@ -1539,45 +1631,16 @@ int main(int argc, char **argv) {
                 continue;
             }
         }
-        if (ctl->magic != HETGPU_PACC_JOB_MAGIC || ctl->version != HETGPU_PACC_JOB_VERSION) {
-            const struct PaccJobDesc *kernel_desc = (const struct PaccJobDesc *)(const void *)ctl;
-            if (kernel_desc->buf_info == PACC_JOB_MAGIC &&
-                kernel_desc->len >= sizeof(struct PaccJobImageHeader) &&
-                kernel_desc->seq != 0 &&
-                kernel_desc->seq != last_kernel_seq) {
-                int status;
-                last_kernel_seq = kernel_desc->seq;
-                log_msg("new kernel doorbell: seq=%" PRIu64 " addr=0x%" PRIx64 " len=%" PRIu64,
-                        kernel_desc->seq, kernel_desc->addr, kernel_desc->len);
-                status = dispatch_kernel_job(fd, kernel_desc);
-                mirror_host_status(fd, PACC_KERNEL_JOB_ID, kernel_desc->seq, (uint32_t)status);
-                log_msg("kernel dispatch done: seq=%" PRIu64 " status=0x%x",
-                        kernel_desc->seq, (uint32_t)status);
-                usleep(poll_us);
-                continue;
-            }
-            if (scan_ddr_control) {
-                ctl = NULL;
-            }
-            usleep(poll_us);
-            continue;
-        }
-        if (ctl->seq != last_seq) {
-            last_seq = ctl->seq;
-            uint32_t job_id = ctl->job_id;
-            ctl->status = 1;
-            __sync_synchronize();
-            log_msg("new doorbell: job_id=%u/%s seq=%" PRIu64,
-                    job_id, job_name(job_id), last_seq);
-            refresh_runtime_table(ctl, &jobs, &last_table_seq);
-            log_msg("dispatch enter: job_id=%u/%s seq=%" PRIu64,
-                    job_id, job_name(job_id), last_seq);
-            int status = dispatch_job(fd, ctl, &jobs, strict);
-            __sync_synchronize();
-            ctl->status = (uint32_t)status;
-            mirror_host_status(fd, job_id, last_seq, (uint32_t)status);
-            log_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
-                    job_id, job_name(job_id), last_seq, (uint32_t)status);
+        poll_result = dispatch_any_job(
+            fd,
+            ctl,
+            &jobs,
+            strict,
+            &last_seq,
+            &last_table_seq,
+            &last_kernel_seq);
+        if (poll_result == DISPATCH_INVALID && scan_ddr_control) {
+            ctl = NULL;
         }
         usleep(poll_us);
     }
