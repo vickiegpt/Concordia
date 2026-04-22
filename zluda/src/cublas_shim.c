@@ -1218,6 +1218,42 @@ cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
                             batchCount, computeType);
 }
 
+cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
+                                    cublasOperation_t transa, cublasOperation_t transb,
+                                    int m, int n, int k,
+                                    const void *alpha,
+                                    const void *const Aarray[], cudaDataType Atype, int lda,
+                                    const void *const Barray[], cudaDataType Btype, int ldb,
+                                    const void *beta,
+                                    void *const Carray[], cudaDataType Ctype, int ldc,
+                                    int batchCount,
+                                    cublasComputeType_t computeType, cublasGemmAlgo_t algo) {
+    (void)handle;
+    (void)algo;
+    DEBUG_LOG("cublasGemmBatchedEx called: m=%d, n=%d, k=%d, batchCount=%d, Atype=%d, Btype=%d, Ctype=%d",
+              m, n, k, batchCount, Atype, Btype, Ctype);
+    if (!Aarray || !Barray || !Carray || batchCount < 0) {
+        return CUBLAS_STATUS_INVALID_VALUE;
+    }
+    if (batchCount == 0) {
+        return CUBLAS_STATUS_SUCCESS;
+    }
+    DEBUG_LOG("cublasGemmBatchedEx pointer-array GEMM falls back to per-batch submit");
+    for (int i = 0; i < batchCount; ++i) {
+        cublasStatus_t st = submit_pacc_gemm("cublasGemmBatchedEx", transa, transb, m, n, k,
+                                             alpha,
+                                             Aarray[i], Atype, lda, 0,
+                                             Barray[i], Btype, ldb, 0,
+                                             beta,
+                                             Carray[i], Ctype, ldc, 0,
+                                             1, computeType);
+        if (st != CUBLAS_STATUS_SUCCESS) {
+            return st;
+        }
+    }
+    return CUBLAS_STATUS_SUCCESS;
+}
+
 // QR factorization batched
 cublasStatus_t cublasSgeqrfBatched(cublasHandle_t handle,
                                     int m, int n,

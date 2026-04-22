@@ -199,9 +199,34 @@ typedef void* cudaMemPool_t;
 typedef void* cudaUserObject_t;
 typedef void* cudaFunction_t;
 typedef struct { unsigned int x, y, z; } dim3;
+typedef struct { size_t width, height, depth; } cudaExtent;
+typedef struct { size_t x, y, z; } cudaPos;
+typedef struct { void *ptr; size_t pitch; size_t xsize; size_t ysize; } cudaPitchedPtr;
+typedef int cudaGraphExecUpdateResult;
 typedef void (*cudaStreamCallback_t)(cudaStream_t stream, cudaError_t status, void* userData);
 typedef void (*cudaHostFn_t)(void* userData);
 typedef int cudaMemcpyKind; // use int placeholder
+
+typedef struct {
+    const void *srcArray;
+    cudaPos srcPos;
+    cudaPitchedPtr srcPtr;
+    const void *dstArray;
+    cudaPos dstPos;
+    cudaPitchedPtr dstPtr;
+    cudaExtent extent;
+    cudaMemcpyKind kind;
+} cudaMemcpy3DParms;
+
+typedef struct {
+    int srcDevice;
+    cudaPos srcPos;
+    cudaPitchedPtr srcPtr;
+    int dstDevice;
+    cudaPos dstPos;
+    cudaPitchedPtr dstPtr;
+    cudaExtent extent;
+} cudaMemcpy3DPeerParms;
 
 enum {
     HETGPU_CUDA_MEMCPY_HOST_TO_HOST = 0,
@@ -2084,6 +2109,23 @@ cudaError_t cudaMemcpyAsync(void* dst, const void* src, size_t count, cudaMemcpy
     (void)stream; return cudaMemcpy(dst, src, count, kind);
 }
 
+cudaError_t cudaMemcpy2DAsync(void *dst, size_t dpitch,
+                              const void *src, size_t spitch,
+                              size_t width, size_t height,
+                              cudaMemcpyKind kind, cudaStream_t stream) {
+    (void)stream;
+    if (!dst || !src) return hetgpu_set_last_error(HETGPU_CUDA_ERROR_INVALID_VALUE);
+    for (size_t row = 0; row < height; ++row) {
+        const char *src_row = (const char *)src + row * spitch;
+        char *dst_row = (char *)dst + row * dpitch;
+        cudaError_t err = cudaMemcpy(dst_row, src_row, width, kind);
+        if (err != HETGPU_CUDA_SUCCESS) {
+            return hetgpu_set_last_error(err);
+        }
+    }
+    return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+}
+
 // Batch memory copy API (CUDA 12.x)
 // This is a batched version of cudaMemcpyAsync that copies multiple regions in one call
 typedef struct {
@@ -2117,6 +2159,29 @@ cudaError_t cudaMemcpyPeerAsync(void* dst, int dstDevice, const void* src, int s
     (void)dstDevice; (void)srcDevice; (void)stream;
     if (!dst || !src || count == 0) return 0;
     return cudaMemcpy(dst, src, count, HETGPU_CUDA_MEMCPY_DEVICE_TO_DEVICE);
+}
+
+cudaError_t cudaMemcpy3DPeerAsync(const cudaMemcpy3DPeerParms *p, cudaStream_t stream) {
+    (void)stream;
+    if (!p) return hetgpu_set_last_error(HETGPU_CUDA_ERROR_INVALID_VALUE);
+    size_t row_bytes = p->extent.width;
+    for (size_t z = 0; z < p->extent.depth; ++z) {
+        for (size_t y = 0; y < p->extent.height; ++y) {
+            const char *src_row = (const char *)p->srcPtr.ptr +
+                (p->srcPos.z + z) * p->srcPtr.pitch * p->srcPtr.ysize +
+                (p->srcPos.y + y) * p->srcPtr.pitch +
+                p->srcPos.x;
+            char *dst_row = (char *)p->dstPtr.ptr +
+                (p->dstPos.z + z) * p->dstPtr.pitch * p->dstPtr.ysize +
+                (p->dstPos.y + y) * p->dstPtr.pitch +
+                p->dstPos.x;
+            cudaError_t err = cudaMemcpy(dst_row, src_row, row_bytes, HETGPU_CUDA_MEMCPY_DEVICE_TO_DEVICE);
+            if (err != HETGPU_CUDA_SUCCESS) {
+                return hetgpu_set_last_error(err);
+            }
+        }
+    }
+    return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
 }
 
 cudaError_t cudaMemcpyToSymbol(const void* symbol,
@@ -2195,6 +2260,11 @@ cudaError_t cudaMallocAsync(void** devPtr, size_t size, cudaStream_t stream) {
     (void)stream; return cudaMalloc(devPtr, size);
 }
 
+cudaError_t cudaMallocManaged(void **devPtr, size_t size, unsigned int flags) {
+    (void)flags;
+    return cudaMalloc(devPtr, size);
+}
+
 cudaError_t cudaFreeAsync(void* devPtr, cudaStream_t stream) {
     (void)stream; return cudaFree(devPtr);
 }
@@ -2209,6 +2279,39 @@ cudaError_t cudaMemset(void* devPtr, int value, size_t count) {
 cudaError_t cudaMemsetAsync(void* devPtr, int value, size_t count, cudaStream_t stream) {
     (void)stream;
     return cudaMemset(devPtr, value, count);
+}
+
+cudaError_t cudaMallocHost(void **ptr, size_t size) {
+    return cudaHostAlloc(ptr, size, 0);
+}
+
+cudaError_t cudaSetDeviceFlags(unsigned int flags) {
+    (void)flags;
+    return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+}
+
+cudaError_t cudaLaunchCooperativeKernel(const void *func,
+                                        dim3 gridDim,
+                                        dim3 blockDim,
+                                        void **args,
+                                        size_t sharedMem,
+                                        cudaStream_t stream) {
+    return __cudaLaunchKernel(func, gridDim, blockDim, args, sharedMem, stream);
+}
+
+cudaError_t cudaGraphExecUpdate(cudaGraphExec_t hGraphExec,
+                                cudaGraph_t hGraph,
+                                cudaGraphNode_t *hErrorNode_out,
+                                cudaGraphExecUpdateResult *updateResult_out) {
+    (void)hGraphExec;
+    (void)hGraph;
+    if (hErrorNode_out) {
+        *hErrorNode_out = NULL;
+    }
+    if (updateResult_out) {
+        *updateResult_out = 0;
+    }
+    return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
 }
 
 // Device stream priority range (stub)
