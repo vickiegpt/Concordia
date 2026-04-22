@@ -2,10 +2,11 @@
 //!
 //! Driver interface (reverse-engineered from pacc.ko DWARF + disassembly):
 //!   Magic: 'p' (0x70)
-//!   PACC_IOC_GET_INFO   = _IOWR('p', 0, pacc_info_size)  = 0xc0087000
-//!   PACC_IOC_GET_INFO_EX = _IOWR('p', 1, pacc_info_size) = 0xc0107001
-//!   PACC_IOC_MEM_ALLOC   = _IOWR('p', 2, u64)            = 0xc0087002
-//!   PACC_IOC_BO_SUBMIT   = _IOW ('p', 3, u64)            = 0x40087003
+//!   PACC_IOC_GET_INFO_SIZE = _IOWR('p', 0, struct pacc_info_size)
+//!   PACC_IOC_GET_INFO      = _IOWR('p', 1, struct pacc_info)
+//!   PACC_IOC_CREATE_BO     = _IOWR('p', 2, struct pacc_bo)
+//!   PACC_IOC_SUBMIT_OP     = _IOW ('p', 3, struct pacc_op)
+//!   PACC_IOC_FREE_BO       = _IOW ('p', 4, struct pacc_bo)
 //!
 //! Mailbox SRAM (accessible from Pcore side via mmap or physical):
 //!   AP→PACC : 0x20000000  (8KB)
@@ -25,13 +26,6 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// ─── ioctl numbers ────────────────────────────────────────────────────────────
-
-pub const PACC_IOC_GET_INFO: u64 = 0xc000_7000;
-pub const PACC_IOC_GET_INFO_EX: u64 = 0xc001_0001;
-pub const PACC_IOC_MEM_ALLOC: u64 = 0xc000_8002;
-pub const PACC_IOC_BO_SUBMIT: u64 = 0x4000_8003;
-
 // Proper encoding: _IOWR(type, nr, size) = (3<<30)|(size<<16)|(type<<8)|nr
 const fn _iowr(ty: u64, nr: u64, size: u64) -> u64 {
     (3 << 30) | (size << 16) | (ty << 8) | nr
@@ -41,14 +35,10 @@ const fn _iow(ty: u64, nr: u64, size: u64) -> u64 {
 }
 
 pub const PACC_MAGIC: u64 = 0x70; // 'p'
-pub const IOC_GET_INFO: u64 = _iowr(PACC_MAGIC, 0, 8);
-pub const IOC_GET_INFO_EX: u64 = _iowr(PACC_MAGIC, 1, 16);
-pub const IOC_MEM_ALLOC: u64 = _iowr(PACC_MAGIC, 2, 8);
-pub const IOC_BO_SUBMIT: u64 = _iow(PACC_MAGIC, 3, 8);
 
 // ─── kernel struct mirrors ─────────────────────────────────────────────────────
 
-/// pacc_info_size — arg for PACC_IOC_GET_INFO (8 bytes)
+/// pacc_info_size — arg for PACC_IOC_GET_INFO_SIZE (8 bytes)
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct pacc_info_size {
@@ -56,14 +46,30 @@ pub struct pacc_info_size {
     pub size: u32,
 }
 
-/// pacc_jobs_addr — arg for legacy nr=1 driver probes (16 bytes)
-/// addr: physical/DMA address of job descriptor buffer
-/// size: byte length of that buffer
+/// `pacc_info` payload returned by ioctl nr=1.
+/// The concrete header has not landed in this tree yet, so keep it opaque.
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
-pub struct pacc_jobs_addr {
-    pub addr: u64,
+pub struct pacc_info {
+    pub raw: [u64; 2],
+}
+
+/// `pacc_bo` create/free descriptor.
+/// `size` is the requested contiguous allocation length on create, and `addr`
+/// is filled by the kernel with the BO's physical base.
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct pacc_bo {
     pub size: u64,
+    pub addr: u64,
+}
+
+/// `pacc_op` submit descriptor. Current callers only need the default
+/// zeroed "submit current BO" behavior.
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct pacc_op {
+    pub reserved: u64,
 }
 
 /// pacc_mbox_job_desc — one job entry (32 bytes)
@@ -75,6 +81,26 @@ pub struct pacc_mbox_job_desc {
     pub rsvd: u64,
     pub buf_info: u64,
 }
+
+pub const PACC_IOC_GET_INFO_SIZE: u64 =
+    _iowr(PACC_MAGIC, 0, std::mem::size_of::<pacc_info_size>() as u64);
+pub const PACC_IOC_GET_INFO: u64 = _iowr(PACC_MAGIC, 1, std::mem::size_of::<pacc_info>() as u64);
+pub const PACC_IOC_CREATE_BO: u64 = _iowr(PACC_MAGIC, 2, std::mem::size_of::<pacc_bo>() as u64);
+pub const PACC_IOC_SUBMIT_OP: u64 = _iow(PACC_MAGIC, 3, std::mem::size_of::<pacc_op>() as u64);
+pub const PACC_IOC_FREE_BO: u64 = _iow(PACC_MAGIC, 4, std::mem::size_of::<pacc_bo>() as u64);
+
+// Backward-compatible aliases for older local call sites.
+pub const PACC_IOC_GET_INFO_EX: u64 = PACC_IOC_GET_INFO;
+pub const PACC_IOC_MEM_ALLOC: u64 = PACC_IOC_CREATE_BO;
+pub const PACC_IOC_BO_SUBMIT: u64 = PACC_IOC_SUBMIT_OP;
+pub const IOC_GET_INFO_SIZE: u64 = PACC_IOC_GET_INFO_SIZE;
+pub const IOC_GET_INFO: u64 = PACC_IOC_GET_INFO;
+pub const IOC_GET_INFO_EX: u64 = PACC_IOC_GET_INFO;
+pub const IOC_CREATE_BO: u64 = PACC_IOC_CREATE_BO;
+pub const IOC_MEM_ALLOC: u64 = PACC_IOC_CREATE_BO;
+pub const IOC_SUBMIT_OP: u64 = PACC_IOC_SUBMIT_OP;
+pub const IOC_BO_SUBMIT: u64 = PACC_IOC_SUBMIT_OP;
+pub const IOC_FREE_BO: u64 = PACC_IOC_FREE_BO;
 
 /// Reduce operation types for NCCL AllReduce
 #[repr(u32)]
@@ -115,7 +141,7 @@ pub const PACC_DDR_BASE: u64 = 0x8000_0000;
 /// PACC DDR extended base (PACC-side high address)
 pub const PACC_DDR_EXT_BASE: u64 = 0x80_8000_0000;
 /// PACC-visible reduce scratch base. Prefer the mailbox helper's allocated
-/// window exported in `/sys/module/hetgpu_pacc_mbox/parameters/shared_ddr_base`.
+/// window exported in `/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base`.
 pub const HETGPU_PACC_SHARED_DDR_BASE: u64 = 0;
 pub const HETGPU_PACC_SHARED_DDR_BYTES: usize = 0x0100_0000;
 pub const HETGPU_PACC_SHARED_DDR_HELPER_OFF: u64 = 0x0010_0000;
@@ -491,6 +517,8 @@ impl Drop for PhysMap {
 }
 
 pub struct PaccBoMap {
+    file: File,
+    bo: pacc_bo,
     phys: u64,
     ptr: *mut u8,
     map_len: usize,
@@ -521,7 +549,22 @@ impl PaccBoMap {
 impl Drop for PaccBoMap {
     fn drop(&mut self) {
         let _ = unsafe { libc::munmap(self.ptr.cast(), self.map_len) };
+        let mut bo = self.bo;
+        let _ = unsafe { libc::ioctl(self.file.as_raw_fd(), IOC_FREE_BO, &mut bo as *mut _) };
     }
+}
+
+fn extract_bo_phys(bo: &pacc_bo, requested_size: u64) -> std::io::Result<u64> {
+    if bo.addr != 0 {
+        return Ok(bo.addr);
+    }
+    if bo.size != 0 && bo.size != requested_size {
+        return Ok(bo.size);
+    }
+    Err(Error::new(
+        ErrorKind::InvalidData,
+        "PACC create_bo returned an empty BO descriptor",
+    ))
 }
 
 // ─── Device handle ─────────────────────────────────────────────────────────────
@@ -556,9 +599,19 @@ impl PaccDevice {
         Ok(dev)
     }
 
-    /// PACC_IOC_GET_INFO — query firmware version / core count
+    /// PACC_IOC_GET_INFO_SIZE — query the size of the full info payload.
     pub fn get_info(&self) -> std::io::Result<pacc_info_size> {
         let mut info = pacc_info_size { opcode: 0, size: 0 };
+        let ret = unsafe { libc::ioctl(self.fd, IOC_GET_INFO_SIZE, &mut info as *mut _) };
+        if ret < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(info)
+    }
+
+    /// PACC_IOC_GET_INFO — fetch the full opaque info record.
+    pub fn get_info_full(&self) -> std::io::Result<pacc_info> {
+        let mut info = pacc_info::default();
         let ret = unsafe { libc::ioctl(self.fd, IOC_GET_INFO, &mut info as *mut _) };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
@@ -566,38 +619,38 @@ impl PaccDevice {
         Ok(info)
     }
 
-    /// PACC_IOC_MEM_ALLOC — allocate DMA-coherent memory, returns physical addr
+    /// PACC_IOC_CREATE_BO — allocate a contiguous BO and return its physical base.
     pub fn mem_alloc(&self, size: u64) -> std::io::Result<u64> {
-        let mut request = self.mem_alloc_request(size as usize)?;
-        let ret = unsafe { libc::ioctl(self.fd, IOC_MEM_ALLOC, request.as_mut_ptr()) };
+        let mut request = self.bo_request(size as usize)?;
+        let requested_size = request.size;
+        let ret = unsafe { libc::ioctl(self.fd, IOC_CREATE_BO, &mut request as *mut _) };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&request[..8]);
-        Ok(u64::from_ne_bytes(bytes))
+        extract_bo_phys(&request, requested_size)
     }
 
-    /// The shipping driver uses ioctl nr=3 as "submit current BO", not free.
-    /// Keeping the old symbol wired to submit prevents silent success on the
-    /// wrong path while preserving the FFI surface for existing probes.
+    /// PACC_IOC_FREE_BO — release a previously created BO.
     pub fn mem_free(&self, addr: u64) -> std::io::Result<()> {
-        let _ = addr;
-        self.submit_current_bo()
+        let mut request = pacc_bo { size: 0, addr };
+        let ret = unsafe { libc::ioctl(self.fd, IOC_FREE_BO, &mut request as *mut _) };
+        if ret < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     pub fn bo_alloc_map(&self, len: usize) -> std::io::Result<PaccBoMap> {
         if len == 0 {
             return Err(Error::new(ErrorKind::InvalidInput, "zero-length PACC BO"));
         }
-        let mut request = self.mem_alloc_request(len)?;
-        let ret = unsafe { libc::ioctl(self.fd, IOC_MEM_ALLOC, request.as_mut_ptr()) };
+        let mut request = self.bo_request(len)?;
+        let requested_size = request.size;
+        let ret = unsafe { libc::ioctl(self.fd, IOC_CREATE_BO, &mut request as *mut _) };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        let mut phys_bytes = [0u8; 8];
-        phys_bytes.copy_from_slice(&request[..8]);
-        let phys = u64::from_ne_bytes(phys_bytes);
+        let phys = extract_bo_phys(&request, requested_size)?;
 
         let map_len = align_up(len, page_size());
         let ptr = unsafe {
@@ -615,6 +668,8 @@ impl PaccDevice {
         }
 
         Ok(PaccBoMap {
+            file: self.file.try_clone()?,
+            bo: request,
             phys,
             ptr: ptr.cast(),
             map_len,
@@ -622,7 +677,7 @@ impl PaccDevice {
         })
     }
 
-    fn mem_alloc_request(&self, len: usize) -> std::io::Result<Vec<u8>> {
+    fn bo_request(&self, len: usize) -> std::io::Result<pacc_bo> {
         if len == 0 {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
@@ -630,9 +685,10 @@ impl PaccDevice {
             ));
         }
         let map_len = align_up(len, page_size());
-        let mut request = vec![0u8; map_len.max(8)];
-        request[..8].copy_from_slice(&(map_len as u64).to_ne_bytes());
-        Ok(request)
+        Ok(pacc_bo {
+            size: map_len as u64,
+            addr: 0,
+        })
     }
 
     pub fn submit_current_bo(&self) -> std::io::Result<()> {
@@ -650,46 +706,32 @@ impl PaccDevice {
             ));
         }
 
-        let mut unused: u64 = 0;
-        let ret = unsafe { libc::ioctl(self.fd, IOC_BO_SUBMIT, &mut unused as *mut u64) };
+        let mut op = pacc_op::default();
+        let ret = unsafe { libc::ioctl(self.fd, IOC_SUBMIT_OP, &mut op as *mut _) };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
     }
 
-    /// Legacy nr=1 probe path. This is not the hardware launch path.
+    /// Legacy nr=1 raw job submit is no longer valid: ioctl nr=1 is now
+    /// `PACC_IOC_GET_INFO`, so the BO submit path or mailbox helper must be used.
     pub fn job_submit(&self, phys_addr: u64, size: u64) -> std::io::Result<()> {
-        if std::env::var("HETGPU_PACC_UNSAFE_LEGACY_JOB_SUBMIT")
-            .ok()
-            .as_deref()
-            != Some("1")
-        {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                format!(
-                    "legacy job_submit(phys=0x{phys_addr:x}, size={size}) disabled: \
-                     pacc.ko launch uses the BO mmap path, not the nr=1 ioctl; \
-                     set HETGPU_PACC_UNSAFE_LEGACY_JOB_SUBMIT=1 only for driver ABI debugging"
-                ),
-            ));
-        }
-        let mut arg = pacc_jobs_addr {
-            addr: phys_addr,
-            size,
-        };
-        let ret = unsafe { libc::ioctl(self.fd, IOC_GET_INFO_EX, &mut arg as *mut _) };
-        if ret < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(())
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            format!(
+                "legacy job_submit(phys=0x{phys_addr:x}, size={size}) removed: \
+                 ioctl nr=1 is now PACC_IOC_GET_INFO; use the BO submit path or \
+                 mailbox helper launch flow instead"
+            ),
+        ))
     }
 
     /// Submit a job image through the driver's BO path.
     ///
     /// `/pacc.ko` does not accept a raw userspace `{addr, size}` for launch.
-    /// The real sequence is MEM_ALLOC(size) -> mmap(fd) -> write payload ->
-    /// ioctl nr=3, where the driver builds the mailbox page descriptors from
+    /// The real sequence is CREATE_BO(size) -> mmap(fd) -> write payload ->
+    /// SUBMIT_OP, where the driver builds the mailbox page descriptors from
     /// the current BO and sends those descriptors to PACC firmware.
     pub fn job_submit_user_buffer(&self, buf: &[u8]) -> std::io::Result<()> {
         self.job_submit_user_buffer_with_len(buf, buf.len())
@@ -1512,7 +1554,7 @@ fn shared_ddr_base() -> u64 {
                 .or_else(|| v.parse().ok())
         })
         .or_else(|| {
-            std::fs::read_to_string("/sys/module/hetgpu_pacc_mbox/parameters/shared_ddr_base")
+            std::fs::read_to_string("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base")
                 .ok()
                 .and_then(|v| {
                     let value = v.trim();
@@ -4489,10 +4531,7 @@ fn default_ptx_module_name() -> &'static CStr {
     unsafe { CStr::from_bytes_with_nul_unchecked(b"module.ptx\0") }
 }
 
-unsafe fn cstr_or_default<'a>(
-    ptr: *const std::ffi::c_char,
-    default_value: &'a CStr,
-) -> &'a CStr {
+unsafe fn cstr_or_default<'a>(ptr: *const std::ffi::c_char, default_value: &'a CStr) -> &'a CStr {
     if ptr.is_null() {
         default_value
     } else {
@@ -5583,9 +5622,10 @@ mod tests {
 
     #[test]
     fn test_ioctl_encoding() {
-        assert_eq!(IOC_GET_INFO, 0xc000_7000u64 & 0xffff_ffff);
-        assert_eq!(IOC_GET_INFO_EX, 0xc001_0001u64 & 0xffff_ffff);
-        assert_eq!(IOC_MEM_ALLOC, 0xc000_8002u64 & 0xffff_ffff);
-        assert_eq!(IOC_BO_SUBMIT, 0x4000_8003u64 & 0xffff_ffff);
+        assert_eq!(IOC_GET_INFO_SIZE, 0xc008_7000u64);
+        assert_eq!(IOC_GET_INFO, 0xc010_7001u64);
+        assert_eq!(IOC_CREATE_BO, 0xc010_7002u64);
+        assert_eq!(IOC_SUBMIT_OP, 0x4008_7003u64);
+        assert_eq!(IOC_FREE_BO, 0x4010_7004u64);
     }
 }

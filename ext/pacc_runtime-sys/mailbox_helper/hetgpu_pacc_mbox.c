@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/cdev.h>
+#include <linux/debugfs.h>
+#include <linux/dma-mapping.h>
 #include <linux/device.h>
+#include <linux/err.h>
 #include <linux/fs.h>
 #include <linux/gfp.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/moduleparam.h>
+#include <linux/seq_file.h>
 #include <linux/uaccess.h>
 
 #define HETGPU_PACC_MBOX_DEV "hetgpu_pacc_mbox"
@@ -16,10 +20,9 @@
 #define SHARED_DDR_USER_OFF 0x100000ULL
 #define DOORBELL_SIZE 32UL
 
-static unsigned long long shared_ddr_base;
+/* Allocated by the kernel helper and exported via debugfs for userspace. */
+static u64 shared_ddr_base;
 static unsigned long shared_ddr_size = 0x01000000UL;
-module_param(shared_ddr_base, ullong, 0444);
-MODULE_PARM_DESC(shared_ddr_base, "Pcore/PACC-visible shared DDR physical base, or 0 to allocate");
 module_param(shared_ddr_size, ulong, 0444);
 MODULE_PARM_DESC(shared_ddr_size, "Pcore/PACC-visible shared DDR window size");
 
@@ -29,21 +32,27 @@ static const phys_addr_t g_pacc_base[PACC_COUNT] = {
 static dev_t g_dev;
 static struct cdev g_cdev;
 static struct class *g_class;
+static struct dentry *g_dentry;
+static u64 g_dma_mask;
+static struct device g_device;
 static DEFINE_MUTEX(g_lock);
 static void __iomem *g_ap2pacc[PACC_COUNT];
 static void __iomem *g_pacc2ap[PACC_COUNT];
-static void __iomem *g_shared_ddr_io;
 static void *g_shared_ddr_mem;
 static bool g_shared_ddr_allocated;
 
 static gfp_t shared_ddr_gfp_flags(void)
 {
-	gfp_t flags = GFP_KERNEL | __GFP_ZERO;
-#ifdef GFP_DMA32
-	flags |= GFP_DMA32;
-#endif
-	return flags;
+	return GFP_KERNEL | __GFP_ZERO;
 }
+
+static int shared_ddr_base_show(struct seq_file *m, void *unused)
+{
+	seq_printf(m, "0x%llx\n", (unsigned long long)shared_ddr_base);
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(shared_ddr_base);
 
 static unsigned int mbox_minor(struct file *file)
 {
@@ -69,14 +78,11 @@ static ssize_t mbox_write(struct file *file, const char __user *buf, size_t len,
 	mutex_lock(&g_lock);
 	if ((u64)*ppos >= SHARED_DDR_USER_OFF) {
 		ddr_off = (u64)*ppos - SHARED_DDR_USER_OFF;
-		if ((!g_shared_ddr_io && !g_shared_ddr_mem) || ddr_off + n > shared_ddr_size) {
+		if (!g_shared_ddr_mem || ddr_off + n > shared_ddr_size) {
 			mutex_unlock(&g_lock);
 			return -EINVAL;
 		}
-		if (g_shared_ddr_io)
-			memcpy_toio((u8 __iomem *)g_shared_ddr_io + ddr_off, tmp, n);
-		else
-			memcpy((u8 *)g_shared_ddr_mem + ddr_off, tmp, n);
+		memcpy((u8 *)g_shared_ddr_mem + ddr_off, tmp, n);
 	} else {
 		if (!g_ap2pacc[minor] || (size_t)*ppos + n > MBOX_SIZE) {
 			mutex_unlock(&g_lock);
@@ -108,16 +114,13 @@ static ssize_t mbox_read(struct file *file, char __user *buf, size_t len, loff_t
 	mutex_lock(&g_lock);
 	if ((u64)*ppos >= SHARED_DDR_USER_OFF) {
 		ddr_off = (u64)*ppos - SHARED_DDR_USER_OFF;
-		if ((!g_shared_ddr_io && !g_shared_ddr_mem) || ddr_off >= shared_ddr_size) {
+		if (!g_shared_ddr_mem || ddr_off >= shared_ddr_size) {
 			mutex_unlock(&g_lock);
 			return 0;
 		}
 		if (ddr_off + n > shared_ddr_size)
 			n = shared_ddr_size - ddr_off;
-		if (g_shared_ddr_io)
-			memcpy_fromio(tmp, (u8 __iomem *)g_shared_ddr_io + ddr_off, n);
-		else
-			memcpy(tmp, (u8 *)g_shared_ddr_mem + ddr_off, n);
+		memcpy(tmp, (u8 *)g_shared_ddr_mem + ddr_off, n);
 	} else {
 		if (!g_pacc2ap[minor] || *ppos >= MBOX_SIZE) {
 			mutex_unlock(&g_lock);
@@ -183,20 +186,33 @@ static int __init hetgpu_pacc_mbox_init(void)
 		}
 	}
 	if (shared_ddr_size) {
-		if (shared_ddr_base) {
-			g_shared_ddr_io = ioremap((phys_addr_t)shared_ddr_base, shared_ddr_size);
-			if (!g_shared_ddr_io) {
-				ret = -ENOMEM;
-				goto err_unmap_all;
-			}
+		memset(&g_device, 0, sizeof(g_device));
+		g_dma_mask = DMA_BIT_MASK(64);
+		g_device.dma_mask = &g_dma_mask;
+		g_device.coherent_dma_mask = DMA_BIT_MASK(64);
+		ret = dma_set_mask_and_coherent(&g_device, DMA_BIT_MASK(64));
+		if (ret)
+			goto err_unmap_all;
+
+		g_shared_ddr_mem = dma_alloc_noncoherent(
+			&g_device,
+			shared_ddr_size,
+			(dma_addr_t *)&shared_ddr_base,
+			DMA_BIDIRECTIONAL,
+			shared_ddr_gfp_flags());
+		if (!g_shared_ddr_mem) {
+			ret = -ENOMEM;
+			goto err_unmap_all;
+		}
+		g_shared_ddr_allocated = true;
+
+		g_dentry = debugfs_create_dir(HETGPU_PACC_MBOX_DEV, NULL);
+		if (IS_ERR_OR_NULL(g_dentry)) {
+			pr_warn("hetgpu_pacc_mbox: failed to create debugfs dir for shared_ddr_base export\n");
+			g_dentry = NULL;
 		} else {
-			g_shared_ddr_mem = alloc_pages_exact(shared_ddr_size, shared_ddr_gfp_flags());
-			if (!g_shared_ddr_mem) {
-				ret = -ENOMEM;
-				goto err_unmap_all;
-			}
-			g_shared_ddr_allocated = true;
-			shared_ddr_base = (unsigned long long)virt_to_phys(g_shared_ddr_mem);
+			debugfs_create_file("shared_ddr_base", 0444, g_dentry, NULL,
+					    &shared_ddr_base_fops);
 		}
 	}
 
@@ -218,10 +234,10 @@ static int __init hetgpu_pacc_mbox_init(void)
 		device_create(g_class, NULL, MKDEV(MAJOR(g_dev), MINOR(g_dev) + i),
 			      NULL, HETGPU_PACC_MBOX_DEV "%u", i);
 	}
-	pr_info("hetgpu_pacc_mbox: %u PACC mailboxes, SRAM off=0x%llx size=0x%lx shared_ddr=0x%llx+0x%lx user_off=0x%llx\n",
+	pr_info("hetgpu_pacc_mbox: %u PACC mailboxes, SRAM off=0x%llx size=0x%lx shared_ddr=0x%llx+0x%lx user_off=0x%llx debugfs=/sys/kernel/debug/%s/shared_ddr_base\n",
 		PACC_COUNT, (unsigned long long)PACC_HOST_MBOX_SRAM_OFF,
-		(unsigned long)MBOX_SIZE, shared_ddr_base, shared_ddr_size,
-		(unsigned long long)SHARED_DDR_USER_OFF);
+		(unsigned long)MBOX_SIZE, (unsigned long long)shared_ddr_base, shared_ddr_size,
+		(unsigned long long)SHARED_DDR_USER_OFF, HETGPU_PACC_MBOX_DEV);
 	return 0;
 
 err_cdev:
@@ -229,10 +245,15 @@ err_cdev:
 err_chrdev:
 	unregister_chrdev_region(g_dev, PACC_COUNT);
 err_unmap_all:
-	if (g_shared_ddr_io)
-		iounmap(g_shared_ddr_io);
-	if (g_shared_ddr_allocated)
-		free_pages_exact(g_shared_ddr_mem, shared_ddr_size);
+	if (g_shared_ddr_allocated) {
+		dma_free_noncoherent(
+			&g_device,
+			shared_ddr_size,
+			g_shared_ddr_mem,
+			(dma_addr_t)shared_ddr_base,
+			DMA_BIDIRECTIONAL);
+		debugfs_remove(g_dentry);
+	}
 	for (i = 0; i < PACC_COUNT; i++) {
 		if (g_pacc2ap[i])
 			iounmap(g_pacc2ap[i]);
@@ -246,6 +267,15 @@ static void __exit hetgpu_pacc_mbox_exit(void)
 {
 	unsigned int i;
 
+	if (g_shared_ddr_allocated) {
+		dma_free_noncoherent(
+			&g_device,
+			shared_ddr_size,
+			g_shared_ddr_mem,
+			(dma_addr_t)shared_ddr_base,
+			DMA_BIDIRECTIONAL);
+		debugfs_remove(g_dentry);
+	}
 	for (i = 0; i < PACC_COUNT; i++)
 		device_destroy(g_class, MKDEV(MAJOR(g_dev), MINOR(g_dev) + i));
 	class_destroy(g_class);
@@ -255,10 +285,6 @@ static void __exit hetgpu_pacc_mbox_exit(void)
 		iounmap(g_pacc2ap[i]);
 		iounmap(g_ap2pacc[i]);
 	}
-	if (g_shared_ddr_io)
-		iounmap(g_shared_ddr_io);
-	if (g_shared_ddr_allocated)
-		free_pages_exact(g_shared_ddr_mem, shared_ddr_size);
 }
 
 module_init(hetgpu_pacc_mbox_init);
@@ -266,4 +292,4 @@ module_exit(hetgpu_pacc_mbox_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("hetGPU");
-MODULE_DESCRIPTION("Tiny AP2PACC mailbox helper for hetGPU PACC job doorbells");
+MODULE_DESCRIPTION("Tiny AP2PACC mailbox helper with kernel-allocated shared DDR export");
