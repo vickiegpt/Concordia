@@ -2135,58 +2135,27 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     // Create PACC program
     let program_ptr = unsafe { pacc_runtime_sys::pacc_CreateProgram() };
 
-    // If PTX, try to compile to RISC-V via comgr
+    // If PTX, ask the PACC runtime to compile PTX -> LLVM -> XM ELF and load it.
     if is_ptx && !program_ptr.is_null() {
         let c_str = unsafe { std::ffi::CStr::from_ptr(image as *const std::ffi::c_char) };
         if let Ok(ptx_text) = c_str.to_str() {
             eprintln!(
-                "[PACC Backend] Compiling PTX ({} bytes) to RISC-V...",
+                "[PACC Backend] Compiling PTX ({} bytes) through pacc runtime...",
                 ptx_text.len()
             );
-            match ptx_parser::parse_module_checked(ptx_text) {
-                Ok(ast) => match ptx::to_llvm_module(
-                    ast,
-                    ptx::pass::Attributes {
-                        clock_rate: 1_000_000,
-                        emit_debug_info: false,
-                    },
-                    |_| {},
-                ) {
-                    Ok(llvm_module) => {
-                        use std::ffi::CStr;
-                        let target = unsafe {
-                            CStr::from_bytes_with_nul_unchecked(b"riscv64-unknown-elf\0")
-                        };
-                        let ir_bytes = llvm_module.llvm_ir.write_bitcode_to_memory();
-                        match comgr::compile_bitcode_pacc(
-                            target,
-                            &*ir_bytes,
-                            llvm_module.linked_bitcode(),
-                        ) {
-                            Ok(elf_bytes) => {
-                                eprintln!(
-                                    "[PACC Backend] Compiled to RISC-V ELF ({} bytes)",
-                                    elf_bytes.len()
-                                );
-                                let result = unsafe {
-                                    pacc_runtime_sys::pacc_LoadProgram(
-                                        program_ptr,
-                                        elf_bytes.as_ptr() as *const std::ffi::c_void,
-                                        elf_bytes.len() as u64,
-                                    )
-                                };
-                                if result != pacc_runtime_sys::pacc_Result_Success {
-                                    eprintln!("[PACC Backend] pacc_LoadProgram failed: {}", result);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("[PACC Backend] compile_bitcode_pacc failed: {:?}", e);
-                            }
-                        }
-                    }
-                    Err(e) => eprintln!("[PACC Backend] PTX to LLVM failed: {:?}", e),
-                },
-                Err(_) => eprintln!("[PACC Backend] PTX parse failed"),
+            let result = unsafe {
+                pacc_runtime_sys::pacc_LoadProgramPtx(
+                    program_ptr,
+                    std::ptr::null(),
+                    c"module.ptx".as_ptr(),
+                    ptx_text.as_ptr(),
+                    ptx_text.len() as u64,
+                    std::ptr::null(),
+                    0,
+                )
+            };
+            if result != pacc_runtime_sys::pacc_Result_Success {
+                eprintln!("[PACC Backend] pacc_LoadProgramPtx failed: {}", result);
             }
         }
     }

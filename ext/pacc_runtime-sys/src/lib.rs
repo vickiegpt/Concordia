@@ -17,6 +17,7 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+use std::ffi::CStr;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -4476,6 +4477,45 @@ pub type pacc_Result = i32;
 pub const pacc_Result_Success: pacc_Result = 0;
 pub const pacc_Result_Error: pacc_Result = -1;
 
+fn default_source_target() -> &'static CStr {
+    unsafe { CStr::from_bytes_with_nul_unchecked(b"riscv64-linux-gnu\0") }
+}
+
+fn default_ptx_target() -> &'static CStr {
+    unsafe { CStr::from_bytes_with_nul_unchecked(b"riscv64-unknown-elf\0") }
+}
+
+fn default_ptx_module_name() -> &'static CStr {
+    unsafe { CStr::from_bytes_with_nul_unchecked(b"module.ptx\0") }
+}
+
+unsafe fn cstr_or_default<'a>(
+    ptr: *const std::ffi::c_char,
+    default_value: &'a CStr,
+) -> &'a CStr {
+    if ptr.is_null() {
+        default_value
+    } else {
+        CStr::from_ptr(ptr)
+    }
+}
+
+unsafe fn slice_or_empty<'a>(ptr: *const u8, len: u64) -> &'a [u8] {
+    if ptr.is_null() || len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(ptr, len as usize)
+    }
+}
+
+unsafe fn load_program_elf_bytes(program: *mut pacc_Program, elf_bytes: Vec<u8>) -> pacc_Result {
+    if program.is_null() || elf_bytes.is_empty() {
+        return pacc_Result_Error;
+    }
+    (*program).elf_bytes = elf_bytes;
+    pacc_Result_Success
+}
+
 /// Create a PACC device handle for device_id (0-3).
 /// Returns null on failure.
 #[no_mangle]
@@ -4525,8 +4565,178 @@ pub unsafe extern "C" fn pacc_LoadProgram(
         return pacc_Result_Error;
     }
     let bytes = std::slice::from_raw_parts(data as *const u8, size as usize);
-    (*program).elf_bytes = bytes.to_vec();
-    pacc_Result_Success
+    load_program_elf_bytes(program, bytes.to_vec())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pacc_LoadProgramSource(
+    program: *mut pacc_Program,
+    target_arch: *const std::ffi::c_char,
+    source_name: *const std::ffi::c_char,
+    source_buffer: *const u8,
+    source_len: u64,
+    working_directory: *const std::ffi::c_char,
+    options: *const *const std::ffi::c_char,
+    option_count: usize,
+    linked_bitcode: *const u8,
+    linked_bitcode_len: u64,
+) -> pacc_Result {
+    if program.is_null() || source_name.is_null() || source_buffer.is_null() || source_len == 0 {
+        return pacc_Result_Error;
+    }
+
+    let target_arch = cstr_or_default(target_arch, default_source_target());
+    let source_name = CStr::from_ptr(source_name);
+    let source_buffer = std::slice::from_raw_parts(source_buffer, source_len as usize);
+    let working_directory = if working_directory.is_null() {
+        None
+    } else {
+        Some(CStr::from_ptr(working_directory))
+    };
+    let linked_bitcode = slice_or_empty(linked_bitcode, linked_bitcode_len);
+
+    let mut option_refs = Vec::with_capacity(option_count);
+    if !options.is_null() {
+        for idx in 0..option_count {
+            let opt = *options.add(idx);
+            if !opt.is_null() {
+                option_refs.push(CStr::from_ptr(opt));
+            }
+        }
+    }
+
+    match comgr::compile_source_pacc(
+        target_arch,
+        source_name,
+        source_buffer,
+        working_directory,
+        &option_refs,
+        linked_bitcode,
+    ) {
+        Ok(elf_bytes) => {
+            if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                eprintln!(
+                    "pacc_LoadProgramSource: compiled '{}' to {}-byte ELF for target {}",
+                    source_name.to_string_lossy(),
+                    elf_bytes.len(),
+                    target_arch.to_string_lossy(),
+                );
+            }
+            load_program_elf_bytes(program, elf_bytes)
+        }
+        Err(err) => {
+            eprintln!(
+                "pacc_LoadProgramSource: failed for {}: {:?}",
+                source_name.to_string_lossy(),
+                err
+            );
+            pacc_Result_Error
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pacc_LoadProgramPtx(
+    program: *mut pacc_Program,
+    target_arch: *const std::ffi::c_char,
+    module_name: *const std::ffi::c_char,
+    ptx_buffer: *const u8,
+    ptx_len: u64,
+    linked_bitcode: *const u8,
+    linked_bitcode_len: u64,
+) -> pacc_Result {
+    if program.is_null() || ptx_buffer.is_null() || ptx_len == 0 {
+        return pacc_Result_Error;
+    }
+
+    let target_arch = cstr_or_default(target_arch, default_ptx_target());
+    let module_name = if module_name.is_null() {
+        default_ptx_module_name()
+    } else {
+        CStr::from_ptr(module_name)
+    };
+    let ptx_bytes = std::slice::from_raw_parts(ptx_buffer, ptx_len as usize);
+    let external_linked = slice_or_empty(linked_bitcode, linked_bitcode_len);
+    let ptx_text = match std::str::from_utf8(ptx_bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!(
+                "pacc_LoadProgramPtx: invalid UTF-8 in module {}: {}",
+                module_name.to_string_lossy(),
+                err
+            );
+            return pacc_Result_Error;
+        }
+    };
+
+    let ast = match ptx_parser::parse_module_checked(ptx_text) {
+        Ok(ast) => ast,
+        Err(err) => {
+            eprintln!(
+                "pacc_LoadProgramPtx: PTX parse failed for {}: {:?}",
+                module_name.to_string_lossy(),
+                err
+            );
+            return pacc_Result_Error;
+        }
+    };
+    let llvm_module = match ptx::to_llvm_module(
+        ast,
+        ptx::pass::Attributes {
+            clock_rate: 1_000_000,
+            emit_debug_info: false,
+        },
+        |_| {},
+    ) {
+        Ok(module) => module,
+        Err(err) => {
+            eprintln!(
+                "pacc_LoadProgramPtx: PTX -> LLVM failed for {}: {:?}",
+                module_name.to_string_lossy(),
+                err
+            );
+            return pacc_Result_Error;
+        }
+    };
+    let ir_bytes = llvm_module.llvm_ir.write_bitcode_to_memory();
+    let internal_linked = llvm_module.linked_bitcode();
+    let mut linked_modules: Vec<&[u8]> = Vec::new();
+    if !internal_linked.is_empty() {
+        linked_modules.push(internal_linked);
+    }
+    if !external_linked.is_empty() {
+        linked_modules.push(external_linked);
+    }
+
+    match comgr::compile_bitcode_pacc_multi(target_arch, &*ir_bytes, &linked_modules) {
+        Ok(elf_bytes) => {
+            if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                eprintln!(
+                    "pacc_LoadProgramPtx: compiled '{}' to {}-byte XM ELF for target {}",
+                    module_name.to_string_lossy(),
+                    elf_bytes.len(),
+                    target_arch.to_string_lossy(),
+                );
+            }
+            load_program_elf_bytes(program, elf_bytes)
+        }
+        Err(err) => {
+            eprintln!(
+                "pacc_LoadProgramPtx: LLVM -> XM ELF failed for {}: {:?}",
+                module_name.to_string_lossy(),
+                err
+            );
+            pacc_Result_Error
+        }
+    }
 }
 
 /// Create a named kernel handle from a program.

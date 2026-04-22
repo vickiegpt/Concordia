@@ -1039,11 +1039,25 @@ pub fn compile_bitcode_pacc(
     main_buffer: &[u8],
     ptx_impl: &[u8],
 ) -> Result<Vec<u8>, pacc_comgr_status_s> {
+    let linked_modules: Vec<&[u8]> = if ptx_impl.is_empty() {
+        Vec::new()
+    } else {
+        vec![ptx_impl]
+    };
+    compile_bitcode_pacc_multi(target_arch, main_buffer, &linked_modules)
+}
+
+#[cfg(feature = "pacc")]
+pub fn compile_bitcode_pacc_multi(
+    target_arch: &CStr,
+    main_buffer: &[u8],
+    linked_modules: &[&[u8]],
+) -> Result<Vec<u8>, pacc_comgr_status_s> {
     eprintln!("ZLUDA DEBUG: Compiling bitcode for PACC (RISC-V IME/VCIX)");
     eprintln!(
-        "ZLUDA DEBUG: Main buffer size: {} bytes, PTX impl size: {} bytes",
+        "ZLUDA DEBUG: Main buffer size: {} bytes, linked module count: {}",
         main_buffer.len(),
-        ptx_impl.len()
+        linked_modules.len()
     );
     eprintln!(
         "ZLUDA DEBUG: Target architecture: {:?}",
@@ -1068,20 +1082,23 @@ pub fn compile_bitcode_pacc(
     pacc_comgr_data_set_name(main_data, c"main.bc".as_ptr())?;
     pacc_comgr_data_set_add(input_data_set, main_data)?;
 
-    // Add PTX impl bitcode if provided
-    if !ptx_impl.is_empty() {
-        let mut ptx_data = unsafe { mem::zeroed() };
+    for (idx, module_bytes) in linked_modules.iter().enumerate() {
+        if module_bytes.is_empty() {
+            continue;
+        }
+        let mut linked_data = unsafe { mem::zeroed() };
         pacc_comgr_create_data(
             pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_BC,
-            &mut ptx_data,
+            &mut linked_data,
         )?;
         pacc_comgr_data_set_bytes(
-            ptx_data,
-            ptx_impl.as_ptr() as *const std::os::raw::c_void,
-            ptx_impl.len(),
+            linked_data,
+            module_bytes.as_ptr() as *const std::os::raw::c_void,
+            module_bytes.len(),
         )?;
-        pacc_comgr_data_set_name(ptx_data, c"ptx_impl.bc".as_ptr())?;
-        pacc_comgr_data_set_add(input_data_set, ptx_data)?;
+        let name = std::ffi::CString::new(format!("linked_{}.bc", idx)).unwrap();
+        pacc_comgr_data_set_name(linked_data, name.as_ptr())?;
+        pacc_comgr_data_set_add(input_data_set, linked_data)?;
     }
 
     // Create action info
@@ -1093,13 +1110,14 @@ pub fn compile_bitcode_pacc(
         action_info,
         pacc_comgr_language_s::PACC_COMGR_LANGUAGE_LLVM_IR,
     )?;
+    pacc_comgr_action_info_set_target(action_info, target_arch.as_ptr())?;
 
     // Create output data set
     let mut output_data_set = unsafe { mem::zeroed() };
     pacc_comgr_create_data_set(&mut output_data_set)?;
 
     // Link bitcode if needed
-    let linked_data_set = if !ptx_impl.is_empty() {
+    let linked_data_set = if !linked_modules.is_empty() {
         eprintln!("ZLUDA DEBUG: Linking PACC bitcode modules");
         let mut linked_set = unsafe { mem::zeroed() };
         pacc_comgr_create_data_set(&mut linked_set)?;
@@ -1162,10 +1180,11 @@ pub fn compile_bitcode_pacc(
     // Cleanup
     pacc_comgr_release_data(output_data)?;
     pacc_comgr_release_data_set(output_data_set)?;
-    if !ptx_impl.is_empty() {
+    if !linked_modules.is_empty() {
         pacc_comgr_release_data_set(linked_data_set)?;
     }
     pacc_comgr_release_data_set(optimized_set)?;
+    pacc_comgr_release_data_set(input_data_set)?;
     pacc_comgr_release_action_info(action_info)?;
 
     eprintln!(
