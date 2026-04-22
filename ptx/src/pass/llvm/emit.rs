@@ -124,7 +124,8 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             .as_deref()
             .or_else(|| self.id_defs.ident_map[&method.name].name.as_deref())
             .ok_or_else(|| error_unreachable())?;
-        let name = CString::new(name).map_err(|_| error_unreachable())?;
+        let symbol_name = name;
+        let name = CString::new(symbol_name).map_err(|_| error_unreachable())?;
         let mut fn_ = unsafe { LLVMGetNamedFunction(self.module, name.as_ptr()) };
         if fn_ == ptr::null_mut() {
             let fn_type = get_function_type(
@@ -182,7 +183,9 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
         }
         if !method.is_kernel {
             unsafe {
-                LLVMSetVisibility(fn_, llvm_zluda::LLVMVisibility::LLVMHiddenVisibility);
+                if !is_passthrough_external_symbol(symbol_name) {
+                    LLVMSetVisibility(fn_, llvm_zluda::LLVMVisibility::LLVMHiddenVisibility);
+                }
             }
         }
         let call_conv = if method.is_kernel {

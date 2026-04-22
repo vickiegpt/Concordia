@@ -53,6 +53,21 @@ static ZLUDA_PTX_IMPL: &'static [u8] = include_bytes!("../../lib/zluda_ptx_ze_im
 static ZLUDA_PTX_IMPL: &'static [u8] = include_bytes!("../../lib/zluda_ptx_impl.bc");
 const ZLUDA_PTX_PREFIX: &'static str = "__zluda_ptx_impl_";
 
+/// `ggml_*` symbols are implemented by the linked PACC operator bitcode
+/// compiled from the llama.cpp-side operator sources. Keep their names stable
+/// so the later ELF/device-side link step can resolve them directly.
+pub(crate) fn is_passthrough_external_symbol(name: &str) -> bool {
+    name.starts_with("ggml_")
+}
+
+pub(crate) fn lower_external_symbol_name<'input>(name: Cow<'input, str>) -> Cow<'input, str> {
+    if is_passthrough_external_symbol(name.as_ref()) {
+        name
+    } else {
+        Cow::Owned(format!("{}{}", ZLUDA_PTX_PREFIX, name))
+    }
+}
+
 quick_error! {
     #[derive(Debug, strum_macros::AsRefStr)]
     pub enum TranslateError {

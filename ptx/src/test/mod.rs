@@ -198,3 +198,71 @@ fn llvm_ir_contains_debug_metadata() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn ggml_extern_symbol_is_preserved_for_pacc_link() -> Result<(), Box<dyn std::error::Error>> {
+    let ptx_source = r#"
+.version 6.5
+.target sm_80
+.address_size 64
+
+.extern .func (.param .u64 output) ggml_vec_dot_f16(
+    .param .u64 input
+);
+
+.visible .entry ggml_call_kernel(
+    .param .u64 input,
+    .param .u64 output
+)
+{
+    .reg .u64 in_addr;
+    .reg .u64 out_addr;
+    .reg .u64 temp;
+
+    ld.param.u64 in_addr, [input];
+    ld.param.u64 out_addr, [output];
+    ld.global.u64 temp, [in_addr];
+
+    .param .u64 ggml_in;
+    .param .u64 ggml_out;
+    st.param.b64 [ggml_in], temp;
+    call (ggml_out), ggml_vec_dot_f16, (ggml_in);
+    ld.param.u64 temp, [ggml_out];
+    st.global.u64 [out_addr], temp;
+    ret;
+}
+    "#;
+
+    let ast = ast::parse_module_checked(ptx_source)
+        .map_err(|e| format!("PTX parsing failed: {:?}", e))?;
+
+    let module = crate::to_llvm_module(
+        ast,
+        pass::Attributes {
+            clock_rate: 2124000,
+            emit_debug_info: false,
+        },
+        |_| {},
+    )?;
+
+    let llvm_ir = module.llvm_ir.print_module_to_string();
+    let llvm_ir = llvm_ir.to_str();
+
+    assert!(
+        llvm_ir.contains("@ggml_vec_dot_f16("),
+        "LLVM IR should keep the ggml operator symbol name intact.\n{}",
+        llvm_ir
+    );
+    assert!(
+        !llvm_ir.contains("@__zluda_ptx_impl_ggml_vec_dot_f16("),
+        "ggml operator symbols must not be rewritten to the PTX helper namespace.\n{}",
+        llvm_ir
+    );
+    assert!(
+        !llvm_ir.contains("declare hidden i64 @ggml_vec_dot_f16"),
+        "ggml operator symbols should stay externally visible for later PACC linking.\n{}",
+        llvm_ir
+    );
+
+    Ok(())
+}
