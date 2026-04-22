@@ -2722,12 +2722,7 @@ pub(crate) fn launch_kernel(
         }
     } else {
         let abi_result = unsafe {
-            configure_pacc_launch_abi(
-                kernel.kernel_ptr,
-                &kernel.kernel_name,
-                kernel_params,
-                extra,
-            )
+            configure_pacc_launch_abi(kernel.kernel_ptr, &kernel.kernel_name, kernel_params, extra)
         };
         if abi_result != pacc_runtime_sys::pacc_Result_Success {
             crate::r#impl::hetgpu_debug!(
@@ -2791,9 +2786,7 @@ fn pacc_looks_like_pointer(value: u64) -> bool {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn parse_pacc_launch_extra_blob(
-    extra: *mut *mut ::core::ffi::c_void,
-) -> Option<Vec<u8>> {
+unsafe fn parse_pacc_launch_extra_blob(extra: *mut *mut ::core::ffi::c_void) -> Option<Vec<u8>> {
     use cuda_types::cuda::{
         CU_LAUNCH_PARAM_BUFFER_POINTER_AS_INT, CU_LAUNCH_PARAM_BUFFER_SIZE_AS_INT,
     };
@@ -2862,6 +2855,18 @@ unsafe fn configure_pacc_launch_abi(
         if rc != pacc_runtime_sys::pacc_Result_Success {
             return rc;
         }
+    }
+
+    if kernel_name.starts_with("lanxin_pacc_mul_mat_") {
+        let m_v = read_param_i32(kernel_params, 0).unwrap_or(0).max(0) as u32;
+        let n_v = read_param_i32(kernel_params, 1).unwrap_or(0).max(0) as u32;
+        let k_v = read_param_i32(kernel_params, 2).unwrap_or(0).max(0) as u32;
+        let a = read_param_u64(kernel_params, 3).unwrap_or(0) as *const ::core::ffi::c_void;
+        let b = read_param_u64(kernel_params, 4).unwrap_or(0) as *const ::core::ffi::c_void;
+        let c = read_param_u64(kernel_params, 5).unwrap_or(0) as *mut ::core::ffi::c_void;
+        return pacc_runtime_sys::pacc_KernelConfigureLanxinMulMatTile(
+            kernel_ptr, m_v, n_v, k_v, a, 0, b, 0, c, 0,
+        );
     }
 
     if kernel_params.is_null() {

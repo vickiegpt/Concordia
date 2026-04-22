@@ -103,6 +103,7 @@ typedef enum {
 #define HETGPU_PACC_DTYPE_INT8 0
 #define HETGPU_PACC_DTYPE_UINT8 1
 #define HETGPU_PACC_DTYPE_INT32 2
+#define HETGPU_PACC_DTYPE_F16 3
 #define HETGPU_PACC_DTYPE_F32 4
 #define HETGPU_PACC_DTYPE_BF16 5
 
@@ -114,6 +115,8 @@ static int hetgpu_pacc_dtype(cudaDataType type) {
             return HETGPU_PACC_DTYPE_UINT8;
         case CUDA_R_32I:
             return HETGPU_PACC_DTYPE_INT32;
+        case CUDA_R_16F:
+            return HETGPU_PACC_DTYPE_F16;
         case CUDA_R_32F:
             return HETGPU_PACC_DTYPE_F32;
         case CUDA_R_16BF:
@@ -200,6 +203,51 @@ static float host_bf16_to_float(uint16_t value) {
     return conv.f;
 }
 
+static float host_f16_to_float(uint16_t value) {
+    uint32_t sign = ((uint32_t)value & 0x8000u) << 16;
+    uint32_t exp = ((uint32_t)value >> 10) & 0x1fu;
+    uint32_t frac = (uint32_t)value & 0x03ffu;
+    uint32_t bits;
+    if (exp == 0) {
+        if (frac == 0) {
+            bits = sign;
+        } else {
+            exp = 127 - 15 + 1;
+            while ((frac & 0x0400u) == 0) {
+                frac <<= 1;
+                exp--;
+            }
+            frac &= 0x03ffu;
+            bits = sign | (exp << 23) | (frac << 13);
+        }
+    } else if (exp == 0x1fu) {
+        bits = sign | 0x7f800000u | (frac << 13);
+    } else {
+        bits = sign | ((exp + (127 - 15)) << 23) | (frac << 13);
+    }
+    union { uint32_t u; float f; } conv;
+    conv.u = bits;
+    return conv.f;
+}
+
+static uint16_t host_float_to_f16(float value) {
+    union { float f; uint32_t u; } conv;
+    conv.f = value;
+    uint32_t sign = (conv.u >> 16) & 0x8000u;
+    uint32_t mant = conv.u & 0x007fffffu;
+    int32_t exp = (int32_t)((conv.u >> 23) & 0xffu) - 127 + 15;
+    if (exp <= 0) {
+        if (exp < -10) return (uint16_t)sign;
+        mant |= 0x00800000u;
+        uint32_t shifted = mant >> (uint32_t)(1 - exp);
+        return (uint16_t)(sign | ((shifted + 0x00001000u) >> 13));
+    }
+    if (exp >= 0x1f) {
+        return (uint16_t)(sign | 0x7c00u);
+    }
+    return (uint16_t)(sign | ((uint32_t)exp << 10) | ((mant + 0x00001000u) >> 13));
+}
+
 static uint16_t host_float_to_bf16(float value) {
     union { float f; uint32_t u; } conv;
     conv.f = value;
@@ -241,6 +289,7 @@ static size_t host_dtype_size(cudaDataType type) {
         case CUDA_R_8I: return sizeof(int8_t);
         case CUDA_R_8U: return sizeof(uint8_t);
         case CUDA_R_32I: return sizeof(int32_t);
+        case CUDA_R_16F: return sizeof(uint16_t);
         case CUDA_R_32F: return sizeof(float);
         case CUDA_R_16BF: return sizeof(uint16_t);
         default: return 0;
@@ -264,6 +313,9 @@ static float host_gemm_load(const void *base, cudaDataType type, int row, int co
     if (type == CUDA_R_32I) {
         return ((const int32_t *)base)[idx];
     }
+    if (type == CUDA_R_16F) {
+        return host_f16_to_float(((const uint16_t *)base)[idx]);
+    }
     if (type == CUDA_R_32F) {
         return ((const float *)base)[idx];
     }
@@ -283,6 +335,9 @@ static float host_gemm_load_c(const void *base, cudaDataType type, size_t idx) {
     if (type == CUDA_R_32I) {
         return ((const int32_t *)base)[idx];
     }
+    if (type == CUDA_R_16F) {
+        return host_f16_to_float(((const uint16_t *)base)[idx]);
+    }
     if (type == CUDA_R_32F) {
         return ((const float *)base)[idx];
     }
@@ -299,6 +354,8 @@ static void host_gemm_store_c(void *base, cudaDataType type, size_t idx, float v
         ((uint8_t *)base)[idx] = host_float_to_u8(value);
     } else if (type == CUDA_R_32I) {
         ((int32_t *)base)[idx] = host_float_to_i32(value);
+    } else if (type == CUDA_R_16F) {
+        ((uint16_t *)base)[idx] = host_float_to_f16(value);
     } else if (type == CUDA_R_32F) {
         ((float *)base)[idx] = value;
     } else if (type == CUDA_R_16BF) {
