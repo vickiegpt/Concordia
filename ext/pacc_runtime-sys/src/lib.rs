@@ -4956,6 +4956,105 @@ pub unsafe extern "C" fn pacc_KernelAddBufferBinding(
     pacc_Result_Success
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn pacc_KernelConfigureLanxinMulMatTile(
+    kernel: *mut pacc_Kernel,
+    m: u32,
+    n: u32,
+    k: u32,
+    a: *const std::ffi::c_void,
+    a_offset: u64,
+    b: *const std::ffi::c_void,
+    b_offset: u64,
+    c: *mut std::ffi::c_void,
+    c_offset: u64,
+) -> pacc_Result {
+    if kernel.is_null() {
+        return pacc_Result_Error;
+    }
+
+    let clear = pacc_KernelClearLaunchState(kernel);
+    if clear != pacc_Result_Success {
+        return clear;
+    }
+
+    let scalar_records = [
+        PaccKernelArgRecord {
+            kind: PACC_KERNEL_ARG_KIND_SCALAR,
+            size: std::mem::size_of::<u32>() as u32,
+            reserved: 0,
+            value: m as u64,
+        },
+        PaccKernelArgRecord {
+            kind: PACC_KERNEL_ARG_KIND_SCALAR,
+            size: std::mem::size_of::<u32>() as u32,
+            reserved: 0,
+            value: n as u64,
+        },
+        PaccKernelArgRecord {
+            kind: PACC_KERNEL_ARG_KIND_SCALAR,
+            size: std::mem::size_of::<u32>() as u32,
+            reserved: 0,
+            value: k as u64,
+        },
+        PaccKernelArgRecord {
+            kind: PACC_KERNEL_ARG_KIND_POINTER,
+            size: std::mem::size_of::<u64>() as u32,
+            reserved: 0,
+            value: a as u64,
+        },
+        PaccKernelArgRecord {
+            kind: PACC_KERNEL_ARG_KIND_POINTER,
+            size: std::mem::size_of::<u64>() as u32,
+            reserved: 0,
+            value: b as u64,
+        },
+        PaccKernelArgRecord {
+            kind: PACC_KERNEL_ARG_KIND_POINTER,
+            size: std::mem::size_of::<u64>() as u32,
+            reserved: 0,
+            value: c as u64,
+        },
+    ];
+
+    for record in scalar_records.iter() {
+        let rc = pacc_KernelPushArgRecord(kernel, record as *const _);
+        if rc != pacc_Result_Success {
+            return rc;
+        }
+    }
+
+    let bindings = [
+        PaccKernelBufferBinding {
+            device_addr: a as u64,
+            size: 0,
+            offset: a_offset,
+            flags: 0,
+        },
+        PaccKernelBufferBinding {
+            device_addr: b as u64,
+            size: 0,
+            offset: b_offset,
+            flags: 0,
+        },
+        PaccKernelBufferBinding {
+            device_addr: c as u64,
+            size: 0,
+            offset: c_offset,
+            flags: 0,
+        },
+    ];
+
+    for binding in bindings.iter() {
+        let rc = pacc_KernelAddBufferBinding(kernel, binding as *const _);
+        if rc != pacc_Result_Success {
+            return rc;
+        }
+    }
+
+    pacc_Result_Success
+}
+
 /// Launch a PACC kernel via job_submit.
 /// Submits the ELF binary to the device using the physical address of a
 /// staging buffer. For now writes ELF bytes to a driver-allocated buffer.
