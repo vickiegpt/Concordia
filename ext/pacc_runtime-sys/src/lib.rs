@@ -5032,21 +5032,21 @@ pub unsafe extern "C" fn pacc_KernelConfigureLanxinMulMatTile(
 
     let bindings = [
         PaccKernelBufferBinding {
-            device_addr: a as u64,
+            arg_index: 3,
+            addr: (a as u64).saturating_add(a_offset),
             size: 0,
-            offset: a_offset,
             flags: 0,
         },
         PaccKernelBufferBinding {
-            device_addr: b as u64,
+            arg_index: 4,
+            addr: (b as u64).saturating_add(b_offset),
             size: 0,
-            offset: b_offset,
             flags: 0,
         },
         PaccKernelBufferBinding {
-            device_addr: c as u64,
+            arg_index: 5,
+            addr: (c as u64).saturating_add(c_offset),
             size: 0,
-            offset: c_offset,
             flags: 0,
         },
     ];
