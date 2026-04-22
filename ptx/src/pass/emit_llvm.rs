@@ -34,7 +34,7 @@ use std::{i8, ptr};
 use super::*;
 use crate::debug::{PtxDwarfBuilder, VariableLocation};
 use crate::pass::debug_integration::{
-    ptx_type_size_bits, ptx_type_to_dwarf_encoding, DebugAwarePtxContext, DebugContext,
+    DebugAwarePtxContext, DebugContext, ptx_type_size_bits, ptx_type_to_dwarf_encoding,
 };
 use llvm_zluda::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
 use llvm_zluda::bit_writer::LLVMWriteBitcodeToMemoryBuffer;
@@ -44,7 +44,7 @@ use ptx_parser::{MultiVariable, PredAt};
 use llvm_zluda::debuginfo::*;
 use llvm_zluda::prelude::*;
 use llvm_zluda::target::{LLVMGetModuleDataLayout, LLVMSizeOfTypeInBits};
-use llvm_zluda::{core::*, LLVMAtomicOrdering, LLVMIntPredicate, LLVMRealPredicate, LLVMTypeKind};
+use llvm_zluda::{LLVMAtomicOrdering, LLVMIntPredicate, LLVMRealPredicate, LLVMTypeKind, core::*};
 use llvm_zluda::{
     LLVMAttributeFunctionIndex, LLVMCallConv, LLVMZludaAtomicRMWBinOp, LLVMZludaBuildAlloca,
     LLVMZludaBuildAtomicCmpXchg, LLVMZludaBuildAtomicRMW, LLVMZludaBuildFence,
@@ -1628,7 +1628,10 @@ impl<'a> MethodEmitContext<'a> {
                                         ) {
                                             Ok(expr) => expr,
                                             Err(e) => {
-                                                eprintln!("Warning: Failed to create debug expression: {}", e);
+                                                eprintln!(
+                                                    "Warning: Failed to create debug expression: {}",
+                                                    e
+                                                );
                                                 // Create an empty expression instead of null
                                                 LLVMDIBuilderCreateExpression(
                                                     dwarf_builder.get_builder(),
@@ -1716,9 +1719,14 @@ impl<'a> MethodEmitContext<'a> {
                                     }
 
                                     eprintln!(
-                                            "DEBUG: PTX variable debug info added: {} ({}:{}) type={}, size={}, space={:?}",
-                                            var_name, var_line, 0, type_name, var_size_bits, var.info.state_space
-                                        );
+                                        "DEBUG: PTX variable debug info added: {} ({}:{}) type={}, size={}, space={:?}",
+                                        var_name,
+                                        var_line,
+                                        0,
+                                        type_name,
+                                        var_size_bits,
+                                        var.info.state_space
+                                    );
                                 }
                             }
                         }
@@ -2013,7 +2021,7 @@ impl<'a> MethodEmitContext<'a> {
                 return Err(TranslateError::Todo(format!(
                     "Instruction not yet implemented: {:?}",
                     inst
-                )))
+                )));
             }
         }
     }
@@ -2082,7 +2090,10 @@ impl<'a> MethodEmitContext<'a> {
                             ) {
                                 eprintln!("Warning: Failed to create debug value: {}", e);
                             } else {
-                                eprintln!("DEBUG_VALUE: {}:{} <- loaded_value (line {}) [llvm.dbg.value created]", "atom_add", var_name, current_line);
+                                eprintln!(
+                                    "DEBUG_VALUE: {}:{} <- loaded_value (line {}) [llvm.dbg.value created]",
+                                    "atom_add", var_name, current_line
+                                );
                             }
                         }
                     }
@@ -2765,7 +2776,7 @@ impl<'a> MethodEmitContext<'a> {
                 ast::MulIntControl::Low => LLVMBuildMul,
                 ast::MulIntControl::High => return self.emit_mul_high(type_, dst, src1, src2),
                 ast::MulIntControl::Wide => {
-                    return Ok(self.emit_mul_wide_impl(type_, dst, src1, src2)?.1)
+                    return Ok(self.emit_mul_wide_impl(type_, dst, src1, src2)?.1);
                 }
             },
             ast::MulDetails::Float(..) => LLVMBuildFMul,
@@ -3001,7 +3012,7 @@ impl<'a> MethodEmitContext<'a> {
             ptx_parser::DivDetails::Unsigned(_) => LLVMBuildUDiv,
             ptx_parser::DivDetails::Signed(_) => LLVMBuildSDiv,
             ptx_parser::DivDetails::Float(float_div) => {
-                return self.emit_div_float(float_div, arguments)
+                return self.emit_div_float(float_div, arguments);
             }
         };
         let src1 = self.resolver.value(arguments.src1)?;
@@ -3385,10 +3396,10 @@ impl<'a> MethodEmitContext<'a> {
             ptx_parser::CvtMode::Truncate => LLVMBuildTrunc,
             ptx_parser::CvtMode::Bitcast => unreachable!(), // Already handled above
             ptx_parser::CvtMode::IntSaturateToSigned => {
-                return self.emit_cvt_unsigned_to_signed_sat(data.from, data.to, arguments)
+                return self.emit_cvt_unsigned_to_signed_sat(data.from, data.to, arguments);
             }
             ptx_parser::CvtMode::IntSaturateToUnsigned => {
-                return self.emit_cvt_signed_to_unsigned_sat(data.from, data.to, arguments)
+                return self.emit_cvt_signed_to_unsigned_sat(data.from, data.to, arguments);
             }
             ptx_parser::CvtMode::FPExtend { .. } => LLVMBuildFPExt,
             ptx_parser::CvtMode::FPTruncate { .. } => LLVMBuildFPTrunc,
@@ -3401,7 +3412,7 @@ impl<'a> MethodEmitContext<'a> {
                     integer_rounding.unwrap_or(ast::RoundingMode::NearestEven),
                     arguments,
                     Some(LLVMBuildFPToSI),
-                )
+                );
             }
             ptx_parser::CvtMode::SignedFromFP { rounding, .. } => {
                 return self.emit_cvt_float_to_int(
@@ -3410,7 +3421,7 @@ impl<'a> MethodEmitContext<'a> {
                     rounding,
                     arguments,
                     Some(LLVMBuildFPToSI),
-                )
+                );
             }
             ptx_parser::CvtMode::UnsignedFromFP { rounding, .. } => {
                 return self.emit_cvt_float_to_int(
@@ -3419,13 +3430,13 @@ impl<'a> MethodEmitContext<'a> {
                     rounding,
                     arguments,
                     Some(LLVMBuildFPToUI),
-                )
+                );
             }
             ptx_parser::CvtMode::FPFromSigned { .. } => {
-                return self.emit_cvt_int_to_float(data.to, arguments, LLVMBuildSIToFP)
+                return self.emit_cvt_int_to_float(data.to, arguments, LLVMBuildSIToFP);
             }
             ptx_parser::CvtMode::FPFromUnsigned { .. } => {
-                return self.emit_cvt_int_to_float(data.to, arguments, LLVMBuildUIToFP)
+                return self.emit_cvt_int_to_float(data.to, arguments, LLVMBuildUIToFP);
             }
         };
         let src = self.resolver.value(arguments.src)?;
@@ -3782,7 +3793,7 @@ impl<'a> MethodEmitContext<'a> {
             let intrinsic = match (data.type_, data.kind) {
                 (ast::ScalarType::F32, ast::RcpKind::Approx) => c"llvm.amdgcn.rcp.f32",
                 (_, ast::RcpKind::Compliant(rnd)) => {
-                    return self.emit_rcp_compliant(data, arguments, rnd)
+                    return self.emit_rcp_compliant(data, arguments, rnd);
                 }
                 _ => return Err(error_unreachable()),
             };
@@ -4118,7 +4129,7 @@ impl<'a> MethodEmitContext<'a> {
             ptx_parser::MinMaxDetails::Signed(..) => "llvm.smin",
             ptx_parser::MinMaxDetails::Unsigned(..) => "llvm.umin",
             ptx_parser::MinMaxDetails::Float(ptx_parser::MinMaxFloat { nan: true, .. }) => {
-                return Err(error_todo())
+                return Err(error_todo());
             }
             ptx_parser::MinMaxDetails::Float(ptx_parser::MinMaxFloat { .. }) => "llvm.minnum",
         };
@@ -4145,7 +4156,7 @@ impl<'a> MethodEmitContext<'a> {
             ptx_parser::MinMaxDetails::Signed(..) => "llvm.smax",
             ptx_parser::MinMaxDetails::Unsigned(..) => "llvm.umax",
             ptx_parser::MinMaxDetails::Float(ptx_parser::MinMaxFloat { nan: true, .. }) => {
-                return Err(error_todo())
+                return Err(error_todo());
             }
             ptx_parser::MinMaxDetails::Float(ptx_parser::MinMaxFloat { .. }) => "llvm.maxnum",
         };
@@ -4206,7 +4217,7 @@ impl<'a> MethodEmitContext<'a> {
                         src2: arguments.src2,
                         src3: arguments.src3,
                     },
-                )
+                );
             }
             ptx_parser::MadDetails::Integer { saturate: true, .. } => return Err(error_todo()),
             ptx_parser::MadDetails::Integer { type_, control, .. } => {

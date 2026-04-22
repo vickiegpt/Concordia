@@ -29,9 +29,9 @@ use std::{i8, ptr, u64};
 
 use super::*;
 use crate::pass::*;
-use llvm_zluda::{core::*, *};
-use llvm_zluda::{prelude::*, LLVMZludaBuildAtomicRMW, LLVMZludaSetAtomic};
 use llvm_zluda::{LLVMCallConv, LLVMZludaBuildAlloca};
+use llvm_zluda::{LLVMZludaBuildAtomicRMW, LLVMZludaSetAtomic, prelude::*};
+use llvm_zluda::{core::*, *};
 use ptx_parser::{CpAsyncArgs, CpAsyncDetails, FunnelShiftMode, Mul24Control, ShfArgs};
 
 struct Builder(LLVMBuilderRef);
@@ -340,11 +340,7 @@ fn get_immediate_value(
 }
 
 fn llvm_ftz(ftz: bool) -> &'static str {
-    if ftz {
-        "preserve-sign"
-    } else {
-        "ieee"
-    }
+    if ftz { "preserve-sign" } else { "ieee" }
 }
 
 fn get_input_argument_type(
@@ -1121,7 +1117,7 @@ impl<'a> MethodEmitContext<'a> {
                 ast::MulIntControl::Low => LLVMBuildMul,
                 ast::MulIntControl::High => return self.emit_mul_high(type_, dst, src1, src2),
                 ast::MulIntControl::Wide => {
-                    return Ok(self.emit_mul_wide_impl(type_, dst, src1, src2)?.1)
+                    return Ok(self.emit_mul_wide_impl(type_, dst, src1, src2)?.1);
                 }
             },
             ast::MulDetails::Float(..) => LLVMBuildFMul,
@@ -1313,7 +1309,7 @@ impl<'a> MethodEmitContext<'a> {
             ptx_parser::DivDetails::Unsigned(_) => LLVMBuildUDiv,
             ptx_parser::DivDetails::Signed(_) => LLVMBuildSDiv,
             ptx_parser::DivDetails::Float(float_div) => {
-                return self.emit_div_float(float_div, arguments)
+                return self.emit_div_float(float_div, arguments);
             }
         };
         let src1 = self.resolver.value(arguments.src1)?;
@@ -1697,10 +1693,10 @@ impl<'a> MethodEmitContext<'a> {
             ptx_parser::CvtMode::Truncate => LLVMBuildTrunc,
             ptx_parser::CvtMode::Bitcast => LLVMBuildBitCast,
             ptx_parser::CvtMode::IntSaturateToSigned => {
-                return self.emit_cvt_unsigned_to_signed_sat(data.from, data.to, arguments)
+                return self.emit_cvt_unsigned_to_signed_sat(data.from, data.to, arguments);
             }
             ptx_parser::CvtMode::IntSaturateToUnsigned => {
-                return self.emit_cvt_signed_to_unsigned_sat(data.from, data.to, arguments)
+                return self.emit_cvt_signed_to_unsigned_sat(data.from, data.to, arguments);
             }
             ptx_parser::CvtMode::FPExtend { .. } => LLVMBuildFPExt,
             ptx_parser::CvtMode::FPTruncate { .. } => LLVMBuildFPTrunc,
@@ -1712,7 +1708,7 @@ impl<'a> MethodEmitContext<'a> {
                 return self.emit_mov(ast::MovArgs {
                     dst: arguments.dst,
                     src: arguments.src,
-                })
+                });
             }
             ptx_parser::CvtMode::FPRound {
                 integer_rounding: None,
@@ -1730,7 +1726,7 @@ impl<'a> MethodEmitContext<'a> {
                     rounding,
                     arguments,
                     Some(true),
-                )
+                );
             }
             ptx_parser::CvtMode::UnsignedFromFP { rounding, .. } => {
                 return self.emit_cvt_float_to_int(
@@ -1739,13 +1735,13 @@ impl<'a> MethodEmitContext<'a> {
                     rounding,
                     arguments,
                     Some(false),
-                )
+                );
             }
             ptx_parser::CvtMode::FPFromSigned { .. } => {
-                return self.emit_cvt_int_to_float(data.to, arguments, LLVMBuildSIToFP)
+                return self.emit_cvt_int_to_float(data.to, arguments, LLVMBuildSIToFP);
             }
             ptx_parser::CvtMode::FPFromUnsigned { .. } => {
-                return self.emit_cvt_int_to_float(data.to, arguments, LLVMBuildUIToFP)
+                return self.emit_cvt_int_to_float(data.to, arguments, LLVMBuildUIToFP);
             }
         };
         let src = self.resolver.value(arguments.src)?;
@@ -2085,7 +2081,7 @@ impl<'a> MethodEmitContext<'a> {
         let intrinsic = match (data.type_, data.kind) {
             (ast::ScalarType::F32, ast::RcpKind::Approx) => c"llvm.amdgcn.rcp.f32",
             (_, ast::RcpKind::Compliant(rnd)) => {
-                return self.emit_rcp_compliant(data, arguments, rnd)
+                return self.emit_rcp_compliant(data, arguments, rnd);
             }
             _ => return Err(error_unreachable()),
         };
@@ -2536,7 +2532,7 @@ impl<'a> MethodEmitContext<'a> {
                         src2: arguments.src2,
                         src3: arguments.src3,
                     },
-                )
+                );
             }
             ptx_parser::MadDetails::Integer {
                 saturate: true,
@@ -2549,7 +2545,7 @@ impl<'a> MethodEmitContext<'a> {
                 );
             }
             ptx_parser::MadDetails::Integer { saturate: true, .. } => {
-                return Err(error_unreachable())
+                return Err(error_unreachable());
             }
             ptx_parser::MadDetails::Integer { type_, control, .. } => {
                 ast::MulDetails::Integer { control, type_ }
@@ -2686,11 +2682,7 @@ impl<'a> MethodEmitContext<'a> {
             reg | (offset << 6) | ((size - 1) << 11)
         }
         fn denormal_to_value(ftz: bool) -> u32 {
-            if ftz {
-                0
-            } else {
-                3
-            }
+            if ftz { 0 } else { 3 }
         }
         fn rounding_to_value(ftz: ast::RoundingMode) -> u32 {
             match ftz {
@@ -3023,7 +3015,7 @@ impl<'a> MethodEmitContext<'a> {
             (ast::ScalarType::S32, ast::ScalarType::S32) => c"llvm.amdgcn.sdot4",
             (ast::ScalarType::U32, ast::ScalarType::S32)
             | (ast::ScalarType::S32, ast::ScalarType::U32) => {
-                return Err(error_todo_msg("dp4a with mixed types is not yet supported"))
+                return Err(error_todo_msg("dp4a with mixed types is not yet supported"));
             }
             _ => return Err(error_unreachable()),
         };
@@ -3492,7 +3484,7 @@ fn create_struct_type(
 fn get_function_type<'a>(
     context: LLVMContextRef,
     mut return_args: impl DoubleEndedIterator<Item = &'a ast::Type>
-        + ExactSizeIterator<Item = &'a ast::Type>,
+    + ExactSizeIterator<Item = &'a ast::Type>,
     input_args: impl ExactSizeIterator<Item = Result<LLVMTypeRef, TranslateError>>,
 ) -> Result<LLVMTypeRef, TranslateError> {
     let mut input_args = input_args.collect::<Result<Vec<_>, _>>()?;

@@ -1691,7 +1691,7 @@ fn sanitize_ptx_source(src: &str) -> String {
                 let parts: Vec<&str> = t.split_whitespace().collect();
                 if parts.len() >= 3 {
                     let instr = parts[0]; // e.g., "redux.sync.add.u32"
-                                          // Extract type from instruction (last part after dots)
+                    // Extract type from instruction (last part after dots)
                     let instr_parts: Vec<&str> = instr.split('.').collect();
                     let type_part = instr_parts.last().unwrap_or(&"u32");
 

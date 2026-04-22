@@ -258,8 +258,12 @@ fn call_with_mode() {
     ));
     let [to_fn0] = calls(method_1);
     let [_, dual_prelude, _, _, add] = labels(method_1);
-    let [post_call, post_prelude_dual, post_prelude_denormal, post_prelude_rounding] =
-        branches(method_1);
+    let [
+        post_call,
+        post_prelude_dual,
+        post_prelude_denormal,
+        post_prelude_rounding,
+    ] = branches(method_1);
     assert_eq!(methods[0].name, to_fn0);
     assert_eq!(post_call, dual_prelude);
     assert_eq!(post_prelude_dual, add);
@@ -320,10 +324,27 @@ fn call_with_mode() {
         ]
     ));
     let [(if_rm_true, if_rm_false), (if_rz_true, if_rz_false)] = conditionals(method_2);
-    let [_, conditional2, post_conditional2, prelude_dual, _, _, add1, add2_set_denormal, add2, ret] =
-        labels(method_2);
-    let [post_conditional2_jump, post_prelude_dual, post_prelude_denormal, post_prelude_rounding, post_add1, post_add2_set_denormal, post_add2] =
-        branches(method_2);
+    let [
+        _,
+        conditional2,
+        post_conditional2,
+        prelude_dual,
+        _,
+        _,
+        add1,
+        add2_set_denormal,
+        add2,
+        ret,
+    ] = labels(method_2);
+    let [
+        post_conditional2_jump,
+        post_prelude_dual,
+        post_prelude_denormal,
+        post_prelude_rounding,
+        post_add1,
+        post_add2_set_denormal,
+        post_add2,
+    ] = branches(method_2);
     assert_eq!(if_rm_true, prelude_dual);
     assert_eq!(if_rm_false, conditional2);
     assert_eq!(if_rz_true, post_conditional2);

@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 use std::hash::Hash;
 use std::{
     borrow::Cow,
-    collections::{hash_map, HashMap},
+    collections::{HashMap, hash_map},
     ffi::CString,
     fmt::Write,
     iter,
@@ -53,11 +53,12 @@ static ZLUDA_PTX_IMPL: &'static [u8] = include_bytes!("../../lib/zluda_ptx_ze_im
 static ZLUDA_PTX_IMPL: &'static [u8] = include_bytes!("../../lib/zluda_ptx_impl.bc");
 const ZLUDA_PTX_PREFIX: &'static str = "__zluda_ptx_impl_";
 
-/// `ggml_*` symbols are implemented by the linked PACC operator bitcode
-/// compiled from the llama.cpp-side operator sources. Keep their names stable
-/// so the later ELF/device-side link step can resolve them directly.
+/// `ggml_*` and `micro_kernel_*` symbols are implemented by the linked PACC
+/// operator bitcode compiled from the llama.cpp-side operator sources. Keep
+/// their names stable so the later ELF/device-side link step can resolve them
+/// directly instead of rewriting them into the generic ZLUDA helper namespace.
 pub(crate) fn is_passthrough_external_symbol(name: &str) -> bool {
-    name.starts_with("ggml_")
+    name.starts_with("ggml_") || name.starts_with("micro_kernel_")
 }
 
 pub(crate) fn lower_external_symbol_name<'input>(name: Cow<'input, str>) -> Cow<'input, str> {
@@ -788,7 +789,7 @@ impl<T: ast::Operand<Ident = SpirvWord>> Statement<ast::Instruction<T>, T> {
     ) -> std::result::Result<Statement<ast::Instruction<To>, To>, Err> {
         Ok(match self {
             Statement::Instruction(i) => {
-                return ast::visit_map(i, visitor).map(Statement::Instruction)
+                return ast::visit_map(i, visitor).map(Statement::Instruction);
             }
             Statement::Label(label) => {
                 Statement::Label(visitor.visit_ident(label, None, false, false)?)
