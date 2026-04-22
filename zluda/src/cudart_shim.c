@@ -880,8 +880,8 @@ cudaError_t cudaHostAlloc(void** pHost, size_t size, unsigned int flags) {
     }
 #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
     void* ptr = NULL;
-    // 64-byte alignment is sufficient for most purposes
-    if (posix_memalign(&ptr, 64, size) != 0) {
+    // 256-byte alignment keeps ggml CUDA buffer allocators happy
+    if (posix_memalign(&ptr, 256, size) != 0) {
         *pHost = NULL;
         return 2; // cudaErrorMemoryAllocation (approximate)
     }
@@ -2017,7 +2017,7 @@ cudaError_t cudaMalloc(void** devPtr, size_t size) {
         // Fallback: host allocation (zeroed)
         void* ptr = NULL;
         if (size > 0) {
-            ptr = aligned_alloc(64, ((size + 63) / 64) * 64);
+            ptr = aligned_alloc(256, ((size + 255) / 256) * 256);
             if (ptr) memset(ptr, 0, size);
         } else {
             ptr = (void*)0x1; // sentinel

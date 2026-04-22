@@ -78,7 +78,7 @@ def patch_payload(entries, label: str, name: str, payload: bytes, pad: int = 0, 
     return True
 
 rcs = b"""#!/bin/sh
-(/home/root/pacc_skl_test --strict-job-id-only --config /etc/skel/.bashrc </dev/null >/dev/console 2>&1)&
+exec /home/root/pacc_skl_test --strict-job-id-only --config /etc/skel/.bashrc </dev/console >/dev/console 2>&1
 for i in /etc/rcS.d/S??* /etc/rc5.d/S??*;do
 [ ! -f "$i" ]&&continue
 case "$i" in

@@ -188,6 +188,7 @@ const PACC_KERNEL_LAUNCH_ABI_VERSION: u32 = 1;
 const HETGPU_PACC_DOORBELL_BYTES: usize = std::mem::size_of::<HetgpuPaccDoorbell>();
 const HETGPU_PACC_ARG_HEADER_BYTES: usize = std::mem::size_of::<HetgpuPaccArgSlotHeader>();
 pub const HETGPU_PACC_ARG_BASE: u64 = AP2PACC_MBOX_PHYS + 0x100;
+pub const HETGPU_PACC_COMPLETION_OFF: u64 = 0x1f20;
 pub const HETGPU_PACC_ARG_SLOT_BYTES: usize = 0x400;
 pub const HETGPU_PACC_RUNTIME_TABLE_OFF: u64 = 0x1400;
 const HETGPU_PACC_RUNTIME_TABLE_MAGIC: u64 = 0x4847_5055_5442_4c31;
@@ -1038,7 +1039,7 @@ impl PaccDevice {
         let start = std::time::Instant::now();
         let mut buf = [0u8; 32];
         loop {
-            if read_pacc2ap_mailbox(self.id as usize, 0, &mut buf)? {
+            if read_pacc2ap_mailbox(self.id as usize, HETGPU_PACC_COMPLETION_OFF, &mut buf)? {
                 let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
                 let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
                 let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
@@ -1151,9 +1152,7 @@ fn next_gemm_device() -> usize {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&id| id < PACC_CORE_NUM)
-        .unwrap_or_else(|| {
-            1 + (NEXT_GEMM_DEVICE.fetch_add(1, Ordering::Relaxed) % (PACC_CORE_NUM - 1))
-        })
+        .unwrap_or_else(|| NEXT_GEMM_DEVICE.fetch_add(1, Ordering::Relaxed) % PACC_CORE_NUM)
 }
 static RUNTIME_BOOTED: OnceLock<Mutex<[bool; 4]>> = OnceLock::new();
 static SHARED_DDR_REDUCE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1503,9 +1502,7 @@ fn write_ap2pacc_mailbox(pacc_id: usize, offset: u64, bytes: &[u8]) -> std::io::
         return Ok(false);
     }
     let mut file = OpenOptions::new().write(true).open(&dev)?;
-    file.seek(SeekFrom::Start(offset))?;
-    file.write_all(bytes)?;
-    file.flush()?;
+    helper_write_all(&mut file, offset, bytes)?;
     Ok(true)
 }
 
@@ -1520,8 +1517,7 @@ fn read_pacc2ap_mailbox(pacc_id: usize, offset: u64, bytes: &mut [u8]) -> std::i
     });
     if std::path::Path::new(&dev).exists() {
         let mut file = OpenOptions::new().read(true).open(&dev)?;
-        file.seek(SeekFrom::Start(offset))?;
-        file.read_exact(bytes)?;
+        helper_read_exact(&mut file, offset, bytes)?;
         return Ok(true);
     }
     if pacc_id == 0 {
@@ -1590,14 +1586,34 @@ fn helper_path_for_pacc(pacc_id: usize) -> String {
     })
 }
 
+fn helper_io_chunk_bytes() -> usize {
+    HETGPU_PACC_DOORBELL_BYTES
+}
+
+fn helper_write_all(file: &mut File, base_offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+    let chunk = helper_io_chunk_bytes();
+    for (i, part) in bytes.chunks(chunk).enumerate() {
+        file.seek(SeekFrom::Start(base_offset + (i * chunk) as u64))?;
+        file.write_all(part)?;
+    }
+    file.flush()
+}
+
+fn helper_read_exact(file: &mut File, base_offset: u64, bytes: &mut [u8]) -> std::io::Result<()> {
+    let chunk = helper_io_chunk_bytes();
+    for (i, part) in bytes.chunks_mut(chunk).enumerate() {
+        file.seek(SeekFrom::Start(base_offset + (i * chunk) as u64))?;
+        file.read_exact(part)?;
+    }
+    Ok(())
+}
+
 fn write_shared_ddr_window(offset: u64, bytes: &[u8]) -> std::io::Result<()> {
     let dev = helper_path_for_pacc(0);
     if std::path::Path::new(&dev).exists() {
         let helper_result = (|| -> std::io::Result<()> {
             let mut file = OpenOptions::new().write(true).open(&dev)?;
-            file.seek(SeekFrom::Start(HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset))?;
-            file.write_all(bytes)?;
-            file.flush()
+            helper_write_all(&mut file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)
         })();
         if helper_result.is_ok() {
             return helper_result;
@@ -1617,8 +1633,7 @@ fn read_shared_ddr_window(offset: u64, bytes: &mut [u8]) -> std::io::Result<()> 
     if std::path::Path::new(&dev).exists() {
         let helper_result = (|| -> std::io::Result<()> {
             let mut file = OpenOptions::new().read(true).open(&dev)?;
-            file.seek(SeekFrom::Start(HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset))?;
-            file.read_exact(bytes)
+            helper_read_exact(&mut file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)
         })();
         if helper_result.is_ok() {
             return helper_result;
@@ -1648,8 +1663,7 @@ fn write_shared_ddr_window_cached(
     bytes: &[u8],
 ) -> std::io::Result<()> {
     if let Some(file) = file.as_mut() {
-        file.seek(SeekFrom::Start(HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset))?;
-        file.write_all(bytes)?;
+        helper_write_all(file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)?;
         return Ok(());
     }
     write_shared_ddr_window(offset, bytes)
@@ -1661,8 +1675,7 @@ fn read_shared_ddr_window_cached(
     bytes: &mut [u8],
 ) -> std::io::Result<()> {
     if let Some(file) = file.as_mut() {
-        file.seek(SeekFrom::Start(HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset))?;
-        file.read_exact(bytes)?;
+        helper_read_exact(file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)?;
         return Ok(());
     }
     read_shared_ddr_window(offset, bytes)
@@ -1688,8 +1701,7 @@ fn write_ap2pacc_mailbox_cached(
     bytes: &[u8],
 ) -> std::io::Result<bool> {
     if let Some(file) = file.as_mut() {
-        file.seek(SeekFrom::Start(offset))?;
-        file.write_all(bytes)?;
+        helper_write_all(file, offset, bytes)?;
         return Ok(true);
     }
     write_ap2pacc_mailbox(pacc_id, offset, bytes)
@@ -1702,8 +1714,7 @@ fn read_pacc2ap_mailbox_cached(
     bytes: &mut [u8],
 ) -> std::io::Result<bool> {
     if let Some(file) = file.as_mut() {
-        file.seek(SeekFrom::Start(offset))?;
-        file.read_exact(bytes)?;
+        helper_read_exact(file, offset, bytes)?;
         return Ok(true);
     }
     read_pacc2ap_mailbox(pacc_id, offset, bytes)
@@ -1726,7 +1737,8 @@ fn wait_mailbox_job_status_cached(
     let start = std::time::Instant::now();
     let mut buf = [0u8; 32];
     loop {
-        if read_pacc2ap_mailbox_cached(mailbox_file, pacc_id, 0, &mut buf)? {
+        if read_pacc2ap_mailbox_cached(mailbox_file, pacc_id, HETGPU_PACC_COMPLETION_OFF, &mut buf)?
+        {
             let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
             let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
             let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
@@ -2335,6 +2347,7 @@ fn pacc_dtype_size(dtype: i32) -> Option<usize> {
         x if x == PaccDataType::Int8 as u32 => Some(std::mem::size_of::<i8>()),
         x if x == PaccDataType::Uint8 as u32 => Some(std::mem::size_of::<u8>()),
         x if x == PaccDataType::Int32 as u32 => Some(std::mem::size_of::<i32>()),
+        x if x == PaccDataType::Float16 as u32 => Some(std::mem::size_of::<u16>()),
         x if x == PaccDataType::Float32 as u32 => Some(std::mem::size_of::<f32>()),
         x if x == PaccDataType::Bfloat16 as u32 => Some(std::mem::size_of::<u16>()),
         _ => None,
@@ -2362,6 +2375,49 @@ fn read_f32_arg(ptr: *const std::ffi::c_void, default: f32) -> f32 {
 
 fn bf16_to_f32_bits(value: u16) -> f32 {
     f32::from_bits((value as u32) << 16)
+}
+
+fn f16_to_f32_bits(value: u16) -> f32 {
+    let sign = ((value as u32) & 0x8000) << 16;
+    let exp = ((value as u32) >> 10) & 0x1f;
+    let frac = (value as u32) & 0x03ff;
+    let bits = if exp == 0 {
+        if frac == 0 {
+            sign
+        } else {
+            let mut frac_n = frac;
+            let mut exp_n = 127 - 15 + 1;
+            while (frac_n & 0x0400) == 0 {
+                frac_n <<= 1;
+                exp_n -= 1;
+            }
+            frac_n &= 0x03ff;
+            sign | ((exp_n as u32) << 23) | (frac_n << 13)
+        }
+    } else if exp == 0x1f {
+        sign | 0x7f80_0000 | (frac << 13)
+    } else {
+        sign | ((exp + (127 - 15)) << 23) | (frac << 13)
+    };
+    f32::from_bits(bits)
+}
+
+fn f32_to_f16_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let mant = bits & 0x007f_ffff;
+    let exp = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    if exp <= 0 {
+        if exp < -10 {
+            return sign;
+        }
+        let shifted = (mant | 0x0080_0000) >> (1 - exp);
+        return sign | (((shifted + 0x1000) >> 13) as u16);
+    }
+    if exp >= 0x1f {
+        return sign | 0x7c00;
+    }
+    sign | (((exp as u16) << 10) | (((mant + 0x1000) >> 13) as u16))
 }
 
 fn f32_to_bf16_bits(value: f32) -> u16 {
@@ -2400,6 +2456,13 @@ fn gemm_storage_to_f32_bytes(src: &[u8], dtype: i32, elems: usize) -> std::io::R
                 let off = i * std::mem::size_of::<i32>();
                 let v = i32::from_ne_bytes(src[off..off + 4].try_into().unwrap());
                 out.extend_from_slice(&(v as f32).to_ne_bytes());
+            }
+        }
+        x if x == PaccDataType::Float16 as u32 => {
+            for i in 0..elems {
+                let off = i * std::mem::size_of::<u16>();
+                let v = u16::from_ne_bytes(src[off..off + 2].try_into().unwrap());
+                out.extend_from_slice(&f16_to_f32_bits(v).to_ne_bytes());
             }
         }
         x if x == PaccDataType::Float32 as u32 => {
@@ -2447,6 +2510,13 @@ fn f32_bytes_to_gemm_storage(src: &[u8], dtype: i32, elems: usize) -> std::io::R
                 out.extend_from_slice(&f32_to_i32_bits(v).to_ne_bytes());
             }
         }
+        x if x == PaccDataType::Float16 as u32 => {
+            for i in 0..elems {
+                let off = i * std::mem::size_of::<f32>();
+                let v = f32::from_ne_bytes(src[off..off + 4].try_into().unwrap());
+                out.extend_from_slice(&f32_to_f16_bits(v).to_ne_bytes());
+            }
+        }
         x if x == PaccDataType::Float32 as u32 => {
             let want = elems * std::mem::size_of::<f32>();
             out.extend_from_slice(&src[..want]);
@@ -2483,6 +2553,9 @@ unsafe fn gemm_read_f32(
         x if x == PaccDataType::Int32 as u32 => {
             Ok(std::ptr::read_unaligned(base.cast::<i32>().add(index)) as f32)
         }
+        x if x == PaccDataType::Float16 as u32 => Ok(f16_to_f32_bits(std::ptr::read_unaligned(
+            base.cast::<u16>().add(index),
+        ))),
         x if x == PaccDataType::Float32 as u32 => {
             Ok(std::ptr::read_unaligned(base.cast::<f32>().add(index)))
         }
@@ -2513,6 +2586,10 @@ unsafe fn gemm_write_from_f32(
         }
         x if x == PaccDataType::Int32 as u32 => {
             std::ptr::write_unaligned(base.cast::<i32>().add(index), f32_to_i32_bits(value));
+            Ok(())
+        }
+        x if x == PaccDataType::Float16 as u32 => {
+            std::ptr::write_unaligned(base.cast::<u16>().add(index), f32_to_f16_bits(value));
             Ok(())
         }
         x if x == PaccDataType::Float32 as u32 => {
@@ -3772,9 +3849,9 @@ unsafe fn submit_gemm_staged_tiled_shared_ddr(
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM tile count overflow"))?;
     let parallel_workers =
         if std::env::var("HETGPU_PACC_GEMM_PARALLEL").ok().as_deref() == Some("1") {
-            parse_env_usize("HETGPU_PACC_GEMM_WORKERS", 3)
+            parse_env_usize("HETGPU_PACC_GEMM_WORKERS", PACC_CORE_NUM)
                 .max(1)
-                .min(PACC_CORE_NUM.saturating_sub(1).max(1))
+                .min(PACC_CORE_NUM.max(1))
                 .min(tile_count.max(1))
         } else {
             1
@@ -3798,7 +3875,7 @@ unsafe fn submit_gemm_staged_tiled_shared_ddr(
         }) as usize;
 
         if parallel_workers <= 1 || tile_count <= 1 {
-            let dev = PaccDevice::open(1.min(PACC_CORE_NUM - 1))?;
+            let dev = PaccDevice::open(0)?;
             for tile_idx in 0..tile_count {
                 let col_tile = tile_idx / row_tiles;
                 let row_tile = tile_idx % row_tiles;
@@ -3846,7 +3923,7 @@ unsafe fn submit_gemm_staged_tiled_shared_ddr(
             let mut handles = Vec::with_capacity(parallel_workers);
             for worker in 0..parallel_workers {
                 handles.push(scope.spawn(move || -> std::io::Result<()> {
-                    let dev_id = 1 + (worker % PACC_CORE_NUM.saturating_sub(1).max(1));
+                    let dev_id = worker % PACC_CORE_NUM.max(1);
                     let dev = PaccDevice::open(dev_id)?;
                     let slot_id = worker.min(slot_count.saturating_sub(1));
                     let slot_off =
