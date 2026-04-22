@@ -426,6 +426,47 @@ static cublasStatus_t host_gemm_fallback(
 
 static int g_pacc_gemm_disabled_after_failure = 0;
 
+static size_t hetgpu_matrix_storage_elems(int ld, int cols, long long stride, int batchCount) {
+    long long elems = stride > 0 ? stride : (long long)ld * (long long)cols;
+    if (elems < 0 || batchCount <= 0) {
+        return 0;
+    }
+    return (size_t)elems * (size_t)batchCount;
+}
+
+static void hetgpu_convert_linear_buffer(const void *src, cudaDataType srcType, void *dst, cudaDataType dstType, size_t elems) {
+    for (size_t i = 0; i < elems; ++i) {
+        host_gemm_store_c(dst, dstType, i, host_gemm_load_c(src, srcType, i));
+    }
+}
+
+static int hetgpu_should_force_staged_f16(
+    const void *A, const void *B, void *C,
+    cudaDataType Atype, cudaDataType Btype, cudaDataType Ctype,
+    int m, int n, int k, int batchCount) {
+    const char *env = getenv("HETGPU_PACC_GEMM_FORCE_STAGED_F16");
+    if (env) {
+        if (strcmp(env, "0") == 0) {
+            return 0;
+        }
+        if (strcmp(env, "1") == 0) {
+            return !hetgpu_pacc_is_device_ptr(A) && !hetgpu_pacc_is_device_ptr(B) && !hetgpu_pacc_is_device_ptr(C);
+        }
+    }
+    if (Atype != CUDA_R_16F || Btype != CUDA_R_16F || Ctype != CUDA_R_16F) {
+        return 0;
+    }
+    if (batchCount != 1) {
+        return 0;
+    }
+    if (n > 4 || m < 512 || k < 512) {
+        return 0;
+    }
+    if (hetgpu_pacc_is_device_ptr(A) || hetgpu_pacc_is_device_ptr(B) || hetgpu_pacc_is_device_ptr(C)) {
+        return 0;
+    }
+    return 1;
+}
 
 typedef struct {
     const char *name;
@@ -565,23 +606,59 @@ static cublasStatus_t submit_pacc_gemm(
         : NULL;
 
     int rc = -1;
+    void *stage_A_buf = NULL;
+    void *stage_B_buf = NULL;
+    void *stage_C_buf = NULL;
+    const void *submit_A = A;
+    const void *submit_B = B;
+    void *submit_C = C;
+    cudaDataType submit_Atype = Atype;
+    cudaDataType submit_Btype = Btype;
+    cudaDataType submit_Ctype = Ctype;
+
+    const int force_staged_f16 = hetgpu_should_force_staged_f16(A, B, C, Atype, Btype, Ctype, m, n, k, batchCount);
+    if (force_staged_f16) {
+        int a_cols = (transa == CUBLAS_OP_N) ? k : m;
+        int b_cols = (transb == CUBLAS_OP_N) ? n : k;
+        size_t a_elems = hetgpu_matrix_storage_elems(lda, a_cols, strideA, batchCount);
+        size_t b_elems = hetgpu_matrix_storage_elems(ldb, b_cols, strideB, batchCount);
+        size_t c_elems = hetgpu_matrix_storage_elems(ldc, n, strideC, batchCount);
+        stage_A_buf = malloc(a_elems * sizeof(uint16_t));
+        stage_B_buf = malloc(b_elems * sizeof(uint16_t));
+        stage_C_buf = malloc(c_elems * sizeof(float));
+        if (!stage_A_buf || !stage_B_buf || !stage_C_buf) {
+            free(stage_A_buf);
+            free(stage_B_buf);
+            free(stage_C_buf);
+            stage_A_buf = NULL;
+            stage_B_buf = NULL;
+            stage_C_buf = NULL;
+        } else {
+            hetgpu_convert_linear_buffer(A, Atype, stage_A_buf, CUDA_R_16BF, a_elems);
+            hetgpu_convert_linear_buffer(B, Btype, stage_B_buf, CUDA_R_16BF, b_elems);
+            hetgpu_convert_linear_buffer(C, Ctype, stage_C_buf, CUDA_R_32F, c_elems);
+            submit_A = stage_A_buf;
+            submit_B = stage_B_buf;
+            submit_C = stage_C_buf;
+            submit_Atype = CUDA_R_16BF;
+            submit_Btype = CUDA_R_16BF;
+            submit_Ctype = CUDA_R_32F;
+            DEBUG_LOG("%s force staged BF16/F32 path for tiny F16 GEMM m=%d n=%d k=%d", name, m, n, k);
+        }
+    }
+
     const char *stage_shared = getenv("HETGPU_PACC_GEMM_STAGE_SHARED_DDR");
-    if (stage_shared && strcmp(stage_shared, "1") == 0) {
+    int use_stage_shared = (stage_shared && strcmp(stage_shared, "1") == 0) || stage_A_buf != NULL;
+    if (use_stage_shared) {
         const char *max_m_env = getenv("HETGPU_PACC_GEMM_MAX_M");
         const char *max_n_env = getenv("HETGPU_PACC_GEMM_MAX_N");
         const char *max_k_env = getenv("HETGPU_PACC_GEMM_MAX_K");
         int max_m = max_m_env ? atoi(max_m_env) : 64;
         int max_n = max_n_env ? atoi(max_n_env) : 16;
         int max_k = max_k_env ? atoi(max_k_env) : 16;
-        if (max_m <= 0) {
-            max_m = m;
-        }
-        if (max_n <= 0) {
-            max_n = n;
-        }
-        if (max_k <= 0) {
-            max_k = k;
-        }
+        if (max_m <= 0) max_m = m;
+        if (max_n <= 0) max_n = n;
+        if (max_k <= 0) max_k = k;
         const char *fw_max_m_env = getenv("HETGPU_PACC_GEMM_FW_MAX_M");
         const char *fw_max_n_env = getenv("HETGPU_PACC_GEMM_FW_MAX_N");
         const char *fw_max_k_env = getenv("HETGPU_PACC_GEMM_FW_MAX_K");
@@ -593,9 +670,9 @@ static cublasStatus_t submit_pacc_gemm(
         if (fw_max_k > 0 && max_k > fw_max_k) max_k = fw_max_k;
         DEBUG_LOG("%s using PACC shared-DDR staged submit", name);
         rc = 0;
-        size_t a_size = host_dtype_size(Atype);
-        size_t b_size = host_dtype_size(Btype);
-        size_t c_size = host_dtype_size(Ctype);
+        size_t a_size = host_dtype_size(submit_Atype);
+        size_t b_size = host_dtype_size(submit_Btype);
+        size_t c_size = host_dtype_size(submit_Ctype);
         int parallel_workers = 1;
         const char *parallel_env = getenv("HETGPU_PACC_GEMM_PARALLEL");
         if (parallel_env && strcmp(parallel_env, "1") == 0) {
@@ -609,14 +686,14 @@ static cublasStatus_t submit_pacc_gemm(
             rc = hetgpu_pacc_submit_gemm_staged_tiled(
                 (int)transa, (int)transb, m, n, k,
                 alpha_arg,
-                A, hetgpu_pacc_dtype(Atype), lda, strideA,
-                B, hetgpu_pacc_dtype(Btype), ldb, strideB,
+                submit_A, hetgpu_pacc_dtype(submit_Atype), lda, strideA,
+                submit_B, hetgpu_pacc_dtype(submit_Btype), ldb, strideB,
                 beta_arg,
-                C, hetgpu_pacc_dtype(Ctype), ldc, strideC,
+                submit_C, hetgpu_pacc_dtype(submit_Ctype), ldc, strideC,
                 batchCount, (int)computeType,
                 max_m, max_n, max_k);
             if (rc == 0) {
-                return CUBLAS_STATUS_SUCCESS;
+                goto pacc_submit_done;
             }
         }
         int row_tiles = (m + max_m - 1) / max_m;
@@ -624,9 +701,9 @@ static cublasStatus_t submit_pacc_gemm(
         if (parallel_workers > 1 && row_tiles * col_tiles * batchCount > 1) {
             hetgpu_parallel_gemm_ctx_t ctx = {
                 name, transa, transb, m, n, k,
-                alpha_arg, A, Atype, lda, strideA,
-                B, Btype, ldb, strideB,
-                beta_arg, C, Ctype, ldc, strideC,
+                alpha_arg, submit_A, submit_Atype, lda, strideA,
+                submit_B, submit_Btype, ldb, strideB,
+                beta_arg, submit_C, submit_Ctype, ldc, strideC,
                 batchCount, computeType,
                 max_m, max_n, max_k,
                 a_size, b_size, c_size,
@@ -654,9 +731,9 @@ static cublasStatus_t submit_pacc_gemm(
         } else {
             float one_beta = 1.0f;
             for (int batch = 0; batch < batchCount && rc == 0; ++batch) {
-                const char *batch_A = (const char *)A + (strideA > 0 ? (size_t)batch * (size_t)strideA * a_size : 0);
-                const char *batch_B = (const char *)B + (strideB > 0 ? (size_t)batch * (size_t)strideB * b_size : 0);
-                char *batch_C = (char *)C + (strideC > 0 ? (size_t)batch * (size_t)strideC * c_size : 0);
+                const char *batch_A = (const char *)submit_A + (strideA > 0 ? (size_t)batch * (size_t)strideA * a_size : 0);
+                const char *batch_B = (const char *)submit_B + (strideB > 0 ? (size_t)batch * (size_t)strideB * b_size : 0);
+                char *batch_C = (char *)submit_C + (strideC > 0 ? (size_t)batch * (size_t)strideC * c_size : 0);
                 for (int col = 0; col < n && rc == 0; col += max_n) {
                     int chunk_n = n - col;
                     if (chunk_n > max_n) chunk_n = max_n;
@@ -683,10 +760,10 @@ static cublasStatus_t submit_pacc_gemm(
                             int chunk_rc = hetgpu_pacc_submit_gemm_staged(
                                 (int)transa, (int)transb, chunk_m, chunk_n, chunk_k,
                                 alpha_arg,
-                                chunk_A, hetgpu_pacc_dtype(Atype), lda, 0,
-                                chunk_B, hetgpu_pacc_dtype(Btype), ldb, 0,
+                                chunk_A, hetgpu_pacc_dtype(submit_Atype), lda, 0,
+                                chunk_B, hetgpu_pacc_dtype(submit_Btype), ldb, 0,
                                 chunk_beta,
-                                chunk_C, hetgpu_pacc_dtype(Ctype), ldc, 0,
+                                chunk_C, hetgpu_pacc_dtype(submit_Ctype), ldc, 0,
                                 1, (int)computeType);
                             if (chunk_rc != 0) {
                                 rc = chunk_rc;
@@ -699,17 +776,29 @@ static cublasStatus_t submit_pacc_gemm(
         }
     } else {
         rc = hetgpu_pacc_submit_gemm(
-        (int)transa, (int)transb, m, n, k,
-        pacc_alpha,
-        pacc_A, hetgpu_pacc_dtype(Atype), lda, strideA,
-        pacc_B, hetgpu_pacc_dtype(Btype), ldb, strideB,
-        pacc_beta,
-        pacc_C, hetgpu_pacc_dtype(Ctype), ldc, strideC,
-        batchCount, (int)computeType);
+            (int)transa, (int)transb, m, n, k,
+            pacc_alpha,
+            pacc_A, hetgpu_pacc_dtype(submit_Atype), lda, strideA,
+            pacc_B, hetgpu_pacc_dtype(submit_Btype), ldb, strideB,
+            pacc_beta,
+            pacc_C, hetgpu_pacc_dtype(submit_Ctype), ldc, strideC,
+            batchCount, (int)computeType);
     }
+
+pacc_submit_done:
     if (rc == 0) {
+        if (stage_C_buf) {
+            size_t c_elems = hetgpu_matrix_storage_elems(ldc, n, strideC, batchCount);
+            hetgpu_convert_linear_buffer(stage_C_buf, submit_Ctype, C, Ctype, c_elems);
+        }
+        free(stage_A_buf);
+        free(stage_B_buf);
+        free(stage_C_buf);
         return CUBLAS_STATUS_SUCCESS;
     }
+    free(stage_A_buf);
+    free(stage_B_buf);
+    free(stage_C_buf);
     if (hetgpu_env_is_one("HETGPU_PACC_GEMM_DISABLE_AFTER_FAILURE")) {
         g_pacc_gemm_disabled_after_failure = 1;
     }

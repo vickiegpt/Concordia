@@ -57,6 +57,10 @@
 #define HETGPU_PACC_PREMIRROR_BEACON_OFF 0x1f80ULL
 #define HETGPU_PACC_TABLE_BEACON_OFF 0x1fa0ULL
 #define HETGPU_PACC_GEMM_STAGE_BEACON_OFF 0x1fc0ULL
+#define HETGPU_PACC_DIRECT_GEMM_SEQ_BEACON_OFF 0x1e80ULL
+#define HETGPU_PACC_DIRECT_GEMM_ADDR_BEACON0_OFF 0x1ea0ULL
+#define HETGPU_PACC_DIRECT_GEMM_ADDR_BEACON1_OFF 0x1ec0ULL
+#define HETGPU_PACC_DIRECT_GEMM_ENTRY_BEACON_OFF 0x1ee0ULL
 #define PACC_DTYPE_INT8 0U
 #define PACC_DTYPE_UINT8 1U
 #define PACC_DTYPE_INT32 2U
@@ -281,6 +285,7 @@ static long g_page_size = 4096;
 
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static void write_stage_beacon(int fd, uint64_t off, uint32_t phase, uint32_t job_id, uint64_t seq);
+static void write_quad_beacon(int fd, uint64_t off, uint64_t v0, uint64_t v1, uint64_t v2, uint64_t v3);
 
 static void log_msg(const char *fmt, ...) {
     char buf[512];
@@ -766,6 +771,13 @@ static int run_gemm(int fd, const struct GemmJob *job) {
     if (norm.ldb <= 0) norm.ldb = norm.transb ? (int64_t)norm.k : (int64_t)norm.n;
     if (norm.ldc <= 0) norm.ldc = (int64_t)norm.n;
     job = &norm;
+    write_quad_beacon(
+        fd,
+        HETGPU_PACC_DIRECT_GEMM_ENTRY_BEACON_OFF,
+        HETGPU_PACC_STARTUP_BEACON_MAGIC,
+        job->a_addr,
+        job->b_addr,
+        job->c_addr);
     write_stage_beacon(fd, HETGPU_PACC_GEMM_STAGE_BEACON_OFF, 0x9101U, 1, 0);
 
     uint64_t batch_count = job->batch_count ? job->batch_count : 1;
@@ -1535,6 +1547,32 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
             job_id, job_name(job_id), *last_seq);
     write_stage_beacon(fd, HETGPU_PACC_DOORBELL_BEACON_OFF, 0xd001, job_id, *last_seq);
     refresh_runtime_table(fd, ctl, jobs, last_table_seq);
+    if (job_id == HETGPU_PACC_JOB_GEMM && jobs->have_gemm) {
+        write_quad_beacon(
+            fd,
+            HETGPU_PACC_DIRECT_GEMM_SEQ_BEACON_OFF,
+            HETGPU_PACC_STARTUP_BEACON_MAGIC,
+            *last_seq,
+            jobs->gemm.m,
+            (jobs->gemm.n << 32) | (jobs->gemm.k & 0xffffffffULL));
+        write_quad_beacon(
+            fd,
+            HETGPU_PACC_DIRECT_GEMM_ADDR_BEACON0_OFF,
+            jobs->gemm.a_addr,
+            jobs->gemm.b_addr,
+            jobs->gemm.c_addr,
+            jobs->gemm.alpha_addr);
+        write_quad_beacon(
+            fd,
+            HETGPU_PACC_DIRECT_GEMM_ADDR_BEACON1_OFF,
+            jobs->gemm.beta_addr,
+            ((uint64_t)jobs->gemm.atype << 48) |
+                ((uint64_t)jobs->gemm.btype << 32) |
+                ((uint64_t)jobs->gemm.ctype << 16) |
+                (uint64_t)jobs->gemm.compute_type,
+            ((uint64_t)(uint32_t)jobs->gemm.lda << 32) | (uint32_t)jobs->gemm.ldb,
+            ((uint64_t)(uint32_t)jobs->gemm.ldc << 32) | (uint32_t)jobs->gemm.batch_count);
+    }
     log_msg("dispatch enter: job_id=%u/%s seq=%" PRIu64,
             job_id, job_name(job_id), *last_seq);
     write_stage_beacon(fd, HETGPU_PACC_DISPATCH_BEACON_OFF, 0xd15c, job_id, *last_seq);
@@ -1664,11 +1702,28 @@ static void write_stage_beacon(int fd, uint64_t off, uint32_t phase, uint32_t jo
     unmap_phys(&map);
 }
 
+static void write_quad_beacon(int fd, uint64_t off, uint64_t v0, uint64_t v1, uint64_t v2, uint64_t v3) {
+    struct Map map = {0};
+    if (map_phys(fd, PACC2AP_MBOX_PHYS + off, 32, &map)) {
+        log_msg("map quad beacon 0x%" PRIx64 " failed: %s",
+                (uint64_t)(PACC2AP_MBOX_PHYS + off), strerror(errno));
+        return;
+    }
+    volatile uint64_t *slot = (volatile uint64_t *)map.ptr;
+    slot[0] = v0;
+    slot[1] = v1;
+    slot[2] = v2;
+    slot[3] = v3;
+    __sync_synchronize();
+    msync(map.base, map.map_len, MS_SYNC);
+    unmap_phys(&map);
+}
+
 int main(int argc, char **argv) {
     const char *devmem = "/dev/mem";
     const char *config = "/etc/hetgpu_pacc_jobs.conf";
     bool strict = false;
-    bool scan_ddr_control = true;
+    bool scan_ddr_control = false;
     unsigned poll_us = 1000;
     struct ScanRange ranges[6] = {
         {0x20000000ULL, 0x20004000ULL},

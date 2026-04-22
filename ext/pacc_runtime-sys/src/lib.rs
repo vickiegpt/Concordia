@@ -1737,8 +1737,7 @@ fn wait_mailbox_job_status_cached(
     let start = std::time::Instant::now();
     let mut buf = [0u8; 32];
     loop {
-        if read_pacc2ap_mailbox_cached(mailbox_file, pacc_id, HETGPU_PACC_COMPLETION_OFF, &mut buf)?
-        {
+        if read_pacc2ap_mailbox(pacc_id, HETGPU_PACC_COMPLETION_OFF, &mut buf)? {
             let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
             let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
             let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
