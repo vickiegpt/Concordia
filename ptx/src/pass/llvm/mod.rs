@@ -5,6 +5,7 @@ use std::ffi::CStr;
 use std::mem;
 use std::ops::Deref;
 use std::ptr;
+use std::sync::Once;
 
 use crate::pass::*;
 use llvm_zluda::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
@@ -28,8 +29,25 @@ pub(super) const NVPTX_KERNEL_CC: u32 = 71;
 
 pub(super) struct Context(LLVMContextRef);
 
+static LLVM_NAME_LIMIT_INIT: Once = Once::new();
+
+fn configure_llvm_name_limit() {
+    LLVM_NAME_LIMIT_INIT.call_once(|| unsafe {
+        let argv = [
+            c"hetgpu-ptx".as_ptr(),
+            c"-non-global-value-max-name-size=16384".as_ptr(),
+        ];
+        llvm_zluda::LLVMParseCommandLineOptions(
+            argv.len() as i32,
+            argv.as_ptr(),
+            c"hetGPU PTX LLVM options".as_ptr(),
+        );
+    });
+}
+
 impl Context {
     pub fn new() -> Self {
+        configure_llvm_name_limit();
         Self(unsafe { LLVMContextCreate() })
     }
 

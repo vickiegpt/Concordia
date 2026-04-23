@@ -235,11 +235,11 @@ static void gemm_scalar_block(const struct GemmJob *job,
         for (u64 col = col0; col < col1; ++col) {
             float acc = 0.0f;
             for (u64 kk = 0; kk < job->k; ++kk) {
-                u64 a_idx = job->transa ? kk * (u64)job->lda + row : row * (u64)job->lda + kk;
-                u64 b_idx = job->transb ? col * (u64)job->ldb + kk : kk * (u64)job->ldb + col;
+                u64 a_idx = job->transa ? kk + row * (u64)job->lda : row + kk * (u64)job->lda;
+                u64 b_idx = job->transb ? col + kk * (u64)job->ldb : kk + col * (u64)job->ldb;
                 acc += load_typed(a, a_idx, job->atype) * load_typed(b, b_idx, job->btype);
             }
-            u64 c_idx = row * (u64)job->ldc + col;
+            u64 c_idx = row + col * (u64)job->ldc;
             float old = beta != 0.0f ? load_typed(c, c_idx, job->ctype) : 0.0f;
             store_typed(c, c_idx, job->ctype, alpha * acc + beta * old);
         }
@@ -260,14 +260,14 @@ static void xm_gemm_qoq_4x8x4_tile(const struct GemmJob *job,
 
     for (u64 row = 0; row < XM_INT8_TILE_M; ++row) {
         for (u64 kk = 0; kk < XM_INT8_TILE_K; ++kk) {
-            u64 a_idx = (row0 + row) * (u64)job->lda + (k0 + kk);
+            u64 a_idx = (row0 + row) + (k0 + kk) * (u64)job->lda;
             a_pack[row * XM_INT8_TILE_K + kk] = (s8)load_typed(a, a_idx, job->atype);
         }
     }
 
     for (u64 kk = 0; kk < XM_INT8_TILE_K; ++kk) {
         for (u64 col = 0; col < XM_INT8_TILE_N; ++col) {
-            u64 b_idx = (k0 + kk) * (u64)job->ldb + (col0 + col);
+            u64 b_idx = (k0 + kk) + (col0 + col) * (u64)job->ldb;
             float value = load_typed(b, b_idx, job->btype);
             b_pack_s[kk * XM_INT8_TILE_N + col] = (s8)value;
             b_pack_u[kk * XM_INT8_TILE_N + col] = (u8)value;
@@ -318,7 +318,7 @@ static void xm_gemm_qqq_4x4x4_tile(const struct GemmJob *job,
 
     for (u64 kk = 0; kk < XM_BF16_TILE_K; ++kk) {
         for (u64 col = 0; col < XM_BF16_TILE_N; ++col) {
-            u64 b_idx = (k0 + kk) * (u64)job->ldb + (col0 + col);
+            u64 b_idx = (k0 + kk) + (col0 + col) * (u64)job->ldb;
             b_pack[kk * XM_BF16_TILE_N + col] = f32_to_bf16(load_typed(b, b_idx, job->btype));
         }
     }
@@ -363,11 +363,11 @@ static int gemm_try_xm_native(const struct GemmJob *job,
                     for (u64 col = col0; col < col1; ++col) {
                         float value = (float)acc[(row - row0) * XM_INT8_TILE_N + (col - col0)];
                         for (u64 kk = k_native; kk < job->k; ++kk) {
-                            u64 a_idx = row * (u64)job->lda + kk;
-                            u64 b_idx = kk * (u64)job->ldb + col;
+                            u64 a_idx = row + kk * (u64)job->lda;
+                            u64 b_idx = kk + col * (u64)job->ldb;
                             value += load_typed(a, a_idx, job->atype) * load_typed(b, b_idx, job->btype);
                         }
-                        u64 c_idx = row * (u64)job->ldc + col;
+                        u64 c_idx = row + col * (u64)job->ldc;
                         float old = beta != 0.0f ? load_typed(c, c_idx, job->ctype) : 0.0f;
                         store_typed(c, c_idx, job->ctype, alpha * value + beta * old);
                     }
@@ -397,11 +397,11 @@ static int gemm_try_xm_native(const struct GemmJob *job,
                     for (u64 col = col0; col < col1; ++col) {
                         float value = acc[(row - row0) * XM_BF16_TILE_N + (col - col0)];
                         for (u64 kk = k_native; kk < job->k; ++kk) {
-                            u64 a_idx = row * (u64)job->lda + kk;
-                            u64 b_idx = kk * (u64)job->ldb + col;
+                            u64 a_idx = row + kk * (u64)job->lda;
+                            u64 b_idx = kk + col * (u64)job->ldb;
                             value += load_typed(a, a_idx, job->atype) * load_typed(b, b_idx, job->btype);
                         }
-                        u64 c_idx = row * (u64)job->ldc + col;
+                        u64 c_idx = row + col * (u64)job->ldc;
                         float old = beta != 0.0f ? load_typed(c, c_idx, job->ctype) : 0.0f;
                         store_typed(c, c_idx, job->ctype, alpha * value + beta * old);
                     }

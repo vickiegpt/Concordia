@@ -442,7 +442,11 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
         let output_file = ctx.temp_dir.join(format!("{}_optimized.bc", file_stem));
 
         let mut cmd = Command::new(opt_tool());
-        cmd.arg(&input_file).arg("-o").arg(&output_file).arg("-O3");
+        cmd.arg(&input_file)
+            .arg("-o")
+            .arg(&output_file)
+            .arg("-O3")
+            .arg("-non-global-value-max-name-size=16384");
 
         match cmd.output() {
             Ok(output) if output.status.success() => {
@@ -459,7 +463,7 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
 }
 
 fn codegen_to_riscv_pacc(ctx: &ActionContext) -> pacc_comgr_status_t {
-    let bc_files: Vec<_> = ctx
+    let mut bc_files: Vec<_> = ctx
         .input_files
         .iter()
         .filter(|(_, kind)| kind.0 == pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_BC.0)
@@ -468,6 +472,21 @@ fn codegen_to_riscv_pacc(ctx: &ActionContext) -> pacc_comgr_status_t {
 
     if bc_files.is_empty() {
         return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR_INVALID_ARGUMENT);
+    }
+
+    // After LINK_BC_TO_BC + OPTIMIZE_BC_TO_BC we may have per-module bitcode
+    // (`main_optimized.bc`, `linked_0_optimized.bc`, ...) and the fully linked
+    // aggregate (`linked_optimized.bc`). For the PACC path we only need the
+    // aggregate relocatable; compiling each helper module separately drags in
+    // AMD-specific helper intrinsics that are irrelevant after linking and can
+    // crash the RISC-V backend during instruction selection.
+    if let Some(linked) = bc_files
+        .iter()
+        .find(|path| path.file_name().and_then(|n| n.to_str()) == Some("linked_optimized.bc"))
+        .cloned()
+    {
+        bc_files.clear();
+        bc_files.push(linked);
     }
 
     for input_file in bc_files {
@@ -637,6 +656,8 @@ fn compile_c_family_source_to_bitcode(
     cmd.arg(format!("--target={}", target))
         .arg(format!("--sysroot={}", sysroot))
         .arg(format!("--gcc-toolchain={}", gcc_toolchain))
+        .arg("-mllvm")
+        .arg("-non-global-value-max-name-size=16384")
         .arg("-emit-llvm")
         .arg("-c")
         .arg("-O3")
@@ -725,6 +746,8 @@ fn compile_bc_to_xm_object(
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
         .arg(&config.target_triple)
+        .arg("-mllvm")
+        .arg("-non-global-value-max-name-size=16384")
         .arg("-menable-experimental-extensions")
         .arg(format!("-march={}", config.march))
         .arg("-Wno-override-module")
@@ -757,6 +780,8 @@ fn compile_bc_to_xm_assembly(
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
         .arg(&config.target_triple)
+        .arg("-mllvm")
+        .arg("-non-global-value-max-name-size=16384")
         .arg("-menable-experimental-extensions")
         .arg(format!("-march={}", config.march))
         .arg("-Wno-override-module")

@@ -47,6 +47,12 @@ pub const LLVMZludaFastMathAll: ::std::ffi::c_uint = LLVMZludaFastMathAllowReass
 pub type LLVMZludaFastMathFlags = std::ffi::c_uint;
 
 extern "C" {
+    pub fn LLVMParseCommandLineOptions(
+        argc: ::std::os::raw::c_int,
+        argv: *const *const ::std::os::raw::c_char,
+        overview: *const ::std::os::raw::c_char,
+    );
+
     pub fn LLVMZludaBuildAlloca(
         B: LLVMBuilderRef,
         Ty: LLVMTypeRef,

@@ -693,8 +693,7 @@ pub fn ze_result_to_result(result: ze_result_t) -> Result<(), CUerror> {
     ZeResult(result).into()
 }
 
-// Allow adapting either ze_result_t or CUresult to CUresult uniformly
-#[cfg(feature = "intel")]
+// Allow adapting backend-specific results or CUerror-based results uniformly.
 pub trait IntoCuResult {
     fn into_cu_result(self) -> Result<(), CUerror>;
 }
@@ -706,14 +705,21 @@ impl IntoCuResult for ze_result_t {
     }
 }
 
-#[cfg(feature = "intel")]
 impl IntoCuResult for Result<(), CUerror> {
     fn into_cu_result(self) -> Result<(), CUerror> {
         self
     }
 }
 
-#[cfg(feature = "intel")]
+impl IntoCuResult for Result<(), String> {
+    fn into_cu_result(self) -> Result<(), CUerror> {
+        match self {
+            Ok(()) => Ok(()),
+            Err(_) => Err(CUerror::UNKNOWN),
+        }
+    }
+}
+
 pub fn into_cu_result<T: IntoCuResult>(v: T) -> Result<(), CUerror> {
     v.into_cu_result()
 }

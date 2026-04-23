@@ -2156,6 +2156,15 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
             };
             if result != pacc_runtime_sys::pacc_Result_Success {
                 eprintln!("[PACC Backend] pacc_LoadProgramPtx failed: {}", result);
+            } else if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                eprintln!(
+                    "[PACC Backend] pacc_LoadProgramPtx succeeded for {} bytes of PTX",
+                    ptx_text.len()
+                );
             }
         }
     }
@@ -2171,6 +2180,22 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     };
 
     *module = new_module.wrap();
+
+    if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        let module_ref = super::as_ref::<Module>(module).as_result()?;
+        let elf_len = module_ref
+            .program
+            .map(|p| unsafe { (*p).elf_bytes.len() })
+            .unwrap_or(0);
+        eprintln!(
+            "[PACC Backend] cuModuleLoadData installed module={:?} program={:?} elf_bytes={}",
+            *module, module_ref.program, elf_len
+        );
+    }
 
     if is_ptx {
         let c_str = unsafe { std::ffi::CStr::from_ptr(image as *const std::ffi::c_char) };
@@ -2234,8 +2259,15 @@ pub(crate) fn get_function(
         == Some("1")
     {
         eprintln!(
-            "[PACC Backend] Function '{}' module_device={:?} program={:?} kernel_ptr={:?}",
-            function_name, module_ref.device, module_ref.program, kernel_ptr
+            "[PACC Backend] Function '{}' module_device={:?} program={:?} elf_bytes={} kernel_ptr={:?}",
+            function_name,
+            module_ref.device,
+            module_ref.program,
+            module_ref
+                .program
+                .map(|p| unsafe { (*p).elf_bytes.len() })
+                .unwrap_or(0),
+            kernel_ptr
         );
     }
 

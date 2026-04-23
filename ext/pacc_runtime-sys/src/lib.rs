@@ -4656,6 +4656,17 @@ unsafe fn load_program_elf_bytes(program: *mut pacc_Program, elf_bytes: Vec<u8>)
     if program.is_null() || elf_bytes.is_empty() {
         return pacc_Result_Error;
     }
+    let log_program_loads = std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+        .ok()
+        .as_deref()
+        == Some("1");
+    if log_program_loads {
+        eprintln!(
+            "load_program_elf_bytes: program={:?} elf_bytes={}",
+            program,
+            elf_bytes.len()
+        );
+    }
     (*program).elf_bytes = elf_bytes;
     pacc_Result_Success
 }
@@ -5114,8 +5125,15 @@ pub unsafe extern "C" fn pacc_LaunchKernel(
         == Some("1");
     if log_launches {
         eprintln!(
-            "pacc_LaunchKernel: kernel='{}' grid=({},{},{}) block=({},{},{})",
-            k.name, grid_x, grid_y, grid_z, block_x, block_y, block_z
+            "pacc_LaunchKernel: kernel='{}' grid=({},{},{}) block=({},{},{}) elf_bytes={}",
+            k.name,
+            grid_x,
+            grid_y,
+            grid_z,
+            block_x,
+            block_y,
+            block_z,
+            prog.elf_bytes.len()
         );
     }
 

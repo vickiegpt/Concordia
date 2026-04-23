@@ -497,8 +497,8 @@ struct GemmWorker {
 
 static size_t gemm_span(uint64_t rows, uint64_t cols, int64_t ld) {
     if (!rows || !cols) return 0;
-    uint64_t lead = ld > 0 ? (uint64_t)ld : cols;
-    return (size_t)((rows - 1) * lead + cols);
+    uint64_t lead = ld > 0 ? (uint64_t)ld : rows;
+    return (size_t)((cols - 1) * lead + rows);
 }
 
 static size_t dtype_size(uint32_t dtype) {
@@ -646,13 +646,13 @@ static void *gemm_worker_main(void *arg) {
     const struct GemmJob *job = w->job;
     for (uint64_t row = w->row_begin; row < w->row_end; row++) {
         for (uint64_t col = 0; col < job->n; col++) {
-            size_t a_base = job->transa ? (size_t)row : (size_t)(row * job->lda);
-            ptrdiff_t a_stride = job->transa ? (ptrdiff_t)job->lda : 1;
-            size_t b_base = job->transb ? (size_t)(col * job->ldb) : (size_t)col;
-            ptrdiff_t b_stride = job->transb ? 1 : (ptrdiff_t)job->ldb;
+            size_t a_base = job->transa ? (size_t)((uint64_t)row * (uint64_t)job->lda) : (size_t)row;
+            ptrdiff_t a_stride = job->transa ? 1 : (ptrdiff_t)job->lda;
+            size_t b_base = job->transb ? (size_t)col : (size_t)((uint64_t)col * (uint64_t)job->ldb);
+            ptrdiff_t b_stride = job->transb ? (ptrdiff_t)job->ldb : 1;
             const void *ap = (const char *)w->a + a_base * dtype_size(job->atype);
             const void *bp = (const char *)w->b + b_base * dtype_size(job->btype);
-            size_t c_idx = (size_t)(row * job->ldc + col);
+            size_t c_idx = (size_t)(row + (uint64_t)col * (uint64_t)job->ldc);
             float acc = gemm_dot_typed(ap, job->atype, a_stride, bp, job->btype, b_stride, job->k);
             float old = w->beta != 0.0f ? load_typed(w->c, c_idx, job->ctype) : 0.0f;
             store_typed(w->c, c_idx, job->ctype, w->alpha * acc + w->beta * old);
@@ -703,9 +703,9 @@ static int run_gemm(int fd, const struct GemmJob *job) {
     }
 
     struct GemmJob norm = *job;
-    if (norm.lda <= 0) norm.lda = norm.transa ? (int64_t)norm.m : (int64_t)norm.k;
-    if (norm.ldb <= 0) norm.ldb = norm.transb ? (int64_t)norm.k : (int64_t)norm.n;
-    if (norm.ldc <= 0) norm.ldc = (int64_t)norm.n;
+    if (norm.lda <= 0) norm.lda = norm.transa ? (int64_t)norm.k : (int64_t)norm.m;
+    if (norm.ldb <= 0) norm.ldb = norm.transb ? (int64_t)norm.n : (int64_t)norm.k;
+    if (norm.ldc <= 0) norm.ldc = (int64_t)norm.m;
     job = &norm;
 
     uint64_t batch_count = job->batch_count ? job->batch_count : 1;
