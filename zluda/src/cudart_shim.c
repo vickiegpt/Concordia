@@ -174,8 +174,6 @@ extern CUresult cuMemFree_v2(CUdeviceptr dptr);
 extern CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void* srcHost, size_t ByteCount);
 extern CUresult cuMemcpyDtoH_v2(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount);
 extern CUresult cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc, size_t N);
-extern CUresult cuModuleLoadData(CUmodule* module, const void* image);
-extern CUresult cuModuleGetFunction(CUfunction* hfunc, CUmodule hmod, const char* name);
 extern CUresult cuLaunchKernel(CUfunction f,
                                unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ,
                                unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ,
@@ -206,6 +204,39 @@ typedef int cudaGraphExecUpdateResult;
 typedef void (*cudaStreamCallback_t)(cudaStream_t stream, cudaError_t status, void* userData);
 typedef void (*cudaHostFn_t)(void* userData);
 typedef int cudaMemcpyKind; // use int placeholder
+
+typedef CUresult (*hetgpu_cuModuleLoadData_fn)(CUmodule* module, const void* image);
+typedef CUresult (*hetgpu_cuModuleGetFunction_fn)(CUfunction* hfunc, CUmodule hmod, const char* name);
+
+static hetgpu_cuModuleLoadData_fn resolve_cuModuleLoadData(void) {
+    static hetgpu_cuModuleLoadData_fn fn = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        attempted = 1;
+        dlerror();
+        fn = (hetgpu_cuModuleLoadData_fn)dlsym(RTLD_DEFAULT, "cuModuleLoadData");
+        if (!fn) {
+            const char* err = dlerror();
+            fprintf(stderr, "[cudart_shim] dlsym(cuModuleLoadData) failed: %s\n", err ? err : "(null)");
+        }
+    }
+    return fn;
+}
+
+static hetgpu_cuModuleGetFunction_fn resolve_cuModuleGetFunction(void) {
+    static hetgpu_cuModuleGetFunction_fn fn = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        attempted = 1;
+        dlerror();
+        fn = (hetgpu_cuModuleGetFunction_fn)dlsym(RTLD_DEFAULT, "cuModuleGetFunction");
+        if (!fn) {
+            const char* err = dlerror();
+            fprintf(stderr, "[cudart_shim] dlsym(cuModuleGetFunction) failed: %s\n", err ? err : "(null)");
+        }
+    }
+    return fn;
+}
 
 typedef struct {
     const void *srcArray;
@@ -1220,6 +1251,7 @@ typedef struct {
 
 typedef struct {
     void* hostFun;           // Host function pointer (from PyTorch)
+    void* deviceFun;         // Device/stub function pointer alias when provided
     CUfunction cuFunc;       // Driver API function handle
     char name[256];          // Kernel name for debugging
     CUmodule module;         // Parent module
@@ -1229,6 +1261,118 @@ static RegisteredModule g_modules[MAX_MODULES];
 static int g_module_count = 0;
 static RegisteredFunction g_functions[MAX_FUNCTIONS];
 static int g_function_count = 0;
+static int g_registry_miss_log_count = 0;
+static int g_registry_register_log_count = 0;
+static int g_registry_neighbor_log_count = 0;
+
+static int hetgpu_same_image(const Dl_info *a, const Dl_info *b) {
+    if (!a || !b) {
+        return 0;
+    }
+    if (a->dli_fbase && b->dli_fbase && a->dli_fbase == b->dli_fbase) {
+        return 1;
+    }
+    if (a->dli_fname && b->dli_fname && strcmp(a->dli_fname, b->dli_fname) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static CUfunction lookup_registered_function(const void *func, const char **func_name) {
+    uintptr_t func_normalized = (uintptr_t)func & ~(uintptr_t)0x7;
+
+    for (int i = 0; i < g_function_count; i++) {
+        uintptr_t registered_host_normalized = (uintptr_t)g_functions[i].hostFun & ~(uintptr_t)0x7;
+        uintptr_t registered_device_normalized = (uintptr_t)g_functions[i].deviceFun & ~(uintptr_t)0x7;
+        if (g_functions[i].hostFun == func ||
+            g_functions[i].deviceFun == func ||
+            registered_host_normalized == func_normalized ||
+            registered_device_normalized == func_normalized) {
+            if (func_name) {
+                *func_name = g_functions[i].name;
+            }
+            return g_functions[i].cuFunc;
+        }
+    }
+
+    // Fallback: some frameworks launch through a nearby wrapper/thunk in the same
+    // shared object rather than the exact host/device registration pointer. If we
+    // can place the launch site in the same image, use the nearest registered
+    // function pointer from that image as a best-effort alias.
+    Dl_info func_info;
+    if (!dladdr(func, &func_info) || !func_info.dli_fbase) {
+        return NULL;
+    }
+
+    uintptr_t target = (uintptr_t)func;
+    uintptr_t best_distance = ~(uintptr_t)0;
+    int best_index = -1;
+    void *best_candidate = NULL;
+    const char *best_candidate_sym = NULL;
+    const char *best_candidate_img = NULL;
+
+    for (int i = 0; i < g_function_count; i++) {
+        void *candidates[2] = { g_functions[i].hostFun, g_functions[i].deviceFun };
+        for (int j = 0; j < 2; ++j) {
+            void *candidate = candidates[j];
+            if (!candidate) {
+                continue;
+            }
+            Dl_info candidate_info;
+            if (!dladdr(candidate, &candidate_info) || !hetgpu_same_image(&candidate_info, &func_info)) {
+                continue;
+            }
+            uintptr_t candidate_addr = (uintptr_t)candidate;
+            uintptr_t distance = target > candidate_addr ? (target - candidate_addr) : (candidate_addr - target);
+            if (distance < best_distance) {
+                best_distance = distance;
+                best_index = i;
+                best_candidate = candidate;
+                best_candidate_sym = candidate_info.dli_sname;
+                best_candidate_img = candidate_info.dli_fname;
+            }
+        }
+    }
+
+    uintptr_t fallback_limit = 0x1000;
+    if (func_info.dli_fname && strstr(func_info.dli_fname, "libggml-cuda.so.0") != NULL) {
+        // ggml-cuda often launches through a nearby stub/thunk instead of the
+        // exact registered host/device pointer. These stubs cluster tightly in
+        // the same image, so allow a wider-but-still-bounded alias window.
+        fallback_limit = 0x40000;
+    }
+
+    if (best_index >= 0 && best_distance <= fallback_limit) {
+        if (func_name) {
+            *func_name = g_functions[best_index].name;
+        }
+        fprintf(stderr,
+                "[cudart_shim] Fallback-matched function %p to registered '%s' via candidate=%p dist=0x%lx image=%s sym=%s\n",
+                func,
+                g_functions[best_index].name,
+                best_candidate,
+                (unsigned long)best_distance,
+                best_candidate_img ? best_candidate_img : "<unknown>",
+                best_candidate_sym ? best_candidate_sym : "<unknown>");
+        return g_functions[best_index].cuFunc;
+    }
+
+    if (best_index >= 0 && g_registry_neighbor_log_count < 24) {
+        fprintf(stderr,
+                "[cudart_shim] registry nearest-candidate #%d: func=%p best='%s' candidate=%p dist=0x%lx limit=0x%lx image=%s sym=%s\n",
+                g_registry_neighbor_log_count + 1,
+                func,
+                g_functions[best_index].name,
+                best_candidate,
+                (unsigned long)best_distance,
+                (unsigned long)fallback_limit,
+                best_candidate_img ? best_candidate_img : "<unknown>",
+                best_candidate_sym ? best_candidate_sym : "<unknown>");
+        g_registry_neighbor_log_count++;
+    }
+
+    return NULL;
+}
 
 // Some code paths call the runtime API cudaLaunchKernel (not the internal __cudaLaunchKernel).
 // Provide a wrapper that forwards to our internal hook and mark it used so the
@@ -1257,25 +1401,36 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
         return hetgpu_set_last_error(HETGPU_CUDA_ERROR_INVALID_VALUE);
     }
 
-    // Look up the function in our registration table
-    // Compare with normalization (mask off low 3 bits) since cudaLaunchKernel
-    // and __cudaRegisterFunction may use different pointer representations
-    CUfunction cuFunc = NULL;
+    // Look up the function in our registration table.
     const char* funcName = "<unknown>";
-    uintptr_t func_normalized = (uintptr_t)func & ~(uintptr_t)0x7;
-
-    for (int i = 0; i < g_function_count; i++) {
-        uintptr_t registered_normalized = (uintptr_t)g_functions[i].hostFun & ~(uintptr_t)0x7;
-        if (g_functions[i].hostFun == func || registered_normalized == func_normalized) {
-            cuFunc = g_functions[i].cuFunc;
-            funcName = g_functions[i].name;
-            HETGPU_LOG("[cudart_shim] Found registered function '%s': %p -> %p\n",
-                    funcName, func, cuFunc);
-            break;
-        }
+    CUfunction cuFunc = lookup_registered_function(func, &funcName);
+    if (cuFunc != NULL) {
+        HETGPU_LOG("[cudart_shim] Found registered function '%s': %p -> %p\n",
+                funcName, func, cuFunc);
     }
 
     if (cuFunc == NULL) {
+        if (g_registry_miss_log_count < 12) {
+            Dl_info miss_info;
+            if (dladdr(func, &miss_info) && miss_info.dli_fname) {
+                fprintf(stderr,
+                        "[cudart_shim] registry miss #%d: func=%p image=%s sym=%s registered=%d modules=%d\n",
+                        g_registry_miss_log_count + 1,
+                        func,
+                        miss_info.dli_fname,
+                        miss_info.dli_sname ? miss_info.dli_sname : "<unknown>",
+                        g_function_count,
+                        g_module_count);
+            } else {
+                fprintf(stderr,
+                        "[cudart_shim] registry miss #%d: func=%p image=<unknown> registered=%d modules=%d\n",
+                        g_registry_miss_log_count + 1,
+                        func,
+                        g_function_count,
+                        g_module_count);
+            }
+            g_registry_miss_log_count++;
+        }
         fprintf(stderr, "[cudart_shim] WARNING: Function %p not in registry - skipping (output uninitialized!)\n", func);
         fprintf(stderr, "[cudart_shim] This may cause SIGFPE in downstream operations like softmax\n");
         if (hetgpu_strict_pacc()) {
@@ -1352,6 +1507,51 @@ static int find_so_from_address(const void* addr, char* path, size_t path_size) 
     return 0;
 }
 
+static int find_mapping_for_address(
+    const void* addr,
+    unsigned long* mapping_start,
+    unsigned long* mapping_end,
+    char* path,
+    size_t path_size
+) {
+    FILE* maps = fopen("/proc/self/maps", "r");
+    if (!maps) return 0;
+
+    char line[1024];
+    unsigned long target = (unsigned long)addr;
+
+    while (fgets(line, sizeof(line), maps)) {
+        unsigned long start, end;
+        char perms[5];
+        unsigned long offset;
+        int dev_major, dev_minor;
+        unsigned long inode;
+        char filepath[512] = {0};
+
+        int n = sscanf(line, "%lx-%lx %4s %lx %x:%x %lu %511[^\n]",
+                       &start, &end, perms, &offset, &dev_major, &dev_minor, &inode, filepath);
+
+        if (n >= 7 && target >= start && target < end) {
+            if (mapping_start) *mapping_start = start;
+            if (mapping_end) *mapping_end = end;
+            if (path && path_size > 0) {
+                path[0] = '\0';
+                if (n >= 8 && filepath[0] != '\0' && filepath[0] != '[') {
+                    char* fp = filepath;
+                    while (*fp == ' ') fp++;
+                    strncpy(path, fp, path_size - 1);
+                    path[path_size - 1] = '\0';
+                }
+            }
+            fclose(maps);
+            return 1;
+        }
+    }
+
+    fclose(maps);
+    return 0;
+}
+
 // Cache for extracted PTX from .so files
 #define MAX_CACHED_SO 16
 #define MAX_PTX_PER_SO 512
@@ -1362,6 +1562,112 @@ static struct {
     char ptx_files[MAX_PTX_PER_SO][256];
 } g_ptx_cache[MAX_CACHED_SO];
 static int g_ptx_cache_count = 0;
+
+static int refresh_ptx_cache_entry(int cache_idx) {
+    char find_cmd[512];
+    snprintf(find_cmd, sizeof(find_cmd),
+             "find %s -name '*.ptx' -type f 2>/dev/null | sort",
+             g_ptx_cache[cache_idx].ptx_dir);
+
+    FILE* find_p = popen(find_cmd, "r");
+    g_ptx_cache[cache_idx].ptx_count = 0;
+    if (!find_p) {
+        return 0;
+    }
+
+    char ptx_path[256];
+    while (fgets(ptx_path, sizeof(ptx_path), find_p) &&
+           g_ptx_cache[cache_idx].ptx_count < MAX_PTX_PER_SO) {
+        size_t len = strlen(ptx_path);
+        if (len > 0 && ptx_path[len - 1] == '\n') {
+            ptx_path[len - 1] = '\0';
+        }
+        if (ptx_path[0] != '\0') {
+            strncpy(g_ptx_cache[cache_idx].ptx_files[g_ptx_cache[cache_idx].ptx_count],
+                    ptx_path, 255);
+            g_ptx_cache[cache_idx].ptx_files[g_ptx_cache[cache_idx].ptx_count][255] = '\0';
+            g_ptx_cache[cache_idx].ptx_count++;
+        }
+    }
+    pclose(find_p);
+    return g_ptx_cache[cache_idx].ptx_count;
+}
+
+static int compile_ggml_cuda_sources_to_ptx(const char* so_path, const char* ptx_dir) {
+    const char* marker = strstr(so_path, "/bin/libggml-cuda.so");
+    if (!marker) {
+        return 0;
+    }
+
+    size_t root_len = (size_t)(marker - so_path);
+    if (root_len == 0 || root_len >= 512) {
+        return 0;
+    }
+
+    char build_root[512];
+    memcpy(build_root, so_path, root_len);
+    build_root[root_len] = '\0';
+
+    char compile_db[640];
+    snprintf(compile_db, sizeof(compile_db), "%s/compile_commands.json", build_root);
+    if (access(compile_db, R_OK) != 0) {
+        fprintf(stderr, "[cudart_shim] No compile_commands.json at %s\n", compile_db);
+        return 0;
+    }
+
+    fprintf(stderr, "[cudart_shim] Falling back to source->PTX compilation using %s\n", compile_db);
+
+    const char* script = "/home/ubuntu/Documents/hetGPU_pacc/tools/source_to_ptx.py";
+    if (access(script, R_OK) != 0) {
+        fprintf(stderr, "[cudart_shim] source->PTX helper not found at %s\n", script);
+        return 0;
+    }
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        return 0;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return 0;
+    }
+
+    if (pid == 0) {
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+
+        unsetenv("LD_PRELOAD");
+        unsetenv("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM");
+        unsetenv("HETGPU_PACC_LOG_KERNEL_LAUNCHES");
+        unsetenv("HETGPU_CUDART_REGISTRY_LOG");
+        unsetenv("HETGPU_PTX_EXTRACT_LOG");
+
+        execl("/usr/bin/python3", "python3", script, compile_db, ptx_dir, (char*)NULL);
+        _exit(127);
+    }
+
+    close(pipefd[1]);
+    char line[128] = {0};
+    ssize_t nread = read(pipefd[0], line, sizeof(line) - 1);
+    close(pipefd[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    int compiled_count = 0;
+    if (nread > 0) {
+        line[nread] = '\0';
+        compiled_count = atoi(line);
+    }
+
+    int rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    fprintf(stderr, "[cudart_shim] source->PTX compile returned rc=%d count=%d\n", rc, compiled_count);
+    return compiled_count;
+}
 
 // Extract all PTX from a .so file using cuobjdump
 static const char* extract_ptx_from_so(const char* so_path) {
@@ -1393,7 +1699,7 @@ static const char* extract_ptx_from_so(const char* so_path) {
     // Run cuobjdump to extract all PTX
     char cmd[1024];
     snprintf(cmd, sizeof(cmd),
-             "cd %s && /usr/local/cuda-12.8/bin/cuobjdump --extract-ptx all '%s' 2>&1",
+             "cd %s && /home/ubuntu/Documents/hetGPU_pacc/tools/cuobjdump --extract-ptx all '%s' 2>&1",
              g_ptx_cache[cache_idx].ptx_dir, so_path);
 
     FILE* p = popen(cmd, "r");
@@ -1409,30 +1715,10 @@ static const char* extract_ptx_from_so(const char* so_path) {
         fprintf(stderr, "[cudart_shim] cuobjdump on .so returned: %d\n", WEXITSTATUS(ret));
     }
 
-    // Count extracted PTX files
-    char find_cmd[512];
-    snprintf(find_cmd, sizeof(find_cmd),
-             "find %s -name '*.ptx' -type f 2>/dev/null",
-             g_ptx_cache[cache_idx].ptx_dir);
-
-    FILE* find_p = popen(find_cmd, "r");
-    if (find_p) {
-        char ptx_path[256];
-        g_ptx_cache[cache_idx].ptx_count = 0;
-        while (fgets(ptx_path, sizeof(ptx_path), find_p) &&
-               g_ptx_cache[cache_idx].ptx_count < MAX_PTX_PER_SO) {
-            // Remove trailing newline
-            size_t len = strlen(ptx_path);
-            if (len > 0 && ptx_path[len-1] == '\n') {
-                ptx_path[len-1] = '\0';
-            }
-            if (strlen(ptx_path) > 0) {
-                strncpy(g_ptx_cache[cache_idx].ptx_files[g_ptx_cache[cache_idx].ptx_count],
-                        ptx_path, 255);
-                g_ptx_cache[cache_idx].ptx_count++;
-            }
-        }
-        pclose(find_p);
+    refresh_ptx_cache_entry(cache_idx);
+    if (g_ptx_cache[cache_idx].ptx_count == 0 && strstr(so_path, "libggml-cuda.so") != NULL) {
+        compile_ggml_cuda_sources_to_ptx(so_path, g_ptx_cache[cache_idx].ptx_dir);
+        refresh_ptx_cache_entry(cache_idx);
     }
 
     fprintf(stderr, "[cudart_shim] Extracted %d PTX files from %s\n",
@@ -1549,6 +1835,171 @@ extern int hetgpu_lz4_decompress(const char* src, char* dst, int compressedSize,
 #define FATBIN_KIND_PTX 0x01
 #define FATBIN_KIND_ELF 0x02
 
+static int hetgpu_ptx_has_markers(const unsigned char* data, size_t size) {
+    if (!data || size < 32) {
+        return 0;
+    }
+    const char* text = (const char*)data;
+    return strstr(text, ".version ") != NULL && strstr(text, ".target ") != NULL;
+}
+
+static char* hetgpu_dup_ptx_blob(const unsigned char* data, size_t size, size_t* out_size) {
+    if (!hetgpu_ptx_has_markers(data, size)) {
+        return NULL;
+    }
+    while (size > 0 && (data[size - 1] == '\0' || data[size - 1] == '\n' || data[size - 1] == '\r')) {
+        size--;
+    }
+    char* out = (char*)malloc(size + 2);
+    if (!out) {
+        return NULL;
+    }
+    memcpy(out, data, size);
+    out[size] = '\n';
+    out[size + 1] = '\0';
+    if (out_size) {
+        *out_size = size + 1;
+    }
+    return out;
+}
+
+static char* extract_ptx_from_fatbin_memory(const unsigned char* base, size_t size, size_t* out_size) {
+    if (!base || size < sizeof(FatbinHeader)) {
+        return NULL;
+    }
+
+    const FatbinHeader* fatbin_header = (const FatbinHeader*)base;
+    if (fatbin_header->magic != FATBIN_MAGIC || fatbin_header->header_size >= size) {
+        return NULL;
+    }
+
+    const unsigned char* file_ptr = base + fatbin_header->header_size;
+    const unsigned char* end_ptr = file_ptr + fatbin_header->files_size;
+    if (end_ptr > base + size) {
+        end_ptr = base + size;
+    }
+
+    while (file_ptr + sizeof(FatbinFileHeader) <= end_ptr) {
+        const FatbinFileHeader* file_header = (const FatbinFileHeader*)file_ptr;
+        if (file_header->header_size == 0) {
+            break;
+        }
+        if (file_ptr + file_header->header_size > end_ptr) {
+            break;
+        }
+        const unsigned char* payload = file_ptr + file_header->header_size;
+        size_t payload_size = file_header->payload_size;
+        if (payload + payload_size > end_ptr) {
+            break;
+        }
+
+        if (file_header->kind == FATBIN_KIND_PTX) {
+            if (file_header->uncompressed_payload > 0) {
+                char* decompressed = (char*)malloc(file_header->uncompressed_payload + 1);
+                if (decompressed) {
+                    int result = hetgpu_lz4_decompress(
+                        (const char*)payload,
+                        decompressed,
+                        (int)payload_size,
+                        (int)file_header->uncompressed_payload
+                    );
+                    if (result > 0) {
+                        decompressed[result] = '\0';
+                        if (hetgpu_ptx_has_markers((const unsigned char*)decompressed, (size_t)result)) {
+                            if (out_size) *out_size = (size_t)result;
+                            return decompressed;
+                        }
+                    }
+                    free(decompressed);
+                }
+            }
+
+            char* raw = hetgpu_dup_ptx_blob(payload, payload_size, out_size);
+            if (raw) {
+                return raw;
+            }
+        }
+
+        size_t entry_total = file_header->header_size + file_header->padded_payload_size;
+        if (entry_total == 0) {
+            break;
+        }
+        file_ptr += entry_total;
+    }
+
+    return NULL;
+}
+
+static char* extract_ptx_from_mapping_local(const void* anchor, size_t* out_size) {
+    unsigned long start = 0;
+    unsigned long end = 0;
+    char image_path[512] = {0};
+    if (!find_mapping_for_address(anchor, &start, &end, image_path, sizeof(image_path)) || end <= start) {
+        return NULL;
+    }
+
+    const unsigned char* mapping = (const unsigned char*)start;
+    size_t mapping_size = (size_t)(end - start);
+
+    for (size_t i = 0; i + 4 <= mapping_size; ++i) {
+        unsigned int magic = 0;
+        memcpy(&magic, mapping + i, sizeof(magic));
+        if (magic == FATBIN_MAGIC) {
+            char* ptx = extract_ptx_from_fatbin_memory(mapping + i, mapping_size - i, out_size);
+            if (ptx) {
+                fprintf(stderr,
+                        "[cudart_shim] Local mapping PTX extraction hit FATBIN_MAGIC at +0x%zx in %s\n",
+                        i,
+                        image_path[0] ? image_path : "<anonymous>");
+                return ptx;
+            }
+        }
+    }
+
+    const unsigned char version_marker[] = ".version ";
+    for (size_t i = 0; i + sizeof(version_marker) < mapping_size; ++i) {
+        if (memcmp(mapping + i, version_marker, sizeof(version_marker) - 1) == 0) {
+            size_t j = i;
+            while (j < mapping_size) {
+                unsigned char c = mapping[j];
+                if (c == '\0') {
+                    break;
+                }
+                if (!(c == '\n' || c == '\r' || c == '\t' || (c >= 32 && c <= 126))) {
+                    break;
+                }
+                j++;
+            }
+            char* ptx = hetgpu_dup_ptx_blob(mapping + i, j - i, out_size);
+            if (ptx) {
+                fprintf(stderr,
+                        "[cudart_shim] Local mapping PTX extraction hit raw PTX at +0x%zx in %s\n",
+                        i,
+                        image_path[0] ? image_path : "<anonymous>");
+                return ptx;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+static int pointer_looks_like_string(const void* p) {
+    if (!p) return 0;
+    const unsigned char* s = (const unsigned char*)p;
+    for (size_t i = 0; i < 8; ++i) {
+        unsigned char c = s[i];
+        if (c == '\0') return i > 0;
+        if (!(c == '/' || c == '.' || c == '_' || c == '-' ||
+              (c >= '0' && c <= '9') ||
+              (c >= 'A' && c <= 'Z') ||
+              (c >= 'a' && c <= 'z'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 void** __cudaRegisterFatBinary(void* fatCubin) {
     fprintf(stderr, "[cudart_shim] __cudaRegisterFatBinary called with %p\n", fatCubin);
 
@@ -1571,17 +2022,27 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
     // }
     // So data pointer is at offset 8
     void* fatbin_header_ptr = NULL;
+    void* wrapper_aux_ptr = NULL;
+    char wrapper_so_path[512] = {0};
 
     if (wrapper_magic[0] == 0x466243B1) {
         // Read the data pointer which is at offset 8
         void** data_ptr_location = (void**)((char*)fatCubin + 8);
         fatbin_header_ptr = *data_ptr_location;
+        wrapper_aux_ptr = *(void**)((char*)fatCubin + 16);
     } else {
         // Fallback: assume data is offset by 16 bytes
         fatbin_header_ptr = (char*)fatCubin + 16;
     }
 
     fprintf(stderr, "[cudart_shim] FatbinHeader pointer: %p\n", fatbin_header_ptr);
+    fprintf(stderr, "[cudart_shim] Fatbin wrapper aux pointer: %p\n", wrapper_aux_ptr);
+    if (pointer_looks_like_string(wrapper_aux_ptr)) {
+        fprintf(stderr, "[cudart_shim] Fatbin wrapper aux string: %s\n", (const char*)wrapper_aux_ptr);
+    }
+    if (find_so_from_address(fatCubin, wrapper_so_path, sizeof(wrapper_so_path))) {
+        fprintf(stderr, "[cudart_shim] Fatbin wrapper mapped from .so: %s\n", wrapper_so_path);
+    }
 
     // Parse FatbinHeader to find the actual CUBIN/PTX payload
     FatbinHeader* fatbin_header = (FatbinHeader*)fatbin_header_ptr;
@@ -1699,8 +2160,28 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
         fprintf(stderr, "[cudart_shim] Invalid or missing FatbinHeader, using data pointer directly\n");
         payload = fatbin_header_ptr;
 
+        size_t local_ptx_size = 0;
+        char* local_ptx = extract_ptx_from_mapping_local(fatCubin, &local_ptx_size);
+        if (!local_ptx) {
+            local_ptx = extract_ptx_from_mapping_local(fatbin_header_ptr, &local_ptx_size);
+        }
+        if (local_ptx && local_ptx_size > 50) {
+            fprintf(stderr, "[cudart_shim] Invalid-header fallback loaded %zu bytes of PTX from local mapping\n", local_ptx_size);
+            payload = local_ptx;
+            payload_size = local_ptx_size;
+            payload_needs_free = 1;
+        }
+
         char so_path[512] = {0};
-        if (find_so_from_address(fatbin_header_ptr, so_path, sizeof(so_path))) {
+        if (!payload_needs_free) {
+            if (wrapper_so_path[0] != '\0') {
+                strncpy(so_path, wrapper_so_path, sizeof(so_path) - 1);
+                so_path[sizeof(so_path) - 1] = '\0';
+            } else if (find_so_from_address(fatbin_header_ptr, so_path, sizeof(so_path))) {
+                ;
+            }
+        }
+        if (!payload_needs_free && so_path[0] != '\0') {
             fprintf(stderr, "[cudart_shim] Invalid-header fallback source .so: %s\n", so_path);
             const char* ptx_dir = extract_ptx_from_so(so_path);
             if (ptx_dir) {
@@ -1741,10 +2222,30 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
             }
             fprintf(stderr, "\n");
 
+            size_t local_ptx_size = 0;
+            char* local_ptx = extract_ptx_from_mapping_local(fatCubin, &local_ptx_size);
+            if (!local_ptx) {
+                local_ptx = extract_ptx_from_mapping_local(fatbin_header_ptr, &local_ptx_size);
+            }
+            if (local_ptx && local_ptx_size > 50) {
+                fprintf(stderr, "[cudart_shim] Successfully loaded %zu bytes of PTX from local mapping\n", local_ptx_size);
+                payload = local_ptx;
+                payload_size = local_ptx_size;
+                payload_needs_free = 1;
+            }
+
             // NEW APPROACH: Find the source .so file from the fatbin pointer address
             // and extract PTX from the full .so using cuobjdump
             char so_path[512] = {0};
-            if (find_so_from_address(fatbin_header_ptr, so_path, sizeof(so_path))) {
+            if (!payload_needs_free) {
+                if (wrapper_so_path[0] != '\0') {
+                    strncpy(so_path, wrapper_so_path, sizeof(so_path) - 1);
+                    so_path[sizeof(so_path) - 1] = '\0';
+                } else if (find_so_from_address(fatbin_header_ptr, so_path, sizeof(so_path))) {
+                    ;
+                }
+            }
+            if (!payload_needs_free && so_path[0] != '\0') {
                 fprintf(stderr, "[cudart_shim] Found source .so: %s\n", so_path);
 
                 // Extract PTX from the .so file (or use cached result)
@@ -1789,7 +2290,8 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
 
     // Try to load the payload as a module
     CUmodule module = NULL;
-    CUresult result = cuModuleLoadData(&module, payload);
+    hetgpu_cuModuleLoadData_fn p_cuModuleLoadData = resolve_cuModuleLoadData();
+    CUresult result = p_cuModuleLoadData ? p_cuModuleLoadData(&module, payload) : 1;
 
     // Free decompressed PTX buffer now that cuModuleLoadData has consumed it
     if (payload_needs_free && payload) {
@@ -1835,7 +2337,7 @@ void __cudaUnregisterFatBinary(void** fatCubinHandle) {
 void __cudaRegisterFunction(void** fatCubinHandle, const char* hostFun, char* deviceFun,
                             const char* deviceName, int thread_limit, void* tid, void* bid,
                             void* bDim, void* gDim, void* wSize) {
-    (void)deviceFun; (void)thread_limit; (void)tid; (void)bid; (void)bDim; (void)gDim; (void)wSize;
+    (void)thread_limit; (void)tid; (void)bid; (void)bDim; (void)gDim; (void)wSize;
 
     if (!fatCubinHandle || !hostFun || !deviceName) {
         fprintf(stderr, "[cudart_shim] __cudaRegisterFunction: invalid arguments\n");
@@ -1843,12 +2345,13 @@ void __cudaRegisterFunction(void** fatCubinHandle, const char* hostFun, char* de
     }
 
     CUmodule module = (CUmodule)(*fatCubinHandle);
-    HETGPU_LOG("[cudart_shim] __cudaRegisterFunction: hostFun=%p, name='%s', module=%p\n",
-            hostFun, deviceName, module);
+    HETGPU_LOG("[cudart_shim] __cudaRegisterFunction: hostFun=%p deviceFun=%p name='%s', module=%p\n",
+            hostFun, deviceFun, deviceName, module);
 
     // Get the function from the module
     CUfunction func = NULL;
-    CUresult result = cuModuleGetFunction(&func, module, deviceName);
+    hetgpu_cuModuleGetFunction_fn p_cuModuleGetFunction = resolve_cuModuleGetFunction();
+    CUresult result = p_cuModuleGetFunction ? p_cuModuleGetFunction(&func, module, deviceName) : 1;
 
     if (result != 0) {
         fprintf(stderr, "[cudart_shim] cuModuleGetFunction('%s') failed: %d\n", deviceName, result);
@@ -1860,13 +2363,37 @@ void __cudaRegisterFunction(void** fatCubinHandle, const char* hostFun, char* de
     // Store the mapping
     if (g_function_count < MAX_FUNCTIONS) {
         g_functions[g_function_count].hostFun = (void*)hostFun;
+        g_functions[g_function_count].deviceFun = (void*)deviceFun;
         g_functions[g_function_count].cuFunc = func;
         g_functions[g_function_count].module = module;
         strncpy(g_functions[g_function_count].name, deviceName, 255);
         g_functions[g_function_count].name[255] = '\0';
 
-        HETGPU_LOG("[cudart_shim] Registered function %d: %p -> %p ('%s')\n",
-                g_function_count, hostFun, func, deviceName);
+        HETGPU_LOG("[cudart_shim] Registered function %d: host=%p device=%p -> %p ('%s')\n",
+                g_function_count, hostFun, deviceFun, func, deviceName);
+        if (g_registry_register_log_count < 16) {
+            Dl_info host_info;
+            if (dladdr((void*)hostFun, &host_info) && host_info.dli_fname) {
+                fprintf(stderr,
+                        "[cudart_shim] register #%d: name='%s' host=%p device=%p cu=%p image=%s sym=%s\n",
+                        g_registry_register_log_count + 1,
+                        deviceName,
+                        hostFun,
+                        deviceFun,
+                        func,
+                        host_info.dli_fname,
+                        host_info.dli_sname ? host_info.dli_sname : "<unknown>");
+            } else {
+                fprintf(stderr,
+                        "[cudart_shim] register #%d: name='%s' host=%p device=%p cu=%p image=<unknown>\n",
+                        g_registry_register_log_count + 1,
+                        deviceName,
+                        hostFun,
+                        deviceFun,
+                        func);
+            }
+            g_registry_register_log_count++;
+        }
 
         g_function_count++;
     } else {

@@ -2776,6 +2776,33 @@ fn pacc_max_launch_params() -> usize {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
+    let name = kernel_name.to_lowercase();
+
+    // ggml-cuda direct launch kernels are passed through cudaLaunchKernel with a
+    // plain `void **kernelParams` array. That array is not null-terminated, so
+    // our generic "scan until NULL" path can walk past the end and segfault.
+    // For the hot kernels we know today, pin the exact arity from the CUDA
+    // kernel signatures and only read that many entries.
+    if name.contains("mul_mat_vec_q") {
+        return Some(19);
+    }
+    if name.contains("mul_mat_q_stream_k_fixup") {
+        return Some(13);
+    }
+    if name.contains("mul_mat_q") {
+        return Some(23);
+    }
+
+    None
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 fn pacc_looks_like_pointer(value: u64) -> bool {
     value > 0x1000 && value < 0x0000_8000_0000_0000
 }
@@ -2804,16 +2831,13 @@ unsafe fn parse_pacc_launch_extra_blob(extra: *mut *mut ::core::ffi::c_void) -> 
             break;
         }
         let value = *extra.add(i + 1);
-        match key as usize {
-            CU_LAUNCH_PARAM_BUFFER_POINTER_AS_INT => {
-                raw_ptr = value as *const u8;
+        let key_usize = key as usize;
+        if key_usize == CU_LAUNCH_PARAM_BUFFER_POINTER_AS_INT as usize {
+            raw_ptr = value as *const u8;
+        } else if key_usize == CU_LAUNCH_PARAM_BUFFER_SIZE_AS_INT as usize {
+            if !value.is_null() {
+                raw_size = (value as *const usize).read_unaligned();
             }
-            CU_LAUNCH_PARAM_BUFFER_SIZE_AS_INT => {
-                if !value.is_null() {
-                    raw_size = (value as *const usize).read_unaligned();
-                }
-            }
-            _ => {}
         }
         i += 2;
     }
@@ -2873,7 +2897,7 @@ unsafe fn configure_pacc_launch_abi(
         return pacc_runtime_sys::pacc_Result_Success;
     }
 
-    let max_params = pacc_max_launch_params();
+    let max_params = pacc_known_kernel_param_count(kernel_name).unwrap_or_else(pacc_max_launch_params);
     let log_launches = std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
         .ok()
         .as_deref()
@@ -2884,6 +2908,15 @@ unsafe fn configure_pacc_launch_abi(
     for i in 0..max_params {
         let param = *kernel_params.add(i);
         if param.is_null() {
+            if pacc_known_kernel_param_count(kernel_name).is_some() {
+                if log_launches {
+                    eprintln!(
+                        "[PACC Backend] launch ABI '{}' hit unexpected null param at index {} of {}",
+                        kernel_name, i, max_params
+                    );
+                }
+                return pacc_runtime_sys::pacc_Result_Error;
+            }
             break;
         }
 

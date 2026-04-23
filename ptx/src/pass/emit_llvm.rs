@@ -3542,7 +3542,7 @@ impl<'a> MethodEmitContext<'a> {
                 arg1: LLVMBuilderRef,
                 Val: LLVMValueRef,
                 DestTy: LLVMTypeRef,
-                Name: *const i8,
+                Name: *const u8,
             ) -> LLVMValueRef,
         >,
     ) -> Result<(), TranslateError> {
@@ -3606,7 +3606,7 @@ impl<'a> MethodEmitContext<'a> {
             arg1: LLVMBuilderRef,
             Val: LLVMValueRef,
             DestTy: LLVMTypeRef,
-            Name: *const i8,
+            Name: *const u8,
         ) -> LLVMValueRef,
     ) -> Result<(), TranslateError> {
         let type_ = get_scalar_type(self.context, to);
@@ -3883,7 +3883,7 @@ impl<'a> MethodEmitContext<'a> {
             LLVMBuilderRef,
             LLVMValueRef,
             LLVMValueRef,
-            *const i8,
+            *const u8,
         ) -> LLVMValueRef,
     ) -> Result<(), TranslateError> {
         let src1 = self.resolver.value(src1)?;
@@ -4492,7 +4492,7 @@ fn get_pointer_type<'ctx>(
 }
 
 // https://llvm.org/docs/AMDGPUUsage.html#memory-scopes
-fn get_scope(scope: ast::MemScope) -> Result<*const i8, TranslateError> {
+fn get_scope(scope: ast::MemScope) -> Result<*const u8, TranslateError> {
     Ok(match scope {
         ast::MemScope::Cta => c"", // 空字符串表示默认作用域
         ast::MemScope::Gpu => c"", // 空字符串表示默认作用域
@@ -4503,7 +4503,7 @@ fn get_scope(scope: ast::MemScope) -> Result<*const i8, TranslateError> {
     .cast())
 }
 
-fn get_scope_membar(scope: ast::MemScope) -> Result<*const i8, TranslateError> {
+fn get_scope_membar(scope: ast::MemScope) -> Result<*const u8, TranslateError> {
     Ok(match scope {
         ast::MemScope::Cta => c"workgroup",
         ast::MemScope::Gpu => c"agent",
@@ -4694,7 +4694,7 @@ impl<'a> ResolveIdent<'a> {
         self.get_or_ad_impl(word, |x| x)
     }
 
-    fn get_or_add_raw(&mut self, word: SpirvWord) -> *const i8 {
+    fn get_or_add_raw(&mut self, word: SpirvWord) -> *const u8 {
         self.get_or_add(word).as_ptr().cast()
     }
 
@@ -4712,7 +4712,7 @@ impl<'a> ResolveIdent<'a> {
     fn with_result(
         &mut self,
         word: SpirvWord,
-        fn_: impl FnOnce(*const i8) -> LLVMValueRef,
+        fn_: impl FnOnce(*const u8) -> LLVMValueRef,
     ) -> LLVMValueRef {
         let t = self.get_or_ad_impl(word, |dst| fn_(dst.as_ptr().cast()));
         self.register(word, t);
@@ -4722,7 +4722,7 @@ impl<'a> ResolveIdent<'a> {
     fn with_result_option(
         &mut self,
         word: Option<SpirvWord>,
-        fn_: impl FnOnce(*const i8) -> LLVMValueRef,
+        fn_: impl FnOnce(*const u8) -> LLVMValueRef,
     ) -> LLVMValueRef {
         match word {
             Some(word) => self.with_result(word, fn_),

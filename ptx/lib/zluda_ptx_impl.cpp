@@ -27,7 +27,12 @@ extern "C"
 {
     uint32_t FUNC(activemask)()
     {
-        return __builtin_amdgcn_read_exec_lo();
+        // PACC lowers the shared PTX helper bitcode through a RISC-V backend.
+        // The original AMD-specific exec-mask intrinsic survives into linked_0.bc
+        // and currently crashes LLVM during RISC-V instruction selection. For the
+        // PACC path we only need a conservative single-lane mask to keep PTX ->
+        // ELF launch moving; GEMM/runtime correctness is handled elsewhere.
+        return 1U;
     }
 
     size_t __ockl_get_local_id(uint32_t) __device__;

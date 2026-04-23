@@ -1590,6 +1590,13 @@ fn helper_io_chunk_bytes() -> usize {
     HETGPU_PACC_DOORBELL_BYTES
 }
 
+fn prefer_physmap_shared_ddr() -> bool {
+    std::env::var("HETGPU_PACC_SHARED_DDR_NO_HELPER")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
 fn helper_write_all(file: &mut File, base_offset: u64, bytes: &[u8]) -> std::io::Result<()> {
     let chunk = helper_io_chunk_bytes();
     for (i, part) in bytes.chunks(chunk).enumerate() {
@@ -1610,7 +1617,7 @@ fn helper_read_exact(file: &mut File, base_offset: u64, bytes: &mut [u8]) -> std
 
 fn write_shared_ddr_window(offset: u64, bytes: &[u8]) -> std::io::Result<()> {
     let dev = helper_path_for_pacc(0);
-    if std::path::Path::new(&dev).exists() {
+    if !prefer_physmap_shared_ddr() && std::path::Path::new(&dev).exists() {
         let helper_result = (|| -> std::io::Result<()> {
             let mut file = OpenOptions::new().write(true).open(&dev)?;
             helper_write_all(&mut file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)
@@ -1630,7 +1637,7 @@ fn write_shared_ddr_window(offset: u64, bytes: &[u8]) -> std::io::Result<()> {
 
 fn read_shared_ddr_window(offset: u64, bytes: &mut [u8]) -> std::io::Result<()> {
     let dev = helper_path_for_pacc(0);
-    if std::path::Path::new(&dev).exists() {
+    if !prefer_physmap_shared_ddr() && std::path::Path::new(&dev).exists() {
         let helper_result = (|| -> std::io::Result<()> {
             let mut file = OpenOptions::new().read(true).open(&dev)?;
             helper_read_exact(&mut file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)
@@ -1649,6 +1656,9 @@ fn read_shared_ddr_window(offset: u64, bytes: &mut [u8]) -> std::io::Result<()> 
 }
 
 fn open_shared_ddr_window_file(pacc_id: usize) -> Option<File> {
+    if prefer_physmap_shared_ddr() {
+        return None;
+    }
     let dev = helper_path_for_pacc(pacc_id);
     if std::path::Path::new(&dev).exists() {
         OpenOptions::new().read(true).write(true).open(&dev).ok()
@@ -1675,6 +1685,12 @@ fn read_shared_ddr_window_cached(
     bytes: &mut [u8],
 ) -> std::io::Result<()> {
     if let Some(file) = file.as_mut() {
+        let dev = helper_path_for_pacc(0);
+        if std::path::Path::new(&dev).exists() {
+            let mut fresh = OpenOptions::new().read(true).open(&dev)?;
+            helper_read_exact(&mut fresh, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)?;
+            return Ok(());
+        }
         helper_read_exact(file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)?;
         return Ok(());
     }
@@ -1737,7 +1753,8 @@ fn wait_mailbox_job_status_cached(
     let start = std::time::Instant::now();
     let mut buf = [0u8; 32];
     loop {
-        if read_pacc2ap_mailbox(pacc_id, HETGPU_PACC_COMPLETION_OFF, &mut buf)? {
+        if read_pacc2ap_mailbox_cached(mailbox_file, pacc_id, HETGPU_PACC_COMPLETION_OFF, &mut buf)?
+        {
             let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
             let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
             let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
@@ -3625,7 +3642,7 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
     let c_ptr = (c_batch as *mut u8)
         .add((row0 + col0 * ldc) * c_dtype_size)
         .cast::<std::ffi::c_void>();
-    let mut c_stage =
+    let c_initial =
         pack_gemm_c_block_rowmajor_f32_bytes(c_ptr.cast_const(), ctype, 0, chunk_m, chunk_n, ldc)?;
     let a_bytes = chunk_m
         .checked_mul(max_k)
@@ -3635,7 +3652,7 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
         .checked_mul(chunk_n)
         .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B tile size overflow"))?;
-    let c_bytes = c_stage.len();
+    let c_bytes = c_initial.len();
     let a_off = 0u64;
     let b_off = align_up_u64(a_bytes as u64, 64)
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "B coarse offset overflow"))?;
@@ -3644,8 +3661,7 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
     let alpha_off = align_up_u64(c_off + c_bytes as u64, 64)
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "alpha coarse offset overflow"))?;
     let beta_off = alpha_off + std::mem::size_of::<f32>() as u64;
-    let one_off = beta_off + std::mem::size_of::<f32>() as u64;
-    let total = one_off + std::mem::size_of::<f32>() as u64;
+    let total = beta_off + std::mem::size_of::<f32>() as u64;
     if total as usize > slot_bytes {
         return Err(Error::new(
             ErrorKind::OutOfMemory,
@@ -3656,7 +3672,6 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
         ));
     }
 
-    write_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, &c_stage)?;
     write_shared_ddr_window_cached(
         &mut shared_file,
         slot_off + alpha_off,
@@ -3665,12 +3680,7 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
     write_shared_ddr_window_cached(
         &mut shared_file,
         slot_off + beta_off,
-        &beta_value.to_ne_bytes(),
-    )?;
-    write_shared_ddr_window_cached(
-        &mut shared_file,
-        slot_off + one_off,
-        &one_value.to_ne_bytes(),
+        &0.0f32.to_ne_bytes(),
     )?;
 
     let tile_max_k = if chunk_m < 64 || chunk_n < 16 {
@@ -3678,6 +3688,17 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
     } else {
         max_k.max(1)
     };
+    let c_elems = chunk_m
+        .checked_mul(chunk_n)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "C tile elem overflow"))?;
+    let mut c_accum = vec![0.0f32; c_elems];
+    if beta_value != 0.0 {
+        for (i, chunk) in c_initial.chunks_exact(4).enumerate() {
+            c_accum[i] = beta_value * f32::from_ne_bytes(chunk.try_into().unwrap());
+        }
+    }
+    let zero_c_stage = vec![0u8; c_bytes];
+    let mut c_partial = vec![0u8; c_bytes];
 
     for kk in (0..k).step_by(tile_max_k) {
         let chunk_k = (k - kk).min(tile_max_k);
@@ -3710,6 +3731,7 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
             pack_gemm_b_rowmajor_f32_bytes(b_ptr, btype, chunk_k, chunk_n, ldb, transb != 0)?;
         write_shared_ddr_window_cached(&mut shared_file, slot_off + a_off, &a_stage)?;
         write_shared_ddr_window_cached(&mut shared_file, slot_off + b_off, &b_stage)?;
+        write_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, &zero_c_stage)?;
 
         let job = HetgpuPaccGemmJob {
             transa: 0,
@@ -3725,7 +3747,7 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
             b_addr: shared_base + slot_off + b_off,
             c_addr: shared_base + slot_off + c_off,
             alpha_addr: shared_base + slot_off + alpha_off,
-            beta_addr: shared_base + slot_off + if kk == 0 { beta_off } else { one_off },
+            beta_addr: shared_base + slot_off + beta_off,
             lda: chunk_k as i64,
             ldb: chunk_n as i64,
             ldc: chunk_n as i64,
@@ -3749,9 +3771,16 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
                 ),
             )
         })?;
+        read_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, &mut c_partial)?;
+        for (i, chunk) in c_partial.chunks_exact(4).enumerate() {
+            c_accum[i] += f32::from_ne_bytes(chunk.try_into().unwrap());
+        }
     }
 
-    read_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, &mut c_stage)?;
+    let mut c_stage = Vec::with_capacity(c_bytes);
+    for value in c_accum {
+        c_stage.extend_from_slice(&value.to_ne_bytes());
+    }
     unpack_gemm_c_block_rowmajor_f32_bytes(&c_stage, c_ptr, ctype, 0, chunk_m, chunk_n, ldc)?;
     if trace_gemm {
         eprintln!(

@@ -21,7 +21,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
-#if defined(__has_include)
+#if defined(__riscv_vector) && defined(__has_include)
 #if __has_include(<riscv_vector.h>)
 #include <riscv_vector.h>
 #endif
@@ -245,6 +245,12 @@ struct PaccJobImage {
     size_t raw_param_size;
 };
 
+struct Map {
+    void *base;
+    size_t map_len;
+    void *ptr;
+};
+
 struct KernelBindingMap {
     struct Map map;
     uint32_t arg_index;
@@ -255,12 +261,6 @@ enum DispatchPollResult {
     DISPATCH_INVALID = 0,
     DISPATCH_IDLE = 1,
     DISPATCH_HANDLED = 2,
-};
-
-struct Map {
-    void *base;
-    size_t map_len;
-    void *ptr;
 };
 
 struct ScanRange {

@@ -912,13 +912,28 @@ static PACC_ALLOC_MAP: std::sync::LazyLock<
 fn pacc_alloc_host(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
     use std::alloc::{alloc_zeroed, Layout};
 
-    let align = 128;
-    let alloc_size = bytesize.max(1);
+    let align = 256;
+    // Leave a small guard area because some CUDA callers query an interior
+    // pointer and compute available bytes relative to that offset. Qwen 35B
+    // was consistently short by 64 B during tensor load, so host-backed
+    // allocations keep one extra aligned chunk of headroom.
+    let alloc_size = bytesize
+        .max(1)
+        .saturating_add(align)
+        .next_multiple_of(align);
     let layout = Layout::from_size_align(alloc_size, align).map_err(|_| CUerror::OUT_OF_MEMORY)?;
     let ptr = unsafe { alloc_zeroed(layout) };
     if ptr.is_null() {
         return Err(CUerror::OUT_OF_MEMORY);
     }
+    eprintln!(
+        "[PACC Backend] host alloc bytesize={} alloc_size={} ptr=0x{:x} mod128={} mod256={}",
+        bytesize,
+        alloc_size,
+        ptr as u64,
+        (ptr as usize) % 128,
+        (ptr as usize) % 256,
+    );
     Ok((
         ptr as u64,
         PaccAlloc {
