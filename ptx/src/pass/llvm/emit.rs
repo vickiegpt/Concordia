@@ -58,6 +58,48 @@ impl Drop for Builder {
     }
 }
 
+unsafe fn llvm_const_int_width_checked(
+    type_: LLVMTypeRef,
+    value: u64,
+    sign_extend: bool,
+) -> LLVMValueRef {
+    let width = LLVMGetIntTypeWidth(type_);
+    let value = if width >= 64 {
+        value
+    } else if width == 0 {
+        0
+    } else {
+        value & ((1u64 << width) - 1)
+    };
+    LLVMConstInt(type_, value, sign_extend as i32)
+}
+
+unsafe fn llvm_const_all_ones(type_: LLVMTypeRef) -> LLVMValueRef {
+    llvm_const_int_width_checked(type_, u64::MAX, false)
+}
+
+fn sanitize_llvm_value_name(name: &str) -> String {
+    let needs_prefix = name.is_empty()
+        || name
+            .as_bytes()
+            .first()
+            .map(|ch| !((*ch as char).is_ascii_alphabetic() || *ch == b'_'))
+            .unwrap_or(true);
+    let mut out = String::with_capacity(name.len() + 4);
+    if needs_prefix {
+        out.push_str("v_");
+    }
+    for ch in name.bytes() {
+        let ch = ch as char;
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    out
+}
+
 pub(crate) fn run<'input>(
     context: &Context,
     id_defs: GlobalStringIdentResolver2<'input>,
@@ -133,8 +175,12 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             .as_deref()
             .or_else(|| self.id_defs.ident_map[&method.name].name.as_deref())
             .ok_or_else(|| error_unreachable())?;
-        let symbol_name = name;
-        let name = CString::new(symbol_name).map_err(|_| error_unreachable())?;
+        let symbol_name = format!("f_{}", sanitize_llvm_value_name(name));
+        eprintln!(
+            "[ptx emit] method name raw='{}' final='{}' kernel={}",
+            name, symbol_name, method.is_kernel
+        );
+        let name = CString::new(symbol_name.as_str()).map_err(|_| error_unreachable())?;
         let mut fn_ = unsafe { LLVMGetNamedFunction(self.module, name.as_ptr()) };
         if fn_ == ptr::null_mut() {
             let fn_type = get_function_type(
@@ -174,7 +220,11 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             if let Some(align) = param.info.align {
                 unsafe { LLVMSetParamAlignment(value, align) };
             }
-            unsafe { LLVMSetValueName2(value, name.as_ptr().cast(), name.len()) };
+            #[cfg(not(feature = "pacc"))]
+            {
+                let llvm_name = sanitize_llvm_value_name(name);
+                unsafe { LLVMSetValueName2(value, llvm_name.as_ptr().cast(), llvm_name.len()) };
+            }
             self.resolver.register(param.name, value);
             if method.is_kernel {
                 let attr_kind = unsafe {
@@ -192,7 +242,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
         }
         if !method.is_kernel {
             unsafe {
-                if !is_passthrough_external_symbol(symbol_name) {
+                if !is_passthrough_external_symbol(&symbol_name) {
                     LLVMSetVisibility(fn_, llvm_zluda::LLVMVisibility::LLVMHiddenVisibility);
                 }
             }
@@ -203,6 +253,12 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             Self::func_call_convention()
         };
         unsafe { LLVMSetFunctionCallConv(fn_, call_conv) };
+        eprintln!(
+            "[ptx emit] method cc final='{}' requested={} actual={}",
+            symbol_name,
+            call_conv,
+            unsafe { LLVMGetFunctionCallConv(fn_) }
+        );
         if let Some(statements) = method.body {
             let variables_bb = unsafe {
                 LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr())
@@ -341,8 +397,8 @@ fn get_immediate_value(
 ) -> *mut LLVMValue {
     let type_ = get_scalar_type(context, *scalar_type);
     match imm {
-        ast::ImmediateValue::U64(x) => unsafe { LLVMConstInt(type_, *x, 0) },
-        ast::ImmediateValue::S64(x) => unsafe { LLVMConstInt(type_, *x as u64, 0) },
+        ast::ImmediateValue::U64(x) => unsafe { llvm_const_int_width_checked(type_, *x, false) },
+        ast::ImmediateValue::S64(x) => unsafe { llvm_const_int_width_checked(type_, *x as u64, false) },
         ast::ImmediateValue::F32(x) => unsafe { LLVMConstReal(type_, *x as f64) },
         ast::ImmediateValue::F64(x) => unsafe { LLVMConstReal(type_, *x) },
     }
@@ -395,6 +451,16 @@ impl<'a> MethodEmitContext<'a> {
         &mut self,
         statement: Statement<ast::Instruction<SpirvWord>, SpirvWord>,
     ) -> Result<(), TranslateError> {
+        #[cfg(feature = "pacc")]
+        {
+            let current_block = unsafe { LLVMGetInsertBlock(self.builder) };
+            if !current_block.is_null()
+                && !matches!(statement, Statement::Label(_))
+                && unsafe { LLVMGetBasicBlockTerminator(current_block) } != ptr::null_mut()
+            {
+                return Ok(());
+            }
+        }
         Ok(match statement {
             Statement::Variable(var) => self.emit_variable(var)?,
             Statement::Label(label) => self.emit_label_delayed(label)?,
@@ -437,12 +503,16 @@ impl<'a> MethodEmitContext<'a> {
     }
 
     fn emit_variable(&mut self, var: ast::Variable<SpirvWord>) -> Result<(), TranslateError> {
+        #[cfg(feature = "pacc")]
+        let llvm_name = LLVM_UNNAMED.as_ptr();
+        #[cfg(not(feature = "pacc"))]
+        let llvm_name = self.resolver.get_or_add_raw(var.name);
         let alloca = unsafe {
             LLVMZludaBuildAlloca(
                 self.variables_builder.get(),
                 get_type(self.context, &var.info.v_type)?,
                 get_state_space(var.info.state_space)?,
-                self.resolver.get_or_add_raw(var.name),
+                llvm_name,
             )
         };
         self.resolver.register(var.name, alloca);
@@ -456,11 +526,19 @@ impl<'a> MethodEmitContext<'a> {
     }
 
     fn emit_label_initial(&mut self, label: SpirvWord) {
+        #[cfg(feature = "pacc")]
+        let block_name = LLVM_UNNAMED.as_ptr();
+        #[cfg(not(feature = "pacc"))]
+        let llvm_name =
+            CString::new(format!("bb_{}", sanitize_llvm_value_name(self.resolver.get_or_add(label))))
+                .expect("basic block label should be sanitizable");
+        #[cfg(not(feature = "pacc"))]
+        let block_name = llvm_name.as_ptr();
         let block = unsafe {
             LLVMAppendBasicBlockInContext(
                 self.context,
                 self.method,
-                self.resolver.get_or_add_raw(label),
+                block_name,
             )
         };
         self.resolver
@@ -853,10 +931,7 @@ impl<'a> MethodEmitContext<'a> {
                 }
             }
         }
-        let name = match &*arguments.return_arguments {
-            [dst] => self.resolver.get_or_add_raw(*dst),
-            _ => LLVM_UNNAMED.as_ptr(),
-        };
+        let name = LLVM_UNNAMED.as_ptr();
         let type_ = get_function_type(
             self.context,
             data.return_arguments.iter().map(|(type_, ..)| type_),
@@ -1550,7 +1625,7 @@ impl<'a> MethodEmitContext<'a> {
     ) -> Result<(), TranslateError> {
         let src = self.resolver.value(arguments.src)?;
         let type_ = get_scalar_type(self.context, type_);
-        let constant = unsafe { LLVMConstInt(type_, u64::MAX, 0) };
+        let constant = unsafe { llvm_const_all_ones(type_) };
         self.resolver.with_result(arguments.dst, |dst| unsafe {
             LLVMBuildXor(self.builder, src, constant, dst)
         });
@@ -2086,6 +2161,10 @@ impl<'a> MethodEmitContext<'a> {
         data: ptx_parser::RcpData,
         arguments: ptx_parser::RcpArgs<SpirvWord>,
     ) -> Result<(), TranslateError> {
+        #[cfg(feature = "pacc")]
+        if matches!((data.type_, data.kind), (ast::ScalarType::F32, ast::RcpKind::Approx)) {
+            return self.emit_rcp_compliant(data, arguments, ast::RoundingMode::NearestEven);
+        }
         let type_ = get_scalar_type(self.context, data.type_);
         let intrinsic = match (data.type_, data.kind) {
             (ast::ScalarType::F32, ast::RcpKind::Approx) => c"llvm.amdgcn.rcp.f32",
@@ -2167,7 +2246,8 @@ impl<'a> MethodEmitContext<'a> {
             });
         } else {
             let name = self.resolver.get_or_add(arguments.dst);
-            unsafe { LLVMSetValueName2(shifted, name.as_ptr().cast(), name.len()) };
+            let llvm_name = sanitize_llvm_value_name(name);
+            unsafe { LLVMSetValueName2(shifted, llvm_name.as_ptr().cast(), llvm_name.len()) };
             self.resolver.register(arguments.dst, shifted);
         }
 
@@ -2305,6 +2385,13 @@ impl<'a> MethodEmitContext<'a> {
         data: ptx_parser::TypeFtz,
         arguments: ptx_parser::Ex2Args<SpirvWord>,
     ) -> Result<(), TranslateError> {
+        #[cfg(feature = "pacc")]
+        let intrinsic = match data.type_ {
+            ast::ScalarType::F16 => c"llvm.exp2.f16",
+            ast::ScalarType::F32 => c"llvm.exp2.f32",
+            _ => return Err(error_unreachable()),
+        };
+        #[cfg(not(feature = "pacc"))]
         let intrinsic = match data.type_ {
             ast::ScalarType::F16 => c"llvm.amdgcn.exp2.f16",
             ast::ScalarType::F32 => c"llvm.amdgcn.exp2.f32",
@@ -2946,8 +3033,7 @@ impl<'a> MethodEmitContext<'a> {
     ) -> Result<LLVMValueRef, TranslateError> {
         let bool_result = self.emit_setp_impl(data.base, None, src1, src2)?;
         let bool_result = if data.negate_src3 {
-            let constant =
-                unsafe { LLVMConstInt(LLVMIntTypeInContext(self.context, 1), u64::MAX, 0) };
+            let constant = unsafe { llvm_const_all_ones(LLVMIntTypeInContext(self.context, 1)) };
             unsafe {
                 LLVMBuildXor(
                     self.builder,
@@ -2986,7 +3072,7 @@ impl<'a> MethodEmitContext<'a> {
         let one = if dtype.kind() == ast::ScalarKind::Float {
             unsafe { LLVMConstReal(llvm_dtype, 1.0) }
         } else {
-            unsafe { LLVMConstInt(llvm_dtype, u64::MAX, 0) }
+            unsafe { llvm_const_all_ones(llvm_dtype) }
         };
         self.resolver.with_result(dst, |dst| unsafe {
             LLVMBuildSelect(self.builder, setp_result, one, zero, dst)
@@ -3562,6 +3648,9 @@ impl ResolveIdent {
         word: SpirvWord,
         fn_: impl FnOnce(*const c_char) -> LLVMValueRef,
     ) -> LLVMValueRef {
+        #[cfg(feature = "pacc")]
+        let t = fn_(LLVM_UNNAMED.as_ptr());
+        #[cfg(not(feature = "pacc"))]
         let t = self.get_or_ad_impl(word, |dst| fn_(dst.as_ptr().cast()));
         self.register(word, t);
         t

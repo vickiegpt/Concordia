@@ -22,6 +22,7 @@ use std::ffi::CStr;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -762,7 +763,13 @@ impl PaccDevice {
     }
 
     pub fn submit_preloaded_job_bytes(&self, job_id: u32, arg_bytes: &[u8]) -> std::io::Result<()> {
-        require_runtime_ready()?;
+        if std::env::var("HETGPU_PACC_ENFORCE_RUNTIME_READY")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            require_runtime_ready()?;
+        }
 
         let seq = next_runtime_job_seq();
 
@@ -4671,6 +4678,134 @@ unsafe fn load_program_elf_bytes(program: *mut pacc_Program, elf_bytes: Vec<u8>)
     pacc_Result_Success
 }
 
+const HETGPU_PACC_ELF_CACHE_VERSION: &[u8] = b"hetgpu-pacc-elf-cache-v2";
+
+fn pacc_program_load_logs_enabled() -> bool {
+    std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+fn pacc_elf_cache_enabled() -> bool {
+    std::env::var("HETGPU_PACC_DISABLE_ELF_CACHE")
+        .ok()
+        .as_deref()
+        != Some("1")
+}
+
+fn pacc_elf_cache_dir() -> PathBuf {
+    std::env::var_os("HETGPU_PACC_ELF_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp/hetgpu_pacc_elf_cache"))
+}
+
+fn fnv1a64_update(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn fnv1a64_with_len(hash: u64, bytes: &[u8]) -> u64 {
+    let hash = fnv1a64_update(hash, &(bytes.len() as u64).to_le_bytes());
+    fnv1a64_update(hash, bytes)
+}
+
+fn compute_pacc_elf_cache_key(
+    target_arch: &CStr,
+    ptx_bytes: &[u8],
+    linked_bitcode: &[u8],
+) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    hash = fnv1a64_with_len(hash, HETGPU_PACC_ELF_CACHE_VERSION);
+    hash = fnv1a64_with_len(hash, target_arch.to_bytes());
+    hash = fnv1a64_with_len(hash, ptx_bytes);
+    hash = fnv1a64_with_len(hash, linked_bitcode);
+    format!("{hash:016x}")
+}
+
+fn pacc_elf_cache_path(cache_dir: &Path, cache_key: &str) -> PathBuf {
+    cache_dir.join(format!("{cache_key}.elf"))
+}
+
+fn try_load_cached_pacc_elf(
+    target_arch: &CStr,
+    module_name: &CStr,
+    ptx_bytes: &[u8],
+    linked_bitcode: &[u8],
+) -> Option<Vec<u8>> {
+    if !pacc_elf_cache_enabled() {
+        return None;
+    }
+
+    let cache_dir = pacc_elf_cache_dir();
+    let cache_key = compute_pacc_elf_cache_key(target_arch, ptx_bytes, linked_bitcode);
+    let cache_path = pacc_elf_cache_path(&cache_dir, &cache_key);
+    let bytes = std::fs::read(&cache_path).ok()?;
+    if bytes.len() < 4 || &bytes[0..4] != b"\x7fELF" {
+        return None;
+    }
+    if pacc_program_load_logs_enabled() {
+        eprintln!(
+            "pacc_LoadProgramPtx: cache hit for '{}' -> {} bytes ({})",
+            module_name.to_string_lossy(),
+            bytes.len(),
+            cache_path.display(),
+        );
+    }
+    Some(bytes)
+}
+
+fn store_cached_pacc_elf(
+    target_arch: &CStr,
+    module_name: &CStr,
+    ptx_bytes: &[u8],
+    linked_bitcode: &[u8],
+    elf_bytes: &[u8],
+) {
+    if !pacc_elf_cache_enabled() || elf_bytes.len() < 4 || &elf_bytes[0..4] != b"\x7fELF" {
+        return;
+    }
+
+    let cache_dir = pacc_elf_cache_dir();
+    if let Err(err) = std::fs::create_dir_all(&cache_dir) {
+        if pacc_program_load_logs_enabled() {
+            eprintln!(
+                "pacc_LoadProgramPtx: failed to create ELF cache dir {}: {}",
+                cache_dir.display(),
+                err
+            );
+        }
+        return;
+    }
+
+    let cache_key = compute_pacc_elf_cache_key(target_arch, ptx_bytes, linked_bitcode);
+    let cache_path = pacc_elf_cache_path(&cache_dir, &cache_key);
+    match std::fs::write(&cache_path, elf_bytes) {
+        Ok(()) => {
+            if pacc_program_load_logs_enabled() {
+                eprintln!(
+                    "pacc_LoadProgramPtx: cached '{}' -> {} bytes ({})",
+                    module_name.to_string_lossy(),
+                    elf_bytes.len(),
+                    cache_path.display(),
+                );
+            }
+        }
+        Err(err) => {
+            if pacc_program_load_logs_enabled() {
+                eprintln!(
+                    "pacc_LoadProgramPtx: failed to write ELF cache {}: {}",
+                    cache_path.display(),
+                    err
+                );
+            }
+        }
+    }
+}
+
 /// Create a PACC device handle for device_id (0-3).
 /// Returns null on failure.
 #[no_mangle]
@@ -4816,6 +4951,13 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
     };
     let ptx_bytes = std::slice::from_raw_parts(ptx_buffer, ptx_len as usize);
     let external_linked = slice_or_empty(linked_bitcode, linked_bitcode_len);
+
+    if let Some(elf_bytes) =
+        try_load_cached_pacc_elf(target_arch, module_name, ptx_bytes, external_linked)
+    {
+        return load_program_elf_bytes(program, elf_bytes);
+    }
+
     let ptx_text = match std::str::from_utf8(ptx_bytes) {
         Ok(text) => text,
         Err(err) => {
@@ -4828,6 +4970,24 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
         }
     };
 
+    if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "pacc_LoadProgramPtx: begin module='{}' target='{}' ptx_bytes={} linked_bitcode_bytes={}",
+            module_name.to_string_lossy(),
+            target_arch.to_string_lossy(),
+            ptx_bytes.len(),
+            external_linked.len(),
+        );
+        eprintln!(
+            "pacc_LoadProgramPtx: stage PTX parse start for {}",
+            module_name.to_string_lossy()
+        );
+    }
+
     let ast = match ptx_parser::parse_module_checked(ptx_text) {
         Ok(ast) => ast,
         Err(err) => {
@@ -4839,13 +4999,35 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
             return pacc_Result_Error;
         }
     };
+    if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "pacc_LoadProgramPtx: stage PTX parse done for {}",
+            module_name.to_string_lossy()
+        );
+        eprintln!(
+            "pacc_LoadProgramPtx: stage PTX -> LLVM start for {}",
+            module_name.to_string_lossy()
+        );
+    }
     let llvm_module = match ptx::to_llvm_module(
         ast,
         ptx::pass::Attributes {
             clock_rate: 1_000_000,
             emit_debug_info: false,
         },
-        |_| {},
+        |pass_name| {
+            if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                eprintln!("pacc_LoadProgramPtx: pass {}", pass_name);
+            }
+        },
     ) {
         Ok(module) => module,
         Err(err) => {
@@ -4857,7 +5039,32 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
             return pacc_Result_Error;
         }
     };
+    if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "pacc_LoadProgramPtx: stage PTX -> LLVM done for {}",
+            module_name.to_string_lossy()
+        );
+        eprintln!(
+            "pacc_LoadProgramPtx: stage LLVM bitcode serialize start for {}",
+            module_name.to_string_lossy()
+        );
+    }
     let ir_bytes = llvm_module.llvm_ir.write_bitcode_to_memory();
+    if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "pacc_LoadProgramPtx: stage LLVM bitcode serialize done for {} ({} bytes)",
+            module_name.to_string_lossy(),
+            ir_bytes.len()
+        );
+    }
     let internal_linked = llvm_module.linked_bitcode();
     let mut linked_modules: Vec<&[u8]> = Vec::new();
     if !internal_linked.is_empty() {
@@ -4866,9 +5073,27 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
     if !external_linked.is_empty() {
         linked_modules.push(external_linked);
     }
+    if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "pacc_LoadProgramPtx: stage LLVM -> XM ELF start for {} (linked_modules={})",
+            module_name.to_string_lossy(),
+            linked_modules.len()
+        );
+    }
 
     match comgr::compile_bitcode_pacc_multi(target_arch, &*ir_bytes, &linked_modules) {
         Ok(elf_bytes) => {
+            store_cached_pacc_elf(
+                target_arch,
+                module_name,
+                ptx_bytes,
+                external_linked,
+                &elf_bytes,
+            );
             if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
                 .ok()
                 .as_deref()
@@ -5135,17 +5360,6 @@ pub unsafe extern "C" fn pacc_LaunchKernel(
             block_z,
             prog.elf_bytes.len()
         );
-    }
-
-    if prog.elf_bytes.is_empty() {
-        if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
-            .ok()
-            .as_deref()
-            == Some("1")
-        {
-            eprintln!("pacc_LaunchKernel: no ELF loaded; refusing to stub kernel execution");
-        }
-        return pacc_Result_Error;
     }
 
     if !k.device.is_null() {
@@ -5672,7 +5886,11 @@ fn preloaded_kernel_job_id(kernel_name: &str) -> Option<u32> {
         Some(hetgpu_pacc_job_id::SOFTMAX)
     } else if name.contains("rmsnorm") || name.contains("rms_norm") {
         Some(hetgpu_pacc_job_id::RMSNORM)
-    } else if name.contains("gemm") || name.contains("matmul") || name.contains("cublas") {
+    } else if name.contains("gemm")
+        || name.contains("matmul")
+        || name.contains("cublas")
+        || name.contains("mul_mat")
+    {
         Some(hetgpu_pacc_job_id::GEMM)
     } else {
         None

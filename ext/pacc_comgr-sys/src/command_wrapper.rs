@@ -118,6 +118,13 @@ fn create_action_tempdir() -> io::Result<TempDir> {
     }
 }
 
+fn keep_action_tempdir() -> bool {
+    matches!(
+        std::env::var("HETGPU_PACC_KEEP_TMP").ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
 pub fn perform_action(
     action_kind: pacc_comgr_action_kind_s,
     action_info: pacc_comgr_action_info_t,
@@ -199,6 +206,10 @@ pub fn perform_action(
         action_kind,
     };
 
+    if keep_action_tempdir() {
+        eprintln!("PACC: keeping temporary directory {}", dir.path().display());
+    }
+
     let result = match action_kind.0 {
         0 => preprocess_source(&ctx),
         1 => Ok(()), // precompiled headers not used
@@ -217,6 +228,14 @@ pub fn perform_action(
 
     if result.is_ok() {
         add_outputs_to_set(&ctx, output_set)?;
+    }
+
+    if keep_action_tempdir() {
+        let preserved = dir.keep();
+        eprintln!(
+            "PACC: preserved temporary directory {}",
+            preserved.display()
+        );
     }
 
     result
@@ -440,6 +459,21 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
             .and_then(|s| s.to_str())
             .unwrap_or("input");
         let output_file = ctx.temp_dir.join(format!("{}_optimized.bc", file_stem));
+        let input_size = fs::metadata(&input_file)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        if input_size >= 1_000_000 {
+            eprintln!(
+                "PACC: Skipping opt for large bitcode ({} bytes): {}",
+                input_size,
+                input_file.display()
+            );
+            fs::copy(&input_file, &output_file)
+                .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
+            eprintln!("PACC: Copied bitcode without optimization: {}", output_file.display());
+            continue;
+        }
 
         let mut cmd = Command::new(opt_tool());
         cmd.arg(&input_file)
@@ -448,11 +482,40 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
             .arg("-O3")
             .arg("-non-global-value-max-name-size=16384");
 
+        eprintln!(
+            "PACC: Running opt on {} -> {}",
+            input_file.display(),
+            output_file.display()
+        );
+
         match cmd.output() {
             Ok(output) if output.status.success() => {
                 eprintln!("PACC: Optimized bitcode: {}", output_file.display());
             }
-            _ => {
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if is_llvm23_attr_mismatch(&stderr) {
+                    eprintln!(
+                        "PACC: skipping opt for {} due to LLVM23/LLVM20 bitcode mismatch; using unoptimized bitcode",
+                        input_file.display()
+                    );
+                } else {
+                    eprintln!(
+                        "PACC: opt failed for {} (status {:?}) stderr:\n{}",
+                        input_file.display(),
+                        output.status.code(),
+                        stderr
+                    );
+                }
+                fs::copy(&input_file, &output_file)
+                    .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
+            }
+            Err(err) => {
+                eprintln!(
+                    "PACC: opt invocation failed for {}: {}",
+                    input_file.display(),
+                    err
+                );
                 fs::copy(&input_file, &output_file)
                     .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
             }
@@ -460,6 +523,11 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
     }
 
     Ok(())
+}
+
+fn is_llvm23_attr_mismatch(stderr: &str) -> bool {
+    stderr.contains("Unknown attribute kind (105)")
+        || (stderr.contains("Producer: 'LLVM23") && stderr.contains("Reader: 'LLVM 20"))
 }
 
 fn codegen_to_riscv_pacc(ctx: &ActionContext) -> pacc_comgr_status_t {
@@ -765,7 +833,17 @@ fn compile_bc_to_xm_object(
             .arg(format!("--gcc-toolchain={}", gcc_toolchain));
     }
 
-    run_command(&mut cmd, "LLVM bitcode -> RISC-V object")
+    match run_command(&mut cmd, "LLVM bitcode -> RISC-V object") {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            eprintln!(
+                "PACC: direct BC->object failed for {}; retrying via sanitized textual IR: {}",
+                input_file.display(),
+                err
+            );
+            compile_bc_to_xm_object_via_sanitized_ll(input_file, output_file, config)
+        }
+    }
 }
 
 fn compile_bc_to_xm_assembly(
@@ -800,6 +878,109 @@ fn compile_bc_to_xm_assembly(
     }
 
     run_command(&mut cmd, "LLVM bitcode -> RISC-V assembly")
+}
+
+fn compile_bc_to_xm_object_via_sanitized_ll(
+    input_file: &Path,
+    output_file: &Path,
+    config: &crate::PaccConfig,
+) -> io::Result<()> {
+    let llvm_dis = llvm_dis_tool();
+    let ll_file = output_file.with_extension("from_bc.ll");
+    let sanitized_ll_file = output_file.with_extension("sanitized.ll");
+
+    let mut dis_cmd = Command::new(llvm_dis);
+    dis_cmd.arg(input_file).arg("-o").arg(&ll_file);
+    run_command(&mut dis_cmd, "LLVM bitcode -> textual LLVM IR")?;
+
+    let ll_text = fs::read_to_string(&ll_file)?;
+    let sanitized = sanitize_llvm23_ir_for_llvm20(&ll_text);
+    fs::write(&sanitized_ll_file, sanitized)?;
+
+    let clang = preferred_tool(
+        "HETGPU_PACC_CLANG",
+        &["/usr/bin/clang-20", "clang-20", "clang"],
+    );
+    let mut cmd = Command::new(clang);
+    cmd.arg("-target")
+        .arg(&config.target_triple)
+        .arg("-mllvm")
+        .arg("-non-global-value-max-name-size=16384")
+        .arg("-menable-experimental-extensions")
+        .arg(format!("-march={}", config.march))
+        .arg("-Wno-override-module")
+        .arg("-c")
+        .arg(&sanitized_ll_file)
+        .arg("-o")
+        .arg(output_file);
+
+    if config.target_triple.contains("linux") {
+        let sysroot =
+            std::env::var("HETGPU_PACC_SOURCE_SYSROOT").unwrap_or_else(|_| "/".to_string());
+        let gcc_toolchain = std::env::var("HETGPU_PACC_SOURCE_GCC_TOOLCHAIN")
+            .unwrap_or_else(|_| "/usr".to_string());
+        cmd.arg(format!("--sysroot={}", sysroot))
+            .arg(format!("--gcc-toolchain={}", gcc_toolchain));
+    }
+
+    run_command(&mut cmd, "sanitized LLVM IR -> RISC-V object")
+}
+
+fn sanitize_llvm23_ir_for_llvm20(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for line in input.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("attributes #") {
+            out.push_str("attributes ");
+            if let Some((lhs, _rhs)) = line.split_once('=') {
+                out.push_str(lhs.trim());
+                out.push_str(" = { nounwind }\n");
+            } else {
+                out.push_str(line);
+                out.push('\n');
+            }
+            continue;
+        }
+
+        let mut owned = line.to_string();
+        for token in [
+            " nocallback",
+            " nocreateundeforpoison",
+            " nofree",
+            " nosync",
+            " willreturn",
+            " speculatable",
+            " mustprogress",
+            " memory(none)",
+            " memory(argmem: readwrite)",
+            " memory(argmem: read)",
+            " memory(read)",
+            " memory(write)",
+            " captures(none)",
+            " captures(address)",
+            " captures(provenance)",
+            " captures(address, provenance)",
+            " denormal-fp-math-f32=\"ieee,ieee\"",
+            " denormal-fp-math=\"ieee,ieee\"",
+            " denormal-fp-math-f64=\"ieee,ieee\"",
+            " denormal-fp-math-f16=\"ieee,ieee\"",
+            " denormal-fp-math-f32=\"preserve-sign,preserve-sign\"",
+            " denormal-fp-math=\"preserve-sign,preserve-sign\"",
+            " denormal-fp-math-f64=\"preserve-sign,preserve-sign\"",
+            " denormal-fp-math-f16=\"preserve-sign,preserve-sign\"",
+            " denormal-fp-math-f32=\"positive-zero,positive-zero\"",
+            " denormal-fp-math=\"positive-zero,positive-zero\"",
+            " denormal-fpenv(\"dynamic\")",
+            " denormal-fpenv(dynamic)",
+            " denormal-fpenv(\"ieee\")",
+            " denormal-fpenv(ieee)",
+        ] {
+            owned = owned.replace(token, "");
+        }
+        out.push_str(&owned);
+        out.push('\n');
+    }
+    out
 }
 
 fn source_extension(path: &Path) -> Option<String> {
@@ -850,19 +1031,70 @@ fn opt_tool() -> String {
     preferred_tool("HETGPU_PACC_OPT", &["/usr/bin/opt-20", "opt-20", "opt"])
 }
 
-fn ensure_ptx_helper_tool(tool_name: &str) -> io::Result<PathBuf> {
-    let repo_root = workspace_root()?;
-    let tool_path = repo_root.join("target/debug").join(tool_name);
-    if tool_path.is_file() {
-        return Ok(tool_path);
+fn llvm_dis_tool() -> String {
+    if let Ok(value) = std::env::var("HETGPU_PACC_LLVM_DIS") {
+        if !value.trim().is_empty() {
+            return value;
+        }
     }
 
+    if let Ok(dir) = std::env::var("HETGPU_PACC_HELPER_TARGET_DIR") {
+        let base = PathBuf::from(dir);
+        for candidate in [
+            base.join("debug/build"),
+            base.join("build"),
+        ] {
+            if let Ok(entries) = fs::read_dir(candidate) {
+                for entry in entries.flatten() {
+                    let path = entry.path().join("out/build/bin/llvm-dis");
+                    if path.is_file() {
+                        return path.display().to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    preferred_tool("HETGPU_PACC_LLVM_DIS", &["llvm-dis"])
+}
+
+fn ensure_ptx_helper_tool(tool_name: &str) -> io::Result<PathBuf> {
+    let repo_root = workspace_root()?;
+    let mut candidate_roots = Vec::new();
+
+    if let Ok(dir) = std::env::var("HETGPU_PACC_HELPER_TARGET_DIR") {
+        if !dir.trim().is_empty() {
+            candidate_roots.push(PathBuf::from(dir));
+        }
+    }
+    if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
+        if !dir.trim().is_empty() {
+            let path = PathBuf::from(dir);
+            if !candidate_roots.iter().any(|p| p == &path) {
+                candidate_roots.push(path);
+            }
+        }
+    }
+    candidate_roots.push(repo_root.join("target"));
+
+    for root in &candidate_roots {
+        let tool_path = root.join("debug").join(tool_name);
+        if tool_path.is_file() {
+            return Ok(tool_path);
+        }
+    }
+
+    let build_target_dir = candidate_roots
+        .first()
+        .cloned()
+        .unwrap_or_else(|| repo_root.join("target"));
     let status = Command::new("bash")
         .arg("-lc")
         .arg(format!(
-            "cd {} && cargo build -p ptx --features pacc --bin {}",
+            "cd {} && cargo build -p ptx --features pacc --bin {} --target-dir {}",
             shell_escape_path(&repo_root),
-            tool_name
+            tool_name,
+            shell_escape_path(&build_target_dir),
         ))
         .status()?;
     if !status.success() {
@@ -872,6 +1104,7 @@ fn ensure_ptx_helper_tool(tool_name: &str) -> io::Result<PathBuf> {
         )));
     }
 
+    let tool_path = build_target_dir.join("debug").join(tool_name);
     if !tool_path.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,

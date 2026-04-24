@@ -702,22 +702,111 @@ fn compute_full_mode_insertions(
     rounding_f32: MandatoryModeInsertions<RoundingMode>,
     rounding_f16f64: MandatoryModeInsertions<RoundingMode>,
 ) -> Result<FullModeInsertion, TranslateError> {
-    let cfg = ResolvedControlFlowGraph::new(
+    #[cfg(feature = "pacc")]
+    {
+        fn default_entry_state(
+            flat_resolver: &mut GlobalStringIdentResolver2,
+            needs_prologue: bool,
+        ) -> FullBasicBlockEntryState {
+            let prologue = needs_prologue.then(|| flat_resolver.register_unnamed(None));
+            FullBasicBlockEntryState {
+                dual_prologue: None,
+                denormal: BasicBlockEntryState {
+                    prologue,
+                    twin_mode: TwinMode {
+                        f32: Resolved::Value(DenormalMode::default()),
+                        f16f64: Resolved::Value(DenormalMode::default()),
+                    },
+                },
+                rounding: BasicBlockEntryState {
+                    prologue: None,
+                    twin_mode: TwinMode {
+                        f32: Resolved::Value(RoundingMode::default()),
+                        f16f64: Resolved::Value(RoundingMode::default()),
+                    },
+                },
+            }
+        }
+
+        let mut basic_blocks = FxHashMap::default();
+        let mut functions_exit_modes = FxHashMap::default();
+        let all_mode_bbs = denormal_f32
+            .basic_blocks
+            .iter()
+            .chain(denormal_f16f64.basic_blocks.iter())
+            .chain(rounding_f32.basic_blocks.iter())
+            .chain(rounding_f16f64.basic_blocks.iter())
+            .copied()
+            .collect::<FxHashSet<_>>();
+
+        for directive in directives.iter() {
+            if let Directive2::Method(Function2 {
+                name,
+                body,
+                is_kernel,
+                ..
+            }) = directive
+            {
+                basic_blocks.entry(*name).or_insert_with(|| {
+                    default_entry_state(
+                        flat_resolver,
+                        all_mode_bbs.contains(name) && !*is_kernel,
+                    )
+                });
+                if !*is_kernel {
+                    functions_exit_modes.insert(
+                        *name,
+                        ResolvedInstructionModes {
+                            denormal_f32: Resolved::Value(DenormalMode::default().to_ftz()),
+                            denormal_f16f64: Resolved::Value(DenormalMode::default().to_ftz()),
+                            rounding_f32: Resolved::Value(RoundingMode::default().to_ast()),
+                            rounding_f16f64: Resolved::Value(RoundingMode::default().to_ast()),
+                        },
+                    );
+                }
+                if let Some(body) = body {
+                    for statement in body.iter() {
+                        if let Statement::Label(label) = statement {
+                            basic_blocks.entry(*label).or_insert_with(|| {
+                                default_entry_state(
+                                    flat_resolver,
+                                    all_mode_bbs.contains(label),
+                                )
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        return Ok(FullModeInsertion {
+            basic_blocks,
+            functions_exit_modes,
+        });
+    }
+
+    #[cfg(not(feature = "pacc"))]
+    let resolved_cfg = ResolvedControlFlowGraph::new(
         cfg,
         &denormal_f32.kernels,
         &denormal_f16f64.kernels,
         &rounding_f32.kernels,
         &rounding_f16f64.kernels,
     )?;
-    join_modes(
+
+    #[cfg(not(feature = "pacc"))]
+    return join_modes(
         flat_resolver,
         directives,
-        cfg,
+        resolved_cfg,
         denormal_f32,
         denormal_f16f64,
         rounding_f32,
         rounding_f16f64,
-    )
+    );
+
+    #[allow(unreachable_code)]
+    Err(error_unreachable())
 }
 
 // This function takes the control flow graph and for each global mode computes:
@@ -1686,6 +1775,18 @@ fn optimize_mode_insertions<
 >(
     partial: PartialModeInsertion<T>,
 ) -> MandatoryModeInsertions<T> {
+    #[cfg(feature = "pacc")]
+    {
+        let mut basic_blocks = partial.bb_must_insert_mode;
+        basic_blocks.extend(partial.bb_maybe_insert_mode.into_keys());
+        return MandatoryModeInsertions {
+            basic_blocks,
+            kernels: FxHashMap::default(),
+        };
+    }
+
+    #[cfg(not(feature = "pacc"))]
+    {
     let mut problem = Problem::new(OptimizationDirection::Maximize);
     let mut kernel_modes = FxHashMap::default();
     let basic_block_variables = partial
@@ -1725,6 +1826,7 @@ fn optimize_mode_insertions<
     MandatoryModeInsertions {
         basic_blocks,
         kernels,
+    }
     }
 }
 

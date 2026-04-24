@@ -75,6 +75,16 @@ impl Module {
         self.0
     }
 
+    pub(crate) fn force_all_function_call_conv(&self, call_conv: u32) {
+        unsafe {
+            let mut func = LLVMGetFirstFunction(self.get());
+            while !func.is_null() {
+                LLVMSetFunctionCallConv(func, call_conv);
+                func = LLVMGetNextFunction(func);
+            }
+        }
+    }
+
     fn verify(&self) -> Result<(), Message> {
         let mut err = ptr::null_mut();
         let error = unsafe {

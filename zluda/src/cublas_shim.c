@@ -209,6 +209,25 @@ static int hetgpu_env_is_one(const char *name) {
     return value && strcmp(value, "1") == 0;
 }
 
+static int hetgpu_copy_pointer_array_to_host(void **dst, const void *src, size_t ptr_bytes) {
+    if (!dst || !src) {
+        return -1;
+    }
+    if (!hetgpu_pacc_is_device_ptr(src)) {
+        memcpy(dst, src, ptr_bytes);
+        return 0;
+    }
+    if (cudaMemcpy(dst, src, ptr_bytes, HETGPU_CUDA_MEMCPY_DEVICE_TO_HOST) == 0) {
+        return 0;
+    }
+    unsigned long long resolved = hetgpu_pacc_resolve_device_addr(src);
+    if (resolved != 0) {
+        memcpy(dst, (const void *)(uintptr_t)resolved, ptr_bytes);
+        return 0;
+    }
+    return -1;
+}
+
 static float host_bf16_to_float(uint16_t value) {
     union { uint32_t u; float f; } conv;
     conv.u = ((uint32_t)value) << 16;
@@ -385,8 +404,7 @@ static cublasStatus_t host_gemm_fallback(
     const void *beta,
     void *C, cudaDataType Ctype, int ldc, long long strideC,
     int batchCount, cublasComputeType_t computeType) {
-    if (!hetgpu_env_is_one("HETGPU_PACC_GEMM_CPU_FALLBACK_AFTER_PACC") ||
-        !hetgpu_env_is_one("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM")) {
+    if (!hetgpu_env_is_one("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM")) {
         return CUBLAS_STATUS_NOT_SUPPORTED;
     }
     if (!alpha || !A || !B || !beta || !C) {
@@ -437,6 +455,14 @@ static cublasStatus_t host_gemm_fallback(
 }
 
 static int g_pacc_gemm_disabled_after_failure = 0;
+
+static int prefer_pacc_gemm_stage_shared_ddr(void) {
+    const char *stage_shared = getenv("HETGPU_PACC_GEMM_STAGE_SHARED_DDR");
+    if (!stage_shared) {
+        return 1;
+    }
+    return strcmp(stage_shared, "0") != 0;
+}
 
 
 typedef struct {
@@ -577,8 +603,7 @@ static cublasStatus_t submit_pacc_gemm(
         : NULL;
 
     int rc = -1;
-    const char *stage_shared = getenv("HETGPU_PACC_GEMM_STAGE_SHARED_DDR");
-    if (stage_shared && strcmp(stage_shared, "1") == 0) {
+    if (prefer_pacc_gemm_stage_shared_ddr()) {
         const char *max_m_env = getenv("HETGPU_PACC_GEMM_MAX_M");
         const char *max_n_env = getenv("HETGPU_PACC_GEMM_MAX_N");
         const char *max_k_env = getenv("HETGPU_PACC_GEMM_MAX_K");
@@ -1317,7 +1342,7 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
 
     if (hetgpu_pacc_is_device_ptr(Aarray)) {
         tmp_Aarray = (void **)malloc(ptr_bytes);
-        if (!tmp_Aarray || cudaMemcpy(tmp_Aarray, Aarray, ptr_bytes, HETGPU_CUDA_MEMCPY_DEVICE_TO_HOST) != 0) {
+        if (!tmp_Aarray || hetgpu_copy_pointer_array_to_host(tmp_Aarray, Aarray, ptr_bytes) != 0) {
             free(tmp_Aarray);
             return CUBLAS_STATUS_INVALID_VALUE;
         }
@@ -1325,7 +1350,7 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
     }
     if (hetgpu_pacc_is_device_ptr(Barray)) {
         tmp_Barray = (void **)malloc(ptr_bytes);
-        if (!tmp_Barray || cudaMemcpy(tmp_Barray, Barray, ptr_bytes, HETGPU_CUDA_MEMCPY_DEVICE_TO_HOST) != 0) {
+        if (!tmp_Barray || hetgpu_copy_pointer_array_to_host(tmp_Barray, Barray, ptr_bytes) != 0) {
             free(tmp_Aarray);
             free(tmp_Barray);
             return CUBLAS_STATUS_INVALID_VALUE;
@@ -1334,7 +1359,7 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
     }
     if (hetgpu_pacc_is_device_ptr(Carray)) {
         tmp_Carray = (void **)malloc(ptr_bytes);
-        if (!tmp_Carray || cudaMemcpy(tmp_Carray, Carray, ptr_bytes, HETGPU_CUDA_MEMCPY_DEVICE_TO_HOST) != 0) {
+        if (!tmp_Carray || hetgpu_copy_pointer_array_to_host(tmp_Carray, Carray, ptr_bytes) != 0) {
             free(tmp_Aarray);
             free(tmp_Barray);
             free(tmp_Carray);

@@ -429,7 +429,7 @@ fn run() -> Result<(), String> {
 
         // Verify module
         if args.verify {
-            let mut error_msg: *mut i8 = std::ptr::null_mut();
+            let mut error_msg: *mut std::os::raw::c_char = std::ptr::null_mut();
             if LLVMVerifyModule(
                 module,
                 LLVMVerifierFailureAction::LLVMReturnStatusAction,

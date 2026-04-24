@@ -21,6 +21,12 @@ const COMPONENTS: &[&'static str] = &[
 ];
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=LLVM_ZLUDA_PREBUILT");
+    println!("cargo:rerun-if-env-changed=LLVM_ZLUDA_COMPILER_LAUNCHER");
+    println!("cargo:rerun-if-env-changed=CMAKE_C_COMPILER_LAUNCHER");
+    println!("cargo:rerun-if-env-changed=CMAKE_CXX_COMPILER_LAUNCHER");
+    println!("cargo:rerun-if-env-changed=CMAKE_ASM_COMPILER_LAUNCHER");
+
     // Allow using a pre-built LLVM installation via environment variable.
     // Set LLVM_ZLUDA_PREBUILT to the LLVM prefix directory (e.g. /usr/lib/llvm-18).
     if let Ok(prebuilt) = std::env::var("LLVM_ZLUDA_PREBUILT") {
@@ -55,6 +61,7 @@ fn main() {
 
     let mut cmake = Config::new(r"../ext/llvm-project/llvm");
     try_use_ninja(&mut cmake);
+    configure_compiler_launcher(&mut cmake);
     cmake
         // It's not like we can do anything about the warnings
         .define("LLVM_ENABLE_WARNINGS", "OFF")
@@ -144,6 +151,37 @@ fn try_use_ninja(cmake: &mut Config) {
             cmake.generator("Ninja");
         }
     }
+}
+
+fn configure_compiler_launcher(cmake: &mut Config) {
+    let launcher = std::env::var("LLVM_ZLUDA_COMPILER_LAUNCHER")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(find_default_compiler_launcher);
+
+    if let Some(launcher) = launcher {
+        println!("cargo:warning=Using LLVM compiler launcher: {launcher}");
+        cmake.define("CMAKE_C_COMPILER_LAUNCHER", &launcher);
+        cmake.define("CMAKE_CXX_COMPILER_LAUNCHER", &launcher);
+        cmake.define("CMAKE_ASM_COMPILER_LAUNCHER", &launcher);
+    }
+}
+
+fn find_default_compiler_launcher() -> Option<String> {
+    for candidate in ["sccache", "ccache"] {
+        if command_available(candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+fn command_available(cmd: &str) -> bool {
+    Command::new(cmd)
+        .arg("--version")
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn llvm_config(
