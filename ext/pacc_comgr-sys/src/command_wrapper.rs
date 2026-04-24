@@ -807,6 +807,14 @@ fn compile_bc_to_xm_object(
     output_file: &Path,
     config: &crate::PaccConfig,
 ) -> io::Result<()> {
+    if bc_requires_sanitized_ll(input_file)? {
+        eprintln!(
+            "PACC: forcing sanitized textual IR path for {} due to unsupported AMDGPU intrinsics",
+            input_file.display()
+        );
+        return compile_bc_to_xm_object_via_sanitized_ll(input_file, output_file, config);
+    }
+
     let clang = preferred_tool(
         "HETGPU_PACC_CLANG",
         &["/usr/bin/clang-20", "clang-20", "clang"],
@@ -844,6 +852,21 @@ fn compile_bc_to_xm_object(
             compile_bc_to_xm_object_via_sanitized_ll(input_file, output_file, config)
         }
     }
+}
+
+fn bc_requires_sanitized_ll(input_file: &Path) -> io::Result<bool> {
+    let llvm_dis = llvm_dis_tool();
+    let output = Command::new(llvm_dis)
+        .arg(input_file)
+        .arg("-o")
+        .arg("-")
+        .output()?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let ll = String::from_utf8_lossy(&output.stdout);
+    Ok(ll.contains("@llvm.amdgcn.wave.barrier")
+        || ll.contains("call void @llvm.amdgcn.wave.barrier("))
 }
 
 fn compile_bc_to_xm_assembly(
@@ -930,8 +953,10 @@ fn sanitize_llvm23_ir_for_llvm20(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for line in input.lines() {
         let trimmed = line.trim_start();
+        if trimmed.contains("llvm.amdgcn.wave.barrier") {
+            continue;
+        }
         if trimmed.starts_with("attributes #") {
-            out.push_str("attributes ");
             if let Some((lhs, _rhs)) = line.split_once('=') {
                 out.push_str(lhs.trim());
                 out.push_str(" = { nounwind }\n");
@@ -981,6 +1006,25 @@ fn sanitize_llvm23_ir_for_llvm20(input: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_llvm23_ir_for_llvm20;
+
+    #[test]
+    fn sanitize_attribute_group_does_not_duplicate_attributes_keyword() {
+        let input = "attributes #0 = { nocallback nofree nounwind willreturn memory(none) }\n";
+        let output = sanitize_llvm23_ir_for_llvm20(input);
+        assert_eq!(output, "attributes #0 = { nounwind }\n");
+    }
+
+    #[test]
+    fn sanitize_drops_wave_barrier_lines() {
+        let input = "declare void @llvm.amdgcn.wave.barrier()\ncall void @llvm.amdgcn.wave.barrier()\nret void\n";
+        let output = sanitize_llvm23_ir_for_llvm20(input);
+        assert_eq!(output, "ret void\n");
+    }
 }
 
 fn source_extension(path: &Path) -> Option<String> {
@@ -1055,7 +1099,30 @@ fn llvm_dis_tool() -> String {
         }
     }
 
-    preferred_tool("HETGPU_PACC_LLVM_DIS", &["llvm-dis"])
+    let clang = preferred_tool(
+        "HETGPU_PACC_CLANG",
+        &["/usr/bin/clang-20", "clang-20", "clang"],
+    );
+    let mut clang_candidates = vec![PathBuf::from(&clang)];
+    if let Ok(resolved) = PathBuf::from(&clang).canonicalize() {
+        if !clang_candidates.iter().any(|path| path == &resolved) {
+            clang_candidates.push(resolved);
+        }
+    }
+    for clang_path in clang_candidates {
+        if let Some(parent) = clang_path.parent() {
+            for candidate in [parent.join("llvm-dis"), parent.join("llvm-dis-20")] {
+                if candidate.is_file() {
+                    return candidate.display().to_string();
+                }
+            }
+        }
+    }
+
+    preferred_tool(
+        "HETGPU_PACC_LLVM_DIS",
+        &["/usr/bin/llvm-dis-20", "llvm-dis-20", "llvm-dis"],
+    )
 }
 
 fn ensure_ptx_helper_tool(tool_name: &str) -> io::Result<PathBuf> {

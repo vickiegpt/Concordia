@@ -127,6 +127,29 @@ extern CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void* srcHost, size
 extern CUresult cuMemcpyDtoH_v2(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount);
 extern int hetgpu_pacc_is_device_ptr(const void* ptr);
 
+typedef int (*hetgpu_pacc_launch_named_kernel_fn)(
+    const char* kernel_name,
+    unsigned int grid_dim_x,
+    unsigned int grid_dim_y,
+    unsigned int grid_dim_z,
+    unsigned int block_dim_x,
+    unsigned int block_dim_y,
+    unsigned int block_dim_z,
+    unsigned int shared_mem_bytes,
+    void* stream,
+    void** kernel_params,
+    void** extra);
+
+static hetgpu_pacc_launch_named_kernel_fn resolve_hetgpu_pacc_launch_named_kernel(void) {
+    static hetgpu_pacc_launch_named_kernel_fn cached = NULL;
+    static int tried = 0;
+    if (!tried) {
+        tried = 1;
+        cached = (hetgpu_pacc_launch_named_kernel_fn)dlsym(RTLD_DEFAULT, "hetgpu_pacc_launch_named_kernel");
+    }
+    return cached;
+}
+
 static cudaError_t hetgpu_cuda_from_cu(CUresult result) {
     return result == 0 ? HETGPU_CUDA_SUCCESS : HETGPU_CUDA_ERROR_UNKNOWN;
 }
@@ -591,8 +614,7 @@ cudaError_t cudaGetDeviceProperties(cudaDeviceProp_t prop, int device) {
     memset(&p, 0, sizeof(p));
 
     // Device name
-    const char* name = "Virtual GPU (hetGPU sm_80)";
-    strncpy(p.name, name, sizeof(p.name) - 1);
+    snprintf(p.name, sizeof(p.name), "Virtual GPU (hetGPU PACC%d sm_80)", device);
 
     // Memory properties
     p.totalGlobalMem = 4ULL * 1024 * 1024 * 1024;  // 4GB
@@ -1263,6 +1285,13 @@ static RegisteredFunction g_functions[MAX_FUNCTIONS];
 static int g_function_count = 0;
 static int g_registry_miss_log_count = 0;
 static int g_registry_register_log_count = 0;
+
+#define MAX_CACHED_PTX_MODULES 128
+static struct {
+    char ptx_path[256];
+    CUmodule module;
+} g_ptx_module_cache[MAX_CACHED_PTX_MODULES];
+static int g_ptx_module_cache_count = 0;
 static int g_registry_neighbor_log_count = 0;
 
 static int hetgpu_same_image(const Dl_info *a, const Dl_info *b) {
@@ -1371,6 +1400,68 @@ static CUfunction lookup_registered_function(const void *func, const char **func
         g_registry_neighbor_log_count++;
     }
 
+    if (func_info.dli_fname && strstr(func_info.dli_fname, "libggml-cuda.so.0") != NULL) {
+        uintptr_t raw_best_distance = ~(uintptr_t)0;
+        int raw_best_index = -1;
+        void *raw_best_candidate = NULL;
+
+        for (int i = 0; i < g_function_count; i++) {
+            void *candidates[2] = { g_functions[i].hostFun, g_functions[i].deviceFun };
+            for (int j = 0; j < 2; ++j) {
+                void *candidate = candidates[j];
+                uintptr_t candidate_addr = (uintptr_t)candidate;
+                if (candidate_addr < 0x10000) {
+                    continue;
+                }
+                uintptr_t distance = target > candidate_addr ? (target - candidate_addr) : (candidate_addr - target);
+                if (distance < raw_best_distance) {
+                    raw_best_distance = distance;
+                    raw_best_index = i;
+                    raw_best_candidate = candidate;
+                }
+            }
+        }
+
+        uintptr_t raw_fallback_limit = 0x40000;
+        if (raw_best_index >= 0 && raw_best_distance <= raw_fallback_limit) {
+            if (func_name) {
+                *func_name = g_functions[raw_best_index].name;
+            }
+            fprintf(stderr,
+                    "[cudart_shim] Raw-fallback-matched function %p to registered '%s' via candidate=%p dist=0x%lx\n",
+                    func,
+                    g_functions[raw_best_index].name,
+                    raw_best_candidate,
+                    (unsigned long)raw_best_distance);
+            return g_functions[raw_best_index].cuFunc;
+        }
+
+        if (raw_best_index >= 0 && g_registry_neighbor_log_count < 24) {
+            fprintf(stderr,
+                    "[cudart_shim] registry raw-nearest #%d: func=%p best='%s' candidate=%p dist=0x%lx limit=0x%lx\n",
+                    g_registry_neighbor_log_count + 1,
+                    func,
+                    g_functions[raw_best_index].name,
+                    raw_best_candidate,
+                    (unsigned long)raw_best_distance,
+                    (unsigned long)raw_fallback_limit);
+            g_registry_neighbor_log_count++;
+        } else if (raw_best_index < 0 && g_registry_neighbor_log_count < 24) {
+            fprintf(stderr,
+                    "[cudart_shim] registry raw-nearest #%d: func=%p no usable raw candidates registered=%d sample0=(%p,%p,'%s') sample1=(%p,%p,'%s')\n",
+                    g_registry_neighbor_log_count + 1,
+                    func,
+                    g_function_count,
+                    g_function_count > 0 ? g_functions[0].hostFun : NULL,
+                    g_function_count > 0 ? g_functions[0].deviceFun : NULL,
+                    g_function_count > 0 ? g_functions[0].name : "<none>",
+                    g_function_count > 1 ? g_functions[1].hostFun : NULL,
+                    g_function_count > 1 ? g_functions[1].deviceFun : NULL,
+                    g_function_count > 1 ? g_functions[1].name : "<none>");
+            g_registry_neighbor_log_count++;
+        }
+    }
+
     return NULL;
 }
 
@@ -1410,6 +1501,29 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
     }
 
     if (cuFunc == NULL) {
+        if (funcName && strcmp(funcName, "<unknown>") != 0) {
+            hetgpu_pacc_launch_named_kernel_fn launch_named = resolve_hetgpu_pacc_launch_named_kernel();
+            if (launch_named) {
+                int named_result = launch_named(
+                    funcName,
+                    gridDim.x, gridDim.y, gridDim.z,
+                    blockDim.x, blockDim.y, blockDim.z,
+                    (unsigned int)sharedMem,
+                    (void*)stream,
+                    args,
+                    NULL);
+                if (named_result == HETGPU_CUDA_SUCCESS) {
+                    HETGPU_LOG("[cudart_shim] named launch handled '%s' without CUfunction\n", funcName);
+                    return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+                }
+                if (named_result == HETGPU_CUDA_ERROR_UNKNOWN) {
+                    fprintf(stderr,
+                            "[cudart_shim] named launch for '%s' failed; refusing to skip kernel\n",
+                            funcName);
+                    return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
+                }
+            }
+        }
         if (g_registry_miss_log_count < 12) {
             Dl_info miss_info;
             if (dladdr(func, &miss_info) && miss_info.dli_fname) {
@@ -1794,6 +1908,132 @@ static char* find_matching_ptx(const char* ptx_dir, const char* pattern, size_t*
     return NULL;
 }
 
+static const char* ptx_filename_hint_for_kernel(const char* kernel_name) {
+    if (!kernel_name) return NULL;
+    if (strstr(kernel_name, "rms_norm") || strstr(kernel_name, "l2_norm")) return "norm.cu.ptx";
+    if (strstr(kernel_name, "rope_")) return "rope.cu.ptx";
+    if (strstr(kernel_name, "soft_max")) return "softmax.cu.ptx";
+    if (strstr(kernel_name, "quantize")) return "quantize.cu.ptx";
+    if (strstr(kernel_name, "mul_mat_vec_q")) return "mmvq.cu.ptx";
+    if (strstr(kernel_name, "mul_mat_vec_f")) return "mmvf.cu.ptx";
+    if (strstr(kernel_name, "k_get_rows")) return "getrows.cu.ptx";
+    if (strstr(kernel_name, "k_set_rows")) return "set-rows.cu.ptx";
+    if (strstr(kernel_name, "scale_f32")) return "scale.cu.ptx";
+    if (strstr(kernel_name, "concat")) return "concat.cu.ptx";
+    if (strstr(kernel_name, "cpy_") || strstr(kernel_name, "cpy_scalar")) return "cpy.cu.ptx";
+    if (strstr(kernel_name, "ssm_conv")) return "ssm-conv.cu.ptx";
+    if (strstr(kernel_name, "ssm_scan")) return "ssm-scan.cu.ptx";
+    if (strstr(kernel_name, "k_bin_bcast")) return "binbcast.cu.ptx";
+    if (strstr(kernel_name, "unary_")) return "unary.cu.ptx";
+    if (strstr(kernel_name, "gated_delta_net")) return "gated_delta_net.cu.ptx";
+    if (strstr(kernel_name, "topk_moe")) return "topk-moe.cu.ptx";
+    return NULL;
+}
+
+static int ptx_file_contains_kernel(const char* path, const char* kernel_name) {
+    if (!path || !kernel_name) return 0;
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+
+    const size_t needle_len = strlen(kernel_name);
+    if (needle_len == 0 || needle_len > 4096) {
+        fclose(f);
+        return 0;
+    }
+
+    char buf[8192 + 4096];
+    size_t carry = 0;
+    int found = 0;
+    while (!found) {
+        size_t n = fread(buf + carry, 1, 8192, f);
+        size_t total = carry + n;
+        if (total > 0) {
+            buf[total] = '\0';
+            found = strstr(buf, kernel_name) != NULL;
+        }
+        if (n < 8192) break;
+        carry = needle_len > 1 ? needle_len - 1 : 0;
+        if (carry > total) carry = total;
+        memmove(buf, buf + total - carry, carry);
+    }
+    fclose(f);
+    return found;
+}
+
+static int find_ptx_file_for_kernel(const char* ptx_dir, const char* kernel_name, char* out_path, size_t out_size) {
+    if (!ptx_dir || !kernel_name || !out_path || out_size == 0) return 0;
+
+    const char* hint = ptx_filename_hint_for_kernel(kernel_name);
+    if (hint) {
+        char hinted[512];
+        snprintf(hinted, sizeof(hinted), "%s/%s", ptx_dir, hint);
+        if (access(hinted, R_OK) == 0 && ptx_file_contains_kernel(hinted, kernel_name)) {
+            strncpy(out_path, hinted, out_size - 1);
+            out_path[out_size - 1] = '\0';
+            return 1;
+        }
+    }
+
+    for (int i = 0; i < g_ptx_cache_count; i++) {
+        if (strcmp(g_ptx_cache[i].ptx_dir, ptx_dir) != 0) {
+            continue;
+        }
+        for (int j = 0; j < g_ptx_cache[i].ptx_count; j++) {
+            const char* candidate = g_ptx_cache[i].ptx_files[j];
+            if (ptx_file_contains_kernel(candidate, kernel_name)) {
+                strncpy(out_path, candidate, out_size - 1);
+                out_path[out_size - 1] = '\0';
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static CUmodule load_or_get_ptx_module_for_kernel(const char* so_path, const char* kernel_name) {
+    if (!so_path || !kernel_name) return NULL;
+
+    const char* ptx_dir = extract_ptx_from_so(so_path);
+    if (!ptx_dir) return NULL;
+
+    char ptx_path[256] = {0};
+    if (!find_ptx_file_for_kernel(ptx_dir, kernel_name, ptx_path, sizeof(ptx_path))) {
+        fprintf(stderr, "[cudart_shim] No PTX file contains kernel '%s'\n", kernel_name);
+        return NULL;
+    }
+
+    for (int i = 0; i < g_ptx_module_cache_count; i++) {
+        if (strcmp(g_ptx_module_cache[i].ptx_path, ptx_path) == 0) {
+            return g_ptx_module_cache[i].module;
+        }
+    }
+
+    size_t ptx_size = 0;
+    char* ptx_data = load_ptx_file(ptx_path, &ptx_size);
+    if (!ptx_data || ptx_size <= 50) {
+        if (ptx_data) free(ptx_data);
+        return NULL;
+    }
+
+    CUmodule module = NULL;
+    hetgpu_cuModuleLoadData_fn p_cuModuleLoadData = resolve_cuModuleLoadData();
+    CUresult result = p_cuModuleLoadData ? p_cuModuleLoadData(&module, ptx_data) : 1;
+    free(ptx_data);
+    if (result != 0 || !module) {
+        fprintf(stderr, "[cudart_shim] Lazy PTX module load failed for %s: %d\n", ptx_path, result);
+        return NULL;
+    }
+
+    if (g_ptx_module_cache_count < MAX_CACHED_PTX_MODULES) {
+        strncpy(g_ptx_module_cache[g_ptx_module_cache_count].ptx_path, ptx_path, 255);
+        g_ptx_module_cache[g_ptx_module_cache_count].ptx_path[255] = '\0';
+        g_ptx_module_cache[g_ptx_module_cache_count].module = module;
+        g_ptx_module_cache_count++;
+    }
+    fprintf(stderr, "[cudart_shim] Lazy-loaded PTX module %s for '%s'\n", ptx_path, kernel_name);
+    return module;
+}
+
 // Concatenate all PTX files into one big PTX string (DISABLED - too slow for large libs)
 // Use find_matching_ptx instead for targeted loading
 static char* concatenate_all_ptx(const char* ptx_dir, size_t* out_size) {
@@ -2049,6 +2289,7 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
     void* payload = NULL;
     size_t payload_size = 0;
     int payload_needs_free = 0;
+    int defer_module_load = 0;
 
     if (fatbin_header && fatbin_header->magic == FATBIN_MAGIC) {
         fprintf(stderr, "[cudart_shim] Valid FatbinHeader found (magic: 0x%08x)\n", fatbin_header->magic);
@@ -2160,82 +2401,20 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
         fprintf(stderr, "[cudart_shim] Invalid or missing FatbinHeader, using data pointer directly\n");
         payload = fatbin_header_ptr;
 
-        size_t local_ptx_size = 0;
-        char* local_ptx = extract_ptx_from_mapping_local(fatCubin, &local_ptx_size);
-        if (!local_ptx) {
-            local_ptx = extract_ptx_from_mapping_local(fatbin_header_ptr, &local_ptx_size);
-        }
-        if (local_ptx && local_ptx_size > 50) {
-            fprintf(stderr, "[cudart_shim] Invalid-header fallback loaded %zu bytes of PTX from local mapping\n", local_ptx_size);
-            payload = local_ptx;
-            payload_size = local_ptx_size;
-            payload_needs_free = 1;
-        }
-
-        char so_path[512] = {0};
-        if (!payload_needs_free) {
-            if (wrapper_so_path[0] != '\0') {
-                strncpy(so_path, wrapper_so_path, sizeof(so_path) - 1);
-                so_path[sizeof(so_path) - 1] = '\0';
-            } else if (find_so_from_address(fatbin_header_ptr, so_path, sizeof(so_path))) {
-                ;
-            }
-        }
-        if (!payload_needs_free && so_path[0] != '\0') {
-            fprintf(stderr, "[cudart_shim] Invalid-header fallback source .so: %s\n", so_path);
-            const char* ptx_dir = extract_ptx_from_so(so_path);
-            if (ptx_dir) {
-                size_t ptx_size = 0;
-                char* ptx_data = find_matching_ptx(ptx_dir, NULL, &ptx_size);
-                if (ptx_data && ptx_size > 50 && strstr(ptx_data, ".version") && strstr(ptx_data, ".target")) {
-                    fprintf(stderr, "[cudart_shim] Invalid-header fallback loaded %zu bytes of PTX from .so\n", ptx_size);
-                    payload = ptx_data;
-                    payload_size = ptx_size;
-                    payload_needs_free = 1;
-                } else if (ptx_data) {
-                    fprintf(stderr, "[cudart_shim] Invalid-header fallback PTX not usable (%zu bytes)\n", ptx_size);
-                    free(ptx_data);
-                }
-            }
-        }
-    }
-
-    // If we didn't find a payload, use the data pointer directly as fallback
-    if (payload == NULL) {
-        fprintf(stderr, "[cudart_shim] No valid payload found in fat binary, using data pointer as fallback\n");
-        payload = fatbin_header_ptr;
-    }
-
-    // If we found a CUBIN (not PTX), try to extract PTX using cuobjdump
-    // This is necessary because many PyTorch modules only include CUBIN, not PTX
-    if (payload != NULL && payload_size > 0) {
-        // Check if this is likely a CUBIN (starts with 0x7fELF or looks binary)
-        unsigned char* payload_bytes = (unsigned char*)payload;
-        int is_binary = (payload_bytes[0] == 0x7f || payload_bytes[0] > 127 ||
-                         (payload_bytes[0] < 32 && payload_bytes[0] != '\n'));
-
-        if (is_binary) {
-            fprintf(stderr, "[cudart_shim] Detected binary CUBIN, attempting PTX extraction from .so file...\n");
-            fprintf(stderr, "[cudart_shim] Payload first 16 bytes: ");
-            for (size_t i = 0; i < 16 && i < payload_size; i++) {
-                fprintf(stderr, "%02x ", payload_bytes[i]);
-            }
-            fprintf(stderr, "\n");
-
+        const char* eager = getenv("HETGPU_CUDART_EAGER_PTX");
+        if (eager && strcmp(eager, "1") == 0) {
             size_t local_ptx_size = 0;
             char* local_ptx = extract_ptx_from_mapping_local(fatCubin, &local_ptx_size);
             if (!local_ptx) {
                 local_ptx = extract_ptx_from_mapping_local(fatbin_header_ptr, &local_ptx_size);
             }
             if (local_ptx && local_ptx_size > 50) {
-                fprintf(stderr, "[cudart_shim] Successfully loaded %zu bytes of PTX from local mapping\n", local_ptx_size);
+                fprintf(stderr, "[cudart_shim] Invalid-header fallback loaded %zu bytes of PTX from local mapping\n", local_ptx_size);
                 payload = local_ptx;
                 payload_size = local_ptx_size;
                 payload_needs_free = 1;
             }
 
-            // NEW APPROACH: Find the source .so file from the fatbin pointer address
-            // and extract PTX from the full .so using cuobjdump
             char so_path[512] = {0};
             if (!payload_needs_free) {
                 if (wrapper_so_path[0] != '\0') {
@@ -2246,43 +2425,116 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
                 }
             }
             if (!payload_needs_free && so_path[0] != '\0') {
-                fprintf(stderr, "[cudart_shim] Found source .so: %s\n", so_path);
-
-                // Extract PTX from the .so file (or use cached result)
+                fprintf(stderr, "[cudart_shim] Invalid-header fallback source .so: %s\n", so_path);
                 const char* ptx_dir = extract_ptx_from_so(so_path);
                 if (ptx_dir) {
-                    // Load a single PTX file (round-robin through available files)
-                    // This is MUCH faster than concatenating all 399+ PTX files
                     size_t ptx_size = 0;
                     char* ptx_data = find_matching_ptx(ptx_dir, NULL, &ptx_size);
-                    if (ptx_data && ptx_size > 50) {
-                        // Verify it looks like PTX
-                        if (strstr(ptx_data, ".version") && strstr(ptx_data, ".target")) {
-                            fprintf(stderr, "[cudart_shim] Successfully loaded %zu bytes of PTX from .so\n", ptx_size);
-                            fprintf(stderr, "[cudart_shim] PTX preview: %.200s...\n", ptx_data);
-                            payload = ptx_data;
-                            payload_size = ptx_size;
-                            payload_needs_free = 1;
-                        } else {
-                            fprintf(stderr, "[cudart_shim] Extracted PTX doesn't look valid\n");
-                            free(ptx_data);
-                        }
+                    if (ptx_data && ptx_size > 50 && strstr(ptx_data, ".version") && strstr(ptx_data, ".target")) {
+                        fprintf(stderr, "[cudart_shim] Invalid-header fallback loaded %zu bytes of PTX from .so\n", ptx_size);
+                        payload = ptx_data;
+                        payload_size = ptx_size;
+                        payload_needs_free = 1;
                     } else if (ptx_data) {
-                        fprintf(stderr, "[cudart_shim] PTX too small: %zu bytes\n", ptx_size);
+                        fprintf(stderr, "[cudart_shim] Invalid-header fallback PTX not usable (%zu bytes)\n", ptx_size);
                         free(ptx_data);
                     }
                 }
-            } else {
-                fprintf(stderr, "[cudart_shim] Could not find source .so for address %p\n", fatbin_header_ptr);
-                // Fallback: try the old approach with the fatbin directly
-                char tmpfile_cubin[256];
-                snprintf(tmpfile_cubin, sizeof(tmpfile_cubin), "/tmp/hetgpu_fatbin_%p.fatbin", fatCubin);
-                FILE* f = fopen(tmpfile_cubin, "wb");
-                if (f) {
-                    size_t fatbin_total_size = fatbin_header->header_size + fatbin_header->files_size;
-                    fwrite(fatbin_header, 1, fatbin_total_size, f);
-                    fclose(f);
-                    fprintf(stderr, "[cudart_shim] Wrote fatbin to %s for manual inspection\n", tmpfile_cubin);
+            }
+        } else {
+            defer_module_load = 1;
+            payload = NULL;
+            payload_size = 0;
+            if (wrapper_so_path[0] != '\0') {
+                fprintf(stderr,
+                        "[cudart_shim] Invalid-header fatbin from %s; deferring PTX load until __cudaRegisterFunction\n",
+                        wrapper_so_path);
+            }
+        }
+    }
+
+    if (defer_module_load) {
+        payload = NULL;
+    } else {
+        // If we didn't find a payload, use the data pointer directly as fallback
+        if (payload == NULL) {
+            fprintf(stderr, "[cudart_shim] No valid payload found in fat binary, using data pointer as fallback\n");
+            payload = fatbin_header_ptr;
+        }
+
+        // If we found a CUBIN (not PTX), try to extract PTX using cuobjdump
+        // This is necessary because many PyTorch modules only include CUBIN, not PTX
+        if (payload != NULL && payload_size > 0) {
+            // Check if this is likely a CUBIN (starts with 0x7fELF or looks binary)
+            unsigned char* payload_bytes = (unsigned char*)payload;
+            int is_binary = (payload_bytes[0] == 0x7f || payload_bytes[0] > 127 ||
+                             (payload_bytes[0] < 32 && payload_bytes[0] != '\n'));
+
+            if (is_binary) {
+                fprintf(stderr, "[cudart_shim] Detected binary CUBIN, attempting PTX extraction from .so file...\n");
+                fprintf(stderr, "[cudart_shim] Payload first 16 bytes: ");
+                for (size_t i = 0; i < 16 && i < payload_size; i++) {
+                    fprintf(stderr, "%02x ", payload_bytes[i]);
+                }
+                fprintf(stderr, "\n");
+
+                size_t local_ptx_size = 0;
+                char* local_ptx = extract_ptx_from_mapping_local(fatCubin, &local_ptx_size);
+                if (!local_ptx) {
+                    local_ptx = extract_ptx_from_mapping_local(fatbin_header_ptr, &local_ptx_size);
+                }
+                if (local_ptx && local_ptx_size > 50) {
+                    fprintf(stderr, "[cudart_shim] Successfully loaded %zu bytes of PTX from local mapping\n", local_ptx_size);
+                    payload = local_ptx;
+                    payload_size = local_ptx_size;
+                    payload_needs_free = 1;
+                }
+
+                // NEW APPROACH: Find the source .so file from the fatbin pointer address
+                // and extract PTX from the full .so using cuobjdump
+                char so_path[512] = {0};
+                if (!payload_needs_free) {
+                    if (wrapper_so_path[0] != '\0') {
+                        strncpy(so_path, wrapper_so_path, sizeof(so_path) - 1);
+                        so_path[sizeof(so_path) - 1] = '\0';
+                    } else if (find_so_from_address(fatbin_header_ptr, so_path, sizeof(so_path))) {
+                        ;
+                    }
+                }
+                if (!payload_needs_free && so_path[0] != '\0') {
+                    fprintf(stderr, "[cudart_shim] Found source .so: %s\n", so_path);
+
+                    const char* ptx_dir = extract_ptx_from_so(so_path);
+                    if (ptx_dir) {
+                        size_t ptx_size = 0;
+                        char* ptx_data = find_matching_ptx(ptx_dir, NULL, &ptx_size);
+                        if (ptx_data && ptx_size > 50) {
+                            if (strstr(ptx_data, ".version") && strstr(ptx_data, ".target")) {
+                                fprintf(stderr, "[cudart_shim] Successfully loaded %zu bytes of PTX from .so\n", ptx_size);
+                                fprintf(stderr, "[cudart_shim] PTX preview: %.200s...\n", ptx_data);
+                                payload = ptx_data;
+                                payload_size = ptx_size;
+                                payload_needs_free = 1;
+                            } else {
+                                fprintf(stderr, "[cudart_shim] Extracted PTX doesn't look valid\n");
+                                free(ptx_data);
+                            }
+                        } else if (ptx_data) {
+                            fprintf(stderr, "[cudart_shim] PTX too small: %zu bytes\n", ptx_size);
+                            free(ptx_data);
+                        }
+                    }
+                } else {
+                    fprintf(stderr, "[cudart_shim] Could not find source .so for address %p\n", fatbin_header_ptr);
+                    char tmpfile_cubin[256];
+                    snprintf(tmpfile_cubin, sizeof(tmpfile_cubin), "/tmp/hetgpu_fatbin_%p.fatbin", fatCubin);
+                    FILE* f = fopen(tmpfile_cubin, "wb");
+                    if (f) {
+                        size_t fatbin_total_size = fatbin_header->header_size + fatbin_header->files_size;
+                        fwrite(fatbin_header, 1, fatbin_total_size, f);
+                        fclose(f);
+                        fprintf(stderr, "[cudart_shim] Wrote fatbin to %s for manual inspection\n", tmpfile_cubin);
+                    }
                 }
             }
         }
@@ -2290,8 +2542,11 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
 
     // Try to load the payload as a module
     CUmodule module = NULL;
-    hetgpu_cuModuleLoadData_fn p_cuModuleLoadData = resolve_cuModuleLoadData();
-    CUresult result = p_cuModuleLoadData ? p_cuModuleLoadData(&module, payload) : 1;
+    CUresult result = 1;
+    if (!defer_module_load && payload != NULL) {
+        hetgpu_cuModuleLoadData_fn p_cuModuleLoadData = resolve_cuModuleLoadData();
+        result = p_cuModuleLoadData ? p_cuModuleLoadData(&module, payload) : 1;
+    }
 
     // Free decompressed PTX buffer now that cuModuleLoadData has consumed it
     if (payload_needs_free && payload) {
@@ -2354,8 +2609,37 @@ void __cudaRegisterFunction(void** fatCubinHandle, const char* hostFun, char* de
     CUresult result = p_cuModuleGetFunction ? p_cuModuleGetFunction(&func, module, deviceName) : 1;
 
     if (result != 0) {
-        fprintf(stderr, "[cudart_shim] cuModuleGetFunction('%s') failed: %d\n", deviceName, result);
-        // Continue anyway - func will be NULL, which we handle in launch
+        const char* lazy_register_ptx = getenv("HETGPU_CUDART_LAZY_REGISTER_PTX");
+        int try_lazy_register_ptx = lazy_register_ptx && strcmp(lazy_register_ptx, "1") == 0;
+        char so_path[512] = {0};
+        Dl_info host_info;
+        if (try_lazy_register_ptx && dladdr((void*)hostFun, &host_info) && host_info.dli_fname) {
+            strncpy(so_path, host_info.dli_fname, sizeof(so_path) - 1);
+            so_path[sizeof(so_path) - 1] = '\0';
+        }
+        if (so_path[0] != '\0') {
+            CUmodule lazy_module = load_or_get_ptx_module_for_kernel(so_path, deviceName);
+            if (lazy_module) {
+                CUfunction lazy_func = NULL;
+                CUresult lazy_result = p_cuModuleGetFunction
+                    ? p_cuModuleGetFunction(&lazy_func, lazy_module, deviceName)
+                    : 1;
+                if (lazy_result == 0 && lazy_func) {
+                    module = lazy_module;
+                    func = lazy_func;
+                    result = 0;
+                } else {
+                    fprintf(stderr,
+                            "[cudart_shim] lazy cuModuleGetFunction('%s') failed: %d\n",
+                            deviceName,
+                            lazy_result);
+                }
+            }
+        }
+        if (result != 0) {
+            fprintf(stderr, "[cudart_shim] cuModuleGetFunction('%s') failed: %d\n", deviceName, result);
+            // Continue anyway - func will be NULL, which we handle in launch
+        }
     } else {
         HETGPU_LOG("[cudart_shim] Got function '%s': %p\n", deviceName, func);
     }
@@ -2539,9 +2823,9 @@ cudaError_t cudaMallocFromPoolAsync(void** ptr,
 
 // Memory info
 cudaError_t cudaMemGetInfo(size_t* free, size_t* total) {
-    const size_t sixteen_gb = (size_t)16 * 1024 * 1024 * 1024ULL;
-    if (free) *free = sixteen_gb;
-    if (total) *total = sixteen_gb;
+    const size_t four_gb = (size_t)4 * 1024 * 1024 * 1024ULL;
+    if (free) *free = four_gb;
+    if (total) *total = four_gb;
     return 0;
 }
 

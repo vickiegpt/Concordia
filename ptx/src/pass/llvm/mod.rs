@@ -122,7 +122,11 @@ impl Drop for Module {
 
 pub fn bitcode_to_ir(bitcode: Vec<u8>) -> Vec<u8> {
     let memory_buffer: LLVMMemoryBufferRef = unsafe {
-        LLVMCreateMemoryBufferWithMemoryRangeCopy(bitcode.as_ptr(), bitcode.len(), ptr::null())
+        LLVMCreateMemoryBufferWithMemoryRangeCopy(
+            bitcode.as_ptr().cast(),
+            bitcode.len(),
+            ptr::null(),
+        )
     };
     let context = Context::new();
     let mut module: LLVMModuleRef = unsafe { mem::zeroed() };

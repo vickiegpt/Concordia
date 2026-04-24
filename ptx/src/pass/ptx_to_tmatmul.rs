@@ -594,6 +594,18 @@ impl PtxToTMatmulCompiler {
                 // Copy src to dst (approximation - real abs would need special handling)
                 self.ptx_to_ssa.insert(dst_name, src_ssa);
             }
+            ast::Instruction::Copysign { arguments, .. } => {
+                let dst_name = Self::operand_to_string(&arguments.dst);
+                let src1_name = Self::operand_to_string(&arguments.src1);
+                let src2_name = Self::operand_to_string(&arguments.src2);
+                let _dst_ssa = self.map_ptx_to_ssa(&dst_name);
+                let src1_ssa = self.map_ptx_to_ssa(&src1_name);
+                self.codegen.add_comment(&format!(
+                    "PTX copysign: {} = copysign({}, {})",
+                    dst_name, src1_name, src2_name
+                ));
+                self.ptx_to_ssa.insert(dst_name, src1_ssa);
+            }
             ast::Instruction::Neg { arguments, .. } => {
                 let dst_name = Self::operand_to_string(&arguments.dst);
                 let src_name = Self::operand_to_string(&arguments.src);
@@ -1220,6 +1232,7 @@ impl PtxToTMatmulCompiler {
     fn inst_name(inst: &ast::Instruction<ast::ParsedOperand<&str>>) -> &'static str {
         match inst {
             ast::Instruction::Abs { .. } => "abs",
+            ast::Instruction::Copysign { .. } => "copysign",
             ast::Instruction::Activemask { .. } => "activemask",
             ast::Instruction::Add { .. } => "add",
             ast::Instruction::And { .. } => "and",

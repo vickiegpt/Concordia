@@ -209,6 +209,11 @@ static int hetgpu_env_is_one(const char *name) {
     return value && strcmp(value, "1") == 0;
 }
 
+static int pacc_runtime_marked_ready(void) {
+    return hetgpu_env_is_one("HETGPU_PACC_RUNTIME_READY") ||
+           hetgpu_env_is_one("HETGPU_PACC_BOOT_RUNTIME");
+}
+
 static int hetgpu_copy_pointer_array_to_host(void **dst, const void *src, size_t ptr_bytes) {
     if (!dst || !src) {
         return -1;
@@ -410,8 +415,7 @@ static cublasStatus_t host_gemm_fallback(
     if (!alpha || !A || !B || !beta || !C) {
         return CUBLAS_STATUS_NOT_SUPPORTED;
     }
-    if (host_dtype_size(Atype) == 0 || host_dtype_size(Btype) == 0 || host_dtype_size(Ctype) == 0 ||
-        (computeType != CUBLAS_COMPUTE_32F && computeType != CUBLAS_COMPUTE_32I)) {
+    if (host_dtype_size(Atype) == 0 || host_dtype_size(Btype) == 0 || host_dtype_size(Ctype) == 0) {
         return CUBLAS_STATUS_NOT_SUPPORTED;
     }
     if (transa != CUBLAS_OP_N && transa != CUBLAS_OP_T && transa != CUBLAS_OP_C) {
@@ -422,6 +426,19 @@ static cublasStatus_t host_gemm_fallback(
     }
     if (m < 0 || n < 0 || k < 0 || batchCount < 0 || lda <= 0 || ldb <= 0 || ldc <= 0) {
         return CUBLAS_STATUS_INVALID_VALUE;
+    }
+
+    const void *host_A = hetgpu_pacc_is_device_ptr(A)
+        ? (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(A)
+        : A;
+    const void *host_B = hetgpu_pacc_is_device_ptr(B)
+        ? (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(B)
+        : B;
+    void *host_C = hetgpu_pacc_is_device_ptr(C)
+        ? (void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(C)
+        : C;
+    if (!host_A || !host_B || !host_C) {
+        return CUBLAS_STATUS_NOT_SUPPORTED;
     }
 
     const float a_scale = host_read_scale(alpha, computeType, 1.0f);
@@ -435,9 +452,9 @@ static cublasStatus_t host_gemm_fallback(
 
     DEBUG_LOG("%s using host GEMM fallback after PACC failure (A=%d B=%d C=%d)", name, Atype, Btype, Ctype);
     for (int batch = 0; batch < batchCount; ++batch) {
-        const char *Ab = (const char *)A + (size_t)batch * (size_t)a_stride * a_elem_size;
-        const char *Bb = (const char *)B + (size_t)batch * (size_t)b_stride * b_elem_size;
-        char *Cb = (char *)C + (size_t)batch * (size_t)c_stride * c_elem_size;
+        const char *Ab = (const char *)host_A + (size_t)batch * (size_t)a_stride * a_elem_size;
+        const char *Bb = (const char *)host_B + (size_t)batch * (size_t)b_stride * b_elem_size;
+        char *Cb = (char *)host_C + (size_t)batch * (size_t)c_stride * c_elem_size;
         for (int col = 0; col < n; ++col) {
             for (int row = 0; row < m; ++row) {
                 float acc = 0.0f;
@@ -455,6 +472,7 @@ static cublasStatus_t host_gemm_fallback(
 }
 
 static int g_pacc_gemm_disabled_after_failure = 0;
+static int g_pacc_gemm_coarse_stage_disabled_after_failure = 0;
 
 static int prefer_pacc_gemm_stage_shared_ddr(void) {
     const char *stage_shared = getenv("HETGPU_PACC_GEMM_STAGE_SHARED_DDR");
@@ -462,6 +480,11 @@ static int prefer_pacc_gemm_stage_shared_ddr(void) {
         return 1;
     }
     return strcmp(stage_shared, "0") != 0;
+}
+
+static int prefer_pacc_gemm_coarse_stage(void) {
+    const char *coarse = getenv("HETGPU_PACC_GEMM_COARSE_STAGE");
+    return coarse && strcmp(coarse, "force") == 0 && pacc_runtime_marked_ready();
 }
 
 
@@ -592,6 +615,16 @@ static cublasStatus_t submit_pacc_gemm(
             batchCount, computeType);
     }
 
+    if (!pacc_runtime_marked_ready()) {
+        DEBUG_LOG("%s skipping PACC GEMM submit because runtime is not marked ready; using host fallback", name);
+        return host_gemm_fallback(
+            name, transa, transb, m, n, k,
+            alpha_arg, A, Atype, lda, strideA,
+            B, Btype, ldb, strideB,
+            beta_arg, C, Ctype, ldc, strideC,
+            batchCount, computeType);
+    }
+
     const void *pacc_A = (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(A);
     const void *pacc_B = (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(B);
     void *pacc_C = (void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(C);
@@ -633,16 +666,18 @@ static cublasStatus_t submit_pacc_gemm(
         size_t a_size = host_dtype_size(Atype);
         size_t b_size = host_dtype_size(Btype);
         size_t c_size = host_dtype_size(Ctype);
-        int parallel_workers = 1;
+        int parallel_workers = 4;
         const char *parallel_env = getenv("HETGPU_PACC_GEMM_PARALLEL");
-        if (parallel_env && strcmp(parallel_env, "1") == 0) {
+        if (parallel_env && strcmp(parallel_env, "0") == 0) {
+            parallel_workers = 1;
+        } else {
             const char *workers_env = getenv("HETGPU_PACC_GEMM_WORKERS");
             parallel_workers = workers_env ? atoi(workers_env) : 4;
             if (parallel_workers < 1) parallel_workers = 1;
             if (parallel_workers > 4) parallel_workers = 4;
         }
-        const char *coarse_env = getenv("HETGPU_PACC_GEMM_COARSE_STAGE");
-        if (!coarse_env || strcmp(coarse_env, "0") != 0) {
+        if (!g_pacc_gemm_coarse_stage_disabled_after_failure &&
+            prefer_pacc_gemm_coarse_stage()) {
             rc = hetgpu_pacc_submit_gemm_staged_tiled(
                 (int)transa, (int)transb, m, n, k,
                 alpha_arg,
@@ -655,6 +690,8 @@ static cublasStatus_t submit_pacc_gemm(
             if (rc == 0) {
                 return CUBLAS_STATUS_SUCCESS;
             }
+            g_pacc_gemm_coarse_stage_disabled_after_failure = 1;
+            DEBUG_LOG("%s disabling coarse staged GEMM after failure rc=%d", name, rc);
         }
         int row_tiles = (m + max_m - 1) / max_m;
         int col_tiles = (n + max_n - 1) / max_n;

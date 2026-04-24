@@ -2091,6 +2091,25 @@ unsafe impl Sync for Module {}
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+fn current_pacc_device_id() -> Result<i32, CUerror> {
+    let device_count = super::driver::global_state()?.devices.len() as i32;
+    let device_id = match super::context::get_current_pacc() {
+        Ok(ctx) => ctx.device_id,
+        Err(_) => 0,
+    };
+    if device_id >= 0 && device_id < device_count {
+        Ok(device_id)
+    } else {
+        Ok(0)
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 impl ZludaObject for Module {
     const COOKIE: usize = 0xe9138bd040487d4a;
 
@@ -2125,11 +2144,25 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
         }
     }
 
-    // Create PACC device handle (device_id 0 for now)
-    let device = unsafe { pacc_runtime_sys::pacc_CreateDevice(0) };
+    let device_id = current_pacc_device_id()?;
+    // Bind this CUDA module to the current logical PACC device/context.
+    let device = unsafe { pacc_runtime_sys::pacc_CreateDevice(device_id as u32) };
     if device.is_null() {
-        eprintln!("[PACC Backend] Failed to create PACC device");
+        eprintln!(
+            "[PACC Backend] Failed to create PACC device {}",
+            device_id
+        );
         return Err(CUerror::UNKNOWN);
+    }
+    if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "[PACC Backend] cuModuleLoadData binding module to pacc{}",
+            device_id
+        );
     }
 
     // Create PACC program
@@ -2155,7 +2188,20 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
                 )
             };
             if result != pacc_runtime_sys::pacc_Result_Success {
-                eprintln!("[PACC Backend] pacc_LoadProgramPtx failed: {}", result);
+                let compile_error = unsafe {
+                    program_ptr
+                        .as_ref()
+                        .and_then(|p| p.compile_error.as_deref())
+                        .map(str::to_owned)
+                };
+                eprintln!(
+                    "[PACC Backend] pacc_LoadProgramPtx failed: {}{}",
+                    result,
+                    compile_error
+                        .as_deref()
+                        .map(|msg| format!(" ({})", msg))
+                        .unwrap_or_default()
+                );
             } else if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
                 .ok()
                 .as_deref()

@@ -329,7 +329,7 @@ pub fn to_llvm_module_with_debug_round_trip<'input>(
         // Create memory buffer from the module's bitcode
         let bitcode_data = &*bitcode_buf;
         let mem_buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(
-            bitcode_data.as_ptr() as *const u8,
+            bitcode_data.as_ptr().cast(),
             bitcode_data.len(),
             CString::new("module").unwrap().as_ptr(),
         );
@@ -466,7 +466,7 @@ pub fn to_llvm_module_with_debug_round_trip_and_filename<'input>(
         // Create memory buffer from the module's bitcode
         let bitcode_data = &*bitcode_buf;
         let mem_buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(
-            bitcode_data.as_ptr() as *const u8,
+            bitcode_data.as_ptr().cast(),
             bitcode_data.len(),
             CString::new("module").unwrap().as_ptr(),
         );

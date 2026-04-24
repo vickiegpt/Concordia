@@ -217,10 +217,10 @@ impl PaccConfig {
             vlen: 512,
             default_sew: 8,
             target_triple: "riscv64-unknown-elf".to_string(),
-            march: "rv64gcv_zvl512b".to_string(),
-            mattr: "+v,+d,+f,+zfbfmin,+zvfbfmin,+zvfbfwma,+zvl512b".to_string(),
+            march: "rv64gcv_zvl512b_zbb".to_string(),
+            mattr: "+v,+d,+f,+zbb,+zfbfmin,+zvfbfmin,+zvfbfwma,+zvl512b".to_string(),
             codegen_mode: PaccCodegenMode::Zvbdot,
-            spike_isa: "rv64gcv_zfbfmin_zvfbfmin_zvfbfwma_zvfbfa_zvqbdot8i_zvqbdot16i_zvfqbdot8f_zvfwbdot16bf_zvfbdot32f_zvl512b".to_string(),
+            spike_isa: "rv64gcv_zbb_zfbfmin_zvfbfmin_zvfbfwma_zvfbfa_zvqbdot8i_zvqbdot16i_zvfqbdot8f_zvfwbdot16bf_zvfbdot32f_zvl512b".to_string(),
         }
     }
 
@@ -230,8 +230,8 @@ impl PaccConfig {
             vlen: 512,
             default_sew: 8,
             target_triple: "riscv64-unknown-elf".to_string(),
-            march: "rv64gcv_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvfwmaccqqq_xsfvqmaccqoq".to_string(),
-            mattr: "+v,+d,+f,+zvfbfmin,+xsfvcp,+xsfvfnrclipxfqf,+xsfvfwmaccqqq,+xsfvqmaccqoq"
+            march: "rv64gcv_zbb_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvfwmaccqqq_xsfvqmaccqoq".to_string(),
+            mattr: "+v,+d,+f,+zbb,+zvfbfmin,+xsfvcp,+xsfvfnrclipxfqf,+xsfvfwmaccqqq,+xsfvqmaccqoq"
                 .to_string(),
             codegen_mode: PaccCodegenMode::Vcix,
             spike_isa: String::new(),
@@ -245,8 +245,8 @@ impl PaccConfig {
             vlen: 512,
             default_sew: 8,
             target_triple: "riscv64-linux-gnu".to_string(),
-            march: "rv64gcv_zfh_zvfbfmin_zvfbfwma".to_string(),
-            mattr: "+v,+d,+f,+zfh,+zvfbfmin,+zvfbfwma".to_string(),
+            march: "rv64gcv_zbb_zfh_zvfbfmin_zvfbfwma".to_string(),
+            mattr: "+v,+d,+f,+zbb,+zfh,+zvfbfmin,+zvfbfwma".to_string(),
             codegen_mode: PaccCodegenMode::Zvbdot,
             spike_isa: String::new(),
         }

@@ -924,7 +924,7 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
             let visible_devices = std::env::var("HETGPU_PACC_VISIBLE_DEVICES")
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(1)
+                .unwrap_or(4)
                 .clamp(1, 4);
 
             // PACC can expose one logical CUDA device per physical PACC.
@@ -999,13 +999,13 @@ pub(crate) fn get_version(version: &mut ::core::ffi::c_int) -> CUresult {
     not(feature = "tenstorrent")
 ))]
 pub(crate) fn device_pacc(dev_id: i32) -> Result<&'static Device, CUerror> {
-    PACC_DEVICES.with(|map| {
-        let map_ref = map.borrow();
-        map_ref
-            .get(&dev_id)
-            .ok_or(CUerror::INVALID_DEVICE)
-            .map(|dev_ptr| unsafe { dev_ptr.as_ref() })
-    })
+    if dev_id < 0 {
+        return Err(CUerror::INVALID_DEVICE);
+    }
+    global_state()?
+        .devices
+        .get(dev_id as usize)
+        .ok_or(CUerror::INVALID_DEVICE)
 }
 
 #[cfg(all(

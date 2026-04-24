@@ -521,6 +521,62 @@ fn run_instruction<'input>(
         i @ ptx_parser::Instruction::Prmt { .. } => {
             to_call(resolver, fn_declarations, "prmt_b32".into(), i)?
         }
+        i @ ptx_parser::Instruction::VSub4 {
+            data:
+                ptx_parser::Vsub4Details {
+                    lane_kind: ptx_parser::VideoPackedLaneKind::Unsigned,
+                    saturate: false,
+                },
+            ..
+        } => to_call(resolver, fn_declarations, "vsub4_u32_u32_u32".into(), i)?,
+        i @ ptx_parser::Instruction::VSub4 {
+            data:
+                ptx_parser::Vsub4Details {
+                    lane_kind: ptx_parser::VideoPackedLaneKind::Unsigned,
+                    saturate: true,
+                },
+            ..
+        } => to_call(resolver, fn_declarations, "vsub4_u32_u32_u32_sat".into(), i)?,
+        i @ ptx_parser::Instruction::VSub4 {
+            data:
+                ptx_parser::Vsub4Details {
+                    lane_kind: ptx_parser::VideoPackedLaneKind::Signed,
+                    saturate: false,
+                },
+            ..
+        } => to_call(resolver, fn_declarations, "vsub4_s32_s32_s32".into(), i)?,
+        i @ ptx_parser::Instruction::VSub4 {
+            data:
+                ptx_parser::Vsub4Details {
+                    lane_kind: ptx_parser::VideoPackedLaneKind::Signed,
+                    saturate: true,
+                },
+            ..
+        } => to_call(resolver, fn_declarations, "vsub4_s32_s32_s32_sat".into(), i)?,
+        i @ ptx_parser::Instruction::VSet4 {
+            data: ptx_parser::VsetCompareOp::Eq,
+            ..
+        } => to_call(resolver, fn_declarations, "vset4_u32_u32_eq".into(), i)?,
+        i @ ptx_parser::Instruction::VSet4 {
+            data: ptx_parser::VsetCompareOp::Ne,
+            ..
+        } => to_call(resolver, fn_declarations, "vset4_u32_u32_ne".into(), i)?,
+        i @ ptx_parser::Instruction::VSet4 {
+            data: ptx_parser::VsetCompareOp::Lt,
+            ..
+        } => to_call(resolver, fn_declarations, "vset4_u32_u32_lt".into(), i)?,
+        i @ ptx_parser::Instruction::VSet4 {
+            data: ptx_parser::VsetCompareOp::Le,
+            ..
+        } => to_call(resolver, fn_declarations, "vset4_u32_u32_le".into(), i)?,
+        i @ ptx_parser::Instruction::VSet4 {
+            data: ptx_parser::VsetCompareOp::Gt,
+            ..
+        } => to_call(resolver, fn_declarations, "vset4_u32_u32_gt".into(), i)?,
+        i @ ptx_parser::Instruction::VSet4 {
+            data: ptx_parser::VsetCompareOp::Ge,
+            ..
+        } => to_call(resolver, fn_declarations, "vset4_u32_u32_ge".into(), i)?,
         i => i,
     })
 }

@@ -1148,6 +1148,7 @@ struct MethodEmitContext<'a> {
     resolver: &'a mut ResolveIdent<'a>,
     debug_context: &'a mut DebugContext,
     current_line: u32,
+    carry_flag: Option<LLVMValueRef>,
 }
 
 impl<'a> MethodEmitContext<'a> {
@@ -1199,6 +1200,7 @@ impl<'a> MethodEmitContext<'a> {
             debug_context,
             // Start from actual PTX content, skip header lines
             current_line: 10, // Start from line 10 to account for PTX header
+            carry_flag: None,
         }
     }
 
@@ -1371,6 +1373,7 @@ fn get_instruction_name(inst: &ast::Instruction<SpirvWord>) -> &'static str {
         ast::Instruction::Ret { .. } => "ret",
         ast::Instruction::Cvta { .. } => "cvta",
         ast::Instruction::Abs { .. } => "abs",
+        ast::Instruction::Copysign { .. } => "copysign",
         ast::Instruction::Mad { .. } => "mad",
         ast::Instruction::Fma { .. } => "fma",
         ast::Instruction::Sub { .. } => "sub",
@@ -1981,6 +1984,9 @@ impl<'a> MethodEmitContext<'a> {
             ast::Instruction::Ret { data } => Ok(self.emit_ret(data)),
             ast::Instruction::Cvta { data, arguments } => self.emit_cvta(data, arguments),
             ast::Instruction::Abs { data, arguments } => self.emit_abs(data, arguments),
+            ast::Instruction::Copysign { data, arguments } => {
+                self.emit_copysign(data, arguments)
+            }
             ast::Instruction::Mad { data, arguments } => self.emit_mad(data, arguments),
             ast::Instruction::Fma { data, arguments } => self.emit_fma(data, arguments),
             ast::Instruction::Sub { data, arguments } => self.emit_sub(data, arguments),
@@ -4220,6 +4226,15 @@ impl<'a> MethodEmitContext<'a> {
                 );
             }
             ptx_parser::MadDetails::Integer { saturate: true, .. } => return Err(error_todo()),
+            ptx_parser::MadDetails::Integer {
+                type_: ast::ScalarType::U32,
+                control,
+                carry_in,
+                carry_out,
+                ..
+            } if carry_in || carry_out => {
+                return self.emit_mad_carry_u32(control, carry_in, carry_out, arguments);
+            }
             ptx_parser::MadDetails::Integer { type_, control, .. } => {
                 ast::MulDetails::Integer { control, type_ }
             }
@@ -4232,13 +4247,110 @@ impl<'a> MethodEmitContext<'a> {
         Ok(())
     }
 
+    fn emit_mad_carry_u32(
+        &mut self,
+        control: ast::MulIntControl,
+        carry_in: bool,
+        carry_out: bool,
+        arguments: ptx_parser::MadArgs<SpirvWord>,
+    ) -> Result<(), TranslateError> {
+        let i1_type = unsafe { LLVMInt1TypeInContext(self.context) };
+        let i32_type = get_scalar_type(self.context, ast::ScalarType::U32);
+        let i64_type = get_scalar_type(self.context, ast::ScalarType::U64);
+        let false_i1 = unsafe { LLVMConstInt(i1_type, 0, 0) };
+
+        let src1 = self.resolver.value(arguments.src1)?;
+        let src2 = self.resolver.value(arguments.src2)?;
+        let src3 = self.resolver.value(arguments.src3)?;
+
+        let src1_64 =
+            unsafe { LLVMBuildZExt(self.builder, src1, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let src2_64 =
+            unsafe { LLVMBuildZExt(self.builder, src2, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let src3_64 =
+            unsafe { LLVMBuildZExt(self.builder, src3, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let product_64 = unsafe {
+            LLVMBuildMul(
+                self.builder,
+                src1_64,
+                src2_64,
+                LLVM_UNNAMED.as_ptr(),
+            )
+        };
+
+        let term_32 = match control {
+            ast::MulIntControl::Low => unsafe {
+                LLVMBuildTrunc(self.builder, product_64, i32_type, LLVM_UNNAMED.as_ptr())
+            },
+            ast::MulIntControl::High => {
+                let shift = unsafe { LLVMConstInt(i64_type, 32, 0) };
+                let high_64 = unsafe {
+                    LLVMBuildLShr(self.builder, product_64, shift, LLVM_UNNAMED.as_ptr())
+                };
+                unsafe { LLVMBuildTrunc(self.builder, high_64, i32_type, LLVM_UNNAMED.as_ptr()) }
+            }
+            ast::MulIntControl::Wide => {
+                return Err(error_todo_msg(
+                    "carry-aware mad.wide integer lowering is not implemented",
+                ));
+            }
+        };
+        let term_64 =
+            unsafe { LLVMBuildZExt(self.builder, term_32, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let mut sum_64 = unsafe {
+            LLVMBuildAdd(
+                self.builder,
+                term_64,
+                src3_64,
+                LLVM_UNNAMED.as_ptr(),
+            )
+        };
+        if carry_in {
+            let carry_64 = unsafe {
+                LLVMBuildZExt(
+                    self.builder,
+                    self.carry_flag.unwrap_or(false_i1),
+                    i64_type,
+                    LLVM_UNNAMED.as_ptr(),
+                )
+            };
+            sum_64 = unsafe {
+                LLVMBuildAdd(
+                    self.builder,
+                    sum_64,
+                    carry_64,
+                    LLVM_UNNAMED.as_ptr(),
+                )
+            };
+        }
+
+        let dst_32 =
+            unsafe { LLVMBuildTrunc(self.builder, sum_64, i32_type, LLVM_UNNAMED.as_ptr()) };
+        self.resolver.register(arguments.dst, dst_32);
+
+        if carry_out {
+            let max_u32 = unsafe { LLVMConstInt(i64_type, u32::MAX as u64, 0) };
+            let overflow = unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    LLVMIntPredicate::LLVMIntUGT,
+                    sum_64,
+                    max_u32,
+                    LLVM_UNNAMED.as_ptr(),
+                )
+            };
+            self.carry_flag = Some(overflow);
+        }
+        Ok(())
+    }
+
     fn emit_membar(&self, data: ptx_parser::MemScope) -> Result<(), TranslateError> {
         unsafe {
             LLVMZludaBuildFence(
                 self.builder,
                 LLVMAtomicOrdering::LLVMAtomicOrderingSequentiallyConsistent,
                 get_scope_membar(data)?,
-                LLVM_UNNAMED.as_ptr(),
+                LLVM_UNNAMED.as_ptr().cast(),
             )
         };
         Ok(())
@@ -4320,6 +4432,25 @@ impl<'a> MethodEmitContext<'a> {
             Some(arguments.dst),
             &data.type_.into(),
             intrinsic_arguments,
+        )?;
+        Ok(())
+    }
+
+    fn emit_copysign(
+        &mut self,
+        data: ast::ScalarType,
+        arguments: ptx_parser::CopysignArgs<SpirvWord>,
+    ) -> Result<(), TranslateError> {
+        let llvm_type = get_scalar_type(self.context, data);
+        let llvm_intrinsic = format!("llvm.copysign.{}\0", LLVMTypeDisplay(data));
+        self.emit_intrinsic(
+            unsafe { CStr::from_bytes_with_nul_unchecked(llvm_intrinsic.as_bytes()) },
+            Some(arguments.dst),
+            &data.into(),
+            vec![
+                (self.resolver.value(arguments.src1)?, llvm_type),
+                (self.resolver.value(arguments.src2)?, llvm_type),
+            ],
         )?;
         Ok(())
     }

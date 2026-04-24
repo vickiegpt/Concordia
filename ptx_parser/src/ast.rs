@@ -6,6 +6,7 @@ use super::{
     ScalarType,
     SetpBoolPostOp,
     StateSpace,
+    VsetCompareOp,
     Tcgen05CpSrcFmt,
     // TCGen05 enums
     Tcgen05CtaGroup,
@@ -53,6 +54,15 @@ ptx_parser_macros::generate_instruction_type!(
             arguments<T>: {
                 dst: T,
                 src: T,
+            }
+        },
+        Copysign {
+            data: ScalarType,
+            type: { Type::Scalar(data.clone()) },
+            arguments<T>: {
+                dst: T,
+                src1: T,
+                src2: T,
             }
         },
         Activemask {
@@ -290,6 +300,50 @@ ptx_parser_macros::generate_instruction_type!(
                 src3: {
                     repr: T,
                     type: { Type::Scalar(data.ctype()) },
+                },
+            }
+        },
+        VSub4 {
+            data: Vsub4Details,
+            type: Type::Scalar(ScalarType::U32),
+            arguments<T>: {
+                dst: {
+                    repr: T,
+                    type: { Type::Scalar(ScalarType::U32) },
+                },
+                src1: {
+                    repr: T,
+                    type: { Type::Scalar(ScalarType::U32) },
+                },
+                src2: {
+                    repr: T,
+                    type: { Type::Scalar(ScalarType::U32) },
+                },
+                src3: {
+                    repr: T,
+                    type: { Type::Scalar(ScalarType::U32) },
+                },
+            }
+        },
+        VSet4 {
+            data: VsetCompareOp,
+            type: Type::Scalar(ScalarType::U32),
+            arguments<T>: {
+                dst: {
+                    repr: T,
+                    type: { Type::Scalar(ScalarType::U32) },
+                },
+                src1: {
+                    repr: T,
+                    type: { Type::Scalar(ScalarType::U32) },
+                },
+                src2: {
+                    repr: T,
+                    type: { Type::Scalar(ScalarType::U32) },
+                },
+                src3: {
+                    repr: T,
+                    type: { Type::Scalar(ScalarType::U32) },
                 },
             }
         },
@@ -2344,6 +2398,8 @@ pub enum MadDetails {
     Integer {
         control: MulIntControl,
         saturate: bool,
+        carry_in: bool,
+        carry_out: bool,
         type_: ScalarType,
     },
     Float(ArithFloat),
@@ -2491,6 +2547,18 @@ pub enum DivDetails {
 pub struct Dp4aDetails {
     pub atype: ScalarType,
     pub btype: ScalarType,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum VideoPackedLaneKind {
+    Unsigned,
+    Signed,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct Vsub4Details {
+    pub lane_kind: VideoPackedLaneKind,
+    pub saturate: bool,
 }
 
 impl Dp4aDetails {

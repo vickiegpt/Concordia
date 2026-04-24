@@ -1161,6 +1161,15 @@ fn next_gemm_device() -> usize {
         .filter(|&id| id < PACC_CORE_NUM)
         .unwrap_or_else(|| NEXT_GEMM_DEVICE.fetch_add(1, Ordering::Relaxed) % PACC_CORE_NUM)
 }
+
+fn normalize_pacc_device_id(dev_id: i32) -> usize {
+    if dev_id >= 0 && (dev_id as usize) < PACC_CORE_NUM {
+        dev_id as usize
+    } else {
+        0
+    }
+}
+
 static RUNTIME_BOOTED: OnceLock<Mutex<[bool; 4]>> = OnceLock::new();
 static SHARED_DDR_REDUCE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static SHARED_DDR_GEMM_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1692,12 +1701,6 @@ fn read_shared_ddr_window_cached(
     bytes: &mut [u8],
 ) -> std::io::Result<()> {
     if let Some(file) = file.as_mut() {
-        let dev = helper_path_for_pacc(0);
-        if std::path::Path::new(&dev).exists() {
-            let mut fresh = OpenOptions::new().read(true).open(&dev)?;
-            helper_read_exact(&mut fresh, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)?;
-            return Ok(());
-        }
         helper_read_exact(file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)?;
         return Ok(());
     }
@@ -1817,7 +1820,13 @@ fn submit_gemm_runtime_job_cached(
     staged_bytes: u64,
     mailbox_file: &mut Option<File>,
 ) -> std::io::Result<()> {
-    require_runtime_ready()?;
+    if std::env::var("HETGPU_PACC_ENFORCE_RUNTIME_READY")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        require_runtime_ready()?;
+    }
     let seq = next_runtime_job_seq();
     let table = HetgpuPaccRuntimeJobTable {
         magic: HETGPU_PACC_RUNTIME_TABLE_MAGIC,
@@ -2382,6 +2391,13 @@ fn pacc_tensor_dtype_supported(dtype: i32) -> bool {
 }
 
 fn align_up_u64(value: u64, align: u64) -> Option<u64> {
+    value
+        .checked_add(align.checked_sub(1)?)?
+        .checked_div(align)?
+        .checked_mul(align)
+}
+
+fn align_up_usize(value: usize, align: usize) -> Option<usize> {
     value
         .checked_add(align.checked_sub(1)?)?
         .checked_div(align)?
@@ -3684,11 +3700,7 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
         slot_off + alpha_off,
         &alpha_value.to_ne_bytes(),
     )?;
-    write_shared_ddr_window_cached(
-        &mut shared_file,
-        slot_off + beta_off,
-        &0.0f32.to_ne_bytes(),
-    )?;
+    write_shared_ddr_window_cached(&mut shared_file, slot_off + beta_off, &0.0f32.to_ne_bytes())?;
 
     let tile_max_k = if chunk_m < 64 || chunk_n < 16 {
         max_k.min(parse_env_usize("HETGPU_PACC_GEMM_TAIL_MAX_K", 80).max(1))
@@ -3883,13 +3895,13 @@ unsafe fn submit_gemm_staged_tiled_shared_ddr(
         .checked_mul(col_tiles)
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM tile count overflow"))?;
     let parallel_workers =
-        if std::env::var("HETGPU_PACC_GEMM_PARALLEL").ok().as_deref() == Some("1") {
+        if std::env::var("HETGPU_PACC_GEMM_PARALLEL").ok().as_deref() == Some("0") {
+            1
+        } else {
             parse_env_usize("HETGPU_PACC_GEMM_WORKERS", PACC_CORE_NUM)
                 .max(1)
                 .min(PACC_CORE_NUM.max(1))
                 .min(tile_count.max(1))
-        } else {
-            1
         };
 
     for batch in 0..batches {
@@ -4316,6 +4328,7 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_gemm(
 }
 
 unsafe fn submit_softmax_typed_impl(
+    dev_id: usize,
     src: *const std::ffi::c_void,
     dst: *mut std::ffi::c_void,
     rows: u64,
@@ -4333,7 +4346,7 @@ unsafe fn submit_softmax_typed_impl(
         dtype,
         reserved: 0,
     };
-    match PaccDevice::open(0)
+    match PaccDevice::open(dev_id)
         .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::SOFTMAX, &job))
     {
         Ok(()) => 0,
@@ -4345,7 +4358,8 @@ unsafe fn submit_softmax_typed_impl(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn hetgpu_pacc_submit_softmax(
+pub unsafe extern "C" fn hetgpu_pacc_submit_softmax_on(
+    dev_id: i32,
     src: *const std::ffi::c_void,
     dst: *mut std::ffi::c_void,
     rows: u64,
@@ -4363,6 +4377,7 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_softmax(
         return -1;
     }
     submit_softmax_typed_impl(
+        normalize_pacc_device_id(dev_id),
         src,
         dst,
         rows,
@@ -4371,6 +4386,18 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_softmax(
         dtype as u32,
         "hetgpu_pacc_submit_softmax",
     )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_pacc_submit_softmax(
+    src: *const std::ffi::c_void,
+    dst: *mut std::ffi::c_void,
+    rows: u64,
+    cols: u64,
+    stride: u64,
+    dtype: i32,
+) -> i32 {
+    hetgpu_pacc_submit_softmax_on(0, src, dst, rows, cols, stride, dtype)
 }
 
 #[no_mangle]
@@ -4396,6 +4423,7 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_softmax_bf16(
 }
 
 unsafe fn submit_rmsnorm_typed_impl(
+    dev_id: usize,
     x: *const std::ffi::c_void,
     weight: *const std::ffi::c_void,
     y: *mut std::ffi::c_void,
@@ -4405,6 +4433,34 @@ unsafe fn submit_rmsnorm_typed_impl(
     dtype: u32,
     label: &str,
 ) -> i32 {
+    let staged = std::env::var("HETGPU_PACC_RMSNORM_STAGE_SHARED_DDR")
+        .ok()
+        .as_deref()
+        != Some("0");
+    let result = if staged {
+        submit_rmsnorm_staged_shared_ddr(dev_id, x, weight, y, rows, hidden, eps, dtype, label)
+    } else {
+        submit_rmsnorm_direct_runtime_job(dev_id, x, weight, y, rows, hidden, eps, dtype)
+    };
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{}: PACC RMSNorm submit failed: {}", label, e);
+            -1
+        }
+    }
+}
+
+unsafe fn submit_rmsnorm_direct_runtime_job(
+    dev_id: usize,
+    x: *const std::ffi::c_void,
+    weight: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    rows: u64,
+    hidden: u64,
+    eps: f32,
+    dtype: u32,
+) -> std::io::Result<()> {
     let job = HetgpuPaccRmsNormJob {
         x_addr: x as u64,
         weight_addr: weight as u64,
@@ -4414,19 +4470,214 @@ unsafe fn submit_rmsnorm_typed_impl(
         eps,
         dtype,
     };
-    match PaccDevice::open(0)
-        .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::RMSNORM, &job))
-    {
-        Ok(()) => 0,
-        Err(e) => {
-            eprintln!("{}: PACC RMSNorm submit failed: {}", label, e);
-            -1
-        }
+    PaccDevice::open(dev_id)?.submit_runtime_job(hetgpu_pacc_job_id::RMSNORM, &job)
+}
+
+fn rmsnorm_trace_enabled() -> bool {
+    std::env::var("HETGPU_PACC_RMSNORM_TRACE").ok().as_deref() == Some("1")
+}
+
+unsafe fn submit_rmsnorm_staged_shared_ddr(
+    dev_id: usize,
+    x: *const std::ffi::c_void,
+    weight: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    rows: u64,
+    hidden: u64,
+    eps: f32,
+    dtype: u32,
+    label: &str,
+) -> std::io::Result<()> {
+    let _shared_guard = shared_ddr_gemm_lock()
+        .lock()
+        .map_err(|_| Error::new(ErrorKind::Other, "PACC shared-DDR staging lock poisoned"))?;
+    let elem_size = pacc_dtype_size(dtype as i32).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Unsupported,
+            format!("unsupported staged RMSNorm dtype {}", dtype),
+        )
+    })?;
+    let rows_usize = usize::try_from(rows)
+        .map_err(|_| Error::new(ErrorKind::InvalidInput, "RMSNorm rows overflow"))?;
+    let hidden_usize = usize::try_from(hidden)
+        .map_err(|_| Error::new(ErrorKind::InvalidInput, "RMSNorm hidden overflow"))?;
+    let row_bytes = hidden_usize
+        .checked_mul(elem_size)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "RMSNorm row size overflow"))?;
+    if row_bytes == 0 {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "RMSNorm row size is zero",
+        ));
     }
+
+    let shared_bytes = shared_ddr_bytes();
+    let slot_count = parse_env_usize("HETGPU_PACC_RMSNORM_SHARED_SLOTS", PACC_CORE_NUM).max(1);
+    let slot_bytes =
+        parse_env_usize("HETGPU_PACC_RMSNORM_SLOT_BYTES", shared_bytes / slot_count).max(1);
+    let slot_id = std::env::var("HETGPU_PACC_RMSNORM_SLOT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(dev_id % slot_count)
+        % slot_count;
+    let slot_off_usize = slot_id
+        .checked_mul(slot_bytes)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "RMSNorm slot offset overflow"))?;
+    if slot_off_usize
+        .checked_add(slot_bytes)
+        .filter(|&end| end <= shared_bytes)
+        .is_none()
+    {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "RMSNorm shared-DDR slot exceeds configured window",
+        ));
+    }
+
+    let weight_bytes = if weight.is_null() { 0 } else { row_bytes };
+    let x_off = align_up_usize(weight_bytes, 64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "RMSNorm x offset overflow"))?;
+    let min_y_off = align_up_usize(
+        x_off
+            .checked_add(row_bytes)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "RMSNorm y offset overflow"))?,
+        64,
+    )
+    .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "RMSNorm y offset overflow"))?;
+    if min_y_off
+        .checked_add(row_bytes)
+        .filter(|&total| total <= slot_bytes)
+        .is_none()
+    {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "RMSNorm shared-DDR slot too small for one row",
+        ));
+    }
+    let row_pair_bytes = row_bytes
+        .checked_mul(2)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "RMSNorm row pair overflow"))?;
+    let mut max_rows = (slot_bytes.saturating_sub(x_off) / row_pair_bytes).max(1);
+    max_rows = max_rows.min(rows_usize);
+    max_rows = max_rows.min(parse_env_usize("HETGPU_PACC_RMSNORM_MAX_ROWS", max_rows).max(1));
+
+    let slot_off = u64::try_from(slot_off_usize)
+        .map_err(|_| Error::new(ErrorKind::InvalidInput, "RMSNorm slot offset overflow"))?;
+    let shared_base = shared_ddr_base();
+    let mut shared_file = open_shared_ddr_window_file(dev_id);
+    let pacc_dev = PaccDevice::open(dev_id)?;
+    let trace = rmsnorm_trace_enabled();
+    let zero_output = std::env::var("HETGPU_PACC_RMSNORM_ZERO_OUTPUT")
+        .ok()
+        .as_deref()
+        == Some("1");
+    if trace {
+        eprintln!(
+            "{}: staged shared-DDR dev={} slot={} rows={} hidden={} dtype={} row_bytes={} slot_bytes={}",
+            label, dev_id, slot_id, rows, hidden, dtype, row_bytes, slot_bytes
+        );
+    }
+
+    if !weight.is_null() {
+        let weight_slice = std::slice::from_raw_parts(weight.cast::<u8>(), weight_bytes);
+        write_shared_ddr_window_cached(&mut shared_file, slot_off, weight_slice)?;
+    }
+
+    let max_chunk_bytes = max_rows
+        .checked_mul(row_bytes)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "RMSNorm max chunk overflow"))?;
+    let mut y_stage = vec![0u8; max_chunk_bytes];
+
+    let mut row0 = 0usize;
+    while row0 < rows_usize {
+        let remaining = rows_usize - row0;
+        let mut chunk_rows = remaining.min(max_rows);
+        let (chunk_bytes, y_off, total_bytes) = loop {
+            let chunk_bytes = chunk_rows.checked_mul(row_bytes).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "RMSNorm chunk size overflow")
+            })?;
+            let y_off = align_up_usize(
+                x_off.checked_add(chunk_bytes).ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidInput, "RMSNorm chunk y offset overflow")
+                })?,
+                64,
+            )
+            .ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "RMSNorm chunk y offset overflow")
+            })?;
+            let total_bytes = y_off.checked_add(chunk_bytes).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "RMSNorm chunk total overflow")
+            })?;
+            if total_bytes <= slot_bytes {
+                break (chunk_bytes, y_off, total_bytes);
+            }
+            chunk_rows = chunk_rows.checked_sub(1).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "RMSNorm chunk does not fit slot")
+            })?;
+            if chunk_rows == 0 {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "RMSNorm chunk does not fit slot",
+                ));
+            }
+        };
+
+        let host_off = row0
+            .checked_mul(row_bytes)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "RMSNorm host offset overflow"))?;
+        let x_slice = std::slice::from_raw_parts(x.cast::<u8>().add(host_off), chunk_bytes);
+        write_shared_ddr_window_cached(&mut shared_file, slot_off + x_off as u64, x_slice)?;
+        if zero_output {
+            y_stage[..chunk_bytes].fill(0);
+            write_shared_ddr_window_cached(
+                &mut shared_file,
+                slot_off + y_off as u64,
+                &y_stage[..chunk_bytes],
+            )?;
+        }
+
+        let job = HetgpuPaccRmsNormJob {
+            x_addr: shared_base + slot_off + x_off as u64,
+            weight_addr: if weight.is_null() {
+                0
+            } else {
+                shared_base + slot_off
+            },
+            y_addr: shared_base + slot_off + y_off as u64,
+            rows: chunk_rows as u64,
+            hidden,
+            eps,
+            dtype,
+        };
+        if trace {
+            eprintln!(
+                "{}: submit RMSNorm chunk dev={} row0={} rows={} x=0x{:x} w=0x{:x} y=0x{:x} bytes={}",
+                label,
+                dev_id,
+                row0,
+                chunk_rows,
+                job.x_addr,
+                job.weight_addr,
+                job.y_addr,
+                total_bytes
+            );
+        }
+        pacc_dev.submit_runtime_job(hetgpu_pacc_job_id::RMSNORM, &job)?;
+
+        read_shared_ddr_window_cached(
+            &mut shared_file,
+            slot_off + y_off as u64,
+            &mut y_stage[..chunk_bytes],
+        )?;
+        std::ptr::copy_nonoverlapping(y_stage.as_ptr(), y.cast::<u8>().add(host_off), chunk_bytes);
+        row0 += chunk_rows;
+    }
+    Ok(())
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn hetgpu_pacc_submit_rmsnorm(
+pub unsafe extern "C" fn hetgpu_pacc_submit_rmsnorm_on(
+    dev_id: i32,
     x: *const std::ffi::c_void,
     weight: *const std::ffi::c_void,
     y: *mut std::ffi::c_void,
@@ -4441,6 +4692,7 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_rmsnorm(
         return -1;
     }
     submit_rmsnorm_typed_impl(
+        normalize_pacc_device_id(dev_id),
         x,
         weight,
         y,
@@ -4450,6 +4702,19 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_rmsnorm(
         dtype as u32,
         "hetgpu_pacc_submit_rmsnorm",
     )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_pacc_submit_rmsnorm(
+    x: *const std::ffi::c_void,
+    weight: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    rows: u64,
+    hidden: u64,
+    eps: f32,
+    dtype: i32,
+) -> i32 {
+    hetgpu_pacc_submit_rmsnorm_on(0, x, weight, y, rows, hidden, eps, dtype)
 }
 
 #[no_mangle]
@@ -4616,6 +4881,7 @@ pub struct pacc_Device(pub PaccDevice);
 /// Opaque program handle (holds compiled ELF bytes)
 pub struct pacc_Program {
     pub elf_bytes: Vec<u8>,
+    pub compile_error: Option<String>,
 }
 
 /// Opaque kernel handle
@@ -4675,7 +4941,20 @@ unsafe fn load_program_elf_bytes(program: *mut pacc_Program, elf_bytes: Vec<u8>)
         );
     }
     (*program).elf_bytes = elf_bytes;
+    (*program).compile_error = None;
     pacc_Result_Success
+}
+
+unsafe fn set_program_compile_error(
+    program: *mut pacc_Program,
+    stage: &str,
+    message: String,
+) -> pacc_Result {
+    if !program.is_null() {
+        (*program).elf_bytes.clear();
+        (*program).compile_error = Some(format!("{}: {}", stage, message));
+    }
+    pacc_Result_Error
 }
 
 const HETGPU_PACC_ELF_CACHE_VERSION: &[u8] = b"hetgpu-pacc-elf-cache-v2";
@@ -4832,6 +5111,7 @@ pub unsafe extern "C" fn pacc_DestroyDevice(dev: *mut pacc_Device) {
 pub unsafe extern "C" fn pacc_CreateProgram() -> *mut pacc_Program {
     Box::into_raw(Box::new(pacc_Program {
         elf_bytes: Vec::new(),
+        compile_error: None,
     }))
 }
 
@@ -4924,7 +5204,11 @@ pub unsafe extern "C" fn pacc_LoadProgramSource(
                 source_name.to_string_lossy(),
                 err
             );
-            pacc_Result_Error
+            set_program_compile_error(
+                program,
+                "source_compile",
+                format!("{}: {:?}", source_name.to_string_lossy(), err),
+            )
         }
     }
 }
@@ -4966,7 +5250,11 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
                 module_name.to_string_lossy(),
                 err
             );
-            return pacc_Result_Error;
+            return set_program_compile_error(
+                program,
+                "ptx_utf8",
+                format!("{}: {}", module_name.to_string_lossy(), err),
+            );
         }
     };
 
@@ -4996,7 +5284,11 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
                 module_name.to_string_lossy(),
                 err
             );
-            return pacc_Result_Error;
+            return set_program_compile_error(
+                program,
+                "ptx_parse",
+                format!("{}: {:?}", module_name.to_string_lossy(), err),
+            );
         }
     };
     if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
@@ -5036,7 +5328,11 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
                 module_name.to_string_lossy(),
                 err
             );
-            return pacc_Result_Error;
+            return set_program_compile_error(
+                program,
+                "ptx_to_llvm",
+                format!("{}: {:?}", module_name.to_string_lossy(), err),
+            );
         }
     };
     if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
@@ -5114,7 +5410,11 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
                 module_name.to_string_lossy(),
                 err
             );
-            pacc_Result_Error
+            set_program_compile_error(
+                program,
+                "llvm_to_xm_elf",
+                format!("{}: {:?}", module_name.to_string_lossy(), err),
+            )
         }
     }
 }
@@ -5360,6 +5660,15 @@ pub unsafe extern "C" fn pacc_LaunchKernel(
             block_z,
             prog.elf_bytes.len()
         );
+    }
+
+    if prog.elf_bytes.is_empty() {
+        if let Some(err) = prog.compile_error.as_deref() {
+            eprintln!(
+                "pacc_LaunchKernel: kernel '{}' has no compiled ELF because program compilation failed: {}",
+                k.name, err
+            );
+        }
     }
 
     if !k.device.is_null() {

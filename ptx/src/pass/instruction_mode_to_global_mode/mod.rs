@@ -1916,6 +1916,7 @@ fn get_modes<T: ast::Operand>(inst: &ast::Instruction<T>) -> InstructionModes {
         // down to instruction argument modifiers, floating point flags have no
         // effect on it. We handle it during LLVM bitcode emission
         | ast::Instruction::Abs { .. }
+        | ast::Instruction::Copysign { .. }
         | ast::Instruction::Neg {.. }
         | ast::Instruction::Mov { .. }
         | ast::Instruction::Ld { .. }
@@ -1952,6 +1953,8 @@ fn get_modes<T: ast::Operand>(inst: &ast::Instruction<T>) -> InstructionModes {
         | ast::Instruction::Cvta { .. }
         | ast::Instruction::Atom { .. }
         | ast::Instruction::Mul24 { .. }
+        | ast::Instruction::VSub4 { .. }
+        | ast::Instruction::VSet4 { .. }
         | ast::Instruction::Nanosleep { .. }
         | ast::Instruction::AtomCas { .. }
         | ast::Instruction::Vote { .. }

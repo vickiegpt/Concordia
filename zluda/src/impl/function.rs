@@ -21,6 +21,22 @@ use ze_runtime_sys::*;
 ))]
 use pacc_runtime_sys;
 use std::ptr;
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+static PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE: AtomicBool = AtomicBool::new(false);
+
 #[cfg(feature = "amd")]
 pub(crate) fn get_attribute(
     pi: &mut i32,
@@ -2991,7 +3007,8 @@ unsafe fn configure_pacc_launch_abi(
         return pacc_runtime_sys::pacc_Result_Success;
     }
 
-    let max_params = pacc_known_kernel_param_count(kernel_name).unwrap_or_else(pacc_max_launch_params);
+    let max_params =
+        pacc_known_kernel_param_count(kernel_name).unwrap_or_else(pacc_max_launch_params);
     let log_launches = std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
         .ok()
         .as_deref()
@@ -3150,6 +3167,117 @@ unsafe fn read_param_i64(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn read_param_uint3_z(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+) -> Option<u32> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    let param = *kernel_params.add(index);
+    if param.is_null() || (param as usize) < 0x1_0000 {
+        return None;
+    }
+    Some((param as *const u32).add(2).read_unaligned())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn rmsnorm_named_offload_template_mode(kernel_name: &str) -> (bool, bool) {
+    let name_lower = kernel_name.to_ascii_lowercase();
+    if name_lower.contains("elb1elb1") || name_lower.contains(", true, true") {
+        (true, true)
+    } else if name_lower.contains("elb1elb0") || name_lower.contains(", true, false") {
+        (true, false)
+    } else if name_lower.contains("elb0elb0") || name_lower.contains(", false, false") {
+        (false, false)
+    } else {
+        (false, false)
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn read_rmsnorm_named_offload_args(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    grid_dim_x: u32,
+    grid_dim_y: u32,
+    grid_dim_z: u32,
+) -> Option<(
+    *const ::core::ffi::c_void,
+    *const ::core::ffi::c_void,
+    *mut ::core::ffi::c_void,
+    u64,
+    u64,
+    f32,
+)> {
+    let (do_multiply, do_add) = rmsnorm_named_offload_template_mode(kernel_name);
+    if do_add {
+        return None;
+    }
+
+    let x = read_param_u64(kernel_params, 0)? as *const ::core::ffi::c_void;
+    let y = read_param_u64(kernel_params, 1)? as *mut ::core::ffi::c_void;
+    let hidden = read_param_i32(kernel_params, 2)?.max(0) as u64;
+    let stride_row = read_param_i64(kernel_params, 3)?.max(0) as u64;
+    let stride_channel = read_param_i64(kernel_params, 4)?.max(0) as u64;
+    let stride_sample = read_param_i64(kernel_params, 5)?.max(0) as u64;
+    let eps = read_param_f32(kernel_params, 6)?;
+
+    if hidden == 0 {
+        return None;
+    }
+
+    let grid_rows = grid_dim_x.max(1) as u64;
+    let grid_channels = grid_dim_y.max(1) as u64;
+    let grid_samples = grid_dim_z.max(1) as u64;
+    let rows = grid_rows
+        .saturating_mul(grid_channels)
+        .saturating_mul(grid_samples)
+        .max(1);
+
+    let expected_stride_row = hidden;
+    let expected_stride_channel = hidden.saturating_mul(grid_rows);
+    let expected_stride_sample = expected_stride_channel.saturating_mul(grid_channels);
+    if stride_row != expected_stride_row
+        || stride_channel != expected_stride_channel
+        || stride_sample != expected_stride_sample
+    {
+        return None;
+    }
+
+    let weight = if do_multiply {
+        let weight = read_param_u64(kernel_params, 7)? as *const ::core::ffi::c_void;
+        let mul_ncols = read_param_uint3_z(kernel_params, 11)? as u64;
+        let mul_nrows = read_param_uint3_z(kernel_params, 12)?;
+        let mul_nchannels = read_param_uint3_z(kernel_params, 13)?;
+        let mul_nsamples = read_param_uint3_z(kernel_params, 14)?;
+        if mul_ncols != hidden || mul_nrows != 1 || mul_nchannels != 1 || mul_nsamples != 1 {
+            return None;
+        }
+        weight
+    } else {
+        ptr::null()
+    };
+
+    Some((x, weight, y, rows, hidden, eps))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn execute_compute_batched_ptrs_fallback(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
@@ -3292,9 +3420,8 @@ unsafe fn execute_l2_norm_f32_fallback(
     for sample in 0..nsamples {
         for channel in 0..nchannels {
             for row in 0..nrows {
-                let src_row = src.add(
-                    sample * stride_sample + channel * stride_channel + row * stride_row,
-                );
+                let src_row =
+                    src.add(sample * stride_sample + channel * stride_channel + row * stride_row);
                 let dst_row = dst.add(((sample * nchannels + channel) * nrows + row) * ncols);
                 let mut sumsq = 0.0f32;
                 for col in 0..ncols {
@@ -3351,9 +3478,8 @@ unsafe fn execute_get_rows_float_fallback(
                 let row_index_ptr = src1.add(i10 * s10 + i11 * s11 + i12 * s12);
                 let i01 = (*row_index_ptr).max(0) as usize;
                 let dst_row = dst.add(i10 * s1 + i11 * s2 + i12 * s3);
-                let src0_row = (src0 as *const u8)
-                    .add(i01 * nb01 + i11 * nb02 + i12 * nb03)
-                    as *const f32;
+                let src0_row =
+                    (src0 as *const u8).add(i01 * nb01 + i11 * nb02 + i12 * nb03) as *const f32;
                 for i00 in 0..ne00 {
                     *dst_row.add(i00) = *src0_row.add(i00);
                 }
@@ -3366,6 +3492,26 @@ unsafe fn execute_get_rows_float_fallback(
         kernel_name, ne00, ne11, ne12
     );
     Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn current_pacc_device_id_or_zero() -> i32 {
+    let device_count = super::driver::global_state()
+        .map(|state| state.devices.len() as i32)
+        .unwrap_or(1);
+    let device_id = super::context::get_current_pacc()
+        .map(|ctx| ctx.device_id)
+        .unwrap_or(0);
+    if device_id >= 0 && device_id < device_count {
+        device_id
+    } else {
+        0
+    }
 }
 
 #[cfg(all(
@@ -3423,11 +3569,14 @@ unsafe fn try_offload_named_pacc_kernel(
         } else {
             pacc_runtime_sys::PaccDataType::Float32 as i32
         };
-        let rc = pacc_runtime_sys::hetgpu_pacc_submit_softmax(src, dst, rows, cols, stride, dtype);
+        let dev_id = current_pacc_device_id_or_zero();
+        let rc = pacc_runtime_sys::hetgpu_pacc_submit_softmax_on(
+            dev_id, src, dst, rows, cols, stride, dtype,
+        );
         if rc == 0 {
             eprintln!(
-                "[PACC Backend] offloaded softmax '{}' rows={} cols={} stride={} dtype={} ",
-                kernel_name, rows, cols, stride, dtype
+                "[PACC Backend] offloaded softmax '{}' dev={} rows={} cols={} stride={} dtype={} ",
+                kernel_name, dev_id, rows, cols, stride, dtype
             );
             return Some(Ok(()));
         }
@@ -3435,9 +3584,27 @@ unsafe fn try_offload_named_pacc_kernel(
     }
 
     if name_lower.contains("rmsnorm") || name_lower.contains("rms_norm") {
-        let hidden = match read_param_i32(kernel_params, 0) {
-            Some(v) => v.max(0) as u64,
-            None => return None,
+        if PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE.load(Ordering::Relaxed) {
+            return None;
+        }
+        let (x, weight, y, rows, hidden, eps) = match read_rmsnorm_named_offload_args(
+            kernel_name,
+            kernel_params,
+            grid_dim_x,
+            grid_dim_y,
+            grid_dim_z,
+        ) {
+            Some(args) => args,
+            None => {
+                let hidden = read_param_i32(kernel_params, 2).unwrap_or(0).max(0) as u64;
+                if hidden == 0 {
+                    eprintln!(
+                        "[PACC Backend] RMSNorm '{}' missing hidden size; falling back to normal launch path",
+                        kernel_name
+                    );
+                }
+                return None;
+            }
         };
         if hidden == 0 {
             eprintln!(
@@ -3446,44 +3613,28 @@ unsafe fn try_offload_named_pacc_kernel(
             );
             return None;
         }
-        let eps = match read_param_f32(kernel_params, 1) {
-            Some(v) => v,
-            None => return None,
-        };
-        let x = match read_param_u64(kernel_params, 2) {
-            Some(v) => v as *const ::core::ffi::c_void,
-            None => return None,
-        };
-        let weight = match read_param_u64(kernel_params, 3) {
-            Some(v) => v as *const ::core::ffi::c_void,
-            None => return None,
-        };
-        let y = match read_param_u64(kernel_params, 5) {
-            Some(v) => v as *mut ::core::ffi::c_void,
-            None => return None,
-        };
-        let rows = (grid_dim_x as u64)
-            .saturating_mul(grid_dim_y.max(1) as u64)
-            .saturating_mul(grid_dim_z.max(1) as u64)
-            .max(1);
         let dtype = if name_lower.contains("bf16") || name_lower.contains("bfloat16") {
             pacc_runtime_sys::PaccDataType::Bfloat16 as i32
         } else {
             pacc_runtime_sys::PaccDataType::Float32 as i32
         };
-        let rc =
-            pacc_runtime_sys::hetgpu_pacc_submit_rmsnorm(x, weight, y, rows, hidden, eps, dtype);
+        let dev_id = current_pacc_device_id_or_zero();
+        let rc = pacc_runtime_sys::hetgpu_pacc_submit_rmsnorm_on(
+            dev_id, x, weight, y, rows, hidden, eps, dtype,
+        );
         if rc == 0 {
             eprintln!(
-                "[PACC Backend] offloaded RMSNorm '{}' rows={} hidden={} eps={} dtype={} ",
-                kernel_name, rows, hidden, eps, dtype
+                "[PACC Backend] offloaded RMSNorm '{}' dev={} rows={} hidden={} eps={} dtype={} ",
+                kernel_name, dev_id, rows, hidden, eps, dtype
             );
             return Some(Ok(()));
         }
-        eprintln!(
-            "[PACC Backend] RMSNorm '{}' offload failed with rc={}; falling back to normal launch path",
-            kernel_name, rc
-        );
+        if !PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "[PACC Backend] RMSNorm '{}' offload failed with rc={}; disabling RMSNorm named offload for this process and falling back to normal launch path",
+                kernel_name, rc
+            );
+        }
         return None;
     }
 

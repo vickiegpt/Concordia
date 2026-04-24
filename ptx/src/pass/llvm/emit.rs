@@ -260,6 +260,33 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             unsafe { LLVMGetFunctionCallConv(fn_) }
         );
         if let Some(statements) = method.body {
+            let trace_needle = std::env::var("HETGPU_PACC_TRACE_EMIT_METHOD").ok();
+            let trace_from = std::env::var("HETGPU_PACC_TRACE_EMIT_FROM")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok());
+            let trace_statement = std::env::var("HETGPU_PACC_TRACE_EMIT_STATEMENT")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok());
+            let trace_every = std::env::var("HETGPU_PACC_TRACE_EMIT_EVERY")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(64);
+            let should_trace = trace_needle
+                .as_deref()
+                .map(|needle| {
+                    needle == "1"
+                        || name.to_string_lossy().contains(needle)
+                        || symbol_name.contains(needle)
+                })
+                .unwrap_or(false);
+            let total_statements = statements.len();
+            if should_trace {
+                eprintln!(
+                    "[ptx emit trace] begin method='{}' stmts={}",
+                    symbol_name, total_statements
+                );
+            }
             let variables_bb = unsafe {
                 LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr())
             };
@@ -289,8 +316,57 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                 method.rounding_mode_f32,
                 method.rounding_mode_f16f64,
             )?;
-            for statement in statements {
-                method_emitter.emit_statement(statement)?;
+            for (statement_idx, statement) in statements.enumerate() {
+                let statement_no = statement_idx + 1;
+                let in_dense_range = trace_from
+                    .map(|from| statement_no >= from)
+                    .unwrap_or(false);
+                let is_target_statement = trace_statement == Some(statement_no);
+                if should_trace
+                    && (statement_idx < 24
+                        || statement_idx % trace_every == 0
+                        || in_dense_range
+                        || is_target_statement)
+                {
+                    eprintln!(
+                        "[ptx emit trace] method='{}' stmt={}/{} kind={}",
+                        symbol_name,
+                        statement_no,
+                        total_statements,
+                        statement_kind_name(&statement)
+                    );
+                }
+                let should_trace_enter_exit = should_trace && (is_target_statement || in_dense_range);
+                if should_trace && is_target_statement {
+                    eprintln!(
+                        "[ptx emit trace] stmt-detail method='{}' stmt={}/{} {:?}",
+                        symbol_name, statement_no, total_statements, statement
+                    );
+                }
+                if should_trace_enter_exit {
+                    eprintln!(
+                        "[ptx emit trace] enter method='{}' stmt={}/{}",
+                        symbol_name, statement_no, total_statements
+                    );
+                }
+                if let Err(err) = method_emitter.emit_statement(statement) {
+                    if should_trace_enter_exit {
+                        eprintln!(
+                            "[ptx emit trace] error method='{}' stmt={}/{} {:?}",
+                            symbol_name, statement_no, total_statements, err
+                        );
+                    }
+                    return Err(err);
+                }
+                if should_trace_enter_exit {
+                    eprintln!(
+                        "[ptx emit trace] exit method='{}' stmt={}/{}",
+                        symbol_name, statement_no, total_statements
+                    );
+                }
+            }
+            if should_trace {
+                eprintln!("[ptx emit trace] done method='{}'", symbol_name);
             }
             unsafe { LLVMBuildBr(method_emitter.variables_builder.get(), real_bb) };
         }
@@ -408,6 +484,28 @@ fn llvm_ftz(ftz: bool) -> &'static str {
     if ftz { "preserve-sign" } else { "ieee" }
 }
 
+fn statement_kind_name(
+    statement: &Statement<ast::Instruction<SpirvWord>, SpirvWord>,
+) -> &'static str {
+    match statement {
+        Statement::Variable(_) => "Variable",
+        Statement::Label(_) => "Label",
+        Statement::Instruction(_) => "Instruction",
+        Statement::Conditional(_) => "Conditional",
+        Statement::Conversion(_) => "Conversion",
+        Statement::Constant(_) => "Constant",
+        Statement::RetValue(_, _) => "RetValue",
+        Statement::PtrAccess(_) => "PtrAccess",
+        Statement::RepackVector(_) => "RepackVector",
+        Statement::FunctionPointer(_) => "FunctionPointer",
+        Statement::VectorRead(_) => "VectorRead",
+        Statement::VectorWrite(_) => "VectorWrite",
+        Statement::SetMode(_) => "SetMode",
+        Statement::FpSaturate { .. } => "FpSaturate",
+        Statement::FpModeRequired { .. } => "FpModeRequired",
+    }
+}
+
 fn get_input_argument_type(
     context: LLVMContextRef,
     v_type: &ast::Type,
@@ -429,6 +527,7 @@ struct MethodEmitContext<'a> {
     builder: LLVMBuilderRef,
     variables_builder: Builder,
     resolver: &'a mut ResolveIdent,
+    carry_flag: Option<LLVMValueRef>,
 }
 
 impl<'a> MethodEmitContext<'a> {
@@ -443,6 +542,7 @@ impl<'a> MethodEmitContext<'a> {
             builder: parent.builder.get(),
             variables_builder,
             resolver: &mut parent.resolver,
+            carry_flag: None,
             method,
         }
     }
@@ -489,18 +589,18 @@ impl<'a> MethodEmitContext<'a> {
         rounding_mode_f32: ast::RoundingMode,
         rounding_mode_f16f64: ast::RoundingMode,
     ) -> Result<(), TranslateError> {
-        if is_kernel {
-            if rounding_mode_f32 != ast::RoundingMode::NearestEven
-                || rounding_mode_f16f64 != ast::RoundingMode::NearestEven
-            {
-                self.emit_set_mode(ModeRegister::Rounding {
+            if is_kernel {
+                if rounding_mode_f32 != ast::RoundingMode::NearestEven
+                    || rounding_mode_f16f64 != ast::RoundingMode::NearestEven
+                {
+                    self.emit_set_mode(ModeRegister::Rounding {
                     f32: rounding_mode_f32,
                     f16f64: rounding_mode_f16f64,
                 })?;
+                }
             }
+            Ok(())
         }
-        Ok(())
-    }
 
     fn emit_variable(&mut self, var: ast::Variable<SpirvWord>) -> Result<(), TranslateError> {
         #[cfg(feature = "pacc")]
@@ -512,7 +612,7 @@ impl<'a> MethodEmitContext<'a> {
                 self.variables_builder.get(),
                 get_type(self.context, &var.info.v_type)?,
                 get_state_space(var.info.state_space)?,
-                llvm_name,
+                llvm_name.cast(),
             )
         };
         self.resolver.register(var.name, alloca);
@@ -584,6 +684,7 @@ impl<'a> MethodEmitContext<'a> {
             ast::Instruction::Ret { data } => Ok(self.emit_ret(data)),
             ast::Instruction::Cvta { data, arguments } => self.emit_cvta(data, arguments),
             ast::Instruction::Abs { data, arguments } => self.emit_abs(data, arguments),
+            ast::Instruction::Copysign { data, arguments } => self.emit_copysign(data, arguments),
             ast::Instruction::Mad { data, arguments } => self.emit_mad(data, arguments),
             ast::Instruction::Fma { data, arguments } => self.emit_fma(data, arguments),
             ast::Instruction::Sub { data, arguments } => self.emit_sub(data, arguments),
@@ -657,6 +758,8 @@ impl<'a> MethodEmitContext<'a> {
             | ast::Instruction::Vote { .. }
             | ast::Instruction::Nanosleep { .. }
             | ast::Instruction::ReduxSync { .. }
+            | ast::Instruction::VSub4 { .. }
+            | ast::Instruction::VSet4 { .. }
             | ast::Instruction::Prmt { .. } => return Err(error_unreachable()),
         }
     }
@@ -2203,28 +2306,97 @@ impl<'a> MethodEmitContext<'a> {
         data: ptx_parser::ShfDetails,
         arguments: ShfArgs<SpirvWord>,
     ) -> Result<(), TranslateError> {
-        let lsb = self.resolver.value(arguments.src_a)?;
-        let msb = self.resolver.value(arguments.src_b)?;
+        let trace_shf = std::env::var("HETGPU_PACC_TRACE_SHF")
+            .ok()
+            .as_deref()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if trace_shf {
+            eprintln!(
+                "[ptx emit shf] begin dir={:?} mode={:?} dst={:?} a={:?} b={:?} c={:?}",
+                data.direction,
+                data.mode,
+                arguments.dst,
+                arguments.src_a,
+                arguments.src_b,
+                arguments.src_c
+            );
+        }
+        let src_a = self.resolver.value(arguments.src_a)?;
+        if trace_shf {
+            eprintln!("[ptx emit shf] resolved src_a");
+        }
+        let src_b = self.resolver.value(arguments.src_b)?;
+        if trace_shf {
+            eprintln!("[ptx emit shf] resolved src_b");
+        }
         let shift_amount = self.resolver.value(arguments.src_c)?;
+        if trace_shf {
+            eprintln!("[ptx emit shf] resolved shift_amount");
+        }
 
         let llvm_i32 = get_scalar_type(self.context, ast::ScalarType::B32);
+        let const_31 = unsafe { LLVMConstInt(llvm_i32, 31, 0) };
         let const_32 = unsafe { LLVMConstInt(llvm_i32, 32, 0) };
+        if trace_shf {
+            eprintln!("[ptx emit shf] created constants");
+        }
 
-        let intrinsic = match data.direction {
-            ptx_parser::ShiftDirection::R => c"llvm.fshr.i32",
-            ptx_parser::ShiftDirection::L => c"llvm.fshl.i32",
+        // PTX shf.{l,r}.{wrap,clamp}.b32 uses raw bit semantics over two 32-bit
+        // operands. Lower it explicitly instead of relying on llvm.fshl/fshr:
+        // the intrinsic path hangs in the current PACC rope_neox workload.
+        let masked_shift = unsafe {
+            LLVMBuildAnd(
+                self.builder,
+                shift_amount,
+                const_31,
+                LLVM_UNNAMED.as_ptr(),
+            )
         };
+        if trace_shf {
+            eprintln!("[ptx emit shf] built masked_shift");
+        }
+        let inverse_shift = unsafe {
+            let diff = LLVMBuildSub(self.builder, const_32, masked_shift, LLVM_UNNAMED.as_ptr());
+            LLVMBuildAnd(self.builder, diff, const_31, LLVM_UNNAMED.as_ptr())
+        };
+        if trace_shf {
+            eprintln!("[ptx emit shf] built inverse_shift");
+        }
 
-        let shifted = self.emit_intrinsic(
-            intrinsic,
-            None,
-            Some(&ast::Type::Scalar(ptx_parser::ScalarType::B32)),
-            vec![(msb, llvm_i32), (lsb, llvm_i32), (shift_amount, llvm_i32)],
-        )?;
+        let shifted = match data.direction {
+            ptx_parser::ShiftDirection::L => unsafe {
+                let left = LLVMBuildShl(self.builder, src_b, masked_shift, LLVM_UNNAMED.as_ptr());
+                if trace_shf {
+                    eprintln!("[ptx emit shf] built left-shift");
+                }
+                let right =
+                    LLVMBuildLShr(self.builder, src_a, inverse_shift, LLVM_UNNAMED.as_ptr());
+                if trace_shf {
+                    eprintln!("[ptx emit shf] built right-part");
+                }
+                LLVMBuildOr(self.builder, left, right, LLVM_UNNAMED.as_ptr())
+            },
+            ptx_parser::ShiftDirection::R => unsafe {
+                let right =
+                    LLVMBuildLShr(self.builder, src_a, masked_shift, LLVM_UNNAMED.as_ptr());
+                if trace_shf {
+                    eprintln!("[ptx emit shf] built right-shift");
+                }
+                let left = LLVMBuildShl(self.builder, src_b, inverse_shift, LLVM_UNNAMED.as_ptr());
+                if trace_shf {
+                    eprintln!("[ptx emit shf] built left-part");
+                }
+                LLVMBuildOr(self.builder, left, right, LLVM_UNNAMED.as_ptr())
+            },
+        };
+        if trace_shf {
+            eprintln!("[ptx emit shf] built merged result");
+        }
 
         if data.mode == FunnelShiftMode::Clamp {
-            // `llvm.fsh*` acts like `shf.*.wrap`. To implement clamp, we must conditionally return
-            // the left or right-most 32 bits if `shift_amount` is greater than or equal to 32.
+            // Clamp returns the left-most/right-most 32 bits once the shift reaches
+            // a whole word instead of wrapping back around.
 
             let should_clamp = unsafe {
                 LLVMBuildICmp(
@@ -2237,20 +2409,32 @@ impl<'a> MethodEmitContext<'a> {
             };
 
             let max_shift = match data.direction {
-                ptx_parser::ShiftDirection::R => msb,
-                ptx_parser::ShiftDirection::L => lsb,
+                ptx_parser::ShiftDirection::R => src_b,
+                ptx_parser::ShiftDirection::L => src_a,
             };
 
             self.resolver.with_result(arguments.dst, |dst| unsafe {
                 LLVMBuildSelect(self.builder, should_clamp, max_shift, shifted, dst)
             });
+            if trace_shf {
+                eprintln!("[ptx emit shf] registered clamp result");
+            }
         } else {
-            let name = self.resolver.get_or_add(arguments.dst);
-            let llvm_name = sanitize_llvm_value_name(name);
-            unsafe { LLVMSetValueName2(shifted, llvm_name.as_ptr().cast(), llvm_name.len()) };
+            #[cfg(not(feature = "pacc"))]
+            {
+                let name = self.resolver.get_or_add(arguments.dst);
+                let llvm_name = sanitize_llvm_value_name(name);
+                unsafe { LLVMSetValueName2(shifted, llvm_name.as_ptr().cast(), llvm_name.len()) };
+            }
             self.resolver.register(arguments.dst, shifted);
+            if trace_shf {
+                eprintln!("[ptx emit shf] registered wrap result");
+            }
         }
 
+        if trace_shf {
+            eprintln!("[ptx emit shf] done");
+        }
         Ok(())
     }
 
@@ -2459,6 +2643,11 @@ impl<'a> MethodEmitContext<'a> {
     }
 
     fn emit_bar_warp(&mut self) -> Result<(), TranslateError> {
+        #[cfg(feature = "pacc")]
+        {
+            return Ok(());
+        }
+        #[cfg(not(feature = "pacc"))]
         self.emit_intrinsic(c"llvm.amdgcn.wave.barrier", None, None, vec![])?;
         Ok(())
     }
@@ -2633,6 +2822,8 @@ impl<'a> MethodEmitContext<'a> {
             ptx_parser::MadDetails::Integer {
                 saturate: true,
                 control: ast::MulIntControl::High,
+                carry_in: false,
+                carry_out: false,
                 type_: ast::ScalarType::S32,
             } => {
                 return self.emit_mad_hi_sat_s32(
@@ -2642,6 +2833,15 @@ impl<'a> MethodEmitContext<'a> {
             }
             ptx_parser::MadDetails::Integer { saturate: true, .. } => {
                 return Err(error_unreachable());
+            }
+            ptx_parser::MadDetails::Integer {
+                type_: ast::ScalarType::U32,
+                control,
+                carry_in,
+                carry_out,
+                ..
+            } if carry_in || carry_out => {
+                return self.emit_mad_carry_u32(control, carry_in, carry_out, arguments);
             }
             ptx_parser::MadDetails::Integer { type_, control, .. } => {
                 ast::MulDetails::Integer { control, type_ }
@@ -2655,13 +2855,110 @@ impl<'a> MethodEmitContext<'a> {
         Ok(())
     }
 
+    fn emit_mad_carry_u32(
+        &mut self,
+        control: ast::MulIntControl,
+        carry_in: bool,
+        carry_out: bool,
+        arguments: ptx_parser::MadArgs<SpirvWord>,
+    ) -> Result<(), TranslateError> {
+        let i1_type = unsafe { LLVMInt1TypeInContext(self.context) };
+        let i32_type = get_scalar_type(self.context, ast::ScalarType::U32);
+        let i64_type = get_scalar_type(self.context, ast::ScalarType::U64);
+        let false_i1 = unsafe { LLVMConstInt(i1_type, 0, 0) };
+
+        let src1 = self.resolver.value(arguments.src1)?;
+        let src2 = self.resolver.value(arguments.src2)?;
+        let src3 = self.resolver.value(arguments.src3)?;
+
+        let src1_64 =
+            unsafe { LLVMBuildZExt(self.builder, src1, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let src2_64 =
+            unsafe { LLVMBuildZExt(self.builder, src2, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let src3_64 =
+            unsafe { LLVMBuildZExt(self.builder, src3, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let product_64 = unsafe {
+            LLVMBuildMul(
+                self.builder,
+                src1_64,
+                src2_64,
+                LLVM_UNNAMED.as_ptr(),
+            )
+        };
+
+        let term_32 = match control {
+            ast::MulIntControl::Low => unsafe {
+                LLVMBuildTrunc(self.builder, product_64, i32_type, LLVM_UNNAMED.as_ptr())
+            },
+            ast::MulIntControl::High => {
+                let shift = unsafe { LLVMConstInt(i64_type, 32, 0) };
+                let high_64 = unsafe {
+                    LLVMBuildLShr(self.builder, product_64, shift, LLVM_UNNAMED.as_ptr())
+                };
+                unsafe { LLVMBuildTrunc(self.builder, high_64, i32_type, LLVM_UNNAMED.as_ptr()) }
+            }
+            ast::MulIntControl::Wide => {
+                return Err(error_todo_msg(
+                    "carry-aware mad.wide integer lowering is not implemented",
+                ));
+            }
+        };
+        let term_64 =
+            unsafe { LLVMBuildZExt(self.builder, term_32, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let mut sum_64 = unsafe {
+            LLVMBuildAdd(
+                self.builder,
+                term_64,
+                src3_64,
+                LLVM_UNNAMED.as_ptr(),
+            )
+        };
+        if carry_in {
+            let carry_64 = unsafe {
+                LLVMBuildZExt(
+                    self.builder,
+                    self.carry_flag.unwrap_or(false_i1),
+                    i64_type,
+                    LLVM_UNNAMED.as_ptr(),
+                )
+            };
+            sum_64 = unsafe {
+                LLVMBuildAdd(
+                    self.builder,
+                    sum_64,
+                    carry_64,
+                    LLVM_UNNAMED.as_ptr(),
+                )
+            };
+        }
+
+        let dst_32 =
+            unsafe { LLVMBuildTrunc(self.builder, sum_64, i32_type, LLVM_UNNAMED.as_ptr()) };
+        self.resolver.register(arguments.dst, dst_32);
+
+        if carry_out {
+            let max_u32 = unsafe { LLVMConstInt(i64_type, u32::MAX as u64, 0) };
+            let overflow = unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    LLVMIntPredicate::LLVMIntUGT,
+                    sum_64,
+                    max_u32,
+                    LLVM_UNNAMED.as_ptr(),
+                )
+            };
+            self.carry_flag = Some(overflow);
+        }
+        Ok(())
+    }
+
     fn emit_membar(&self, data: ptx_parser::MemScope) -> Result<(), TranslateError> {
         unsafe {
             LLVMZludaBuildFence(
                 self.builder,
                 LLVMAtomicOrdering::LLVMAtomicOrderingSequentiallyConsistent,
                 get_scope_membar(data)?,
-                LLVM_UNNAMED.as_ptr(),
+                LLVM_UNNAMED.as_ptr().cast(),
             )
         };
         Ok(())
@@ -2700,6 +2997,25 @@ impl<'a> MethodEmitContext<'a> {
         } else {
             self.resolver.register(arguments.dst, abs_result);
         }
+        Ok(())
+    }
+
+    fn emit_copysign(
+        &mut self,
+        data: ast::ScalarType,
+        arguments: ptx_parser::CopysignArgs<SpirvWord>,
+    ) -> Result<(), TranslateError> {
+        let llvm_type = get_scalar_type(self.context, data);
+        let llvm_intrinsic = format!("llvm.copysign.{}\0", LLVMTypeDisplay(data));
+        self.emit_intrinsic(
+            unsafe { CStr::from_bytes_with_nul_unchecked(llvm_intrinsic.as_bytes()) },
+            Some(arguments.dst),
+            Some(&data.into()),
+            vec![
+                (self.resolver.value(arguments.src1)?, llvm_type),
+                (self.resolver.value(arguments.src2)?, llvm_type),
+            ],
+        )?;
         Ok(())
     }
 
@@ -3466,17 +3782,18 @@ fn get_pointer_type<'ctx>(
 }
 
 // https://llvm.org/docs/AMDGPUUsage.html#memory-scopes
-fn get_scope(scope: ast::MemScope) -> Result<*const c_char, TranslateError> {
+fn get_scope(scope: ast::MemScope) -> Result<*const u8, TranslateError> {
     Ok(match scope {
         ast::MemScope::Cta => c"workgroup-one-as",
         ast::MemScope::Gpu => c"agent-one-as",
         ast::MemScope::Sys => c"one-as",
         ast::MemScope::Cluster => return Err(error_todo()),
     }
-    .as_ptr())
+    .as_ptr()
+    .cast())
 }
 
-fn get_scope_membar(scope: ast::MemScope) -> Result<*const c_char, TranslateError> {
+fn get_scope_membar(scope: ast::MemScope) -> Result<*const u8, TranslateError> {
     Ok(match scope {
         ast::MemScope::Cta => c"workgroup",
         ast::MemScope::Gpu => c"agent",
@@ -3484,7 +3801,8 @@ fn get_scope_membar(scope: ast::MemScope) -> Result<*const c_char, TranslateErro
         ast::MemScope::Sys => c"",
         ast::MemScope::Cluster => return Err(error_todo()),
     }
-    .as_ptr())
+    .as_ptr()
+    .cast())
 }
 
 fn get_ordering(semantics: ast::AtomSemantics) -> LLVMAtomicOrdering {
