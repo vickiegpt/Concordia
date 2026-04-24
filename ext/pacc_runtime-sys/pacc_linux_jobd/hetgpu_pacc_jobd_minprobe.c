@@ -49,6 +49,10 @@
 #define HETGPU_PACC_RUNTIME_TABLE_VERSION 1U
 #define AP2PACC_MBOX_PHYS 0x20000000ULL
 #define PACC2AP_MBOX_PHYS 0x20002000ULL
+#define HETGPU_PACC_SHARED_DDR_HELPER_OFF 0x00100000ULL
+#define HETGPU_PACC_AP2PACC_READ_HELPER_OFF 0x02000000ULL
+#define HETGPU_PACC_PACC2AP_RW_HELPER_OFF 0x02002000ULL
+#define HETGPU_PACC_DEFAULT_SHARED_DDR_BYTES 0x01000000ULL
 #define HETGPU_PACC_STARTUP_BEACON_OFF 0x1f00ULL
 #define HETGPU_PACC_STARTUP_BEACON_MAGIC 0x4d494e50524f4245ULL
 #define HETGPU_PACC_COMPLETION_OFF 0x1f20ULL
@@ -262,6 +266,9 @@ struct Map {
     void *base;
     size_t map_len;
     void *ptr;
+    int helper_fd;
+    uint64_t helper_off;
+    bool helper_backed;
 };
 
 struct KernelBindingMap {
@@ -366,11 +373,93 @@ static uint64_t hash_kernel_name_bytes(const char *name) {
     return hash;
 }
 
+static uint64_t env_u64(const char *name, uint64_t fallback) {
+    const char *value = getenv(name);
+    char *end = NULL;
+    unsigned long long parsed;
+    if (!value || !*value) return fallback;
+    errno = 0;
+    parsed = strtoull(value, &end, 0);
+    if (errno || end == value) return fallback;
+    return (uint64_t)parsed;
+}
+
+static bool fd_points_to_mbox_helper(int fd) {
+    char proc_path[64];
+    char target[PATH_MAX];
+    ssize_t n;
+    snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+    n = readlink(proc_path, target, sizeof(target) - 1);
+    if (n <= 0) return false;
+    target[n] = '\0';
+    return strstr(target, "/dev/hetgpu_pacc_mbox") != NULL;
+}
+
+static int helper_io_full(int fd, bool write_mode, uint64_t off, void *buf, size_t len) {
+    const size_t chunk = 32;
+    size_t done = 0;
+    while (done < len) {
+        size_t n = len - done;
+        ssize_t rc;
+        if (n > chunk) n = chunk;
+        if (write_mode) {
+            rc = pwrite(fd, (const char *)buf + done, n, (off_t)(off + done));
+        } else {
+            rc = pread(fd, (char *)buf + done, n, (off_t)(off + done));
+        }
+        if (rc < 0) return -1;
+        if (rc == 0) {
+            errno = EIO;
+            return -1;
+        }
+        done += (size_t)rc;
+    }
+    return 0;
+}
+
+static bool helper_offset_for_phys(uint64_t phys, uint64_t *helper_off) {
+    uint64_t shared_base = env_u64("HETGPU_PACC_SHARED_DDR_BASE", 0);
+    uint64_t shared_bytes = env_u64("HETGPU_PACC_SHARED_DDR_BYTES",
+                                    HETGPU_PACC_DEFAULT_SHARED_DDR_BYTES);
+    if (phys >= AP2PACC_MBOX_PHYS &&
+        phys < AP2PACC_MBOX_PHYS + HETGPU_PACC_CONTROL_BYTES) {
+        *helper_off = HETGPU_PACC_AP2PACC_READ_HELPER_OFF + (phys - AP2PACC_MBOX_PHYS);
+        return true;
+    }
+    if (phys >= PACC2AP_MBOX_PHYS &&
+        phys < PACC2AP_MBOX_PHYS + HETGPU_PACC_CONTROL_BYTES) {
+        *helper_off = HETGPU_PACC_PACC2AP_RW_HELPER_OFF + (phys - PACC2AP_MBOX_PHYS);
+        return true;
+    }
+    if (shared_base && shared_bytes &&
+        phys >= shared_base && phys < shared_base + shared_bytes) {
+        *helper_off = HETGPU_PACC_SHARED_DDR_HELPER_OFF + (phys - shared_base);
+        return true;
+    }
+    return false;
+}
+
 static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out) {
     uint64_t page = (uint64_t)g_page_size;
     uint64_t base = phys & ~(page - 1);
     size_t off = (size_t)(phys - base);
     size_t map_len = ((off + len + page - 1) / page) * page;
+    uint64_t helper_off = 0;
+    if (fd_points_to_mbox_helper(fd) && helper_offset_for_phys(base, &helper_off)) {
+        void *p = calloc(1, map_len);
+        if (!p) return -1;
+        if (helper_io_full(fd, false, helper_off, p, map_len) != 0) {
+            free(p);
+            return -1;
+        }
+        out->base = p;
+        out->map_len = map_len;
+        out->ptr = (char *)p + off;
+        out->helper_fd = fd;
+        out->helper_off = helper_off;
+        out->helper_backed = true;
+        return 0;
+    }
     void *p = mmap(NULL, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)base);
     if (p == MAP_FAILED) {
         return -1;
@@ -382,6 +471,12 @@ static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out) {
 }
 
 static void unmap_phys(struct Map *m) {
+    if (m->helper_backed && m->base) {
+        (void)helper_io_full(m->helper_fd, true, m->helper_off, m->base, m->map_len);
+        free(m->base);
+        memset(m, 0, sizeof(*m));
+        return;
+    }
     if (m->base && m->base != MAP_FAILED) {
         munmap(m->base, m->map_len);
     }

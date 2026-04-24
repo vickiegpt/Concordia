@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <pthread.h>
+#include <limits.h>
 
 // Real cuBLAS library handle
 static void* real_cublas_handle = NULL;
@@ -165,6 +166,7 @@ static int hetgpu_cublas_trace_enabled(void) {
     }
 
 static cublasMath_t g_math_mode = CUBLAS_DEFAULT_MATH;
+static size_t host_dtype_size(cudaDataType type);
 
 extern int hetgpu_pacc_submit_gemm(
     int transa, int transb, int m, int n, int k,
@@ -202,6 +204,7 @@ extern int hetgpu_pacc_submit_gemm_staged_tiled(
     int max_m, int max_n, int max_k);
 extern unsigned long long hetgpu_pacc_resolve_device_addr(const void *ptr);
 extern int hetgpu_pacc_is_device_ptr(const void *ptr);
+extern size_t hetgpu_pacc_allocation_remaining(const void *ptr);
 extern cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind kind);
 
 static int hetgpu_env_is_one(const char *name) {
@@ -210,8 +213,118 @@ static int hetgpu_env_is_one(const char *name) {
 }
 
 static int pacc_runtime_marked_ready(void) {
+    if (!hetgpu_env_is_one("HETGPU_PACC_ENFORCE_RUNTIME_READY")) {
+        return 1;
+    }
     return hetgpu_env_is_one("HETGPU_PACC_RUNTIME_READY") ||
            hetgpu_env_is_one("HETGPU_PACC_BOOT_RUNTIME");
+}
+
+static int hetgpu_checked_add_size(size_t a, size_t b, size_t *out) {
+    if (SIZE_MAX - a < b) {
+        return 0;
+    }
+    *out = a + b;
+    return 1;
+}
+
+static int hetgpu_checked_mul_size(size_t a, size_t b, size_t *out) {
+    if (a != 0 && b > SIZE_MAX / a) {
+        return 0;
+    }
+    *out = a * b;
+    return 1;
+}
+
+static int hetgpu_gemm_matrix_span_elems(cublasOperation_t trans, int rows, int cols, int ld, size_t *out) {
+    if (!out || rows < 0 || cols < 0 || ld <= 0) {
+        return 0;
+    }
+    if (rows == 0 || cols == 0) {
+        *out = 0;
+        return 1;
+    }
+    size_t r = (size_t)rows;
+    size_t c = (size_t)cols;
+    size_t lead = (size_t)ld;
+    size_t term_a = 0;
+    size_t term_b = 0;
+    if (trans == CUBLAS_OP_N) {
+        if (!hetgpu_checked_mul_size(c - 1, lead, &term_a)) {
+            return 0;
+        }
+        return hetgpu_checked_add_size(term_a, r, out);
+    }
+    if (!hetgpu_checked_mul_size(r - 1, lead, &term_a)) {
+        return 0;
+    }
+    term_b = c;
+    return hetgpu_checked_add_size(term_a, term_b, out);
+}
+
+static int hetgpu_gemm_c_span_elems(int m, int n, int ldc, size_t *out) {
+    if (!out || m < 0 || n < 0 || ldc <= 0) {
+        return 0;
+    }
+    if (m == 0 || n == 0) {
+        *out = 0;
+        return 1;
+    }
+    size_t col_span = 0;
+    if (!hetgpu_checked_mul_size((size_t)(n - 1), (size_t)ldc, &col_span)) {
+        return 0;
+    }
+    return hetgpu_checked_add_size(col_span, (size_t)m, out);
+}
+
+static int hetgpu_gemm_validate_region(
+    const char *name,
+    const char *which,
+    const void *ptr,
+    size_t elems,
+    size_t elem_size) {
+    size_t bytes = 0;
+    if (!ptr || elem_size == 0 || !hetgpu_checked_mul_size(elems, elem_size, &bytes)) {
+        DEBUG_LOG("%s invalid %s GEMM region ptr=%p elems=%zu elem=%zu", name, which, ptr, elems, elem_size);
+        return 0;
+    }
+    size_t remaining = hetgpu_pacc_allocation_remaining(ptr);
+    if (remaining != SIZE_MAX && bytes > remaining) {
+        fprintf(stderr,
+                "[hetGPU cublas_shim] %s refuses %s out-of-bounds GEMM region: ptr=%p need=%zu remaining=%zu\n",
+                name, which, ptr, bytes, remaining);
+        return 0;
+    }
+    return 1;
+}
+
+static cublasStatus_t hetgpu_validate_gemm_regions(
+    const char *name,
+    cublasOperation_t transa, cublasOperation_t transb,
+    int m, int n, int k,
+    const void *A, cudaDataType Atype, int lda,
+    const void *B, cudaDataType Btype, int ldb,
+    const void *C, cudaDataType Ctype, int ldc) {
+    size_t a_elems = 0;
+    size_t b_elems = 0;
+    size_t c_elems = 0;
+    size_t a_size = host_dtype_size(Atype);
+    size_t b_size = host_dtype_size(Btype);
+    size_t c_size = host_dtype_size(Ctype);
+    if (!hetgpu_gemm_matrix_span_elems(transa, m, k, lda, &a_elems) ||
+        !hetgpu_gemm_matrix_span_elems(transb, k, n, ldb, &b_elems) ||
+        !hetgpu_gemm_c_span_elems(m, n, ldc, &c_elems)) {
+        fprintf(stderr,
+                "[hetGPU cublas_shim] %s invalid GEMM shape m=%d n=%d k=%d lda=%d ldb=%d ldc=%d trans=%d/%d\n",
+                name, m, n, k, lda, ldb, ldc, (int)transa, (int)transb);
+        return CUBLAS_STATUS_INVALID_VALUE;
+    }
+    if (!hetgpu_gemm_validate_region(name, "A", A, a_elems, a_size) ||
+        !hetgpu_gemm_validate_region(name, "B", B, b_elems, b_size) ||
+        !hetgpu_gemm_validate_region(name, "C", C, c_elems, c_size)) {
+        return CUBLAS_STATUS_INVALID_VALUE;
+    }
+    return CUBLAS_STATUS_SUCCESS;
 }
 
 static int hetgpu_copy_pointer_array_to_host(void **dst, const void *src, size_t ptr_bytes) {
@@ -600,6 +713,14 @@ static cublasStatus_t submit_pacc_gemm(
     const void *beta,
     void *C, cudaDataType Ctype, int ldc, long long strideC,
     int batchCount, cublasComputeType_t computeType) {
+    cublasStatus_t region_status = hetgpu_validate_gemm_regions(
+        name, transa, transb, m, n, k,
+        A, Atype, lda,
+        B, Btype, ldb,
+        C, Ctype, ldc);
+    if (region_status != CUBLAS_STATUS_SUCCESS) {
+        return region_status;
+    }
     float alpha_f32 = host_read_scale(alpha, computeType, 1.0f);
     float beta_f32 = host_read_scale(beta, computeType, 0.0f);
     const void *alpha_arg = alpha ? (const void *)&alpha_f32 : NULL;
@@ -661,7 +782,9 @@ static cublasStatus_t submit_pacc_gemm(
         if (fw_max_m > 0 && max_m > fw_max_m) max_m = fw_max_m;
         if (fw_max_n > 0 && max_n > fw_max_n) max_n = fw_max_n;
         if (fw_max_k > 0 && max_k > fw_max_k) max_k = fw_max_k;
-        DEBUG_LOG("%s using PACC shared-DDR staged submit", name);
+        DEBUG_LOG("%s using PACC shared-DDR staged submit trans=%d/%d m=%d n=%d k=%d lda=%d ldb=%d ldc=%d batch=%d stride=%lld/%lld/%lld",
+                  name, (int)transa, (int)transb, m, n, k, lda, ldb, ldc, batchCount,
+                  strideA, strideB, strideC);
         rc = 0;
         size_t a_size = host_dtype_size(Atype);
         size_t b_size = host_dtype_size(Btype);
@@ -753,7 +876,7 @@ static cublasStatus_t submit_pacc_gemm(
                             } else {
                                 chunk_B += ((size_t)col + (size_t)kk * (size_t)ldb) * b_size;
                             }
-                            const void *chunk_beta = (kk == 0) ? beta : &one_beta;
+                            const void *chunk_beta = (kk == 0) ? beta_arg : &one_beta;
                             int chunk_rc = hetgpu_pacc_submit_gemm_staged(
                                 (int)transa, (int)transb, chunk_m, chunk_n, chunk_k,
                                 alpha_arg,
@@ -1361,8 +1484,8 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
                                     cublasComputeType_t computeType, cublasGemmAlgo_t algo) {
     (void)handle;
     (void)algo;
-    DEBUG_LOG("cublasGemmBatchedEx called: m=%d, n=%d, k=%d, batchCount=%d, Atype=%d, Btype=%d, Ctype=%d",
-              m, n, k, batchCount, Atype, Btype, Ctype);
+    DEBUG_LOG("cublasGemmBatchedEx called: m=%d, n=%d, k=%d, batchCount=%d, Atype=%d, Btype=%d, Ctype=%d, lda=%d, ldb=%d, ldc=%d",
+              m, n, k, batchCount, Atype, Btype, Ctype, lda, ldb, ldc);
     if (!Aarray || !Barray || !Carray || batchCount < 0) {
         return CUBLAS_STATUS_INVALID_VALUE;
     }

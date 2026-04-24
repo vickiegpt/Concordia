@@ -912,28 +912,13 @@ static PACC_ALLOC_MAP: std::sync::LazyLock<
 fn pacc_alloc_host(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
     use std::alloc::{alloc_zeroed, Layout};
 
-    let align = 256;
-    // Leave a small guard area because some CUDA callers query an interior
-    // pointer and compute available bytes relative to that offset. Qwen 35B
-    // was consistently short by 64 B during tensor load, so host-backed
-    // allocations keep one extra aligned chunk of headroom.
-    let alloc_size = bytesize
-        .max(1)
-        .saturating_add(align)
-        .next_multiple_of(align);
+    let align = 64;
+    let alloc_size = bytesize.max(1);
     let layout = Layout::from_size_align(alloc_size, align).map_err(|_| CUerror::OUT_OF_MEMORY)?;
     let ptr = unsafe { alloc_zeroed(layout) };
     if ptr.is_null() {
         return Err(CUerror::OUT_OF_MEMORY);
     }
-    eprintln!(
-        "[PACC Backend] host alloc bytesize={} alloc_size={} ptr=0x{:x} mod128={} mod256={}",
-        bytesize,
-        alloc_size,
-        ptr as u64,
-        (ptr as usize) % 128,
-        (ptr as usize) % 256,
-    );
     Ok((
         ptr as u64,
         PaccAlloc {
@@ -1276,6 +1261,25 @@ pub(crate) fn pacc_resolve_device_addr(ptr: *const ::core::ffi::c_void) -> Optio
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+pub(crate) fn pacc_allocation_remaining_addr(addr: u64) -> Option<usize> {
+    let map = PACC_ALLOC_MAP.lock().unwrap();
+    map.iter().find_map(|(base, alloc)| {
+        let start = *base;
+        let end = start.saturating_add(alloc.size as u64);
+        if addr >= start && addr < end {
+            Some((end - addr) as usize)
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 #[no_mangle]
 pub unsafe extern "C" fn hetgpu_pacc_resolve_device_addr(ptr: *const ::core::ffi::c_void) -> u64 {
     pacc_resolve_device_addr(ptr).unwrap_or(ptr as u64)
@@ -1300,4 +1304,21 @@ pub unsafe extern "C" fn hetgpu_pacc_is_device_ptr(ptr: *const ::core::ffi::c_vo
     } else {
         0
     }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_pacc_allocation_remaining(
+    ptr: *const ::core::ffi::c_void,
+) -> usize {
+    let addr = ptr as u64;
+    if addr == 0 {
+        return 0;
+    }
+    pacc_allocation_remaining_addr(addr).unwrap_or(0)
 }

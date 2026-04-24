@@ -8,7 +8,7 @@ use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use tempfile::{tempdir, Builder, TempDir};
+use tempfile::{Builder, TempDir, tempdir};
 
 use crate::{
     pacc_comgr_action_info_t, pacc_comgr_action_kind_s, pacc_comgr_create_data,
@@ -459,9 +459,7 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
             .and_then(|s| s.to_str())
             .unwrap_or("input");
         let output_file = ctx.temp_dir.join(format!("{}_optimized.bc", file_stem));
-        let input_size = fs::metadata(&input_file)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let input_size = fs::metadata(&input_file).map(|m| m.len()).unwrap_or(0);
 
         if input_size >= 1_000_000 {
             eprintln!(
@@ -471,7 +469,10 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
             );
             fs::copy(&input_file, &output_file)
                 .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
-            eprintln!("PACC: Copied bitcode without optimization: {}", output_file.display());
+            eprintln!(
+                "PACC: Copied bitcode without optimization: {}",
+                output_file.display()
+            );
             continue;
         }
 
@@ -717,7 +718,9 @@ fn compile_c_family_source_to_bitcode(
     let sysroot = std::env::var("HETGPU_PACC_SOURCE_SYSROOT").unwrap_or_else(|_| "/".to_string());
     let gcc_toolchain =
         std::env::var("HETGPU_PACC_SOURCE_GCC_TOOLCHAIN").unwrap_or_else(|_| "/usr".to_string());
-    let march = std::env::var("HETGPU_PACC_SOURCE_MARCH").unwrap_or_else(|_| config.march.clone());
+    let march = riscv_march_with_required_extensions(
+        &std::env::var("HETGPU_PACC_SOURCE_MARCH").unwrap_or_else(|_| config.march.clone()),
+    );
     let mabi = std::env::var("HETGPU_PACC_SOURCE_MABI").unwrap_or_else(|_| "lp64d".to_string());
 
     let mut cmd = Command::new(clang);
@@ -756,6 +759,21 @@ fn apply_action_context_to_command(ctx: &ActionContext, cmd: &mut Command) {
         .env("TMPDIR", &ctx.temp_dir)
         .env("TEMP", &ctx.temp_dir)
         .env("TMP", &ctx.temp_dir);
+}
+
+fn riscv_march_with_required_extensions(march: &str) -> String {
+    if !(march.starts_with("rv32") || march.starts_with("rv64")) {
+        return march.to_string();
+    }
+
+    let has_zbb = march
+        .split('_')
+        .any(|ext| ext.to_ascii_lowercase().starts_with("zbb"));
+    if has_zbb {
+        march.to_string()
+    } else {
+        format!("{march}_zbb")
+    }
 }
 
 fn resolve_original_input_path(
@@ -819,13 +837,14 @@ fn compile_bc_to_xm_object(
         "HETGPU_PACC_CLANG",
         &["/usr/bin/clang-20", "clang-20", "clang"],
     );
+    let march = riscv_march_with_required_extensions(&config.march);
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
         .arg(&config.target_triple)
         .arg("-mllvm")
         .arg("-non-global-value-max-name-size=16384")
         .arg("-menable-experimental-extensions")
-        .arg(format!("-march={}", config.march))
+        .arg(format!("-march={}", march))
         .arg("-Wno-override-module")
         .arg("-c")
         .arg(input_file)
@@ -878,13 +897,14 @@ fn compile_bc_to_xm_assembly(
         "HETGPU_PACC_CLANG",
         &["/usr/bin/clang-20", "clang-20", "clang"],
     );
+    let march = riscv_march_with_required_extensions(&config.march);
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
         .arg(&config.target_triple)
         .arg("-mllvm")
         .arg("-non-global-value-max-name-size=16384")
         .arg("-menable-experimental-extensions")
-        .arg(format!("-march={}", config.march))
+        .arg(format!("-march={}", march))
         .arg("-Wno-override-module")
         .arg("-S")
         .arg(input_file)
@@ -924,13 +944,14 @@ fn compile_bc_to_xm_object_via_sanitized_ll(
         "HETGPU_PACC_CLANG",
         &["/usr/bin/clang-20", "clang-20", "clang"],
     );
+    let march = riscv_march_with_required_extensions(&config.march);
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
         .arg(&config.target_triple)
         .arg("-mllvm")
         .arg("-non-global-value-max-name-size=16384")
         .arg("-menable-experimental-extensions")
-        .arg(format!("-march={}", config.march))
+        .arg(format!("-march={}", march))
         .arg("-Wno-override-module")
         .arg("-c")
         .arg(&sanitized_ll_file)
@@ -1010,7 +1031,7 @@ fn sanitize_llvm23_ir_for_llvm20(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_llvm23_ir_for_llvm20;
+    use super::{riscv_march_with_required_extensions, sanitize_llvm23_ir_for_llvm20};
 
     #[test]
     fn sanitize_attribute_group_does_not_duplicate_attributes_keyword() {
@@ -1024,6 +1045,20 @@ mod tests {
         let input = "declare void @llvm.amdgcn.wave.barrier()\ncall void @llvm.amdgcn.wave.barrier()\nret void\n";
         let output = sanitize_llvm23_ir_for_llvm20(input);
         assert_eq!(output, "ret void\n");
+    }
+
+    #[test]
+    fn riscv_march_adds_zbb_for_backend_orc_b_selection() {
+        assert_eq!(
+            riscv_march_with_required_extensions(
+                "rv64gcv_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvfwmaccqqq_xsfvqmaccqoq"
+            ),
+            "rv64gcv_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvfwmaccqqq_xsfvqmaccqoq_zbb"
+        );
+        assert_eq!(
+            riscv_march_with_required_extensions("rv64gcv_zbb_zvfbfmin"),
+            "rv64gcv_zbb_zvfbfmin"
+        );
     }
 }
 
@@ -1084,10 +1119,7 @@ fn llvm_dis_tool() -> String {
 
     if let Ok(dir) = std::env::var("HETGPU_PACC_HELPER_TARGET_DIR") {
         let base = PathBuf::from(dir);
-        for candidate in [
-            base.join("debug/build"),
-            base.join("build"),
-        ] {
+        for candidate in [base.join("debug/build"), base.join("build")] {
             if let Ok(entries) = fs::read_dir(candidate) {
                 for entry in entries.flatten() {
                     let path = entry.path().join("out/build/bin/llvm-dis");

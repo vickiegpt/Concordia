@@ -118,6 +118,16 @@ static int hetgpu_strict_pacc(void) {
     return strict && strcmp(strict, "1") == 0;
 }
 
+static int hetgpu_allow_skip_null_registered_kernel(void) {
+    const char* allow = getenv("HETGPU_CUDART_ALLOW_SKIP_NULL_FUNCTIONS");
+    return allow && strcmp(allow, "1") == 0;
+}
+
+static int hetgpu_hide_sync_errors(void) {
+    const char* hide = getenv("HETGPU_CUDART_HIDE_SYNC_ERRORS");
+    return hide && strcmp(hide, "1") == 0;
+}
+
 static cudaError_t hetgpu_set_last_error(cudaError_t error) {
     g_last_cuda_error = error;
     return error;
@@ -699,8 +709,10 @@ cudaError_t cudaGetDeviceProperties_v2(cudaDeviceProp_t prop, int device) {
     return cudaGetDeviceProperties(prop, device);
 }
 
-// Global to track current device
-static int current_device = 0;
+// CUDA runtime current device is per host thread. llama.cpp schedules work for
+// multiple visible devices from multiple threads, so a process-global current
+// device makes workers race and submit kernels to the wrong PACC context.
+static __thread int current_device = 0;
 
 cudaError_t cudaSetDevice(int device) {
     HETGPU_LOG("[hetGPU] cudaSetDevice(%d) called\n", device);
@@ -759,11 +771,11 @@ cudaError_t cudaRuntimeGetVersion(int* version) {
 }
 
 cudaError_t cudaDeviceSynchronize(void) {
-    return hetgpu_strict_pacc() ? g_last_cuda_error : HETGPU_CUDA_SUCCESS;
+    return hetgpu_hide_sync_errors() ? HETGPU_CUDA_SUCCESS : g_last_cuda_error;
 }
 cudaError_t cudaStreamSynchronize(cudaStream_t stream) {
     (void)stream;
-    return hetgpu_strict_pacc() ? g_last_cuda_error : HETGPU_CUDA_SUCCESS;
+    return hetgpu_hide_sync_errors() ? HETGPU_CUDA_SUCCESS : g_last_cuda_error;
 }
 cudaError_t cudaStreamQuery(cudaStream_t stream) { (void)stream; return 0; }
 cudaError_t cudaStreamWaitEvent(cudaStream_t stream, cudaEvent_t event, unsigned int flags) {
@@ -1285,6 +1297,7 @@ static RegisteredFunction g_functions[MAX_FUNCTIONS];
 static int g_function_count = 0;
 static int g_registry_miss_log_count = 0;
 static int g_registry_register_log_count = 0;
+static int g_null_function_log_count = 0;
 
 #define MAX_CACHED_PTX_MODULES 128
 static struct {
@@ -1293,6 +1306,42 @@ static struct {
 } g_ptx_module_cache[MAX_CACHED_PTX_MODULES];
 static int g_ptx_module_cache_count = 0;
 static int g_registry_neighbor_log_count = 0;
+
+static CUfunction lazy_load_registered_function_for_launch(const char* kernel_name, const void* launch_func);
+
+static uintptr_t hetgpu_registry_alias_window(const Dl_info *func_info) {
+    const char *env = getenv("HETGPU_CUDART_REGISTRY_ALIAS_WINDOW");
+    if (env && env[0]) {
+        char *end = NULL;
+        unsigned long long value = strtoull(env, &end, 0);
+        if (end && *end == '\0' && value > 0) {
+            return (uintptr_t)value;
+        }
+    }
+    if (func_info && func_info->dli_fname && strstr(func_info->dli_fname, "libggml-cuda.so.0") != NULL) {
+        return 0x400000;
+    }
+    return 0x1000;
+}
+
+static int hetgpu_allow_skip_unregistered_kernel(void) {
+    const char* allow = getenv("HETGPU_CUDART_ALLOW_SKIP_UNREGISTERED_KERNELS");
+    return allow && strcmp(allow, "1") == 0;
+}
+
+static int hetgpu_requires_named_launch(const char* kernel_name) {
+    if (!kernel_name || strcmp(kernel_name, "<unknown>") == 0) {
+        return 0;
+    }
+    return strstr(kernel_name, "rms_norm") != NULL ||
+           strstr(kernel_name, "rmsnorm") != NULL ||
+           strstr(kernel_name, "soft_max") != NULL ||
+           strstr(kernel_name, "softmax") != NULL ||
+           strstr(kernel_name, "l2_norm_f32") != NULL ||
+           strstr(kernel_name, "scale_f32") != NULL ||
+           strstr(kernel_name, "k_get_rows_float") != NULL ||
+           strstr(kernel_name, "compute_batched_ptrs") != NULL;
+}
 
 static int hetgpu_same_image(const Dl_info *a, const Dl_info *b) {
     if (!a || !b) {
@@ -1320,6 +1369,15 @@ static CUfunction lookup_registered_function(const void *func, const char **func
             if (func_name) {
                 *func_name = g_functions[i].name;
             }
+            if (g_functions[i].cuFunc == NULL && g_null_function_log_count < 8) {
+                fprintf(stderr,
+                        "[cudart_shim] exact registry hit has NULL CUfunction: func=%p name='%s' host=%p device=%p\n",
+                        func,
+                        g_functions[i].name,
+                        g_functions[i].hostFun,
+                        g_functions[i].deviceFun);
+                g_null_function_log_count++;
+            }
             return g_functions[i].cuFunc;
         }
     }
@@ -1329,11 +1387,31 @@ static CUfunction lookup_registered_function(const void *func, const char **func
     // can place the launch site in the same image, use the nearest registered
     // function pointer from that image as a best-effort alias.
     Dl_info func_info;
-    if (!dladdr(func, &func_info) || !func_info.dli_fbase) {
-        return NULL;
-    }
+    memset(&func_info, 0, sizeof(func_info));
+    int have_func_info = dladdr(func, &func_info);
 
     uintptr_t target = (uintptr_t)func;
+    if (have_func_info && func_info.dli_saddr && func_info.dli_saddr != func) {
+        uintptr_t symbol_normalized = (uintptr_t)func_info.dli_saddr & ~(uintptr_t)0x7;
+        for (int i = 0; i < g_function_count; i++) {
+            uintptr_t registered_host_normalized = (uintptr_t)g_functions[i].hostFun & ~(uintptr_t)0x7;
+            uintptr_t registered_device_normalized = (uintptr_t)g_functions[i].deviceFun & ~(uintptr_t)0x7;
+            if (registered_host_normalized == symbol_normalized ||
+                registered_device_normalized == symbol_normalized) {
+                if (func_name) {
+                    *func_name = g_functions[i].name;
+                }
+                fprintf(stderr,
+                        "[cudart_shim] symbol-base matched function %p (%s+0x%lx) to registered '%s'\n",
+                        func,
+                        func_info.dli_sname ? func_info.dli_sname : "<unknown>",
+                        (unsigned long)((uintptr_t)func - (uintptr_t)func_info.dli_saddr),
+                        g_functions[i].name);
+                return g_functions[i].cuFunc;
+            }
+        }
+    }
+
     uintptr_t best_distance = ~(uintptr_t)0;
     int best_index = -1;
     void *best_candidate = NULL;
@@ -1345,6 +1423,9 @@ static CUfunction lookup_registered_function(const void *func, const char **func
         for (int j = 0; j < 2; ++j) {
             void *candidate = candidates[j];
             if (!candidate) {
+                continue;
+            }
+            if (!have_func_info) {
                 continue;
             }
             Dl_info candidate_info;
@@ -1363,13 +1444,7 @@ static CUfunction lookup_registered_function(const void *func, const char **func
         }
     }
 
-    uintptr_t fallback_limit = 0x1000;
-    if (func_info.dli_fname && strstr(func_info.dli_fname, "libggml-cuda.so.0") != NULL) {
-        // ggml-cuda often launches through a nearby stub/thunk instead of the
-        // exact registered host/device pointer. These stubs cluster tightly in
-        // the same image, so allow a wider-but-still-bounded alias window.
-        fallback_limit = 0x40000;
-    }
+    uintptr_t fallback_limit = hetgpu_registry_alias_window(have_func_info ? &func_info : NULL);
 
     if (best_index >= 0 && best_distance <= fallback_limit) {
         if (func_name) {
@@ -1400,7 +1475,7 @@ static CUfunction lookup_registered_function(const void *func, const char **func
         g_registry_neighbor_log_count++;
     }
 
-    if (func_info.dli_fname && strstr(func_info.dli_fname, "libggml-cuda.so.0") != NULL) {
+    {
         uintptr_t raw_best_distance = ~(uintptr_t)0;
         int raw_best_index = -1;
         void *raw_best_candidate = NULL;
@@ -1422,7 +1497,7 @@ static CUfunction lookup_registered_function(const void *func, const char **func
             }
         }
 
-        uintptr_t raw_fallback_limit = 0x40000;
+        uintptr_t raw_fallback_limit = fallback_limit;
         if (raw_best_index >= 0 && raw_best_distance <= raw_fallback_limit) {
             if (func_name) {
                 *func_name = g_functions[raw_best_index].name;
@@ -1462,6 +1537,18 @@ static CUfunction lookup_registered_function(const void *func, const char **func
         }
     }
 
+    return NULL;
+}
+
+static RegisteredFunction* find_registered_function_by_name(const char* kernel_name) {
+    if (!kernel_name || strcmp(kernel_name, "<unknown>") == 0) {
+        return NULL;
+    }
+    for (int i = 0; i < g_function_count; ++i) {
+        if (strcmp(g_functions[i].name, kernel_name) == 0) {
+            return &g_functions[i];
+        }
+    }
     return NULL;
 }
 
@@ -1522,6 +1609,28 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                             funcName);
                     return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
                 }
+                if (g_registry_miss_log_count < 12) {
+                    fprintf(stderr,
+                            "[cudart_shim] named launch did not handle '%s' (result=%d); cuFunc is NULL\n",
+                            funcName,
+                            named_result);
+                }
+            }
+            if (hetgpu_requires_named_launch(funcName)) {
+                fprintf(stderr,
+                        "[cudart_shim] ERROR: named-only PACC kernel '%s' has NULL CUfunction and named launch did not take it; refusing lazy/normal launch\n",
+                        funcName);
+                return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
+            }
+            cuFunc = lazy_load_registered_function_for_launch(funcName, func);
+            if (cuFunc != NULL) {
+                HETGPU_LOG("[cudart_shim] launch-time lazy PTX resolved '%s': %p\n", funcName, cuFunc);
+                goto launch_registered_kernel;
+            } else if (!hetgpu_allow_skip_null_registered_kernel()) {
+                fprintf(stderr,
+                        "[cudart_shim] ERROR: registered kernel '%s' has no CUfunction and no named PACC handler; refusing to skip uninitialized output\n",
+                        funcName);
+                return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
             }
         }
         if (g_registry_miss_log_count < 12) {
@@ -1545,14 +1654,18 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
             }
             g_registry_miss_log_count++;
         }
-        fprintf(stderr, "[cudart_shim] WARNING: Function %p not in registry - skipping (output uninitialized!)\n", func);
-        fprintf(stderr, "[cudart_shim] This may cause SIGFPE in downstream operations like softmax\n");
-        if (hetgpu_strict_pacc()) {
+        if (hetgpu_strict_pacc() || !hetgpu_allow_skip_unregistered_kernel()) {
+            fprintf(stderr,
+                    "[cudart_shim] ERROR: Function %p not in registry; refusing to skip uninitialized kernel output\n",
+                    func);
             return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
         }
+        fprintf(stderr, "[cudart_shim] WARNING: Function %p not in registry - skipping (output uninitialized!)\n", func);
+        fprintf(stderr, "[cudart_shim] This may cause SIGFPE in downstream operations like softmax\n");
         return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
     }
 
+launch_registered_kernel:
     if (hetgpu_strict_pacc() && !hetgpu_pacc_kernel_has_handle(cuFunc)) {
         fprintf(stderr, "[cudart_shim] ERROR: PACC kernel '%s' has no executable handle\n", funcName);
         return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
@@ -2032,6 +2145,51 @@ static CUmodule load_or_get_ptx_module_for_kernel(const char* so_path, const cha
     }
     fprintf(stderr, "[cudart_shim] Lazy-loaded PTX module %s for '%s'\n", ptx_path, kernel_name);
     return module;
+}
+
+static CUfunction lazy_load_registered_function_for_launch(const char* kernel_name, const void* launch_func) {
+    RegisteredFunction* entry = find_registered_function_by_name(kernel_name);
+    if (!entry) {
+        return NULL;
+    }
+    if (entry->cuFunc) {
+        return entry->cuFunc;
+    }
+
+    void* anchor = entry->hostFun ? entry->hostFun : entry->deviceFun;
+    if (!anchor) {
+        anchor = (void*)launch_func;
+    }
+
+    Dl_info info;
+    if (!dladdr(anchor, &info) || !info.dli_fname) {
+        return NULL;
+    }
+
+    CUmodule module = load_or_get_ptx_module_for_kernel(info.dli_fname, kernel_name);
+    if (!module) {
+        return NULL;
+    }
+
+    CUfunction func = NULL;
+    hetgpu_cuModuleGetFunction_fn p_cuModuleGetFunction = resolve_cuModuleGetFunction();
+    CUresult result = p_cuModuleGetFunction ? p_cuModuleGetFunction(&func, module, kernel_name) : 1;
+    if (result != 0 || !func) {
+        fprintf(stderr,
+                "[cudart_shim] launch-time lazy cuModuleGetFunction('%s') failed: %d\n",
+                kernel_name,
+                result);
+        return NULL;
+    }
+
+    entry->module = module;
+    entry->cuFunc = func;
+    fprintf(stderr,
+            "[cudart_shim] launch-time lazy resolved '%s' -> %p from %s\n",
+            kernel_name,
+            func,
+            info.dli_fname);
+    return func;
 }
 
 // Concatenate all PTX files into one big PTX string (DISABLED - too slow for large libs)

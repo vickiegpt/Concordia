@@ -1155,30 +1155,12 @@ pub fn compile_bitcode_pacc_multi(
         output_data_set,
     )?;
 
-    // Get the output data
-    let mut count = 0;
-    pacc_comgr_get_data_count(output_data_set, &mut count)?;
-
-    if count == 0 {
-        eprintln!("ZLUDA ERROR: No PACC output generated");
-        return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR);
-    }
-
-    let mut output_data = unsafe { mem::zeroed() };
-    pacc_comgr_get_data(output_data_set, 0, &mut output_data)?;
-
-    let mut size = 0;
-    pacc_comgr_data_get_bytes(output_data, std::ptr::null_mut(), &mut size)?;
-
-    let mut result = vec![0u8; size];
-    pacc_comgr_data_get_bytes(
-        output_data,
-        result.as_mut_ptr() as *mut std::os::raw::c_void,
-        &mut size,
-    )?;
+    // Codegen temp directories can contain both intermediate bitcode and the
+    // final object. Pick the launchable object by data kind instead of assuming
+    // output slot 0 is the relocatable payload.
+    let result = unsafe { pacc_copy_first_output_bytes(output_data_set)? };
 
     // Cleanup
-    pacc_comgr_release_data(output_data)?;
     pacc_comgr_release_data_set(output_data_set)?;
     if !linked_modules.is_empty() {
         pacc_comgr_release_data_set(linked_data_set)?;
