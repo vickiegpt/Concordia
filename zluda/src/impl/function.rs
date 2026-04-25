@@ -2750,6 +2750,9 @@ pub(crate) fn launch_kernel(
                 configure_pacc_launch_abi(
                     kernel.kernel_ptr,
                     &kernel.kernel_name,
+                    grid_dim_x,
+                    grid_dim_y,
+                    grid_dim_z,
                     kernel_params,
                     extra,
                 )
@@ -2855,6 +2858,12 @@ fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
     }
     if name.contains("quantize_q8_1") {
         return Some(9);
+    }
+    if name.contains("k_bin_bcast_unravel") {
+        return Some(24 + pacc_bin_bcast_fuse_count(kernel_name));
+    }
+    if name.contains("k_bin_bcast") {
+        return Some(22 + pacc_bin_bcast_fuse_count(kernel_name));
     }
     if name.contains("ssm_conv_f32") {
         return Some(11);
@@ -3081,6 +3090,9 @@ unsafe fn parse_pacc_launch_extra_blob(extra: *mut *mut ::core::ffi::c_void) -> 
 unsafe fn configure_pacc_launch_abi(
     kernel_ptr: *mut pacc_runtime_sys::pacc_Kernel,
     kernel_name: &str,
+    grid_dim_x: u32,
+    grid_dim_y: u32,
+    grid_dim_z: u32,
     kernel_params: *mut *mut ::core::ffi::c_void,
     extra: *mut *mut ::core::ffi::c_void,
 ) -> pacc_runtime_sys::pacc_Result {
@@ -3126,6 +3138,7 @@ unsafe fn configure_pacc_launch_abi(
         .ok()
         .as_deref()
         == Some("1");
+    let _ = (grid_dim_x, grid_dim_y);
     let mut pushed = 0usize;
     let mut pointer_like = 0usize;
 
@@ -3150,7 +3163,10 @@ unsafe fn configure_pacc_launch_abi(
         } else {
             (param as *const u64).read_unaligned()
         };
-        let is_pointer = !inline_immediate && pacc_looks_like_pointer(value);
+        let is_pointer = !inline_immediate
+            && pacc_looks_like_pointer(value)
+            && pacc_kernel_arg_can_be_pointer(kernel_name, i)
+            && super::memory::pacc_allocation_remaining_addr(value).is_some();
         let record = pacc_runtime_sys::PaccKernelArgRecord {
             kind: if is_pointer {
                 pacc_runtime_sys::PACC_KERNEL_ARG_KIND_POINTER
@@ -3168,11 +3184,14 @@ unsafe fn configure_pacc_launch_abi(
         }
 
         if is_pointer {
+            let (size, flags) =
+                pacc_kernel_binding_metadata(kernel_name, kernel_params, grid_dim_z, i)
+                    .unwrap_or((0, 0));
             let binding = pacc_runtime_sys::PaccKernelBufferBinding {
                 arg_index: i as u32,
-                flags: 0,
+                flags,
                 addr: value,
-                size: 0,
+                size,
             };
             let rc = pacc_runtime_sys::pacc_KernelAddBufferBinding(kernel_ptr, &binding);
             if rc != pacc_runtime_sys::pacc_Result_Success {
@@ -3192,6 +3211,272 @@ unsafe fn configure_pacc_launch_abi(
     }
 
     pacc_runtime_sys::pacc_Result_Success
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_kernel_arg_can_be_pointer(kernel_name: &str, index: usize) -> bool {
+    let name = kernel_name.to_ascii_lowercase();
+    if name.contains("mul_mat_vec_q") && index == 3 {
+        return false;
+    }
+    true
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn pacc_kernel_binding_metadata(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    grid_dim_z: u32,
+    index: usize,
+) -> Option<(u64, u32)> {
+    let name = kernel_name.to_ascii_lowercase();
+    if name.contains("quantize_q8_1") {
+        return pacc_quantize_q8_1_binding_metadata(kernel_params, grid_dim_z, index);
+    }
+    if name.contains("k_bin_bcast_unravel") {
+        return pacc_bin_bcast_binding_metadata(kernel_name, kernel_params, index, true);
+    }
+    if name.contains("k_bin_bcast") {
+        return pacc_bin_bcast_binding_metadata(kernel_name, kernel_params, index, false);
+    }
+    None
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_bin_bcast_fuse_count(kernel_name: &str) -> usize {
+    let marker = match kernel_name.find("EvPKT0_") {
+        Some(pos) => pos,
+        None => return 0,
+    };
+    let template = &kernel_name[..marker];
+    template
+        .rfind('J')
+        .map(|pack_start| template[pack_start..].matches("PK").count())
+        .unwrap_or(0)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_parse_mangled_scalar_size(name: &str, offset: &mut usize) -> Option<u64> {
+    let rest = name.get(*offset..)?;
+    if rest.starts_with('f') {
+        *offset += 1;
+        Some(std::mem::size_of::<f32>() as u64)
+    } else if rest.starts_with("6__half") {
+        *offset += "6__half".len();
+        Some(2)
+    } else {
+        None
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_bin_bcast_element_sizes(kernel_name: &str) -> (u64, u64, u64) {
+    let default = std::mem::size_of::<f32>() as u64;
+    let Some(type_start) = kernel_name.find("EE").map(|pos| pos + 2) else {
+        return (default, default, default);
+    };
+    let mut offset = type_start;
+    let src0 = pacc_parse_mangled_scalar_size(kernel_name, &mut offset).unwrap_or(default);
+    let src1 = pacc_parse_mangled_scalar_size(kernel_name, &mut offset).unwrap_or(default);
+    let dst = pacc_parse_mangled_scalar_size(kernel_name, &mut offset).unwrap_or(default);
+    (src0, src1, dst)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_strided_extent_bytes(dims: [u64; 4], strides: [u64; 4], elem_size: u64) -> u64 {
+    if elem_size == 0 || dims.iter().any(|&dim| dim == 0) {
+        return 0;
+    }
+    let max_elem = dims
+        .into_iter()
+        .zip(strides)
+        .fold(0u64, |acc, (dim, stride)| {
+            acc.saturating_add(dim.saturating_sub(1).saturating_mul(stride))
+        });
+    max_elem.saturating_add(1).saturating_mul(elem_size)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn pacc_binding_bytes_for_host_ptr(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+    bytes: u64,
+) -> Option<u64> {
+    let ptr = read_param_u64(kernel_params, index)?;
+    let remaining = super::memory::pacc_allocation_remaining_addr(ptr)? as u64;
+    if remaining == 0 {
+        None
+    } else {
+        Some(bytes.min(remaining))
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn pacc_bin_bcast_binding_metadata(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+    unravel: bool,
+) -> Option<(u64, u32)> {
+    let (src0_elem, src1_elem, dst_elem) = pacc_bin_bcast_element_sizes(kernel_name);
+    let (ne0, ne1, ne2, ne3, ne10, ne11, ne12, ne13, stride_base) = if unravel {
+        (
+            read_param_uint3_z(kernel_params, 3)? as u64,
+            read_param_uint3_z(kernel_params, 4)? as u64,
+            read_param_uint3_z(kernel_params, 5)? as u64,
+            read_param_u32(kernel_params, 6)? as u64,
+            read_param_uint3_z(kernel_params, 9)? as u64,
+            read_param_uint3_z(kernel_params, 10)? as u64,
+            read_param_uint3_z(kernel_params, 11)? as u64,
+            read_param_uint3_z(kernel_params, 12)? as u64,
+            13usize,
+        )
+    } else {
+        (
+            read_param_i32(kernel_params, 3)?.max(0) as u64,
+            read_param_i32(kernel_params, 4)?.max(0) as u64,
+            read_param_i32(kernel_params, 5)?.max(0) as u64,
+            read_param_uint3_z(kernel_params, 6)? as u64,
+            read_param_uint3_z(kernel_params, 7)? as u64,
+            read_param_uint3_z(kernel_params, 8)? as u64,
+            read_param_uint3_z(kernel_params, 9)? as u64,
+            read_param_uint3_z(kernel_params, 10)? as u64,
+            11usize,
+        )
+    };
+
+    let s1 = read_param_i32(kernel_params, stride_base)?.max(0) as u64;
+    let s2 = read_param_i32(kernel_params, stride_base + 1)?.max(0) as u64;
+    let s3 = read_param_i32(kernel_params, stride_base + 2)?.max(0) as u64;
+    let s00 = read_param_i32(kernel_params, stride_base + 3)?.max(0) as u64;
+    let s01 = read_param_i32(kernel_params, stride_base + 4)?.max(0) as u64;
+    let s02 = read_param_i32(kernel_params, stride_base + 5)?.max(0) as u64;
+    let s03 = read_param_i32(kernel_params, stride_base + 6)?.max(0) as u64;
+    let s10 = read_param_i32(kernel_params, stride_base + 7)?.max(0) as u64;
+    let s11 = read_param_i32(kernel_params, stride_base + 8)?.max(0) as u64;
+    let s12 = read_param_i32(kernel_params, stride_base + 9)?.max(0) as u64;
+    let s13 = read_param_i32(kernel_params, stride_base + 10)?.max(0) as u64;
+
+    let src0_bytes =
+        pacc_strided_extent_bytes([ne0, ne1, ne2, ne3], [s00, s01, s02, s03], src0_elem);
+    let src1_bytes = pacc_strided_extent_bytes(
+        [ne0.min(ne10), ne1.min(ne11), ne2.min(ne12), ne3.min(ne13)],
+        [s10, s11, s12, s13],
+        src1_elem,
+    );
+    let dst_bytes = pacc_strided_extent_bytes([ne0, ne1, ne2, ne3], [1, s1, s2, s3], dst_elem);
+
+    let (bytes, flags) = match index {
+        0 => (
+            src0_bytes,
+            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+        ),
+        1 => (
+            src1_bytes,
+            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+        ),
+        2 => (
+            dst_bytes,
+            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+        ),
+        i if i >= stride_base + 11 => (
+            src1_bytes,
+            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+        ),
+        _ => return None,
+    };
+    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    Some((bytes, flags))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn pacc_quantize_q8_1_binding_metadata(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    grid_dim_z: u32,
+    index: usize,
+) -> Option<(u64, u32)> {
+    let ne00 = read_param_i64(kernel_params, 2)?.max(0) as u64;
+    let s01 = read_param_i64(kernel_params, 3)?.max(0) as u64;
+    let s02 = read_param_i64(kernel_params, 4)?.max(0) as u64;
+    let s03 = read_param_i64(kernel_params, 5)?.max(0) as u64;
+    let ne0 = read_param_i64(kernel_params, 6)?.max(0) as u64;
+    let ne1 = read_param_u32(kernel_params, 7)? as u64;
+    let ne2 = read_param_uint3_z(kernel_params, 8)? as u64;
+    let grid_z = grid_dim_z as u64;
+
+    match index {
+        0 => {
+            let ne3 = if ne2 == 0 {
+                1
+            } else {
+                grid_z.max(1).div_ceil(ne2)
+            };
+            let max_i0 = ne00.min(ne0).saturating_sub(1);
+            let max_off = max_i0
+                .saturating_add(ne1.saturating_sub(1).saturating_mul(s01))
+                .saturating_add(ne2.saturating_sub(1).saturating_mul(s02))
+                .saturating_add(ne3.saturating_sub(1).saturating_mul(s03));
+            let bytes = max_off
+                .saturating_add(1)
+                .saturating_mul(std::mem::size_of::<f32>() as u64);
+            Some((bytes, pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT))
+        }
+        1 => {
+            let total = ne0.saturating_mul(ne1).saturating_mul(grid_z.max(1));
+            let blocks = total.saturating_add(31) / 32;
+            let block_q8_1_bytes = 36u64;
+            Some((
+                blocks.saturating_mul(block_q8_1_bytes),
+                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            ))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(all(
@@ -3232,6 +3517,26 @@ unsafe fn read_param_i32(
         return None;
     }
     Some((param as *const i32).read_unaligned())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn read_param_u32(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+) -> Option<u32> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    let param = *kernel_params.add(index);
+    if param.is_null() || (param as usize) < 0x1_0000 {
+        return None;
+    }
+    Some((param as *const u32).read_unaligned())
 }
 
 #[cfg(all(
@@ -3558,7 +3863,13 @@ unsafe fn read_softmax_named_args(
     let sinks = read_param_u64(kernel_params, 2).unwrap_or(0) as *const ::core::ffi::c_void;
     let dst = read_param_u64(kernel_params, 3)? as *mut ::core::ffi::c_void;
     let p_ptr = *kernel_params.add(4) as *const PaccSoftMaxParams;
-    if p_ptr.is_null() || !pacc_host_range_has_perms(p_ptr as usize, std::mem::size_of::<PaccSoftMaxParams>(), false) {
+    if p_ptr.is_null()
+        || !pacc_host_range_has_perms(
+            p_ptr as usize,
+            std::mem::size_of::<PaccSoftMaxParams>(),
+            false,
+        )
+    {
         return None;
     }
     Some((x, mask, sinks, dst, p_ptr.read_unaligned()))
@@ -3646,7 +3957,9 @@ unsafe fn execute_softmax_f32_host_fallback(
     if ncols == 0 || rows == 0 {
         return Some(Ok(()));
     }
-    let bytes = rows.checked_mul(ncols)?.checked_mul(std::mem::size_of::<f32>())?;
+    let bytes = rows
+        .checked_mul(ncols)?
+        .checked_mul(std::mem::size_of::<f32>())?;
     let x_addr = x as usize;
     let dst_addr = dst as usize;
     if !pacc_host_range_has_perms(x_addr, bytes, false)
@@ -4162,10 +4475,8 @@ unsafe fn try_offload_named_pacc_kernel(
             .saturating_mul(params.ne02.max(1) as u64)
             .saturating_mul(params.ne03.max(1) as u64);
         let cols = params.ncols.max(1) as u64;
-        let can_pacc_simple = mask.is_null()
-            && sinks.is_null()
-            && params.scale == 1.0
-            && params.max_bias == 0.0;
+        let can_pacc_simple =
+            mask.is_null() && sinks.is_null() && params.scale == 1.0 && params.max_bias == 0.0;
         if can_pacc_simple {
             let dev_id = current_pacc_device_id_or_zero();
             let rc = pacc_runtime_sys::hetgpu_pacc_submit_softmax_on(

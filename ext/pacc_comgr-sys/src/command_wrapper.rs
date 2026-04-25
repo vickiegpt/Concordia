@@ -433,10 +433,17 @@ fn link_bc_to_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
             eprintln!("PACC: Successfully linked bitcode files");
             Ok(())
         }
-        _ => {
-            fs::copy(&bc_files[0], &output_file)
-                .map_err(|_| pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)?;
-            Ok(())
+        Ok(output) => {
+            eprintln!(
+                "PACC: llvm-link failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)
+        }
+        Err(err) => {
+            eprintln!("PACC: failed to execute llvm-link: {err}");
+            Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)
         }
     }
 }
@@ -841,6 +848,7 @@ fn compile_bc_to_xm_object(
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
         .arg(&config.target_triple)
+        .arg("-fPIC")
         .arg("-mllvm")
         .arg("-non-global-value-max-name-size=16384")
         .arg("-menable-experimental-extensions")
@@ -901,6 +909,7 @@ fn compile_bc_to_xm_assembly(
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
         .arg(&config.target_triple)
+        .arg("-fPIC")
         .arg("-mllvm")
         .arg("-non-global-value-max-name-size=16384")
         .arg("-menable-experimental-extensions")
@@ -948,6 +957,7 @@ fn compile_bc_to_xm_object_via_sanitized_ll(
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
         .arg(&config.target_triple)
+        .arg("-fPIC")
         .arg("-mllvm")
         .arg("-non-global-value-max-name-size=16384")
         .arg("-menable-experimental-extensions")
@@ -1100,34 +1110,71 @@ fn preferred_tool(env_var: &str, fallbacks: &[&str]) -> String {
 }
 
 fn llvm_link_tool() -> String {
-    preferred_tool(
+    bundled_llvm_tool(
         "HETGPU_PACC_LLVM_LINK",
+        "llvm-link",
         &["/usr/bin/llvm-link-20", "llvm-link-20", "llvm-link"],
     )
 }
 
 fn opt_tool() -> String {
-    preferred_tool("HETGPU_PACC_OPT", &["/usr/bin/opt-20", "opt-20", "opt"])
+    bundled_llvm_tool(
+        "HETGPU_PACC_OPT",
+        "opt",
+        &["/usr/bin/opt-20", "opt-20", "opt"],
+    )
 }
 
 fn llvm_dis_tool() -> String {
-    if let Ok(value) = std::env::var("HETGPU_PACC_LLVM_DIS") {
+    bundled_llvm_tool(
+        "HETGPU_PACC_LLVM_DIS",
+        "llvm-dis",
+        &["/usr/bin/llvm-dis-20", "llvm-dis-20", "llvm-dis"],
+    )
+}
+
+fn existing_tool(path: PathBuf) -> Option<String> {
+    if path.is_file() {
+        Some(path.display().to_string())
+    } else {
+        None
+    }
+}
+
+fn llvm_tool_from_build_dir(build_dir: &Path, tool_name: &str) -> Option<String> {
+    let entries = fs::read_dir(build_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path().join("out/build/bin").join(tool_name);
+        if let Some(tool) = existing_tool(path) {
+            return Some(tool);
+        }
+    }
+    None
+}
+
+fn llvm_tool_from_target_dir(target_dir: &Path, tool_name: &str) -> Option<String> {
+    for candidate in [
+        target_dir.join("debug/build"),
+        target_dir.join("release/build"),
+        target_dir.join("build"),
+    ] {
+        if let Some(tool) = llvm_tool_from_build_dir(&candidate, tool_name) {
+            return Some(tool);
+        }
+    }
+    None
+}
+
+fn bundled_llvm_tool(env_var: &str, tool_name: &str, fallbacks: &[&str]) -> String {
+    if let Ok(value) = std::env::var(env_var) {
         if !value.trim().is_empty() {
             return value;
         }
     }
 
-    if let Ok(dir) = std::env::var("HETGPU_PACC_HELPER_TARGET_DIR") {
-        let base = PathBuf::from(dir);
-        for candidate in [base.join("debug/build"), base.join("build")] {
-            if let Ok(entries) = fs::read_dir(candidate) {
-                for entry in entries.flatten() {
-                    let path = entry.path().join("out/build/bin/llvm-dis");
-                    if path.is_file() {
-                        return path.display().to_string();
-                    }
-                }
-            }
+    if let Ok(dir) = std::env::var("HETGPU_PACC_LLVM_TOOLS_DIR") {
+        if let Some(tool) = existing_tool(PathBuf::from(dir).join(tool_name)) {
+            return tool;
         }
     }
 
@@ -1143,18 +1190,36 @@ fn llvm_dis_tool() -> String {
     }
     for clang_path in clang_candidates {
         if let Some(parent) = clang_path.parent() {
-            for candidate in [parent.join("llvm-dis"), parent.join("llvm-dis-20")] {
-                if candidate.is_file() {
-                    return candidate.display().to_string();
+            for candidate in [
+                parent.join(tool_name),
+                parent.join(format!("{tool_name}-20")),
+            ] {
+                if let Some(tool) = existing_tool(candidate) {
+                    return tool;
                 }
             }
         }
     }
 
-    preferred_tool(
-        "HETGPU_PACC_LLVM_DIS",
-        &["/usr/bin/llvm-dis-20", "llvm-dis-20", "llvm-dis"],
-    )
+    for env in ["HETGPU_PACC_HELPER_TARGET_DIR", "CARGO_TARGET_DIR"] {
+        if let Ok(dir) = std::env::var(env) {
+            if let Some(tool) = llvm_tool_from_target_dir(Path::new(&dir), tool_name) {
+                return tool;
+            }
+        }
+    }
+
+    for dir in [
+        "/mnt/usb/hetgpu_build_target/releasefix",
+        "/mnt/usb/hetgpu_build_target/release",
+        "/mnt/usb/hetgpu_build_target",
+    ] {
+        if let Some(tool) = llvm_tool_from_target_dir(Path::new(dir), tool_name) {
+            return tool;
+        }
+    }
+
+    preferred_tool(env_var, fallbacks)
 }
 
 fn ensure_ptx_helper_tool(tool_name: &str) -> io::Result<PathBuf> {

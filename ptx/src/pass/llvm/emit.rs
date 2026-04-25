@@ -475,9 +475,26 @@ fn get_immediate_value(
     match imm {
         ast::ImmediateValue::U64(x) => unsafe { llvm_const_int_width_checked(type_, *x, false) },
         ast::ImmediateValue::S64(x) => unsafe { llvm_const_int_width_checked(type_, *x as u64, false) },
-        ast::ImmediateValue::F32(x) => unsafe { LLVMConstReal(type_, *x as f64) },
-        ast::ImmediateValue::F64(x) => unsafe { LLVMConstReal(type_, *x) },
+        ast::ImmediateValue::F32(x) if is_real_scalar_type(*scalar_type) => unsafe {
+            LLVMConstReal(type_, *x as f64)
+        },
+        ast::ImmediateValue::F32(x) => unsafe {
+            llvm_const_int_width_checked(type_, x.to_bits() as u64, false)
+        },
+        ast::ImmediateValue::F64(x) if is_real_scalar_type(*scalar_type) => unsafe {
+            LLVMConstReal(type_, *x)
+        },
+        ast::ImmediateValue::F64(x) => unsafe {
+            llvm_const_int_width_checked(type_, x.to_bits(), false)
+        },
     }
+}
+
+fn is_real_scalar_type(scalar_type: ast::ScalarType) -> bool {
+    matches!(
+        scalar_type,
+        ast::ScalarType::F16 | ast::ScalarType::F32 | ast::ScalarType::F64 | ast::ScalarType::BF16
+    )
 }
 
 fn llvm_ftz(ftz: bool) -> &'static str {

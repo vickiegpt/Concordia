@@ -2298,8 +2298,14 @@ impl<'a> MethodEmitContext<'a> {
         let value = match constant.value {
             ast::ImmediateValue::U64(x) => unsafe { LLVMConstInt(type_, x, 0) },
             ast::ImmediateValue::S64(x) => unsafe { LLVMConstInt(type_, x as u64, 0) },
-            ast::ImmediateValue::F32(x) => unsafe { LLVMConstReal(type_, x as f64) },
-            ast::ImmediateValue::F64(x) => unsafe { LLVMConstReal(type_, x) },
+            ast::ImmediateValue::F32(x) if is_real_scalar_type(constant.typ) => unsafe {
+                LLVMConstReal(type_, x as f64)
+            },
+            ast::ImmediateValue::F32(x) => unsafe { LLVMConstInt(type_, x.to_bits() as u64, 0) },
+            ast::ImmediateValue::F64(x) if is_real_scalar_type(constant.typ) => unsafe {
+                LLVMConstReal(type_, x)
+            },
+            ast::ImmediateValue::F64(x) => unsafe { LLVMConstInt(type_, x.to_bits(), 0) },
         };
         self.resolver.register(constant.dst, value);
         Ok(())
@@ -4744,6 +4750,13 @@ fn get_scalar_type(context: LLVMContextRef, type_: ast::ScalarType) -> LLVMTypeR
         ast::ScalarType::BF16x2 => todo!(),
         ast::ScalarType::E4m3x2 | ast::ScalarType::E5m2x2 => todo!(),
     }
+}
+
+fn is_real_scalar_type(scalar_type: ast::ScalarType) -> bool {
+    matches!(
+        scalar_type,
+        ast::ScalarType::F16 | ast::ScalarType::F32 | ast::ScalarType::F64 | ast::ScalarType::BF16
+    )
 }
 
 fn get_function_type<'a>(

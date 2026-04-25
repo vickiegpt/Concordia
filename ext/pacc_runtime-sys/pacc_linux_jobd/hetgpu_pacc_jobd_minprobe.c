@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <math.h>
+#include <poll.h>
 #include <pthread.h>
 #include <dlfcn.h>
 #include <stdarg.h>
@@ -15,6 +16,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
@@ -75,6 +77,10 @@
 #define PACC_MAX_KERNEL_ARGS 16U
 #define PACC_MAX_KERNEL_BINDINGS 16U
 
+#define PACC_IOC_MAGIC 'p'
+#define PACC_IOC_ZLUDA_IRQ _IOW(PACC_IOC_MAGIC, 5, struct pacc_zluda_ddr_info)
+#define PACC_IOC_ZLUDA_GET_DDR_BASE _IOR(PACC_IOC_MAGIC, 6, struct pacc_zluda_ddr_info)
+
 #define PACC_ELF_ET_REL 1U
 #define PACC_ELF_ET_EXEC 2U
 #define PACC_ELF_ET_DYN 3U
@@ -108,6 +114,11 @@ struct HostStatus {
     uint32_t job_id;
     uint32_t status;
     uint64_t seq;
+};
+
+struct pacc_zluda_ddr_info {
+    uint64_t ddr_base;
+    uint64_t ddr_size;
 };
 
 struct ArgSlotHeader {
@@ -283,12 +294,9 @@ enum DispatchPollResult {
     DISPATCH_HANDLED = 2,
 };
 
-struct ScanRange {
-    uint64_t start;
-    uint64_t end;
-};
-
 static long g_page_size = 4096;
+static struct pacc_zluda_ddr_info g_ddr_info;
+static unsigned g_pacc_id = 0;
 
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static void write_stage_beacon(int fd, uint64_t off, uint32_t phase, uint32_t job_id, uint64_t seq);
@@ -306,6 +314,163 @@ static void log_msg(const char *fmt, ...) {
         dprintf(kmsg, "hetgpu_pacc_jobd: %s\n", buf);
         close(kmsg);
     }
+}
+
+static int control_poll_timeout_ms(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_POLL_TIMEOUT_MS");
+    char *end = NULL;
+    long parsed;
+    if (!value || !*value) {
+        return -1;
+    }
+    errno = 0;
+    parsed = strtol(value, &end, 0);
+    if (errno || end == value) {
+        return 10;
+    }
+    if (parsed < -1) {
+        return 10;
+    }
+    if (parsed > INT_MAX) {
+        return INT_MAX;
+    }
+    return (int)parsed;
+}
+
+static bool parse_u64_checked(const char *s, uint64_t *out) {
+    char *end = NULL;
+    unsigned long long value;
+    if (!s || !*s || !out) {
+        return false;
+    }
+    errno = 0;
+    value = strtoull(s, &end, 0);
+    if (errno || end == s) {
+        return false;
+    }
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+        end++;
+    }
+    if (*end) {
+        return false;
+    }
+    *out = (uint64_t)value;
+    return true;
+}
+
+static bool read_u64_file(const char *path, uint64_t *out) {
+    char buf[64];
+    int fd;
+    ssize_t n;
+    if (!path || !out) {
+        return false;
+    }
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return false;
+    }
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        return false;
+    }
+    buf[n] = '\0';
+    return parse_u64_checked(buf, out);
+}
+
+static bool read_shared_ddr_info_from_env_or_debugfs(struct pacc_zluda_ddr_info *info) {
+    uint64_t base = 0;
+    uint64_t size = 0;
+    if (!info) {
+        return false;
+    }
+    parse_u64_checked(getenv("HETGPU_PACC_SHARED_DDR_BASE"), &base);
+    parse_u64_checked(getenv("HETGPU_PACC_SHARED_DDR_BYTES"), &size);
+    if (!size) {
+        parse_u64_checked(getenv("HETGPU_PACC_SHARED_DDR_SIZE"), &size);
+    }
+    if (!base) {
+        read_u64_file("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base", &base);
+    }
+    if (!size) {
+        read_u64_file("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_bytes", &size);
+    }
+    if (!size) {
+        read_u64_file("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_size", &size);
+    }
+    if (!size && base) {
+        size = HETGPU_PACC_DEFAULT_SHARED_DDR_BYTES;
+    }
+    if (!base || size < HETGPU_PACC_CONTROL_BYTES) {
+        return false;
+    }
+    info->ddr_base = base;
+    info->ddr_size = size;
+    return true;
+}
+
+static void wait_for_control(int mbox_fd) {
+    for (;;) {
+        struct pollfd pfd;
+        int ret;
+        memset(&pfd, 0, sizeof(pfd));
+        pfd.fd = mbox_fd;
+        pfd.events = POLLIN;
+        ret = poll(&pfd, 1, control_poll_timeout_ms());
+        if (ret > 0) {
+            if (pfd.revents & (POLLIN | POLLPRI)) {
+                return;
+            }
+            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                log_msg("buggy: poll revents 0x%x", pfd.revents);
+                exit(EIO);
+            }
+            continue;
+        }
+        if (ret == 0) {
+            return;
+        }
+        if (errno == EINTR || errno == EAGAIN) {
+            continue;
+        }
+        log_msg("buggy: poll return %d", errno);
+        exit(errno ? errno : EIO);
+    }
+}
+
+static void read_shared_ddr_info_from_mbox(int mbox_fd) {
+    struct pacc_zluda_ddr_info info;
+    int ret;
+    memset(&info, 0, sizeof(info));
+    if (read_shared_ddr_info_from_env_or_debugfs(&info)) {
+        g_ddr_info = info;
+        log_msg("shared ddr base 0x%" PRIx64 " size 0x%" PRIx64 " from env/debugfs",
+                g_ddr_info.ddr_base, g_ddr_info.ddr_size);
+        return;
+    }
+    ret = ioctl(mbox_fd, PACC_IOC_ZLUDA_GET_DDR_BASE, &info);
+    if (ret < 0) {
+        log_msg("failed to read shared ddr base/size: %d", errno);
+        exit(errno ? errno : EIO);
+    }
+    if (!info.ddr_base || info.ddr_size < HETGPU_PACC_CONTROL_BYTES) {
+        log_msg("invalid shared ddr base 0x%" PRIx64 " size 0x%" PRIx64,
+                info.ddr_base, info.ddr_size);
+        exit(EINVAL);
+    }
+    g_ddr_info = info;
+    log_msg("shared ddr base 0x%" PRIx64 " size 0x%" PRIx64,
+            g_ddr_info.ddr_base, g_ddr_info.ddr_size);
+}
+
+static uint64_t shared_ddr_control_phys(uint64_t off, size_t len) {
+    uint64_t control_off = (uint64_t)g_pacc_id * HETGPU_PACC_CONTROL_BYTES + off;
+    if (g_ddr_info.ddr_base &&
+        control_off <= g_ddr_info.ddr_size &&
+        (uint64_t)len <= g_ddr_info.ddr_size - control_off) {
+        return g_ddr_info.ddr_base + control_off;
+    }
+    return PACC2AP_MBOX_PHYS + off;
 }
 
 static uint64_t parse_u64(const char *s) {
@@ -395,6 +560,48 @@ static bool fd_points_to_mbox_helper(int fd) {
     return strstr(target, "/dev/hetgpu_pacc_mbox") != NULL;
 }
 
+static bool helper_path_from_pacc_path(const char *pacc_path, char *out, size_t out_len) {
+    const char *end;
+    const char *digits;
+    if (!pacc_path || !out || out_len == 0) {
+        return false;
+    }
+    end = pacc_path + strlen(pacc_path);
+    digits = end;
+    while (digits > pacc_path && digits[-1] >= '0' && digits[-1] <= '9') {
+        digits--;
+    }
+    if (digits == end) {
+        return false;
+    }
+    snprintf(out, out_len, "/dev/hetgpu_pacc_mbox%s", digits);
+    return true;
+}
+
+static unsigned pacc_id_from_path(const char *pacc_path) {
+    const char *end;
+    const char *digits;
+    unsigned long parsed;
+    char *parse_end = NULL;
+    if (!pacc_path) {
+        return 0;
+    }
+    end = pacc_path + strlen(pacc_path);
+    digits = end;
+    while (digits > pacc_path && digits[-1] >= '0' && digits[-1] <= '9') {
+        digits--;
+    }
+    if (digits == end) {
+        return 0;
+    }
+    errno = 0;
+    parsed = strtoul(digits, &parse_end, 10);
+    if (errno || parse_end == digits || *parse_end) {
+        return 0;
+    }
+    return (unsigned)parsed;
+}
+
 static int helper_io_full(int fd, bool write_mode, uint64_t off, void *buf, size_t len) {
     const size_t chunk = 32;
     size_t done = 0;
@@ -418,9 +625,15 @@ static int helper_io_full(int fd, bool write_mode, uint64_t off, void *buf, size
 }
 
 static bool helper_offset_for_phys(uint64_t phys, uint64_t *helper_off) {
-    uint64_t shared_base = env_u64("HETGPU_PACC_SHARED_DDR_BASE", 0);
-    uint64_t shared_bytes = env_u64("HETGPU_PACC_SHARED_DDR_BYTES",
-                                    HETGPU_PACC_DEFAULT_SHARED_DDR_BYTES);
+    uint64_t shared_base = g_ddr_info.ddr_base;
+    uint64_t shared_bytes = g_ddr_info.ddr_size;
+    if (!shared_base) {
+        shared_base = env_u64("HETGPU_PACC_SHARED_DDR_BASE", 0);
+    }
+    if (!shared_bytes) {
+        shared_bytes = env_u64("HETGPU_PACC_SHARED_DDR_BYTES",
+                               HETGPU_PACC_DEFAULT_SHARED_DDR_BYTES);
+    }
     if (phys >= AP2PACC_MBOX_PHYS &&
         phys < AP2PACC_MBOX_PHYS + HETGPU_PACC_CONTROL_BYTES) {
         *helper_off = HETGPU_PACC_AP2PACC_READ_HELPER_OFF + (phys - AP2PACC_MBOX_PHYS);
@@ -481,6 +694,32 @@ static void unmap_phys(struct Map *m) {
         munmap(m->base, m->map_len);
     }
     memset(m, 0, sizeof(*m));
+}
+
+static int refresh_map(struct Map *m) {
+    if (!m || !m->base || !m->helper_backed) {
+        return 0;
+    }
+    return helper_io_full(m->helper_fd, false, m->helper_off, m->base, m->map_len);
+}
+
+static int flush_map(struct Map *m) {
+    if (!m || !m->base) {
+        return 0;
+    }
+    if (m->helper_backed) {
+        return helper_io_full(m->helper_fd, true, m->helper_off, m->base, m->map_len);
+    }
+    return msync(m->base, m->map_len, MS_SYNC);
+}
+
+static int clear_control_map(struct Map *m) {
+    if (!m || !m->ptr) {
+        return -1;
+    }
+    memset(m->ptr, 0, HETGPU_PACC_CONTROL_BYTES);
+    __sync_synchronize();
+    return flush_map(m);
 }
 
 static int load_jobs_config(const char *path, struct PreloadedJobs *jobs) {
@@ -1070,6 +1309,74 @@ static const char *find_program_on_path(const char *name) {
     return NULL;
 }
 
+static const char kernel_host_stubs_c[] =
+"#include <stdint.h>\n"
+"#define WEAK __attribute__((weak))\n"
+"struct ShflSyncResult { uint32_t x; uint32_t pred; };\n"
+"struct DivF32Part1Result { float fma_4; float fma_1; float fma_3; uint8_t numerator_scaled_flag; };\n"
+"static uint32_t lane_u8(uint32_t x, unsigned lane) { return (x >> (lane * 8)) & 0xffu; }\n"
+"static int32_t lane_s8(uint32_t x, unsigned lane) { return (int8_t)lane_u8(x, lane); }\n"
+"static uint32_t pack_lane_u8(uint32_t base, unsigned lane, uint32_t value) {\n"
+"    uint32_t shift = lane * 8;\n"
+"    return (base & ~(0xffu << shift)) | ((value & 0xffu) << shift);\n"
+"}\n"
+"static uint32_t sat_u8(int32_t v) { return v < 0 ? 0u : (v > 255 ? 255u : (uint32_t)v); }\n"
+"static int32_t sat_s8(int32_t v) { return v < -128 ? -128 : (v > 127 ? 127 : v); }\n"
+"WEAK uint32_t f___zluda_ptx_impl_vsub4_u32_u32_u32(uint32_t a, uint32_t b, uint32_t c) {\n"
+"    (void)c; uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) r = pack_lane_u8(r, i, lane_u8(a, i) - lane_u8(b, i)); return r;\n"
+"}\n"
+"WEAK uint32_t f___zluda_ptx_impl_vsub4_u32_u32_u32_sat(uint32_t a, uint32_t b, uint32_t c) {\n"
+"    (void)c; uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) r = pack_lane_u8(r, i, sat_u8((int32_t)lane_u8(a, i) - (int32_t)lane_u8(b, i))); return r;\n"
+"}\n"
+"WEAK uint32_t f___zluda_ptx_impl_vsub4_s32_s32_s32(uint32_t a, uint32_t b, uint32_t c) {\n"
+"    (void)c; uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) r = pack_lane_u8(r, i, (uint8_t)(lane_s8(a, i) - lane_s8(b, i))); return r;\n"
+"}\n"
+"WEAK uint32_t f___zluda_ptx_impl_vsub4_s32_s32_s32_sat(uint32_t a, uint32_t b, uint32_t c) {\n"
+"    (void)c; uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) r = pack_lane_u8(r, i, (uint8_t)sat_s8(lane_s8(a, i) - lane_s8(b, i))); return r;\n"
+"}\n"
+"static uint32_t vset_cmp(uint32_t a, uint32_t b, int op) {\n"
+"    uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) { uint32_t x = lane_u8(a, i), y = lane_u8(b, i); int p = 0;\n"
+"    switch (op) { case 0: p = x == y; break; case 1: p = x != y; break; case 2: p = x < y; break; case 3: p = x <= y; break; case 4: p = x > y; break; default: p = x >= y; break; }\n"
+"    r = pack_lane_u8(r, i, p ? 1u : 0u); } return r;\n"
+"}\n"
+"WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_eq(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 0); }\n"
+"WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_ne(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 1); }\n"
+"WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_lt(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 2); }\n"
+"WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_le(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 3); }\n"
+"WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_gt(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 4); }\n"
+"WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_ge(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 5); }\n"
+"WEAK void f___zluda_ptx_impl_bar_sync(uint32_t barrier_id) { (void)barrier_id; __sync_synchronize(); }\n"
+"WEAK uint32_t f___zluda_ptx_impl_activemask(void) { return 1u; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_sreg_tid(uint8_t member) { (void)member; return 0u; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_sreg_ntid(uint8_t member) { (void)member; return 1u; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_sreg_ctaid(uint8_t member) { (void)member; return 0u; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_sreg_nctaid(uint8_t member) { (void)member; return 1u; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_sreg_laneid(void) { return 0u; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_sreg_lanemask_lt(void) { return 0u; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_sreg_lanemask_ge(void) { return ~0u; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_sreg_clock(void) { return 0u; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_bfe_u32(uint32_t base, uint32_t pos_32, uint32_t len_32) {\n"
+"    uint32_t pos = pos_32 & 0xffu, len = len_32 & 0xffu; if (pos >= 32u || len == 0u) return 0u; if (len >= 32u) return base >> pos; if (len > 31u) len = 31u; return (base >> pos) & ((1u << len) - 1u);\n"
+"}\n"
+"WEAK int32_t f___zluda_ptx_impl_bfe_s32(int32_t base, uint32_t pos_32, uint32_t len_32) {\n"
+"    uint32_t pos = pos_32 & 0xffu, len = len_32 & 0xffu; if (len == 0u) return 0; if (pos >= 32u) return base >> 31; if (len >= 32u || pos + len >= 32u) return base >> pos; return (base << (32u - pos - len)) >> (32u - len);\n"
+"}\n"
+"WEAK uint64_t f___zluda_ptx_impl_bfe_u64(uint64_t base, uint32_t pos, uint32_t len) { if (pos >= 64u || len == 0u) return 0u; if (len >= 64u) return base >> pos; return (base >> pos) & ((1ull << len) - 1ull); }\n"
+"WEAK int64_t f___zluda_ptx_impl_bfe_s64(int64_t base, uint32_t pos, uint32_t len) { if (len == 0u) return 0; if (pos >= 64u) return base >> 63; if (len >= 64u || pos + len >= 64u) return base >> pos; return (base << (64u - pos - len)) >> (64u - len); }\n"
+"WEAK uint32_t f___zluda_ptx_impl_bfi_b32(uint32_t insert, uint32_t base, uint32_t pos_32, uint32_t len_32) { uint32_t pos = pos_32 & 0xffu, len = len_32 & 0xffu; if (pos >= 32u || len == 0u) return base; uint32_t mask = (len >= 32u || pos + len >= 32u) ? (~0u << pos) : (((1u << len) - 1u) << pos); return (base & ~mask) | ((insert << pos) & mask); }\n"
+"WEAK uint64_t f___zluda_ptx_impl_bfi_b64(uint64_t insert, uint64_t base, uint32_t pos, uint32_t len) { if (pos >= 64u || len == 0u) return base; uint64_t mask = (len >= 64u || pos + len >= 64u) ? (~0ull << pos) : (((1ull << len) - 1ull) << pos); return (base & ~mask) | ((insert << pos) & mask); }\n"
+"WEAK uint32_t f___zluda_ptx_impl_prmt_b32(uint32_t a, uint32_t b, uint32_t c) { uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) { uint32_t sel = (c >> (4 * i)) & 0xfu; uint32_t src = (sel & 4u) ? b : a; uint32_t val = (src >> (8 * (sel & 3u))) & 0xffu; if (sel & 8u) val = (val & 0x80u) ? 0xffu : 0u; r |= val << (8 * i); } return r; }\n"
+"WEAK struct DivF32Part1Result f___zluda_ptx_impl_div_f32_part1(float lhs, float rhs) { (void)lhs; (void)rhs; return (struct DivF32Part1Result){ 0.0f, 0.0f, 0.0f, 0u }; }\n"
+"WEAK float f___zluda_ptx_impl_div_f32_part2(float x, float y, float fma_4, float fma_1, float fma_3, uint8_t numerator_scaled_flag) { (void)fma_4; (void)fma_1; (void)fma_3; (void)numerator_scaled_flag; return x / y; }\n"
+"WEAK struct ShflSyncResult f___zluda_ptx_impl_shfl_sync_bfly_b32_pred(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return (struct ShflSyncResult){ input, 1u }; }\n"
+"WEAK struct ShflSyncResult f___zluda_ptx_impl_shfl_sync_up_b32_pred(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return (struct ShflSyncResult){ input, 1u }; }\n"
+"WEAK struct ShflSyncResult f___zluda_ptx_impl_shfl_sync_down_b32_pred(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return (struct ShflSyncResult){ input, 1u }; }\n"
+"WEAK struct ShflSyncResult f___zluda_ptx_impl_shfl_sync_idx_b32_pred(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return (struct ShflSyncResult){ input, 1u }; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_shfl_sync_bfly_b32(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return input; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_shfl_sync_up_b32(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return input; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_shfl_sync_down_b32(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return input; }\n"
+"WEAK uint32_t f___zluda_ptx_impl_shfl_sync_idx_b32(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return input; }\n";
+
 static int run_command(char *const argv[]) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -1090,29 +1397,190 @@ static int run_command(char *const argv[]) {
     return 0;
 }
 
-static int device_link_kernel_object(const char *input_obj, const char *output_so) {
-    const char *env_linker = getenv("HETGPU_PACC_DEVICE_LINKER");
+static int compile_kernel_c_object(const char *src, const char *obj) {
+    const char *env_cc = getenv("HETGPU_PACC_DEVICE_CC");
     const char *candidates[] = {
+        "riscv64-linux-gnu-gcc",
+        "gcc",
         "cc",
         "clang",
-        "gcc",
-        "riscv64-linux-gnu-gcc",
-        "ld.lld",
-        "riscv64-linux-gnu-ld",
-        "ld",
         NULL,
     };
+
+    if (env_cc && *env_cc) {
+        const char *tool = find_program_on_path(env_cc);
+        if (tool) {
+            char *const argv[] = {
+                (char *)tool, (char *)"-O2", (char *)"-fPIC", (char *)"-c",
+                (char *)"-o", (char *)obj, (char *)src, NULL,
+            };
+            if (run_command(argv) == 0) return 0;
+        }
+    }
+
+    for (size_t i = 0; candidates[i]; i++) {
+        const char *tool = find_program_on_path(candidates[i]);
+        if (!tool) continue;
+        char *const argv[] = {
+            (char *)tool, (char *)"-O2", (char *)"-fPIC", (char *)"-c",
+            (char *)"-o", (char *)obj, (char *)src, NULL,
+        };
+        if (run_command(argv) == 0) return 0;
+    }
+
+    return -1;
+}
+
+static int build_kernel_host_stubs(const char *stub_src, const char *stub_obj) {
+    if (write_file_all(stub_src, (const uint8_t *)kernel_host_stubs_c,
+                       sizeof(kernel_host_stubs_c) - 1) != 0) {
+        return -1;
+    }
+    return compile_kernel_c_object(stub_src, stub_obj);
+}
+
+static bool is_c_symbol_char(char c, bool first) {
+    if (c == '_') return true;
+    if (c >= 'A' && c <= 'Z') return true;
+    if (c >= 'a' && c <= 'z') return true;
+    if (!first && c >= '0' && c <= '9') return true;
+    return false;
+}
+
+static bool is_valid_c_symbol_name(const char *s) {
+    if (!s || !*s || !is_c_symbol_char(*s, true)) return false;
+    for (const char *p = s + 1; *p; p++) {
+        if (!is_c_symbol_char(*p, false)) return false;
+    }
+    return true;
+}
+
+static bool symbol_name_seen(char symbols[][1024], size_t count, const char *name) {
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(symbols[i], name) == 0) return true;
+    }
+    return false;
+}
+
+static size_t kernel_tmp_shared_stub_bytes(void) {
+    const char *env = getenv("HETGPU_PACC_KERNEL_TMP_SHARED_BYTES");
+    if (env && *env) {
+        char *end = NULL;
+        unsigned long long value = strtoull(env, &end, 0);
+        if (end != env && value >= 4096ULL && value <= (16ULL << 20)) {
+            return (size_t)value;
+        }
+    }
+    return 64UL << 10;
+}
+
+static int build_kernel_tmp_shared_stubs(const char *input_obj,
+                                         const char *stub_src,
+                                         const char *stub_obj) {
+    enum { MAX_TMP_SHARED_SYMBOLS = 512 };
+    char symbols[MAX_TMP_SHARED_SYMBOLS][1024];
+    size_t symbol_count = 0;
+    const char *nm_candidates[] = {
+        "riscv64-linux-gnu-nm",
+        "nm",
+        NULL,
+    };
+    const char *nm_tool = NULL;
+    for (size_t i = 0; nm_candidates[i]; i++) {
+        nm_tool = find_program_on_path(nm_candidates[i]);
+        if (nm_tool) break;
+    }
+
+    if (nm_tool) {
+        char cmd[PATH_MAX * 2 + 64];
+        snprintf(cmd, sizeof(cmd), "%s -u %s", nm_tool, input_obj);
+        FILE *pipe = popen(cmd, "r");
+        if (pipe) {
+            char line[2048];
+            while (fgets(line, sizeof(line), pipe)) {
+                char *save = NULL;
+                char *last = NULL;
+                for (char *tok = strtok_r(line, " \t\r\n", &save); tok;
+                     tok = strtok_r(NULL, " \t\r\n", &save)) {
+                    last = tok;
+                }
+                if (!last || !strstr(last, "tmp_shared")) continue;
+                if (!is_valid_c_symbol_name(last)) continue;
+                if (symbol_name_seen(symbols, symbol_count, last)) continue;
+                if (symbol_count >= MAX_TMP_SHARED_SYMBOLS) {
+                    log_msg("device-link: too many tmp_shared symbols, truncating at %u",
+                            MAX_TMP_SHARED_SYMBOLS);
+                    break;
+                }
+                snprintf(symbols[symbol_count], sizeof(symbols[symbol_count]), "%s", last);
+                symbol_count++;
+            }
+            int status = pclose(pipe);
+            if (status != 0) {
+                log_msg("device-link: nm returned non-zero while scanning tmp_shared stubs");
+            }
+        }
+    }
+
+    FILE *out = fopen(stub_src, "w");
+    if (!out) return -1;
+    fprintf(out, "#include <stdint.h>\n");
+    fprintf(out, "__attribute__((used)) static unsigned char hetgpu_pacc_tmp_shared_anchor;\n");
+    size_t bytes = kernel_tmp_shared_stub_bytes();
+    for (size_t i = 0; i < symbol_count; i++) {
+        fprintf(out,
+                "__attribute__((weak, aligned(16))) unsigned char %s[%zu];\n",
+                symbols[i], bytes);
+    }
+    if (fclose(out) != 0) return -1;
+
+    if (symbol_count > 0) {
+        log_msg("device-link: adding %zu tmp_shared BSS stubs (%zu bytes each)",
+                symbol_count, bytes);
+    }
+    return compile_kernel_c_object(stub_src, stub_obj);
+}
+
+static int device_link_kernel_object(const char *input_obj, const char *output_so) {
+    const char *env_linker = getenv("HETGPU_PACC_DEVICE_LINKER");
+    char stub_src[PATH_MAX];
+    char stub_obj[PATH_MAX];
+    char tmp_shared_src[PATH_MAX];
+    char tmp_shared_obj[PATH_MAX];
+    const char *candidates[] = {
+        "riscv64-linux-gnu-gcc",
+        "gcc",
+        "cc",
+        "clang",
+        NULL,
+    };
+
+    snprintf(stub_src, sizeof(stub_src), "%s.host_stubs.c", output_so);
+    snprintf(stub_obj, sizeof(stub_obj), "%s.host_stubs.o", output_so);
+    if (build_kernel_host_stubs(stub_src, stub_obj) != 0) {
+        log_msg("device-link failed to build host PTX helper stubs");
+        return -1;
+    }
+    snprintf(tmp_shared_src, sizeof(tmp_shared_src), "%s.tmp_shared_stubs.c", output_so);
+    snprintf(tmp_shared_obj, sizeof(tmp_shared_obj), "%s.tmp_shared_stubs.o", output_so);
+    if (build_kernel_tmp_shared_stubs(input_obj, tmp_shared_src, tmp_shared_obj) != 0) {
+        log_msg("device-link failed to build tmp_shared data stubs");
+        return -1;
+    }
 
     if (env_linker && *env_linker) {
         const char *tool = find_program_on_path(env_linker);
         if (tool) {
             char *const env_argv[] = {
                 (char *)tool,
+                (char *)"-fuse-ld=bfd",
                 (char *)"-shared",
                 (char *)"-fPIC",
                 (char *)"-o",
                 (char *)output_so,
                 (char *)input_obj,
+                (char *)stub_obj,
+                (char *)tmp_shared_obj,
                 (char *)"-lm",
                 (char *)"-ldl",
                 NULL,
@@ -1130,11 +1598,14 @@ static int device_link_kernel_object(const char *input_obj, const char *output_s
 
         char *const cc_argv[] = {
             (char *)tool,
+            (char *)"-fuse-ld=bfd",
             (char *)"-shared",
             (char *)"-fPIC",
             (char *)"-o",
             (char *)output_so,
             (char *)input_obj,
+            (char *)stub_obj,
+            (char *)tmp_shared_obj,
             (char *)"-lm",
             (char *)"-ldl",
             NULL,
@@ -1223,6 +1694,8 @@ static int load_kernel_image(const uint8_t *elf, size_t elf_len,
                              char *artifact_path, size_t artifact_path_len,
                              void **handle_out) {
     char tmpdir[] = "/tmp/hetgpu_pacc_kernelXXXXXX";
+    char obj_path[PATH_MAX];
+    char so_path[PATH_MAX];
     uint16_t e_type;
     const char *load_path = NULL;
 
@@ -1239,8 +1712,6 @@ static int load_kernel_image(const uint8_t *elf, size_t elf_len,
     }
 
     if (e_type == PACC_ELF_ET_REL) {
-        char obj_path[PATH_MAX];
-        char so_path[PATH_MAX];
         snprintf(obj_path, sizeof(obj_path), "%s/kernel.o", tmpdir);
         snprintf(so_path, sizeof(so_path), "%s/kernel.so", tmpdir);
         if (write_file_all(obj_path, elf, elf_len) != 0) {
@@ -1253,7 +1724,6 @@ static int load_kernel_image(const uint8_t *elf, size_t elf_len,
         load_path = so_path;
         snprintf(artifact_path, artifact_path_len, "%s", so_path);
     } else if (e_type == PACC_ELF_ET_DYN) {
-        char so_path[PATH_MAX];
         snprintf(so_path, sizeof(so_path), "%s/kernel.so", tmpdir);
         if (write_file_all(so_path, elf, elf_len) != 0) {
             return -1;
@@ -1726,36 +2196,27 @@ static enum DispatchPollResult dispatch_any_job(
     return maybe_dispatch_preloaded_job(fd, ctl, jobs, strict, last_seq, last_table_seq);
 }
 
-static volatile struct Doorbell *scan_for_control(int fd, const struct ScanRange *ranges, size_t nranges) {
-    const size_t chunk = 1UL << 20;
-    for (size_t r = 0; r < nranges; r++) {
-        for (uint64_t base = ranges[r].start; base < ranges[r].end; base += chunk) {
-            size_t len = chunk;
-            if (base + len > ranges[r].end) len = (size_t)(ranges[r].end - base);
-            struct Map m = {0};
-            if (map_phys(fd, base, len, &m)) continue;
-            char *p = (char *)m.ptr;
-            for (size_t off = 0; off + sizeof(struct Doorbell) <= len; off += (size_t)g_page_size) {
-                volatile struct Doorbell *d = (volatile struct Doorbell *)(p + off);
-                if (d->magic == HETGPU_PACC_JOB_MAGIC && d->version == HETGPU_PACC_JOB_VERSION) {
-                    log_msg("found control page at phys 0x%" PRIx64, base + off);
-                    write_stage_beacon(fd, HETGPU_PACC_DOORBELL_BEACON_OFF, 0xc001, 0, base + off);
-                    return d;
-                }
-            }
-            unmap_phys(&m);
-        }
-    }
-    return NULL;
-}
-
-static volatile struct Doorbell *map_mailbox_control(int fd, struct Map *map) {
-    if (map_phys(fd, AP2PACC_MBOX_PHYS, HETGPU_PACC_CONTROL_BYTES, map)) {
-        log_msg("map AP2PACC mailbox 0x%" PRIx64 " failed: %s",
-                (uint64_t)AP2PACC_MBOX_PHYS, strerror(errno));
+static volatile struct Doorbell *scan_for_control(int fd, const struct pacc_zluda_ddr_info *ddr_info, struct Map *map) {
+    uint64_t control_off = (uint64_t)g_pacc_id * HETGPU_PACC_CONTROL_BYTES;
+    uint64_t control_phys;
+    if (!ddr_info || !ddr_info->ddr_base ||
+        control_off > ddr_info->ddr_size ||
+        HETGPU_PACC_CONTROL_BYTES > ddr_info->ddr_size - control_off) {
+        log_msg("invalid shared ddr control window: pacc=%u base=0x%" PRIx64 " size=0x%" PRIx64 " off=0x%" PRIx64,
+                g_pacc_id,
+                ddr_info ? ddr_info->ddr_base : 0,
+                ddr_info ? ddr_info->ddr_size : 0,
+                control_off);
         return NULL;
     }
-    log_msg("polling AP2PACC mailbox at phys 0x%" PRIx64, (uint64_t)AP2PACC_MBOX_PHYS);
+    control_phys = ddr_info->ddr_base + control_off;
+    if (map_phys(fd, control_phys, HETGPU_PACC_CONTROL_BYTES, map)) {
+        log_msg("map shared DDR control pacc=%u 0x%" PRIx64 " len 0x%x failed: %s",
+                g_pacc_id, control_phys, (unsigned)HETGPU_PACC_CONTROL_BYTES, strerror(errno));
+        return NULL;
+    }
+    log_msg("mapped shared DDR control pacc=%u at phys 0x%" PRIx64 " len 0x%x",
+            g_pacc_id, control_phys, (unsigned)HETGPU_PACC_CONTROL_BYTES);
     return (volatile struct Doorbell *)map->ptr;
 }
 
@@ -1774,9 +2235,9 @@ static void pid1_bootstrap_devices(void) {
 
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status) {
     struct Map map = {0};
-    if (map_phys(fd, PACC2AP_MBOX_PHYS + HETGPU_PACC_COMPLETION_OFF, sizeof(struct HostStatus), &map)) {
-        log_msg("map PACC2AP mailbox 0x%" PRIx64 " failed: %s",
-                (uint64_t)(PACC2AP_MBOX_PHYS + HETGPU_PACC_COMPLETION_OFF), strerror(errno));
+    uint64_t phys = shared_ddr_control_phys(HETGPU_PACC_COMPLETION_OFF, sizeof(struct HostStatus));
+    if (map_phys(fd, phys, sizeof(struct HostStatus), &map)) {
+        log_msg("map host status 0x%" PRIx64 " failed: %s", phys, strerror(errno));
         return;
     }
     volatile struct HostStatus *host = (volatile struct HostStatus *)map.ptr;
@@ -1794,9 +2255,9 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
 
 static void write_startup_beacon(int fd, uint32_t phase) {
     struct Map map = {0};
-    if (map_phys(fd, PACC2AP_MBOX_PHYS + HETGPU_PACC_STARTUP_BEACON_OFF, 32, &map)) {
-        log_msg("map startup beacon 0x%" PRIx64 " failed: %s",
-                (uint64_t)(PACC2AP_MBOX_PHYS + HETGPU_PACC_STARTUP_BEACON_OFF), strerror(errno));
+    uint64_t phys = shared_ddr_control_phys(HETGPU_PACC_STARTUP_BEACON_OFF, 32);
+    if (map_phys(fd, phys, 32, &map)) {
+        log_msg("map startup beacon 0x%" PRIx64 " failed: %s", phys, strerror(errno));
         return;
     }
     volatile uint64_t *slot = (volatile uint64_t *)map.ptr;
@@ -1812,9 +2273,9 @@ static void write_startup_beacon(int fd, uint32_t phase) {
 
 static void write_stage_beacon(int fd, uint64_t off, uint32_t phase, uint32_t job_id, uint64_t seq) {
     struct Map map = {0};
-    if (map_phys(fd, PACC2AP_MBOX_PHYS + off, 32, &map)) {
-        log_msg("map stage beacon 0x%" PRIx64 " failed: %s",
-                (uint64_t)(PACC2AP_MBOX_PHYS + off), strerror(errno));
+    uint64_t phys = shared_ddr_control_phys(off, 32);
+    if (map_phys(fd, phys, 32, &map)) {
+        log_msg("map stage beacon 0x%" PRIx64 " failed: %s", phys, strerror(errno));
         return;
     }
     volatile uint64_t *slot = (volatile uint64_t *)map.ptr;
@@ -1829,9 +2290,9 @@ static void write_stage_beacon(int fd, uint64_t off, uint32_t phase, uint32_t jo
 
 static void write_quad_beacon(int fd, uint64_t off, uint64_t v0, uint64_t v1, uint64_t v2, uint64_t v3) {
     struct Map map = {0};
-    if (map_phys(fd, PACC2AP_MBOX_PHYS + off, 32, &map)) {
-        log_msg("map quad beacon 0x%" PRIx64 " failed: %s",
-                (uint64_t)(PACC2AP_MBOX_PHYS + off), strerror(errno));
+    uint64_t phys = shared_ddr_control_phys(off, 32);
+    if (map_phys(fd, phys, 32, &map)) {
+        log_msg("map quad beacon 0x%" PRIx64 " failed: %s", phys, strerror(errno));
         return;
     }
     volatile uint64_t *slot = (volatile uint64_t *)map.ptr;
@@ -1846,19 +2307,9 @@ static void write_quad_beacon(int fd, uint64_t off, uint64_t v0, uint64_t v1, ui
 
 int main(int argc, char **argv) {
     const char *devmem = "/dev/mem";
+    const char *mbox_path = "/dev/pacc0";
     const char *config = "/etc/hetgpu_pacc_jobs.conf";
     bool strict = false;
-    bool scan_ddr_control = false;
-    unsigned poll_us = 1000;
-    struct ScanRange ranges[6] = {
-        {0x20000000ULL, 0x20004000ULL},
-        {0x20100600000ULL, 0x20101600000ULL},
-        {0x80100000ULL, 0xc0000000ULL},
-        {0xe0000000ULL, 0xffc00000ULL},
-        {0x20100000000ULL, 0x20110000000ULL},
-        {0, 0},
-    };
-    size_t nranges = 5;
 
     if (getpid() == 1) {
         pid1_bootstrap_devices();
@@ -1873,13 +2324,14 @@ int main(int argc, char **argv) {
             devmem = argv[++i];
         } else if (!strcmp(argv[i], "--config") && i + 1 < argc) {
             config = argv[++i];
-        } else if (!strcmp(argv[i], "--poll-us") && i + 1 < argc) {
-            poll_us = (unsigned)strtoul(argv[++i], NULL, 0);
+        } else if ((!strcmp(argv[i], "--mbox") || !strcmp(argv[i], "--pacc-dev")) && i + 1 < argc) {
+            mbox_path = argv[++i];
         }
     }
 
     g_page_size = sysconf(_SC_PAGESIZE);
     if (g_page_size <= 0) g_page_size = 4096;
+    g_pacc_id = pacc_id_from_path(mbox_path);
 
     struct PreloadedJobs jobs;
     memset(&jobs, 0, sizeof(jobs));
@@ -1890,48 +2342,82 @@ int main(int argc, char **argv) {
         log_msg("open %s failed: %s", devmem, strerror(errno));
         return 1;
     }
+    int map_fd = fd;
+    int helper_fd = -1;
+    int mbox_fd = open(mbox_path, O_RDWR | O_SYNC | O_CLOEXEC);
+    if (mbox_fd < 0) {
+        log_msg("open %s failed: %s", mbox_path, strerror(errno));
+        close(fd);
+        return 1;
+    }
 
-    log_msg("started MINPROBE strict=%d config=%s",
-            strict ? 1 : 0, config);
-    write_startup_beacon(fd, 0x600d);
-    mirror_host_status(fd, 0, 0, 0x600d);
-    struct Map mailbox_map = {0};
+    log_msg("started MINPROBE strict=%d config=%s mbox=%s pacc=%u",
+            strict ? 1 : 0, config, mbox_path, g_pacc_id);
+    wait_for_control(mbox_fd);
+    read_shared_ddr_info_from_mbox(mbox_fd);
+    if (!fd_points_to_mbox_helper(fd)) {
+        char helper_path[PATH_MAX];
+        if (helper_path_from_pacc_path(mbox_path, helper_path, sizeof(helper_path))) {
+            helper_fd = open(helper_path, O_RDWR | O_SYNC | O_CLOEXEC);
+            if (helper_fd >= 0) {
+                map_fd = helper_fd;
+                log_msg("using %s for shared DDR/helper-backed mappings", helper_path);
+            } else {
+                log_msg("open %s failed, falling back to %s mappings: %s",
+                        helper_path, devmem, strerror(errno));
+            }
+        }
+    }
+    struct Map control_map = {0};
     volatile struct Doorbell *ctl = NULL;
     uint64_t last_seq = 0;
     uint64_t last_table_seq = 0;
     uint64_t last_kernel_seq = 0;
-    if (!scan_ddr_control) {
-        ctl = map_mailbox_control(fd, &mailbox_map);
-        if (!ctl) {
+    ctl = scan_for_control(map_fd, &g_ddr_info, &control_map);
+    if (!ctl) {
+        if (helper_fd >= 0) close(helper_fd);
+        close(mbox_fd);
+        close(fd);
+        return 1;
+    }
+    if (clear_control_map(&control_map) != 0) {
+        log_msg("failed to clear shared DDR control page for pacc=%u: %s",
+                g_pacc_id, strerror(errno));
+        unmap_phys(&control_map);
+        if (helper_fd >= 0) close(helper_fd);
+        close(mbox_fd);
+        close(fd);
+        return 1;
+    }
+    write_startup_beacon(map_fd, 0x600d);
+    mirror_host_status(map_fd, 0, 0, 0x600d);
+    for (;;) {
+        enum DispatchPollResult poll_result;
+        if (refresh_map(&control_map) != 0) {
+            log_msg("failed to refresh shared DDR control page for pacc=%u: %s",
+                    g_pacc_id, strerror(errno));
+            unmap_phys(&control_map);
+            if (helper_fd >= 0) close(helper_fd);
+            close(mbox_fd);
             close(fd);
             return 1;
         }
-    } else {
-        ctl = scan_for_control(fd, ranges, nranges);
-        if (!ctl) {
-            log_msg("initial control-page scan found nothing; will keep scanning");
-        }
-    }
-    for (;;) {
-        enum DispatchPollResult poll_result;
-        if (!ctl) {
-            ctl = scan_for_control(fd, ranges, nranges);
-            if (!ctl) {
-                usleep(100000);
-                continue;
-            }
-        }
         poll_result = dispatch_any_job(
-            fd,
+            map_fd,
             ctl,
             &jobs,
             strict,
             &last_seq,
             &last_table_seq,
             &last_kernel_seq);
-        if (poll_result == DISPATCH_INVALID && scan_ddr_control) {
-            ctl = NULL;
+        if (poll_result == DISPATCH_HANDLED) {
+            struct pacc_zluda_ddr_info irq_info = g_ddr_info;
+            int ret = ioctl(mbox_fd, PACC_IOC_ZLUDA_IRQ, &irq_info);
+            if (ret < 0) {
+                log_msg("failed to response: %d", errno);
+                return errno ? errno : EIO;
+            }
         }
-        usleep(poll_us);
+        wait_for_control(mbox_fd);
     }
 }
