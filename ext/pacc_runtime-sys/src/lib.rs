@@ -364,7 +364,8 @@ pub struct PaccKernelLaunchAbiHeader {
     pub binding_count: u32,
     pub raw_param_offset: u32,
     pub raw_param_size: u32,
-    pub reserved: u64,
+    pub kernel_name_offset: u32,
+    pub kernel_name_size: u32,
 }
 
 #[repr(C)]
@@ -375,6 +376,7 @@ pub struct PaccKernelArgRecord {
     pub flags: u32,
     pub reserved: u32,
     pub value: u64,
+    pub value_hi: u64,
 }
 
 #[repr(C)]
@@ -7027,7 +7029,7 @@ pub unsafe extern "C" fn pacc_KernelPushArgRecord(
         return pacc_Result_Error;
     }
     let record = *record;
-    if record.size == 0 || record.size > 8 {
+    if record.size == 0 || record.size > 16 {
         return pacc_Result_Error;
     }
     if record.kind != PACC_KERNEL_ARG_KIND_SCALAR && record.kind != PACC_KERNEL_ARG_KIND_POINTER {
@@ -7082,6 +7084,7 @@ pub unsafe extern "C" fn pacc_KernelConfigureLanxinMulMatTile(
             flags: 0,
             reserved: 0,
             value: m as u64,
+            value_hi: 0,
         },
         PaccKernelArgRecord {
             kind: PACC_KERNEL_ARG_KIND_SCALAR,
@@ -7089,6 +7092,7 @@ pub unsafe extern "C" fn pacc_KernelConfigureLanxinMulMatTile(
             flags: 0,
             reserved: 0,
             value: n as u64,
+            value_hi: 0,
         },
         PaccKernelArgRecord {
             kind: PACC_KERNEL_ARG_KIND_SCALAR,
@@ -7096,6 +7100,7 @@ pub unsafe extern "C" fn pacc_KernelConfigureLanxinMulMatTile(
             flags: 0,
             reserved: 0,
             value: k as u64,
+            value_hi: 0,
         },
         PaccKernelArgRecord {
             kind: PACC_KERNEL_ARG_KIND_POINTER,
@@ -7103,6 +7108,7 @@ pub unsafe extern "C" fn pacc_KernelConfigureLanxinMulMatTile(
             flags: 0,
             reserved: 0,
             value: a as u64,
+            value_hi: 0,
         },
         PaccKernelArgRecord {
             kind: PACC_KERNEL_ARG_KIND_POINTER,
@@ -7110,6 +7116,7 @@ pub unsafe extern "C" fn pacc_KernelConfigureLanxinMulMatTile(
             flags: 0,
             reserved: 0,
             value: b as u64,
+            value_hi: 0,
         },
         PaccKernelArgRecord {
             kind: PACC_KERNEL_ARG_KIND_POINTER,
@@ -7117,6 +7124,7 @@ pub unsafe extern "C" fn pacc_KernelConfigureLanxinMulMatTile(
             flags: 0,
             reserved: 0,
             value: c as u64,
+            value_hi: 0,
         },
     ];
 
@@ -7270,12 +7278,15 @@ struct PaccKernelImageLayout {
     arg_records_offset: usize,
     bindings_offset: usize,
     raw_param_offset: usize,
+    kernel_name_offset: usize,
+    kernel_name_size: usize,
     elf_offset: usize,
     image_len: usize,
     submit_len: usize,
 }
 
 fn compute_pacc_kernel_image_layout(
+    kernel_name: &str,
     elf_bytes: &[u8],
     launch_state: &PaccKernelLaunchState,
 ) -> std::io::Result<PaccKernelImageLayout> {
@@ -7291,6 +7302,8 @@ fn compute_pacc_kernel_image_layout(
             arg_records_offset: 0,
             bindings_offset: 0,
             raw_param_offset: 0,
+            kernel_name_offset: 0,
+            kernel_name_size: 0,
             elf_offset: PACC_JOB_HEADER_BYTES,
             image_len,
             submit_len: align_up(image_len, 64),
@@ -7352,6 +7365,21 @@ fn compute_pacc_kernel_image_layout(
         offset
     };
 
+    let kernel_name_bytes = kernel_name.as_bytes();
+    let kernel_name_offset = if kernel_name_bytes.is_empty() {
+        0
+    } else {
+        let offset = cursor;
+        cursor = align_up(
+            cursor
+                .checked_add(kernel_name_bytes.len())
+                .and_then(|v| v.checked_add(1))
+                .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "PACC kernel name too large"))?,
+            8,
+        );
+        offset
+    };
+
     let elf_offset = cursor;
     let image_len = elf_offset
         .checked_add(elf_bytes.len())
@@ -7363,6 +7391,8 @@ fn compute_pacc_kernel_image_layout(
         arg_records_offset,
         bindings_offset,
         raw_param_offset,
+        kernel_name_offset,
+        kernel_name_size: kernel_name_bytes.len(),
         elf_offset,
         image_len,
         submit_len: align_up(image_len, 64),
@@ -7380,7 +7410,7 @@ fn build_pacc_kernel_submit_buffer(
     block_y: u32,
     block_z: u32,
 ) -> std::io::Result<(Vec<u8>, usize)> {
-    let layout = compute_pacc_kernel_image_layout(elf_bytes, launch_state)?;
+    let layout = compute_pacc_kernel_image_layout(kernel_name, elf_bytes, launch_state)?;
     let submit_len = layout.submit_len;
     let mut buf = vec![0u8; submit_len];
     fill_pacc_kernel_image(
@@ -8079,7 +8109,7 @@ fn fill_pacc_kernel_image(
     block_y: u32,
     block_z: u32,
 ) -> std::io::Result<()> {
-    let layout = compute_pacc_kernel_image_layout(elf_bytes, launch_state)?;
+    let layout = compute_pacc_kernel_image_layout(kernel_name, elf_bytes, launch_state)?;
     if buf.len() < layout.image_len {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -8123,7 +8153,8 @@ fn fill_pacc_kernel_image(
             binding_count: launch_state.bindings.len() as u32,
             raw_param_offset: layout.raw_param_offset as u32,
             raw_param_size: launch_state.raw_param_blob.len() as u32,
-            reserved: 0,
+            kernel_name_offset: layout.kernel_name_offset as u32,
+            kernel_name_size: layout.kernel_name_size as u32,
         };
         let abi_bytes = unsafe {
             std::slice::from_raw_parts(
@@ -8159,6 +8190,11 @@ fn fill_pacc_kernel_image(
         if !launch_state.raw_param_blob.is_empty() {
             let end = layout.raw_param_offset + launch_state.raw_param_blob.len();
             buf[layout.raw_param_offset..end].copy_from_slice(&launch_state.raw_param_blob);
+        }
+
+        if layout.kernel_name_offset != 0 {
+            let end = layout.kernel_name_offset + kernel_name.len();
+            buf[layout.kernel_name_offset..end].copy_from_slice(kernel_name.as_bytes());
         }
     }
 

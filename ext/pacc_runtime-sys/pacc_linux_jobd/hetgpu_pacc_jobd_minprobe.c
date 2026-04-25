@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <execinfo.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -7,6 +8,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <dlfcn.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -14,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/ioctl.h>
@@ -74,11 +77,12 @@
 #define PACC_DTYPE_F32 4U
 #define PACC_DTYPE_BF16 5U
 #define PACC_GEMM_THREADS 4U
-#define PACC_MAX_KERNEL_ARGS 16U
+#define PACC_MAX_KERNEL_ARGS 64U
 #define PACC_MAX_KERNEL_BINDINGS 16U
 
 #define PACC_IOC_MAGIC 'p'
-#define PACC_IOC_ZLUDA_IRQ _IOW(PACC_IOC_MAGIC, 5, struct pacc_zluda_ddr_info)
+#define PACC_IOC_ZLUDA_IRQ _IO(PACC_IOC_MAGIC, 5)
+#define PACC_IOC_ZLUDA_IRQ_WITH_DDR _IOW(PACC_IOC_MAGIC, 5, struct pacc_zluda_ddr_info)
 #define PACC_IOC_ZLUDA_GET_DDR_BASE _IOR(PACC_IOC_MAGIC, 6, struct pacc_zluda_ddr_info)
 
 #define PACC_ELF_ET_REL 1U
@@ -242,7 +246,8 @@ struct PaccKernelLaunchAbiHeader {
     uint32_t binding_count;
     uint32_t raw_param_offset;
     uint32_t raw_param_size;
-    uint64_t reserved;
+    uint32_t kernel_name_offset;
+    uint32_t kernel_name_size;
 };
 
 struct PaccKernelArgRecord {
@@ -251,6 +256,7 @@ struct PaccKernelArgRecord {
     uint32_t flags;
     uint32_t reserved;
     uint64_t value;
+    uint64_t value_hi;
 };
 
 struct PaccKernelBufferBinding {
@@ -271,6 +277,8 @@ struct PaccJobImage {
     size_t binding_count;
     const uint8_t *raw_params;
     size_t raw_param_size;
+    const char *kernel_name;
+    size_t kernel_name_size;
 };
 
 struct Map {
@@ -288,6 +296,11 @@ struct KernelBindingMap {
     uint32_t flags;
 };
 
+struct KernelParamCell {
+    uint64_t lo;
+    uint64_t hi;
+};
+
 enum DispatchPollResult {
     DISPATCH_INVALID = 0,
     DISPATCH_IDLE = 1,
@@ -297,23 +310,84 @@ enum DispatchPollResult {
 static long g_page_size = 4096;
 static struct pacc_zluda_ddr_info g_ddr_info;
 static unsigned g_pacc_id = 0;
+static const char *g_current_kernel_symbol = NULL;
+static uint64_t g_current_kernel_seq = 0;
 
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static void write_stage_beacon(int fd, uint64_t off, uint32_t phase, uint32_t job_id, uint64_t seq);
 static void write_quad_beacon(int fd, uint64_t off, uint64_t v0, uint64_t v1, uint64_t v2, uint64_t v3);
 
-static void log_msg(const char *fmt, ...) {
+static bool env_flag_true(const char *value) {
+    return value && *value && strcmp(value, "0") != 0 &&
+           strcasecmp(value, "false") != 0 &&
+           strcasecmp(value, "off") != 0 &&
+           strcasecmp(value, "no") != 0;
+}
+
+static bool jobd_trace_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_TRACE"));
+}
+
+static bool jobd_kmsg_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_KMSG"));
+}
+
+static void emit_msg(const char *fmt, va_list ap) {
     char buf[512];
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    fprintf(stderr, "hetgpu_pacc_jobd: %s\n", buf);
+    if (jobd_kmsg_enabled()) {
+        int kmsg = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+        if (kmsg >= 0) {
+            dprintf(kmsg, "hetgpu_pacc_jobd: %s\n", buf);
+            close(kmsg);
+        }
+    }
+}
+
+static void log_msg(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
+    emit_msg(fmt, ap);
     va_end(ap);
-    fprintf(stderr, "hetgpu_pacc_jobd: %s\n", buf);
-    int kmsg = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
-    if (kmsg >= 0) {
-        dprintf(kmsg, "hetgpu_pacc_jobd: %s\n", buf);
-        close(kmsg);
+}
+
+static void trace_msg(const char *fmt, ...) {
+    if (!jobd_trace_enabled()) return;
+    va_list ap;
+    va_start(ap, fmt);
+    emit_msg(fmt, ap);
+    va_end(ap);
+}
+
+static void jobd_crash_handler(int sig) {
+    void *frames[64];
+    int nframes;
+    char buf[512];
+    int len = snprintf(buf, sizeof(buf),
+                       "hetgpu_pacc_jobd: fatal signal %d while running seq=%" PRIu64
+                       " symbol=%s\n",
+                       sig, g_current_kernel_seq,
+                       g_current_kernel_symbol ? g_current_kernel_symbol : "<none>");
+    if (len > 0) {
+        write(STDERR_FILENO, buf, (size_t)len);
     }
+    nframes = backtrace(frames, (int)(sizeof(frames) / sizeof(frames[0])));
+    backtrace_symbols_fd(frames, nframes, STDERR_FILENO);
+    _exit(128 + sig);
+}
+
+static void install_crash_handlers(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = jobd_crash_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESETHAND | SA_NODEFER;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGFPE, &sa, NULL);
 }
 
 static int control_poll_timeout_ms(void) {
@@ -407,6 +481,36 @@ static bool read_shared_ddr_info_from_env_or_debugfs(struct pacc_zluda_ddr_info 
     info->ddr_base = base;
     info->ddr_size = size;
     return true;
+}
+
+static int notify_zluda_irq(int mbox_fd) {
+    static bool warned_unsupported;
+    struct pacc_zluda_ddr_info irq_info = g_ddr_info;
+    int ret = ioctl(mbox_fd, PACC_IOC_ZLUDA_IRQ);
+    int saved_errno;
+    if (ret == 0) {
+        return 0;
+    }
+
+    saved_errno = errno;
+    if (saved_errno == ENOTTY || saved_errno == EINVAL) {
+        ret = ioctl(mbox_fd, PACC_IOC_ZLUDA_IRQ_WITH_DDR, &irq_info);
+        if (ret == 0) {
+            return 0;
+        }
+        saved_errno = errno;
+    }
+
+    if (saved_errno == ENOTTY || saved_errno == ENOSYS || saved_errno == EOPNOTSUPP) {
+        if (!warned_unsupported) {
+            log_msg("ZLUDA IRQ ioctl unsupported on mbox fd; continuing with shared-DDR polling mock");
+            warned_unsupported = true;
+        }
+        return 0;
+    }
+
+    errno = saved_errno;
+    return -1;
 }
 
 static void wait_for_control(int mbox_fd) {
@@ -533,6 +637,16 @@ static uint64_t hash_kernel_name_bytes(const char *name) {
     if (!name) return hash;
     for (const unsigned char *p = (const unsigned char *)name; *p; ++p) {
         hash ^= (uint64_t)*p;
+        hash *= PACC_FNV64_PRIME;
+    }
+    return hash;
+}
+
+static uint64_t hash_bytes_fnv64(const uint8_t *data, size_t len) {
+    uint64_t hash = PACC_FNV64_OFFSET;
+    if (!data) return hash;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= (uint64_t)data[i];
         hash *= PACC_FNV64_PRIME;
     }
     return hash;
@@ -1288,6 +1402,43 @@ static int write_file_all(const char *path, const uint8_t *data, size_t len) {
     return 0;
 }
 
+static int copy_file_all(const char *dst, const char *src) {
+    int in_fd = open(src, O_RDONLY | O_CLOEXEC);
+    int out_fd = -1;
+    char buf[65536];
+    if (in_fd < 0) return -1;
+    out_fd = open(dst, O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, 0700);
+    if (out_fd < 0) {
+        close(in_fd);
+        return -1;
+    }
+    for (;;) {
+        ssize_t nread = read(in_fd, buf, sizeof(buf));
+        if (nread < 0) {
+            close(in_fd);
+            close(out_fd);
+            return -1;
+        }
+        if (nread == 0) break;
+        ssize_t written = 0;
+        while (written < nread) {
+            ssize_t nw = write(out_fd, buf + written, (size_t)(nread - written));
+            if (nw < 0) {
+                close(in_fd);
+                close(out_fd);
+                return -1;
+            }
+            written += nw;
+        }
+    }
+    if (close(in_fd) != 0) {
+        close(out_fd);
+        return -1;
+    }
+    if (close(out_fd) != 0) return -1;
+    return 0;
+}
+
 static const char *find_program_on_path(const char *name) {
     static char resolved[8][512];
     static unsigned next_slot;
@@ -1311,6 +1462,7 @@ static const char *find_program_on_path(const char *name) {
 
 static const char kernel_host_stubs_c[] =
 "#include <stdint.h>\n"
+"#include <math.h>\n"
 "#define WEAK __attribute__((weak))\n"
 "struct ShflSyncResult { uint32_t x; uint32_t pred; };\n"
 "struct DivF32Part1Result { float fma_4; float fma_1; float fma_3; uint8_t numerator_scaled_flag; };\n"
@@ -1355,6 +1507,11 @@ static const char kernel_host_stubs_c[] =
 "WEAK uint32_t f___zluda_ptx_impl_sreg_lanemask_lt(void) { return 0u; }\n"
 "WEAK uint32_t f___zluda_ptx_impl_sreg_lanemask_ge(void) { return ~0u; }\n"
 "WEAK uint32_t f___zluda_ptx_impl_sreg_clock(void) { return 0u; }\n"
+"WEAK float f___zluda_ptx_impl_sqrt_approx_f32(float x) { return sqrtf(x); }\n"
+"WEAK float f___zluda_ptx_impl_rsqrt_approx_f32(float x) { return 1.0f / sqrtf(x); }\n"
+"WEAK float f___zluda_ptx_impl_ex2_approx_f32(float x) { return exp2f(x); }\n"
+"WEAK float f___zluda_ptx_impl_lg2_approx_f32(float x) { return log2f(x); }\n"
+"WEAK float f___zluda_ptx_impl_rcp_approx_f32(float x) { return 1.0f / x; }\n"
 "WEAK uint32_t f___zluda_ptx_impl_bfe_u32(uint32_t base, uint32_t pos_32, uint32_t len_32) {\n"
 "    uint32_t pos = pos_32 & 0xffu, len = len_32 & 0xffu; if (pos >= 32u || len == 0u) return 0u; if (len >= 32u) return base >> pos; if (len > 31u) len = 31u; return (base >> pos) & ((1u << len) - 1u);\n"
 "}\n"
@@ -1535,8 +1692,8 @@ static int build_kernel_tmp_shared_stubs(const char *input_obj,
     if (fclose(out) != 0) return -1;
 
     if (symbol_count > 0) {
-        log_msg("device-link: adding %zu tmp_shared BSS stubs (%zu bytes each)",
-                symbol_count, bytes);
+        trace_msg("device-link: adding %zu tmp_shared BSS stubs (%zu bytes each)",
+                  symbol_count, bytes);
     }
     return compile_kernel_c_object(stub_src, stub_obj);
 }
@@ -1586,7 +1743,7 @@ static int device_link_kernel_object(const char *input_obj, const char *output_s
                 NULL,
             };
             if (run_command(env_argv) == 0) {
-                log_msg("device-link ok: %s -> %s via %s", input_obj, output_so, tool);
+                trace_msg("device-link ok: %s -> %s via %s", input_obj, output_so, tool);
                 return 0;
             }
         }
@@ -1611,7 +1768,7 @@ static int device_link_kernel_object(const char *input_obj, const char *output_s
             NULL,
         };
         if (run_command(cc_argv) == 0) {
-            log_msg("device-link ok: %s -> %s via %s", input_obj, output_so, tool);
+            trace_msg("device-link ok: %s -> %s via %s", input_obj, output_so, tool);
             return 0;
         }
     }
@@ -1623,8 +1780,26 @@ static bool elf64_bounds_ok(size_t off, size_t size, size_t total) {
     return off <= total && size <= total - off;
 }
 
+static bool symbol_matches_kernel_name(const char *symbol,
+                                       const char *kernel_name,
+                                       size_t kernel_name_size) {
+    if (!symbol || !kernel_name || kernel_name_size == 0) return false;
+    if (strlen(symbol) == kernel_name_size &&
+        memcmp(symbol, kernel_name, kernel_name_size) == 0) {
+        return true;
+    }
+    if (symbol[0] == 'f' && symbol[1] == '_' &&
+        strlen(symbol + 2) == kernel_name_size &&
+        memcmp(symbol + 2, kernel_name, kernel_name_size) == 0) {
+        return true;
+    }
+    return false;
+}
+
 static bool elf64_locate_symbol_by_hash(const uint8_t *elf, size_t elf_len,
                                         uint64_t want_hash,
+                                        const char *kernel_name,
+                                        size_t kernel_name_size,
                                         char *name_out, size_t name_out_len) {
     if (!elf || elf_len < 64 || !name_out || name_out_len == 0) return false;
     if (!(elf[0] == 0x7f && elf[1] == 'E' && elf[2] == 'L' && elf[3] == 'F')) return false;
@@ -1664,13 +1839,16 @@ static bool elf64_locate_symbol_by_hash(const uint8_t *elf, size_t elf_len,
             uint16_t st_shndx = read_u16_le(sym + 0x06);
             if (st_name >= str_size || st_shndx == 0) continue;
             const char *name = strtab + st_name;
-            if (!*name) continue;
+            if (!*name || !is_valid_c_symbol_name(name)) continue;
             if (st_type != PACC_ELF_STT_FUNC && st_type != PACC_ELF_STT_NOTYPE) continue;
-            if (!fallback) fallback = name;
-            if (hash_kernel_name_bytes(name) == want_hash) {
+            if (symbol_matches_kernel_name(name, kernel_name, kernel_name_size) ||
+                hash_kernel_name_bytes(name) == want_hash ||
+                (name[0] == 'f' && name[1] == '_' &&
+                 hash_kernel_name_bytes(name + 2) == want_hash)) {
                 snprintf(name_out, name_out_len, "%s", name);
                 return true;
             }
+            if (st_type == PACC_ELF_STT_FUNC && !fallback) fallback = name;
         }
     }
 
@@ -1688,26 +1866,96 @@ static uint16_t elf64_type(const uint8_t *elf, size_t elf_len) {
     return read_u16_le(elf + 0x10);
 }
 
+static bool kernel_cache_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_KERNEL_CACHE");
+    return !(value && (!strcmp(value, "0") || !strcasecmp(value, "false") ||
+                      !strcasecmp(value, "off") || !strcasecmp(value, "no")));
+}
+
+static const char *kernel_cache_dir(void) {
+    const char *value = getenv("HETGPU_PACC_KERNEL_CACHE_DIR");
+    return (value && *value) ? value : "/tmp/hetgpu_pacc_kernel_cache";
+}
+
+static int ensure_kernel_cache_dir(const char *dir) {
+    if (!dir || !*dir) return -1;
+    if (mkdir(dir, 0700) != 0 && errno != EEXIST) return -1;
+    return 0;
+}
+
+static bool make_kernel_cache_path(char *out, size_t out_len,
+                                   const uint8_t *elf, size_t elf_len,
+                                   uint64_t kernel_hash, uint16_t e_type) {
+    const char *dir = kernel_cache_dir();
+    uint64_t elf_hash = hash_bytes_fnv64(elf, elf_len);
+    if (!out || out_len == 0 || !kernel_cache_enabled()) return false;
+    if (ensure_kernel_cache_dir(dir) != 0) return false;
+    return snprintf(out, out_len,
+                    "%s/kernel-t%u-%016" PRIx64 "-%016" PRIx64 "-%zu.so",
+                    dir, (unsigned)e_type, kernel_hash, elf_hash, elf_len) < (int)out_len;
+}
+
+static bool dlopen_cached_kernel(const char *path, char *artifact_path,
+                                 size_t artifact_path_len, void **handle_out) {
+    if (!path || !*path || !handle_out || access(path, R_OK) != 0) return false;
+    *handle_out = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (*handle_out) {
+        snprintf(artifact_path, artifact_path_len, "%s", path);
+        trace_msg("kernel cache hit: %s", path);
+        return true;
+    }
+    log_msg("kernel cache stale: dlopen(%s) failed: %s", path, dlerror());
+    unlink(path);
+    return false;
+}
+
+static void install_kernel_cache_artifact(const char *cache_path,
+                                          const char *built_so,
+                                          char *artifact_path,
+                                          size_t artifact_path_len,
+                                          const char **load_path) {
+    char tmp_path[PATH_MAX];
+    if (!cache_path || !*cache_path || !built_so || !load_path) return;
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%ld", cache_path, (long)getpid());
+    if (copy_file_all(tmp_path, built_so) == 0 && rename(tmp_path, cache_path) == 0) {
+        trace_msg("kernel cache store: %s", cache_path);
+        *load_path = cache_path;
+        snprintf(artifact_path, artifact_path_len, "%s", cache_path);
+        return;
+    }
+    unlink(tmp_path);
+}
+
 static int load_kernel_image(const uint8_t *elf, size_t elf_len,
                              uint64_t kernel_hash,
+                             const char *kernel_name, size_t kernel_name_size,
                              char *symbol_name, size_t symbol_name_len,
                              char *artifact_path, size_t artifact_path_len,
                              void **handle_out) {
     char tmpdir[] = "/tmp/hetgpu_pacc_kernelXXXXXX";
     char obj_path[PATH_MAX];
     char so_path[PATH_MAX];
+    char cache_path[PATH_MAX] = {0};
     uint16_t e_type;
     const char *load_path = NULL;
 
     if (!elf || !elf_len || !handle_out) return -1;
     *handle_out = NULL;
-    if (!mkdtemp(tmpdir)) {
+
+    e_type = elf64_type(elf, elf_len);
+    if (!elf64_locate_symbol_by_hash(elf, elf_len, kernel_hash,
+                                     kernel_name, kernel_name_size,
+                                     symbol_name, symbol_name_len)) {
+        log_msg("kernel image: no symbol matched hash=0x%" PRIx64, kernel_hash);
         return -1;
     }
 
-    e_type = elf64_type(elf, elf_len);
-    if (!elf64_locate_symbol_by_hash(elf, elf_len, kernel_hash, symbol_name, symbol_name_len)) {
-        log_msg("kernel image: no symbol matched hash=0x%" PRIx64, kernel_hash);
+    if (make_kernel_cache_path(cache_path, sizeof(cache_path), elf, elf_len, kernel_hash, e_type) &&
+        dlopen_cached_kernel(cache_path, artifact_path, artifact_path_len, handle_out)) {
+        return 0;
+    }
+
+    if (!mkdtemp(tmpdir)) {
         return -1;
     }
 
@@ -1723,6 +1971,8 @@ static int load_kernel_image(const uint8_t *elf, size_t elf_len,
         }
         load_path = so_path;
         snprintf(artifact_path, artifact_path_len, "%s", so_path);
+        install_kernel_cache_artifact(cache_path, so_path, artifact_path,
+                                      artifact_path_len, &load_path);
     } else if (e_type == PACC_ELF_ET_DYN) {
         snprintf(so_path, sizeof(so_path), "%s/kernel.so", tmpdir);
         if (write_file_all(so_path, elf, elf_len) != 0) {
@@ -1730,6 +1980,8 @@ static int load_kernel_image(const uint8_t *elf, size_t elf_len,
         }
         load_path = so_path;
         snprintf(artifact_path, artifact_path_len, "%s", so_path);
+        install_kernel_cache_artifact(cache_path, so_path, artifact_path,
+                                      artifact_path_len, &load_path);
     } else {
         log_msg("unsupported kernel ELF type=%u", (unsigned)e_type);
         return -1;
@@ -1743,7 +1995,88 @@ static int load_kernel_image(const uint8_t *elf, size_t elf_len,
     return 0;
 }
 
-static int invoke_kernel_symbol(void *fn, const uint64_t *args, size_t argc) {
+struct PaccUint3 {
+    uint32_t x;
+    uint32_t y;
+    uint32_t z;
+};
+
+static struct PaccUint3 kernel_arg_uint3(const uint64_t *args,
+                                         const struct PaccJobImage *job,
+                                         size_t index) {
+    struct PaccUint3 v;
+    v.x = (uint32_t)args[index];
+    v.y = (uint32_t)(args[index] >> 32);
+    v.z = (job && job->arg_records && index < job->arg_count) ? (uint32_t)job->arg_records[index].value_hi : 0;
+    return v;
+}
+
+static int invoke_kernel_bin_bcast23(void *fn,
+                                     const uint64_t *args,
+                                     const struct PaccJobImage *job) {
+    struct PaccUint3 u3_6 = kernel_arg_uint3(args, job, 6);
+    struct PaccUint3 u3_7 = kernel_arg_uint3(args, job, 7);
+    struct PaccUint3 u3_8 = kernel_arg_uint3(args, job, 8);
+    struct PaccUint3 u3_9 = kernel_arg_uint3(args, job, 9);
+    struct PaccUint3 u3_10 = kernel_arg_uint3(args, job, 10);
+    typedef void (*BinBcast23Fn)(
+        const void *, const void *, void *,
+        int32_t, int32_t, int32_t,
+        struct PaccUint3, struct PaccUint3, struct PaccUint3,
+        struct PaccUint3, struct PaccUint3,
+        int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
+        int32_t, int32_t, int32_t, int32_t, int32_t,
+        const void *);
+    trace_msg("bin_bcast23 call: ptrs=%p,%p,%p,%p dims=%d,%d,%d "
+              "u3={%u,%u,%u}/{%u,%u,%u}/{%u,%u,%u}/{%u,%u,%u}/{%u,%u,%u} "
+              "tail=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+              (const void *)(uintptr_t)args[0],
+              (const void *)(uintptr_t)args[1],
+              (void *)(uintptr_t)args[2],
+              (const void *)(uintptr_t)args[22],
+              (int32_t)args[3], (int32_t)args[4], (int32_t)args[5],
+              u3_6.x, u3_6.y, u3_6.z,
+              u3_7.x, u3_7.y, u3_7.z,
+              u3_8.x, u3_8.y, u3_8.z,
+              u3_9.x, u3_9.y, u3_9.z,
+              u3_10.x, u3_10.y, u3_10.z,
+              (int32_t)args[11], (int32_t)args[12], (int32_t)args[13],
+              (int32_t)args[14], (int32_t)args[15], (int32_t)args[16],
+              (int32_t)args[17], (int32_t)args[18], (int32_t)args[19],
+              (int32_t)args[20], (int32_t)args[21]);
+    ((BinBcast23Fn)fn)(
+        (const void *)(uintptr_t)args[0],
+        (const void *)(uintptr_t)args[1],
+        (void *)(uintptr_t)args[2],
+        (int32_t)args[3],
+        (int32_t)args[4],
+        (int32_t)args[5],
+        u3_6,
+        u3_7,
+        u3_8,
+        u3_9,
+        u3_10,
+        (int32_t)args[11],
+        (int32_t)args[12],
+        (int32_t)args[13],
+        (int32_t)args[14],
+        (int32_t)args[15],
+        (int32_t)args[16],
+        (int32_t)args[17],
+        (int32_t)args[18],
+        (int32_t)args[19],
+        (int32_t)args[20],
+        (int32_t)args[21],
+        (const void *)(uintptr_t)args[22]);
+    return 0;
+}
+
+static int invoke_kernel_symbol(const char *symbol, void *fn,
+                                const uint64_t *args,
+                                const struct PaccJobImage *job,
+                                size_t argc) {
+    (void)symbol;
+    (void)job;
     switch (argc) {
     case 0: ((void (*)(void))fn)(); return 0;
     case 1: ((void (*)(uint64_t))fn)(args[0]); return 0;
@@ -1770,6 +2103,9 @@ static int invoke_kernel_symbol(void *fn, const uint64_t *args, size_t argc) {
     case 22: ((void (*)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t))fn)(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[13], args[14], args[15], args[16], args[17], args[18], args[19], args[20], args[21]); return 0;
     case 23: ((void (*)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t))fn)(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[13], args[14], args[15], args[16], args[17], args[18], args[19], args[20], args[21], args[22]); return 0;
     case 24: ((void (*)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t))fn)(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[13], args[14], args[15], args[16], args[17], args[18], args[19], args[20], args[21], args[22], args[23]); return 0;
+    case 25: ((void (*)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t))fn)(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[13], args[14], args[15], args[16], args[17], args[18], args[19], args[20], args[21], args[22], args[23], args[24]); return 0;
+    case 26: ((void (*)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t))fn)(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[13], args[14], args[15], args[16], args[17], args[18], args[19], args[20], args[21], args[22], args[23], args[24], args[25]); return 0;
+    case 27: ((void (*)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t))fn)(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[13], args[14], args[15], args[16], args[17], args[18], args[19], args[20], args[21], args[22], args[23], args[24], args[25], args[26]); return 0;
     default:
         log_msg("invoke_kernel_symbol: unsupported argc=%zu", argc);
         return -1;
@@ -1821,12 +2157,12 @@ static int build_kernel_launch_args(
         }
         maps[map_count].arg_index = binding->arg_index;
         maps[map_count].flags = binding->flags;
-        log_msg("kernel binding: arg=%u phys=0x%" PRIx64 " size=%zu flags=0x%x host=%p",
-                binding->arg_index,
-                binding->addr,
-                bind_bytes,
-                binding->flags,
-                maps[map_count].map.ptr);
+        trace_msg("kernel binding: arg=%u phys=0x%" PRIx64 " size=%zu flags=0x%x host=%p",
+                  binding->arg_index,
+                  binding->addr,
+                  bind_bytes,
+                  binding->flags,
+                  maps[map_count].map.ptr);
         map_count++;
     }
 
@@ -1855,6 +2191,34 @@ static int build_kernel_launch_args(
 
     *argc_out = argc;
     *map_count_out = map_count;
+    return 0;
+}
+
+static int build_kernel_param_cells(
+    const struct PaccJobImage *job,
+    const uint64_t *argv,
+    size_t argc,
+    struct KernelParamCell *cells,
+    uint64_t *call_argv) {
+    if (!job || !argv || !cells || !call_argv || argc > PACC_MAX_KERNEL_ARGS) {
+        return -1;
+    }
+    memset(cells, 0, sizeof(cells[0]) * PACC_MAX_KERNEL_ARGS);
+    for (size_t i = 0; i < argc; i++) {
+        uint32_t size = 8;
+        if (job->arg_records && i < job->arg_count) {
+            size = job->arg_records[i].size ? job->arg_records[i].size : 8;
+        }
+        if (size > sizeof(struct KernelParamCell)) {
+            log_msg("kernel arg %zu size=%u exceeds param cell", i, size);
+            return -1;
+        }
+        cells[i].lo = argv[i];
+        if (size > sizeof(uint64_t)) {
+            cells[i].hi = job->arg_records[i].value_hi;
+        }
+        call_argv[i] = (uint64_t)(uintptr_t)&cells[i];
+    }
     return 0;
 }
 
@@ -1893,6 +2257,11 @@ static int parse_kernel_job_image(const uint8_t *image, size_t image_len, struct
             out->raw_params = image + out->abi->raw_param_offset;
             out->raw_param_size = out->abi->raw_param_size;
         }
+        if (out->abi->kernel_name_size) {
+            if (!elf64_bounds_ok(out->abi->kernel_name_offset, out->abi->kernel_name_size, image_len)) return -1;
+            out->kernel_name = (const char *)(image + out->abi->kernel_name_offset);
+            out->kernel_name_size = out->abi->kernel_name_size;
+        }
     }
     return 0;
 }
@@ -1901,6 +2270,8 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
     struct Map map = {0};
     struct PaccJobImage job;
     uint64_t argv[PACC_MAX_KERNEL_ARGS];
+    uint64_t call_argv[PACC_MAX_KERNEL_ARGS];
+    struct KernelParamCell param_cells[PACC_MAX_KERNEL_ARGS];
     size_t argc = 0;
     struct KernelBindingMap binding_maps[PACC_MAX_KERNEL_BINDINGS];
     size_t binding_map_count = 0;
@@ -1922,18 +2293,27 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
         return 0xffff5003;
     }
 
-    log_msg("kernel job seq=%" PRIu64 " hash=0x%" PRIx64 " elf=%zu args=%zu bindings=%zu grid=%ux%ux%u block=%ux%ux%u",
-            desc->seq, job.header.kernel_name_hash, job.elf_len, job.arg_count, job.binding_count,
-            job.header.grid_x, job.header.grid_y, job.header.grid_z,
-            job.header.block_x, job.header.block_y, job.header.block_z);
+    trace_msg("kernel job seq=%" PRIu64 " hash=0x%" PRIx64 " name=%.*s elf=%zu args=%zu bindings=%zu grid=%ux%ux%u block=%ux%ux%u",
+              desc->seq, job.header.kernel_name_hash,
+              (int)job.kernel_name_size, job.kernel_name ? job.kernel_name : "",
+              job.elf_len, job.arg_count, job.binding_count,
+              job.header.grid_x, job.header.grid_y, job.header.grid_z,
+              job.header.block_x, job.header.block_y, job.header.block_z);
 
     if (load_kernel_image(job.elf, job.elf_len, job.header.kernel_name_hash,
+                          job.kernel_name, job.kernel_name_size,
                           symbol, sizeof(symbol), artifact, sizeof(artifact), &handle) != 0) {
         unmap_phys(&map);
         return 0xffff5004;
     }
 
     if (build_kernel_launch_args(fd, &job, argv, &argc, binding_maps, &binding_map_count) != 0) {
+        dlclose(handle);
+        unmap_phys(&map);
+        return 0xffff5005;
+    }
+    if (build_kernel_param_cells(&job, argv, argc, param_cells, call_argv) != 0) {
+        release_kernel_binding_maps(binding_maps, binding_map_count);
         dlclose(handle);
         unmap_phys(&map);
         return 0xffff5005;
@@ -1948,9 +2328,13 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
         return 0xffff5006;
     }
 
-    log_msg("kernel dispatch: seq=%" PRIu64 " symbol=%s argc=%zu artifact=%s",
-            desc->seq, symbol, argc, artifact);
-    status = invoke_kernel_symbol(fn, argv, argc);
+    trace_msg("kernel dispatch: seq=%" PRIu64 " symbol=%s argc=%zu artifact=%s",
+              desc->seq, symbol, argc, artifact);
+    g_current_kernel_seq = desc->seq;
+    g_current_kernel_symbol = symbol;
+    status = invoke_kernel_symbol(symbol, fn, call_argv, &job, argc);
+    g_current_kernel_symbol = NULL;
+    g_current_kernel_seq = 0;
 
     release_kernel_binding_maps(binding_maps, binding_map_count);
     dlclose(handle);
@@ -1970,9 +2354,9 @@ static void *arg_payload(volatile struct Doorbell *ctl, uint32_t job_id, uint64_
                                           (size_t)slot * HETGPU_PACC_ARG_SLOT_BYTES);
     if (h->magic != HETGPU_PACC_JOB_MAGIC || h->version != HETGPU_PACC_JOB_VERSION ||
         h->job_id != job_id || h->seq != seq || h->arg_len < want) {
-        log_msg("arg_payload mismatch: job_id=%u/%s seq=%" PRIu64 " slot=%d magic=0x%" PRIx64 " ver=%u hdr_job=%u hdr_seq=%" PRIu64 " arg_len=%" PRIu64 " want=%zu",
-                job_id, job_name(job_id), seq, slot, h->magic, h->version,
-                h->job_id, h->seq, h->arg_len, want);
+        trace_msg("arg_payload mismatch: job_id=%u/%s seq=%" PRIu64 " slot=%d magic=0x%" PRIx64 " ver=%u hdr_job=%u hdr_seq=%" PRIu64 " arg_len=%" PRIu64 " want=%zu",
+                  job_id, job_name(job_id), seq, slot, h->magic, h->version,
+                  h->job_id, h->seq, h->arg_len, want);
         return NULL;
     }
     return (void *)((char *)h + sizeof(*h));
@@ -2027,13 +2411,13 @@ static bool refresh_runtime_table(int fd, volatile struct Doorbell *ctl, struct 
                          ((local.have_allreduce ? 1U : 0U) << 3);
         write_stage_beacon(fd, HETGPU_PACC_TABLE_BEACON_OFF, 0x7000U | flags, 0, local.seq);
     }
-    log_msg("runtime table seq=%" PRIu64 " have_gemm=%u have_softmax=%u have_rmsnorm=%u have_allreduce=%u",
-            local.seq, local.have_gemm, local.have_softmax, local.have_rmsnorm, local.have_allreduce);
+    trace_msg("runtime table seq=%" PRIu64 " have_gemm=%u have_softmax=%u have_rmsnorm=%u have_allreduce=%u",
+              local.seq, local.have_gemm, local.have_softmax, local.have_rmsnorm, local.have_allreduce);
     if (local.have_gemm) {
-        log_msg("runtime table GEMM: m=%" PRIu64 " n=%" PRIu64 " k=%" PRIu64 " atype=%u btype=%u ctype=%u a=0x%" PRIx64 " b=0x%" PRIx64 " c=0x%" PRIx64,
-                local.gemm.m, local.gemm.n, local.gemm.k,
-                local.gemm.atype, local.gemm.btype, local.gemm.ctype,
-                local.gemm.a_addr, local.gemm.b_addr, local.gemm.c_addr);
+        trace_msg("runtime table GEMM: m=%" PRIu64 " n=%" PRIu64 " k=%" PRIu64 " atype=%u btype=%u ctype=%u a=0x%" PRIx64 " b=0x%" PRIx64 " c=0x%" PRIx64,
+                  local.gemm.m, local.gemm.n, local.gemm.k,
+                  local.gemm.atype, local.gemm.btype, local.gemm.ctype,
+                  local.gemm.a_addr, local.gemm.b_addr, local.gemm.c_addr);
     }
     return true;
 }
@@ -2048,8 +2432,8 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
             if (dyn) job = dyn;
         }
         if (job) {
-            log_msg("dispatch GEMM: seq=%" PRIu64 " m=%" PRIu64 " n=%" PRIu64 " k=%" PRIu64 " atype=%u btype=%u ctype=%u",
-                    seq, job->m, job->n, job->k, job->atype, job->btype, job->ctype);
+            trace_msg("dispatch GEMM: seq=%" PRIu64 " m=%" PRIu64 " n=%" PRIu64 " k=%" PRIu64 " atype=%u btype=%u ctype=%u",
+                      seq, job->m, job->n, job->k, job->atype, job->btype, job->ctype);
         }
         return job ? run_gemm(fd, job) : (int)0xffff0101U;
     }
@@ -2060,8 +2444,8 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
             if (dyn) job = dyn;
         }
         if (job) {
-            log_msg("dispatch SOFTMAX: seq=%" PRIu64 " rows=%" PRIu64 " cols=%" PRIu64 " stride=%" PRIu64 " dtype=%u",
-                    seq, job->rows, job->cols, job->stride, job->dtype);
+            trace_msg("dispatch SOFTMAX: seq=%" PRIu64 " rows=%" PRIu64 " cols=%" PRIu64 " stride=%" PRIu64 " dtype=%u",
+                      seq, job->rows, job->cols, job->stride, job->dtype);
         }
         return job ? run_softmax(fd, job) : (int)0xffff0201U;
     }
@@ -2072,8 +2456,8 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
             if (dyn) job = dyn;
         }
         if (job) {
-            log_msg("dispatch RMSNORM: seq=%" PRIu64 " rows=%" PRIu64 " hidden=%" PRIu64 " dtype=%u eps=%g",
-                    seq, job->rows, job->hidden, job->dtype, job->eps);
+            trace_msg("dispatch RMSNORM: seq=%" PRIu64 " rows=%" PRIu64 " hidden=%" PRIu64 " dtype=%u eps=%g",
+                      seq, job->rows, job->hidden, job->dtype, job->eps);
         }
         return job ? run_rmsnorm(fd, job) : (int)0xffff0301U;
     }
@@ -2084,8 +2468,8 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
             if (dyn) job = dyn;
         }
         if (job) {
-            log_msg("dispatch ALLREDUCE: seq=%" PRIu64 " count=%" PRIu64 " nranks=%u dtype=%u op=%u",
-                    seq, job->count, job->nranks, job->dtype, job->reduce_op);
+            trace_msg("dispatch ALLREDUCE: seq=%" PRIu64 " count=%" PRIu64 " nranks=%u dtype=%u op=%u",
+                      seq, job->count, job->nranks, job->dtype, job->reduce_op);
         }
         return job ? run_allreduce(fd, job) : (int)0xffff0401U;
     }
@@ -2108,12 +2492,12 @@ static enum DispatchPollResult maybe_dispatch_kernel_job(
     }
 
     *last_kernel_seq = kernel_desc->seq;
-    log_msg("new kernel doorbell: seq=%" PRIu64 " addr=0x%" PRIx64 " len=%" PRIu64,
-            kernel_desc->seq, kernel_desc->addr, kernel_desc->len);
+    trace_msg("new kernel doorbell: seq=%" PRIu64 " addr=0x%" PRIx64 " len=%" PRIu64,
+              kernel_desc->seq, kernel_desc->addr, kernel_desc->len);
     status = dispatch_kernel_job(fd, kernel_desc);
     mirror_host_status(fd, PACC_KERNEL_JOB_ID, kernel_desc->seq, (uint32_t)status);
-    log_msg("kernel dispatch done: seq=%" PRIu64 " status=0x%x",
-            kernel_desc->seq, (uint32_t)status);
+    trace_msg("kernel dispatch done: seq=%" PRIu64 " status=0x%x",
+              kernel_desc->seq, (uint32_t)status);
     return DISPATCH_HANDLED;
 }
 
@@ -2138,8 +2522,8 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
     job_id = ctl->job_id;
     ctl->status = 1;
     __sync_synchronize();
-    log_msg("new doorbell: job_id=%u/%s seq=%" PRIu64,
-            job_id, job_name(job_id), *last_seq);
+    trace_msg("new doorbell: job_id=%u/%s seq=%" PRIu64,
+              job_id, job_name(job_id), *last_seq);
     write_stage_beacon(fd, HETGPU_PACC_DOORBELL_BEACON_OFF, 0xd001, job_id, *last_seq);
     refresh_runtime_table(fd, ctl, jobs, last_table_seq);
     if (job_id == HETGPU_PACC_JOB_GEMM && jobs->have_gemm) {
@@ -2168,16 +2552,16 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
             ((uint64_t)(uint32_t)jobs->gemm.lda << 32) | (uint32_t)jobs->gemm.ldb,
             ((uint64_t)(uint32_t)jobs->gemm.ldc << 32) | (uint32_t)jobs->gemm.batch_count);
     }
-    log_msg("dispatch enter: job_id=%u/%s seq=%" PRIu64,
-            job_id, job_name(job_id), *last_seq);
+    trace_msg("dispatch enter: job_id=%u/%s seq=%" PRIu64,
+              job_id, job_name(job_id), *last_seq);
     write_stage_beacon(fd, HETGPU_PACC_DISPATCH_BEACON_OFF, 0xd15c, job_id, *last_seq);
     status = dispatch_job(fd, ctl, jobs, strict);
     __sync_synchronize();
     ctl->status = (uint32_t)status;
     write_stage_beacon(fd, HETGPU_PACC_PREMIRROR_BEACON_OFF, (uint32_t)status, job_id, *last_seq);
     mirror_host_status(fd, job_id, *last_seq, (uint32_t)status);
-    log_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
-            job_id, job_name(job_id), *last_seq, (uint32_t)status);
+    trace_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+              job_id, job_name(job_id), *last_seq, (uint32_t)status);
     return DISPATCH_HANDLED;
 }
 
@@ -2215,8 +2599,8 @@ static volatile struct Doorbell *scan_for_control(int fd, const struct pacc_zlud
                 g_pacc_id, control_phys, (unsigned)HETGPU_PACC_CONTROL_BYTES, strerror(errno));
         return NULL;
     }
-    log_msg("mapped shared DDR control pacc=%u at phys 0x%" PRIx64 " len 0x%x",
-            g_pacc_id, control_phys, (unsigned)HETGPU_PACC_CONTROL_BYTES);
+    trace_msg("mapped shared DDR control pacc=%u at phys 0x%" PRIx64 " len 0x%x",
+              g_pacc_id, control_phys, (unsigned)HETGPU_PACC_CONTROL_BYTES);
     return (volatile struct Doorbell *)map->ptr;
 }
 
@@ -2248,8 +2632,8 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
     host->seq = seq;
     __sync_synchronize();
     msync(map.base, map.map_len, MS_SYNC);
-    log_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
-            job_id, job_name(job_id), seq, status);
+    trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+              job_id, job_name(job_id), seq, status);
     unmap_phys(&map);
 }
 
@@ -2310,6 +2694,8 @@ int main(int argc, char **argv) {
     const char *mbox_path = "/dev/pacc0";
     const char *config = "/etc/hetgpu_pacc_jobs.conf";
     bool strict = false;
+
+    install_crash_handlers();
 
     if (getpid() == 1) {
         pid1_bootstrap_devices();
@@ -2411,8 +2797,7 @@ int main(int argc, char **argv) {
             &last_table_seq,
             &last_kernel_seq);
         if (poll_result == DISPATCH_HANDLED) {
-            struct pacc_zluda_ddr_info irq_info = g_ddr_info;
-            int ret = ioctl(mbox_fd, PACC_IOC_ZLUDA_IRQ, &irq_info);
+            int ret = notify_zluda_irq(mbox_fd);
             if (ret < 0) {
                 log_msg("failed to response: %d", errno);
                 return errno ? errno : EIO;
