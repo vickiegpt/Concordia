@@ -496,7 +496,16 @@ fn version<'a, 'input>(stream: &mut PtxParser<'a, 'input>) -> PResult<(u8, u8)> 
 }
 
 fn target<'a, 'input>(stream: &mut PtxParser<'a, 'input>) -> PResult<(u32, Option<char>)> {
-    preceded(Token::DotTarget, ident.and_then(shader_model)).parse_next(stream)
+    (
+        Token::DotTarget,
+        ident.and_then(shader_model),
+        opt(preceded(
+            Token::Comma,
+            separated::<_, _, Vec<_>, _, _, _, _>(1.., ident, Token::Comma),
+        )),
+    )
+        .map(|(_, target, _)| target)
+        .parse_next(stream)
 }
 
 fn shader_model<'a>(stream: &mut &str) -> PResult<(u32, Option<char>)> {
@@ -4367,6 +4376,22 @@ mod tests {
             state: PtxParserState::new(text, &mut errors),
         };
         assert_eq!(target.parse(stream).unwrap(), (90, Some('a')));
+        assert_eq!(errors.len(), 0);
+    }
+
+    #[test]
+    fn sm_80_debug_target_option() {
+        let text = ".target sm_80, debug";
+        let tokens = Token::lexer(text)
+            .map(|t| t.map(|t| (t, Span::default())))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let mut errors = Vec::new();
+        let stream = super::PtxParser {
+            input: &tokens[..],
+            state: PtxParserState::new(text, &mut errors),
+        };
+        assert_eq!(target.parse(stream).unwrap(), (80, None));
         assert_eq!(errors.len(), 0);
     }
 
