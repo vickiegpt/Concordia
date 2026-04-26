@@ -17,6 +17,10 @@ JOB_RMSNORM = 3
 DTypeF32 = 4
 
 TABLE_OFF = 0x1400
+CONTROL_BYTES = 0x2000
+CONTROL_RESERVED = 4 * CONTROL_BYTES
+COMPLETION_OFF = 0x1F20
+SHARED_DDR_USER_OFF = 0x100000
 
 GEMM_A_OFF = 0x1800
 GEMM_B_OFF = 0x1840
@@ -43,7 +47,31 @@ def unpack_f32(data):
     return list(struct.unpack("<" + "f" * (len(data) // 4), data))
 
 
-def write_ap(dev, off, data):
+def parse_u64_text(text):
+    text = text.strip()
+    if text.lower().startswith("0x"):
+        return int(text, 16)
+    return int(text, 10)
+
+
+def shared_ddr_base():
+    env = os.environ.get("HETGPU_PACC_SHARED_DDR_BASE")
+    if env:
+        return parse_u64_text(env)
+    for path in (
+        "/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base",
+    ):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                value = parse_u64_text(f.read())
+                if value:
+                    return value
+        except OSError:
+            pass
+    raise RuntimeError("shared DDR base is not available")
+
+
+def write_dev(dev, off, data):
     with open(dev, "r+b", buffering=0) as f:
         f.seek(off)
         view = memoryview(data)
@@ -57,14 +85,49 @@ def write_ap(dev, off, data):
             written += n
 
 
-def read_pacc(dev, off, n):
+def read_dev(dev, off, n):
     with open(dev, "rb", buffering=0) as f:
         f.seek(off)
         return f.read(n)
 
 
-def read_status(dev):
-    data = read_pacc(dev, 0, 32)
+def control_off(pacc_id, off):
+    return pacc_id * CONTROL_BYTES + off
+
+
+def shared_user_off(off):
+    return SHARED_DDR_USER_OFF + off
+
+
+def write_control(dev, backend, pacc_id, off, data):
+    if backend == "shared-ddr":
+        return write_dev(dev, shared_user_off(control_off(pacc_id, off)), data)
+    return write_dev(dev, off, data)
+
+
+def write_data(dev, backend, off, data):
+    if backend == "shared-ddr":
+        return write_dev(dev, shared_user_off(off), data)
+    return write_dev(dev, off, data)
+
+
+def read_data(dev, backend, off, n):
+    if backend == "shared-ddr":
+        return read_dev(dev, shared_user_off(off), n)
+    return read_dev(dev, off, n)
+
+
+def phys_addr(backend, shared_base, off, legacy_phys):
+    if backend == "shared-ddr":
+        return shared_base + off
+    return legacy_phys + off
+
+
+def read_status(dev, backend, pacc_id):
+    if backend == "shared-ddr":
+        data = read_dev(dev, shared_user_off(control_off(pacc_id, COMPLETION_OFF)), 32)
+    else:
+        data = read_dev(dev, 0, 32)
     magic, ver, job, status, seq = struct.unpack_from("<QIII4xQ", data, 0)
     return magic, ver, job, status, seq, data
 
@@ -99,13 +162,13 @@ def make_table(seq, gemm=None, softmax=None, rmsnorm=None):
     return header + gemm + softmax + rmsnorm
 
 
-def submit(dev, job_id, seq):
+def submit(dev, backend, pacc_id, job_id, seq):
     doorbell = struct.pack("<QIIIIQ", MAGIC, VERSION, job_id, 0, 0, seq)
-    write_ap(dev, 0, doorbell)
+    write_control(dev, backend, pacc_id, 0, doorbell)
     deadline = time.time() + 5
     last = None
     while time.time() < deadline:
-        last = read_status(dev)
+        last = read_status(dev, backend, pacc_id)
         magic, ver, job, status, got_seq, _ = last
         if magic == MAGIC and ver == VERSION and job == job_id and got_seq == seq and status != STATUS_BUSY:
             return status
@@ -121,63 +184,64 @@ def assert_close(name, got, want, tol=1e-3):
             raise AssertionError(f"{name}[{i}] got {g:.6f} want {w:.6f}")
 
 
-def smoke_one(dev, base_seq):
+def smoke_one(dev, pacc_id, base_seq, backend, shared_base):
+    data_base = CONTROL_RESERVED + pacc_id * 0x4000 if backend == "shared-ddr" else 0
     seq = base_seq + 1
-    write_ap(dev, GEMM_A_OFF, pack_f32([1.0, 2.0, 3.0, 4.0]))
-    write_ap(dev, GEMM_B_OFF, pack_f32([5.0, 6.0, 7.0, 8.0]))
+    write_data(dev, backend, data_base + GEMM_A_OFF, pack_f32([1.0, 2.0, 3.0, 4.0]))
+    write_data(dev, backend, data_base + GEMM_B_OFF, pack_f32([5.0, 6.0, 7.0, 8.0]))
     gemm_job = struct.pack(
         GEMM_FMT,
         0, 0, DTypeF32, DTypeF32, DTypeF32, DTypeF32,
         2, 2, 2,
-        AP2PACC_PHYS + GEMM_A_OFF,
-        AP2PACC_PHYS + GEMM_B_OFF,
-        PACC2AP_PHYS + GEMM_C_OFF,
+        phys_addr(backend, shared_base, data_base + GEMM_A_OFF, AP2PACC_PHYS),
+        phys_addr(backend, shared_base, data_base + GEMM_B_OFF, AP2PACC_PHYS),
+        phys_addr(backend, shared_base, data_base + GEMM_C_OFF, PACC2AP_PHYS),
         0, 0,
         2, 2, 2,
         0, 0, 0,
         1,
     )
-    write_ap(dev, TABLE_OFF, make_table(seq, gemm=gemm_job))
-    status = submit(dev, JOB_GEMM, seq)
+    write_control(dev, backend, pacc_id, TABLE_OFF, make_table(seq, gemm=gemm_job))
+    status = submit(dev, backend, pacc_id, JOB_GEMM, seq)
     if status != 0:
         raise RuntimeError(f"{dev} GEMM status=0x{status:x}")
-    gemm = unpack_f32(read_pacc(dev, GEMM_C_OFF, 16))
+    gemm = unpack_f32(read_data(dev, backend, data_base + GEMM_C_OFF, 16))
     assert_close(f"{dev} GEMM", gemm, [19.0, 22.0, 43.0, 50.0])
 
     seq = base_seq + 2
-    write_ap(dev, SOFTMAX_SRC_OFF, pack_f32([1.0, 2.0, 3.0, 4.0]))
+    write_data(dev, backend, data_base + SOFTMAX_SRC_OFF, pack_f32([1.0, 2.0, 3.0, 4.0]))
     softmax_job = struct.pack(
         SOFTMAX_FMT,
-        AP2PACC_PHYS + SOFTMAX_SRC_OFF,
-        PACC2AP_PHYS + SOFTMAX_DST_OFF,
+        phys_addr(backend, shared_base, data_base + SOFTMAX_SRC_OFF, AP2PACC_PHYS),
+        phys_addr(backend, shared_base, data_base + SOFTMAX_DST_OFF, PACC2AP_PHYS),
         1, 4, 4,
         DTypeF32, 0,
     )
-    write_ap(dev, TABLE_OFF, make_table(seq, softmax=softmax_job))
-    status = submit(dev, JOB_SOFTMAX, seq)
+    write_control(dev, backend, pacc_id, TABLE_OFF, make_table(seq, softmax=softmax_job))
+    status = submit(dev, backend, pacc_id, JOB_SOFTMAX, seq)
     if status != 0:
         raise RuntimeError(f"{dev} softmax status=0x{status:x}")
-    softmax = unpack_f32(read_pacc(dev, SOFTMAX_DST_OFF, 16))
+    softmax = unpack_f32(read_data(dev, backend, data_base + SOFTMAX_DST_OFF, 16))
     if abs(sum(softmax) - 1.0) > 1e-3 or any(softmax[i] >= softmax[i + 1] for i in range(3)):
         raise AssertionError(f"{dev} softmax bad result {softmax}")
 
     seq = base_seq + 3
-    write_ap(dev, RMS_X_OFF, pack_f32([1.0, 2.0, 3.0, 4.0]))
-    write_ap(dev, RMS_W_OFF, pack_f32([1.0, 1.0, 1.0, 1.0]))
+    write_data(dev, backend, data_base + RMS_X_OFF, pack_f32([1.0, 2.0, 3.0, 4.0]))
+    write_data(dev, backend, data_base + RMS_W_OFF, pack_f32([1.0, 1.0, 1.0, 1.0]))
     rms_job = struct.pack(
         RMS_FMT,
-        AP2PACC_PHYS + RMS_X_OFF,
-        AP2PACC_PHYS + RMS_W_OFF,
-        PACC2AP_PHYS + RMS_Y_OFF,
+        phys_addr(backend, shared_base, data_base + RMS_X_OFF, AP2PACC_PHYS),
+        phys_addr(backend, shared_base, data_base + RMS_W_OFF, AP2PACC_PHYS),
+        phys_addr(backend, shared_base, data_base + RMS_Y_OFF, PACC2AP_PHYS),
         1, 4,
         0.00001,
         DTypeF32,
     )
-    write_ap(dev, TABLE_OFF, make_table(seq, rmsnorm=rms_job))
-    status = submit(dev, JOB_RMSNORM, seq)
+    write_control(dev, backend, pacc_id, TABLE_OFF, make_table(seq, rmsnorm=rms_job))
+    status = submit(dev, backend, pacc_id, JOB_RMSNORM, seq)
     if status != 0:
         raise RuntimeError(f"{dev} rmsnorm status=0x{status:x}")
-    rms = unpack_f32(read_pacc(dev, RMS_Y_OFF, 16))
+    rms = unpack_f32(read_data(dev, backend, data_base + RMS_Y_OFF, 16))
     scale = 1.0 / math.sqrt(7.5 + 0.00001)
     assert_close(f"{dev} RMSNorm", rms, [scale, 2 * scale, 3 * scale, 4 * scale], tol=2e-3)
 
@@ -187,15 +251,17 @@ def smoke_one(dev, base_seq):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--devices", type=int, default=4)
+    parser.add_argument("--backend", choices=("legacy", "shared-ddr"), default="legacy")
     args = parser.parse_args()
 
+    shared_base = shared_ddr_base() if args.backend == "shared-ddr" else 0
     base = int(time.time() * 1000)
     for i in range(args.devices):
         dev = f"/dev/hetgpu_pacc_mbox{i}"
         if not os.path.exists(dev):
             raise FileNotFoundError(dev)
-        gemm, softmax, rms = smoke_one(dev, base + i * 100)
-        print(f"pacc{i} runtime-table OK gemm={gemm} softmax={softmax} rmsnorm={rms}")
+        gemm, softmax, rms = smoke_one(dev, i, base + i * 100, args.backend, shared_base)
+        print(f"pacc{i} {args.backend} runtime-table OK gemm={gemm} softmax={softmax} rmsnorm={rms}")
 
 
 if __name__ == "__main__":

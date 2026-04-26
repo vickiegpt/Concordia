@@ -10,8 +10,8 @@
 
 use super::*;
 use ptx_parser as ast;
-use smallvec::SmallVec;
 use smallvec::smallvec;
+use smallvec::SmallVec;
 
 pub(crate) fn run<'input>(
     resolver: &mut GlobalStringIdentResolver2<'input>,

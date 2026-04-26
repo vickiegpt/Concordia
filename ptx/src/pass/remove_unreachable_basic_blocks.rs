@@ -1,8 +1,8 @@
 use super::*;
 use petgraph::{
-    Graph,
     graph::NodeIndex,
     visit::{Bfs, VisitMap},
+    Graph,
 };
 use rustc_hash::FxHashSet;
 

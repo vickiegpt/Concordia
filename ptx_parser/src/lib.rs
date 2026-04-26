@@ -420,7 +420,7 @@ pub fn parse_module_checked<'input>(
             .map_err(|err| PtxError::Parser(err.into_inner()))
     };
     match parse_result {
-        Ok(result) if errors.is_empty() && result.invalid_directives == 0 => Ok(result),
+        Ok(result) if errors.is_empty() => Ok(result),
         Ok(_) => Err(errors),
         Err(err) => {
             errors.push(err);
@@ -4393,6 +4393,28 @@ mod tests {
         };
         assert_eq!(target.parse(stream).unwrap(), (80, None));
         assert_eq!(errors.len(), 0);
+    }
+
+    #[test]
+    fn module_with_debug_target_option() {
+        let text = "
+            .version 8.0
+            .target sm_80, debug
+            .address_size 64
+        ";
+        assert!(parse_module_checked(text).is_ok());
+    }
+
+    #[test]
+    fn module_with_ignored_debug_directives() {
+        let text = "
+            .version 8.0
+            .target sm_80, debug
+            .address_size 64
+            .file 1 \"kernel.cu\"
+            .section .debug_info { }
+        ";
+        assert!(parse_module_checked(text).is_ok());
     }
 
     #[test]
