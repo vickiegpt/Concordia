@@ -2,6 +2,7 @@
 import json
 import os
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -103,6 +104,19 @@ def source_entries(entries):
             yield src, cmd
 
 
+def sanitize_ptx_for_parser(path: str) -> None:
+    with open(path, "r") as f:
+        text = f.read()
+
+    # Our PTX parser only accepts the base target directive.  Clang can emit
+    # ".target sm_80, debug" when the original compile command carried debug
+    # flags; the target option is not needed by the PACC lowering path.
+    text = re.sub(r"(?m)^(\s*\.target\s+[^,\n]+),[^\n]*$", r"\1", text)
+
+    with open(path, "w") as f:
+        f.write(text)
+
+
 def compile_one(src: str, cmd: list[str], out_dir: str, clang: str, host_target: str, prelude: str):
     out = os.path.join(out_dir, os.path.basename(src) + ".ptx")
     new = [
@@ -146,6 +160,15 @@ def compile_one(src: str, cmd: list[str], out_dir: str, clang: str, host_target:
             continue
         if a in ("-extended-lambda", "--expt-extended-lambda", "-use_fast_math"):
             continue
+        if (
+            a in ("-g", "-G", "--device-debug", "--generate-line-info", "-lineinfo")
+            or a.startswith("-gline-")
+            or a.startswith("-gdwarf")
+            or a.startswith("-ggdb")
+            or a.startswith("-gmodules")
+            or a.startswith("-fdebug-")
+        ):
+            continue
         if a.startswith("-compress-mode=") or a in ("--ptx", "--cubin", "--fatbin"):
             continue
         new.append(a)
@@ -153,6 +176,8 @@ def compile_one(src: str, cmd: list[str], out_dir: str, clang: str, host_target:
     new.append("-DTHRUST_IGNORE_CUB_VERSION_CHECK")
     new.extend(["--cuda-device-only", "-S", src, "-o", out])
     result = subprocess.run(new, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode == 0:
+        sanitize_ptx_for_parser(out)
     return src, result.returncode, result.stderr[-4000:]
 
 
