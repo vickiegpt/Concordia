@@ -18,6 +18,12 @@ const COMPONENTS: &[&'static str] = &[
     "LLVMNVPTXCodeGen",
     "LLVMNVPTXDesc",
     "LLVMNVPTXInfo",
+    // RISC-V target support for PACC codegen.
+    "LLVMRISCVCodeGen",
+    "LLVMRISCVAsmParser",
+    "LLVMRISCVDesc",
+    "LLVMRISCVDisassembler",
+    "LLVMRISCVInfo",
 ];
 
 fn main() {
@@ -75,9 +81,11 @@ fn main() {
         .define("LLVM_INCLUDE_EXAMPLES", "OFF")
         .define("LLVM_INCLUDE_TESTS", "OFF")
         .define("LLVM_BUILD_TOOLS", "ON")
-        // Build X86 for linking and NVPTX for PTX generation with debug info
-        .define("LLVM_TARGETS_TO_BUILD", "X86;NVPTX")
-        .define("LLVM_ENABLE_PROJECTS", "");
+        // Build X86 for host-side helpers, NVPTX for PTX/debug flows, and
+        // RISCV for PACC object generation. Clang is built from the same
+        // LLVM tree so PACC never has to fall back to system clang.
+        .define("LLVM_TARGETS_TO_BUILD", "X86;NVPTX;RISCV")
+        .define("LLVM_ENABLE_PROJECTS", "clang");
 
     // For some reason Rust always links to release MSVCRT
     #[cfg(windows)]
@@ -96,11 +104,13 @@ fn main() {
     cmake.build_target("llvm-config");
     let llvm_dir = cmake.build();
 
-    // Build llc and llvm-dis tools for debug round-trip
-    cmake.build_target("llc");
-    cmake.build();
-    cmake.build_target("llvm-dis");
-    cmake.build();
+    // Build the tools PACC uses from this LLVM tree. Keeping llvm-link/opt/
+    // clang in lockstep with llvm-sys avoids mixing system tools with
+    // the llvm_zluda LLVM 21 libraries.
+    for tool in ["llc", "llvm-dis", "llvm-link", "opt", "clang"] {
+        cmake.build_target(tool);
+        cmake.build();
+    }
 
     for c in COMPONENTS {
         cmake.build_target(c);
@@ -126,7 +136,9 @@ fn main() {
     // Try multiple possible locations for the built tools
     let tool_paths = [
         llvm_dir.join("build").join("bin"),
+        llvm_dir.join("build").join("tools"),
         llvm_dir.join("build").join(cmake_profile).join("bin"),
+        llvm_dir.join("build").join(cmake_profile).join("tools"),
         llvm_dir.join("bin"),
     ];
 
