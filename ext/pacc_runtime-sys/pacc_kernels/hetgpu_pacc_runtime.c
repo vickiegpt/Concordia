@@ -20,9 +20,22 @@ typedef signed int s32;
 #define HETGPU_PACC_JOB_SOFTMAX 2U
 #define HETGPU_PACC_JOB_RMSNORM 3U
 #define HETGPU_PACC_JOB_ALLREDUCE 4U
+#define HETGPU_PACC_JOB_KERNEL 0U
+#define PACC_JOB_MAGIC 0x504143434a4f4231UL
 
 #define HETGPU_PACC_ARG_BASE (AP2PACC_SEC_MBSRAM + 0x100UL)
+#define HETGPU_PACC_CONTROL_BYTES 0x2000UL
+#define HETGPU_PACC_DOORBELL_OFF 0x0UL
+#define HETGPU_PACC_ARG_BASE_OFF 0x100UL
 #define HETGPU_PACC_ARG_SLOT_BYTES 0x400UL
+#define HETGPU_PACC_RUNTIME_TABLE_OFF 0x1400UL
+#define HETGPU_PACC_RUNTIME_TABLE_MAGIC 0x4847505554424c31UL
+#define HETGPU_PACC_RUNTIME_TABLE_VERSION 1U
+#define HETGPU_PACC_RUNTIME_BOOT_INFO_OFF 0x1800UL
+#define HETGPU_PACC_RUNTIME_BOOT_INFO_MAGIC 0x4847505550424f54UL
+#define HETGPU_PACC_RUNTIME_BOOT_INFO_VERSION 1U
+#define HETGPU_PACC_COMPLETION_OFF 0x1f20UL
+#define HETGPU_PACC_CORE_COUNT 4U
 
 #define PACC_DTYPE_INT8 0U
 #define PACC_DTYPE_UINT8 1U
@@ -96,6 +109,54 @@ struct RmsNormJob {
     u64 hidden;
     float eps;
     u32 dtype;
+};
+
+struct AllReduceJob {
+    u64 src_addr;
+    u64 dst_addr;
+    u64 count;
+    u32 nranks;
+    u32 reduce_op;
+    u32 dtype;
+    u32 reserved;
+};
+
+struct RuntimeJobTable {
+    u64 magic;
+    u32 version;
+    u32 flags;
+    u64 seq;
+    u32 have_gemm;
+    u32 have_softmax;
+    u32 have_rmsnorm;
+    u32 have_allreduce;
+    struct GemmJob gemm;
+    struct SoftmaxJob softmax;
+    struct RmsNormJob rmsnorm;
+    struct AllReduceJob allreduce;
+};
+
+struct HostStatus {
+    u64 magic;
+    u32 version;
+    u32 job_id;
+    u32 status;
+    u64 seq;
+};
+
+struct RuntimeBootInfo {
+    u64 magic;
+    u32 version;
+    u32 pacc_id;
+    u64 shared_ddr_base;
+    u64 shared_ddr_size;
+};
+
+struct PaccJobDesc {
+    u64 addr;
+    u64 len;
+    u64 rsvd;
+    u64 buf_info;
 };
 
 static inline void fence_all(void) {
@@ -477,7 +538,7 @@ static void rmsnorm_typed(const struct RmsNormJob *job) {
     }
 }
 
-static volatile struct ArgSlotHeader *arg_slot(u32 job_id) {
+static volatile struct ArgSlotHeader *arg_slot(volatile struct Doorbell *control, u32 job_id) {
     u64 slot = 0;
     if (job_id == HETGPU_PACC_JOB_GEMM) {
         slot = 0;
@@ -493,67 +554,160 @@ static volatile struct ArgSlotHeader *arg_slot(u32 job_id) {
     if (slot == 0xff) {
         return (volatile struct ArgSlotHeader *)0;
     }
-    return (volatile struct ArgSlotHeader *)(HETGPU_PACC_ARG_BASE + slot * HETGPU_PACC_ARG_SLOT_BYTES);
+    return (volatile struct ArgSlotHeader *)((u64)control + HETGPU_PACC_ARG_BASE_OFF +
+                                             slot * HETGPU_PACC_ARG_SLOT_BYTES);
 }
 
 static void *arg_payload(volatile struct ArgSlotHeader *slot) {
     return (void *)((u64)slot + sizeof(struct ArgSlotHeader));
 }
 
-static void run_preloaded_job(volatile struct Doorbell *doorbell) {
-    volatile struct ArgSlotHeader *slot = arg_slot(doorbell->job_id);
+static void mirror_host_status(volatile void *completion_base, u32 job_id, u64 seq, u32 status) {
+    volatile struct HostStatus *host =
+        (volatile struct HostStatus *)((u64)completion_base + HETGPU_PACC_COMPLETION_OFF);
+    host->magic = HETGPU_PACC_JOB_MAGIC;
+    host->version = HETGPU_PACC_JOB_VERSION;
+    host->job_id = job_id;
+    host->status = status;
+    host->seq = seq;
+    fence_all();
+}
+
+static u32 run_job_from_table(volatile struct Doorbell *control, volatile struct Doorbell *doorbell) {
+    volatile struct RuntimeJobTable *table =
+        (volatile struct RuntimeJobTable *)((u64)control + HETGPU_PACC_RUNTIME_TABLE_OFF);
+    if (table->magic != HETGPU_PACC_RUNTIME_TABLE_MAGIC ||
+        table->version != HETGPU_PACC_RUNTIME_TABLE_VERSION ||
+        table->seq != doorbell->seq) {
+        return 0xffffffffU;
+    }
+
+    if (doorbell->job_id == HETGPU_PACC_JOB_GEMM) {
+        const struct GemmJob *job = (const struct GemmJob *)&table->gemm;
+        if (!table->have_gemm) return 0xffff0005U;
+        if (!dtype_supported(job->atype) || !dtype_supported(job->btype) || !dtype_supported(job->ctype)) {
+            return 0xffff0002U;
+        }
+        gemm_typed(job);
+        return 0;
+    }
+    if (doorbell->job_id == HETGPU_PACC_JOB_SOFTMAX) {
+        const struct SoftmaxJob *job = (const struct SoftmaxJob *)&table->softmax;
+        if (!table->have_softmax) return 0xffff0005U;
+        if (!dtype_supported(job->dtype)) return 0xffff0003U;
+        softmax_typed(job);
+        return 0;
+    }
+    if (doorbell->job_id == HETGPU_PACC_JOB_RMSNORM) {
+        const struct RmsNormJob *job = (const struct RmsNormJob *)&table->rmsnorm;
+        if (!table->have_rmsnorm) return 0xffff0005U;
+        if (!dtype_supported(job->dtype)) return 0xffff0004U;
+        rmsnorm_typed(job);
+        return 0;
+    }
+    if (doorbell->job_id == HETGPU_PACC_JOB_ALLREDUCE) {
+        return table->have_allreduce ? 0xffff0006U : 0xffff0005U;
+    }
+    return 0xffff00ffU;
+}
+
+static u32 run_job_from_arg_slot(volatile struct Doorbell *control, volatile struct Doorbell *doorbell) {
+    volatile struct ArgSlotHeader *slot = arg_slot(control, doorbell->job_id);
+    if (!slot || slot->magic != HETGPU_PACC_JOB_MAGIC ||
+        slot->version != HETGPU_PACC_JOB_VERSION ||
+        slot->job_id != doorbell->job_id ||
+        slot->seq != doorbell->seq) {
+        return 0xffff0005U;
+    }
+
+    if (doorbell->job_id == HETGPU_PACC_JOB_GEMM) {
+        const struct GemmJob *job = (const struct GemmJob *)arg_payload(slot);
+        if (!dtype_supported(job->atype) || !dtype_supported(job->btype) || !dtype_supported(job->ctype)) {
+            return 0xffff0002U;
+        }
+        gemm_typed(job);
+        return 0;
+    }
+    if (doorbell->job_id == HETGPU_PACC_JOB_SOFTMAX) {
+        const struct SoftmaxJob *job = (const struct SoftmaxJob *)arg_payload(slot);
+        if (!dtype_supported(job->dtype)) return 0xffff0003U;
+        softmax_typed(job);
+        return 0;
+    }
+    if (doorbell->job_id == HETGPU_PACC_JOB_RMSNORM) {
+        const struct RmsNormJob *job = (const struct RmsNormJob *)arg_payload(slot);
+        if (!dtype_supported(job->dtype)) return 0xffff0004U;
+        rmsnorm_typed(job);
+        return 0;
+    }
+    return 0xffff00ffU;
+}
+
+static void run_preloaded_job(volatile struct Doorbell *control, volatile void *completion_base) {
+    volatile struct Doorbell *doorbell = control;
+    u32 status = 0xffff00ffU;
     doorbell->status = 1;
+    mirror_host_status(completion_base, doorbell->job_id, doorbell->seq, 1);
     fence_all();
 
     if (doorbell->version != HETGPU_PACC_JOB_VERSION) {
-        doorbell->status = 0xffff0001U;
-    } else if (!slot || slot->magic != HETGPU_PACC_JOB_MAGIC ||
-               slot->version != HETGPU_PACC_JOB_VERSION ||
-               slot->job_id != doorbell->job_id ||
-               slot->seq != doorbell->seq) {
-        doorbell->status = 0xffff0005U;
-    } else if (doorbell->job_id == HETGPU_PACC_JOB_GEMM) {
-        const struct GemmJob *job = (const struct GemmJob *)arg_payload(slot);
-        if (dtype_supported(job->atype) && dtype_supported(job->btype) && dtype_supported(job->ctype)) {
-            gemm_typed(job);
-            doorbell->status = 0;
-        } else {
-            doorbell->status = 0xffff0002U;
-        }
-    } else if (doorbell->job_id == HETGPU_PACC_JOB_SOFTMAX) {
-        const struct SoftmaxJob *job = (const struct SoftmaxJob *)arg_payload(slot);
-        if (dtype_supported(job->dtype)) {
-            softmax_typed(job);
-            doorbell->status = 0;
-        } else {
-            doorbell->status = 0xffff0003U;
-        }
-    } else if (doorbell->job_id == HETGPU_PACC_JOB_RMSNORM) {
-        const struct RmsNormJob *job = (const struct RmsNormJob *)arg_payload(slot);
-        if (dtype_supported(job->dtype)) {
-            rmsnorm_typed(job);
-            doorbell->status = 0;
-        } else {
-            doorbell->status = 0xffff0004U;
-        }
+        status = 0xffff0001U;
     } else {
-        doorbell->status = 0xffff00ffU;
+        status = run_job_from_table(control, doorbell);
+        if (status == 0xffffffffU) {
+            status = run_job_from_arg_slot(control, doorbell);
+        }
     }
+    doorbell->status = status;
+    mirror_host_status(completion_base, doorbell->job_id, doorbell->seq, status);
     fence_all();
 }
 
 __attribute__((section(".text.start")))
 void _start(void) {
+    volatile struct RuntimeBootInfo *boot =
+        (volatile struct RuntimeBootInfo *)(AP2PACC_SEC_MBSRAM + HETGPU_PACC_RUNTIME_BOOT_INFO_OFF);
     volatile struct Doorbell *doorbell = (volatile struct Doorbell *)AP2PACC_SEC_MBSRAM;
+    volatile void *completion_base = (volatile void *)PACC2AP_SEC_MBSRAM;
     volatile u64 *heartbeat = (volatile u64 *)PACC2AP_SEC_MBSRAM;
     u64 last_seq = 0;
+    u64 last_kernel_seq = 0;
+
+    fence_all();
+    if (boot->magic == HETGPU_PACC_RUNTIME_BOOT_INFO_MAGIC &&
+        boot->version == HETGPU_PACC_RUNTIME_BOOT_INFO_VERSION &&
+        boot->pacc_id < HETGPU_PACC_CORE_COUNT &&
+        boot->shared_ddr_base != 0 &&
+        boot->shared_ddr_size >= ((u64)boot->pacc_id + 1UL) * HETGPU_PACC_CONTROL_BYTES) {
+        u64 control_base = boot->shared_ddr_base + (u64)boot->pacc_id * HETGPU_PACC_CONTROL_BYTES;
+        doorbell = (volatile struct Doorbell *)(control_base + HETGPU_PACC_DOORBELL_OFF);
+        completion_base = (volatile void *)control_base;
+        heartbeat = (volatile u64 *)(control_base + HETGPU_PACC_COMPLETION_OFF + sizeof(struct HostStatus));
+    }
+    *heartbeat = 0;
+    last_seq = doorbell->seq;
+    last_kernel_seq = ((volatile struct PaccJobDesc *)doorbell)->rsvd;
+    fence_all();
 
     for (;;) {
+        volatile struct PaccJobDesc *kernel_desc = (volatile struct PaccJobDesc *)doorbell;
+        fence_all();
+        if (kernel_desc->buf_info == PACC_JOB_MAGIC &&
+            kernel_desc->rsvd != 0 &&
+            kernel_desc->rsvd != last_kernel_seq) {
+            last_kernel_seq = kernel_desc->rsvd;
+            mirror_host_status(completion_base, HETGPU_PACC_JOB_KERNEL, last_kernel_seq, 0xffff0e1fU);
+            *heartbeat = last_kernel_seq;
+            fence_all();
+        }
         if (doorbell->magic == HETGPU_PACC_JOB_MAGIC && doorbell->seq != last_seq) {
             last_seq = doorbell->seq;
-            run_preloaded_job(doorbell);
+            run_preloaded_job(doorbell, completion_base);
             *heartbeat = last_seq;
+            fence_all();
         }
-        __asm__ volatile("wfi");
+        for (volatile u32 i = 0; i < 1024U; ++i) {
+            __asm__ volatile("" ::: "memory");
+        }
     }
 }

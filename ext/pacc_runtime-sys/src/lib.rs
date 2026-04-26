@@ -216,6 +216,9 @@ pub const HETGPU_PACC_ARG_SLOT_BYTES: usize = 0x400;
 pub const HETGPU_PACC_RUNTIME_TABLE_OFF: u64 = 0x1400;
 const HETGPU_PACC_RUNTIME_TABLE_MAGIC: u64 = 0x4847_5055_5442_4c31;
 const HETGPU_PACC_RUNTIME_TABLE_VERSION: u32 = 1;
+pub const HETGPU_PACC_RUNTIME_BOOT_INFO_OFF: u64 = 0x1800;
+const HETGPU_PACC_RUNTIME_BOOT_INFO_MAGIC: u64 = 0x4847_5055_5042_4f54; // "HGPUPBOT"
+const HETGPU_PACC_RUNTIME_BOOT_INFO_VERSION: u32 = 1;
 
 pub mod hetgpu_pacc_job_id {
     pub const KERNEL: u32 = 0;
@@ -234,6 +237,16 @@ pub struct HetgpuPaccDoorbell {
     pub flags: u32,
     pub status: u32,
     pub seq: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct HetgpuPaccRuntimeBootInfo {
+    pub magic: u64,
+    pub version: u32,
+    pub pacc_id: u32,
+    pub shared_ddr_base: u64,
+    pub shared_ddr_size: u64,
 }
 
 #[repr(C)]
@@ -692,7 +705,11 @@ impl SharedDdrFullMmap {
                 "shared DDR full mmap offset does not fit usize",
             )
         })?;
-        if start.checked_add(len).filter(|&end| end <= self.len).is_none() {
+        if start
+            .checked_add(len)
+            .filter(|&end| end <= self.len)
+            .is_none()
+        {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!(
@@ -884,6 +901,19 @@ impl PaccDevice {
     }
 
     pub fn zluda_irq(&self, shared_ddr: HetgpuPaccSharedDdrInfo) -> std::io::Result<()> {
+        if std::env::var("HETGPU_PACC_ZLUDA_IRQ_SKIP_IOCTL")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            if zluda_irq_trace_enabled() {
+                eprintln!(
+                    "PACC ZLUDA IRQ: dev={} skip ioctl, PACC runtime is polling shared_ddr_base=0x{:x} shared_ddr_size=0x{:x}",
+                    self.id, shared_ddr.ddr_base, shared_ddr.ddr_size
+                );
+            }
+            return Ok(());
+        }
         let mut arg = shared_ddr;
         let ret = unsafe { libc::ioctl(self.fd, IOC_ZLUDA_IRQ, &mut arg as *mut _) };
         if ret < 0 {
@@ -1467,9 +1497,31 @@ impl PaccDevice {
 
         let bytes = std::fs::read(elf_path)?;
         let entry = load_elf64_load_segments_to_phys(&bytes)?;
+        self.stage_runtime_boot_info()?;
         self.boot_from_reset_vector64(entry)?;
         guard[self.id] = true;
         Ok(())
+    }
+
+    fn stage_runtime_boot_info(&self) -> std::io::Result<()> {
+        let shared_ddr = shared_ddr_info();
+        let info = HetgpuPaccRuntimeBootInfo {
+            magic: HETGPU_PACC_RUNTIME_BOOT_INFO_MAGIC,
+            version: HETGPU_PACC_RUNTIME_BOOT_INFO_VERSION,
+            pacc_id: self.id as u32,
+            shared_ddr_base: shared_ddr.ddr_base,
+            shared_ddr_size: shared_ddr.ddr_size,
+        };
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                (&info as *const HetgpuPaccRuntimeBootInfo).cast::<u8>(),
+                std::mem::size_of::<HetgpuPaccRuntimeBootInfo>(),
+            )
+        };
+        if write_ap2pacc_mailbox(self.id, HETGPU_PACC_RUNTIME_BOOT_INFO_OFF, bytes)? {
+            return Ok(());
+        }
+        write_ap2pacc_mailbox_phys(self.id, HETGPU_PACC_RUNTIME_BOOT_INFO_OFF, bytes)
     }
 
     /// Boot/release this PACC cluster using the Pcore-visible top registers
@@ -2707,8 +2759,7 @@ fn note_shared_ddr_mmap_unavailable(op: &str, dev: &str, err: &std::io::Error) {
 }
 
 fn note_shared_ddr_full_mmap_unavailable(op: &str, err: &std::io::Error) {
-    if SHARED_DDR_FULL_MMAP_UNAVAILABLE.swap(1, Ordering::Relaxed) == 0
-        && zluda_irq_trace_enabled()
+    if SHARED_DDR_FULL_MMAP_UNAVAILABLE.swap(1, Ordering::Relaxed) == 0 && zluda_irq_trace_enabled()
     {
         eprintln!(
             "PACC shared DDR full mmap {op} unavailable ({err}); falling back to per-window mmap"
@@ -6663,6 +6714,23 @@ fn default_ptx_module_name() -> &'static CStr {
     unsafe { CStr::from_bytes_with_nul_unchecked(b"module.ptx\0") }
 }
 
+fn sanitize_ptx_for_pacc_parser(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(".target ") {
+            if let Some(comma) = line.find(',') {
+                out.push_str(line[..comma].trim_end());
+                out.push('\n');
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 unsafe fn cstr_or_default<'a>(ptr: *const std::ffi::c_char, default_value: &'a CStr) -> &'a CStr {
     if ptr.is_null() {
         default_value
@@ -7011,6 +7079,7 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
             );
         }
     };
+    let ptx_text = sanitize_ptx_for_pacc_parser(ptx_text);
 
     if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
         .ok()
@@ -7030,7 +7099,7 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
         );
     }
 
-    let ast = match ptx_parser::parse_module_checked(ptx_text) {
+    let ast = match ptx_parser::parse_module_checked(&ptx_text) {
         Ok(ast) => ast,
         Err(err) => {
             eprintln!(
