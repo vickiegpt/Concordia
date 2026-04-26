@@ -66,7 +66,6 @@ struct RuntimeConfig {
     int mbox_fd;
     u64 shared_ddr_base;
     u64 shared_ddr_size;
-    u64 map_phys_base;
     u64 map_len;
     u8 *shared_ddr;
     void *map_ptr;
@@ -287,11 +286,6 @@ static void signal_host_irq(void) {
 }
 
 static int remap_shared_ddr(u64 base, u64 size) {
-    long page_long;
-    u64 page;
-    u64 delta;
-    const char *devmem;
-    int fd;
     void *map;
 
     if (!base || size < (g_runtime.pacc_id + 1UL) * HETGPU_PACC_CONTROL_BYTES) {
@@ -312,37 +306,21 @@ static int remap_shared_ddr(u64 base, u64 size) {
         g_runtime.shared_ddr = 0;
     }
 
-    page_long = sysconf(_SC_PAGESIZE);
-    page = page_long > 0 ? (u64)page_long : 4096UL;
     g_runtime.shared_ddr_base = base;
     g_runtime.shared_ddr_size = size;
-    g_runtime.map_phys_base = base & ~(page - 1UL);
-    delta = base - g_runtime.map_phys_base;
-    if (size > ~0UL - delta || delta + size > ~0UL - (page - 1UL)) {
-        fprintf(stderr, "hetgpu_pacc_runtime: shared DDR mmap size overflows\n");
-        return -1;
-    }
-    g_runtime.map_len = (delta + size + page - 1UL) & ~(page - 1UL);
+    g_runtime.map_len = size;
 
-    devmem = getenv("HETGPU_PACC_DEVMEM");
-    if (!devmem || !*devmem) devmem = "/dev/mem";
-    fd = open(devmem, O_RDWR | O_SYNC | O_CLOEXEC);
-    if (fd < 0) {
-        fprintf(stderr, "hetgpu_pacc_runtime: open %s failed: %s\n", devmem, strerror(errno));
-        return -1;
-    }
-    map = mmap(0, (size_t)g_runtime.map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
-               (off_t)g_runtime.map_phys_base);
-    close(fd);
+    map = mmap(0, (size_t)g_runtime.map_len, PROT_READ | PROT_WRITE, MAP_SHARED,
+               g_runtime.mbox_fd, 0);
     if (map == MAP_FAILED) {
         fprintf(stderr,
-                "hetgpu_pacc_runtime: mmap shared DDR base=0x%lx size=0x%lx failed: %s\n",
+                "hetgpu_pacc_runtime: mmap mailbox shared DDR base=0x%lx size=0x%lx failed: %s\n",
                 (unsigned long)base, (unsigned long)size, strerror(errno));
         return -1;
     }
 
     g_runtime.map_ptr = map;
-    g_runtime.shared_ddr = (u8 *)map + delta;
+    g_runtime.shared_ddr = (u8 *)map;
     return 0;
 }
 
