@@ -1,7 +1,21 @@
-#if defined(__clang__)
+#if defined(__riscv) && defined(__has_include)
+#if __has_include(<riscv_vector.h>)
 #include <riscv_vector.h>
+#endif
+#if __has_include(<sifive_vector.h>)
 #include <sifive_vector.h>
 #endif
+#endif
+
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 typedef unsigned long u64;
 typedef unsigned int u32;
@@ -9,9 +23,6 @@ typedef unsigned short u16;
 typedef unsigned char u8;
 typedef signed char s8;
 typedef signed int s32;
-
-#define AP2PACC_SEC_MBSRAM 0x20000000UL
-#define PACC2AP_SEC_MBSRAM 0x20002000UL
 
 #define HETGPU_PACC_JOB_MAGIC 0x4847505550414343UL
 #define HETGPU_PACC_JOB_VERSION 1U
@@ -23,7 +34,6 @@ typedef signed int s32;
 #define HETGPU_PACC_JOB_KERNEL 0U
 #define PACC_JOB_MAGIC 0x504143434a4f4231UL
 
-#define HETGPU_PACC_ARG_BASE (AP2PACC_SEC_MBSRAM + 0x100UL)
 #define HETGPU_PACC_CONTROL_BYTES 0x2000UL
 #define HETGPU_PACC_DOORBELL_OFF 0x0UL
 #define HETGPU_PACC_ARG_BASE_OFF 0x100UL
@@ -31,11 +41,12 @@ typedef signed int s32;
 #define HETGPU_PACC_RUNTIME_TABLE_OFF 0x1400UL
 #define HETGPU_PACC_RUNTIME_TABLE_MAGIC 0x4847505554424c31UL
 #define HETGPU_PACC_RUNTIME_TABLE_VERSION 1U
-#define HETGPU_PACC_RUNTIME_BOOT_INFO_OFF 0x1800UL
-#define HETGPU_PACC_RUNTIME_BOOT_INFO_MAGIC 0x4847505550424f54UL
-#define HETGPU_PACC_RUNTIME_BOOT_INFO_VERSION 1U
 #define HETGPU_PACC_COMPLETION_OFF 0x1f20UL
 #define HETGPU_PACC_CORE_COUNT 4U
+
+#define PACC_IOC_MAGIC 'p'
+#define PACC_IOC_ZLUDA_IRQ _IO(PACC_IOC_MAGIC, 5)
+#define PACC_IOC_ZLUDA_GET_DDR_BASE _IOR(PACC_IOC_MAGIC, 6, struct pacc_zluda_ddr_info)
 
 #define PACC_DTYPE_INT8 0U
 #define PACC_DTYPE_UINT8 1U
@@ -49,6 +60,24 @@ typedef signed int s32;
 #define XM_BF16_TILE_M 4U
 #define XM_BF16_TILE_N 4U
 #define XM_BF16_TILE_K 4U
+
+struct RuntimeConfig {
+    u32 pacc_id;
+    int mbox_fd;
+    u64 shared_ddr_base;
+    u64 shared_ddr_size;
+    u64 map_phys_base;
+    u64 map_len;
+    u8 *shared_ddr;
+    void *map_ptr;
+};
+
+static struct RuntimeConfig g_runtime;
+
+struct pacc_zluda_ddr_info {
+    u64 ddr_base;
+    u64 ddr_size;
+};
 
 struct Doorbell {
     u64 magic;
@@ -144,14 +173,6 @@ struct HostStatus {
     u64 seq;
 };
 
-struct RuntimeBootInfo {
-    u64 magic;
-    u32 version;
-    u32 pacc_id;
-    u64 shared_ddr_base;
-    u64 shared_ddr_size;
-};
-
 struct PaccJobDesc {
     u64 addr;
     u64 len;
@@ -161,6 +182,217 @@ struct PaccJobDesc {
 
 static inline void fence_all(void) {
     __asm__ volatile("fence rw, rw" ::: "memory");
+}
+
+static int parse_u64_arg(const char *s, u64 *out) {
+    char *end = 0;
+    unsigned long long value;
+    if (!s || !*s) return 0;
+    errno = 0;
+    value = strtoull(s, &end, 0);
+    if (errno || end == s || (end && *end)) return 0;
+    *out = (u64)value;
+    return 1;
+}
+
+static int parse_prefixed_arg(const char *arg, const char *prefix, u64 *out) {
+    size_t n;
+    if (!arg || !prefix) return 0;
+    n = strlen(prefix);
+    if (strncmp(arg, prefix, n) != 0) return 0;
+    return parse_u64_arg(arg + n, out);
+}
+
+static const char *parse_prefixed_string_arg(const char *arg, const char *prefix) {
+    size_t n;
+    if (!arg || !prefix) return 0;
+    n = strlen(prefix);
+    if (strncmp(arg, prefix, n) != 0) return 0;
+    return arg + n;
+}
+
+static void read_runtime_args(int argc, char **argv, u64 *pacc_id, const char **mbox_path) {
+    const char *value;
+    value = getenv("HETGPU_PACC_ID");
+    if (!parse_u64_arg(value, pacc_id)) {
+        value = getenv("HETGPU_PACC_DEVICE_ID");
+        parse_u64_arg(value, pacc_id);
+    }
+    value = getenv("HETGPU_PACC_MBOX_PATH");
+    if (value && *value) *mbox_path = value;
+
+    for (int i = 1; i < argc; ++i) {
+        (void)parse_prefixed_arg(argv[i], "--pacc-id=", pacc_id);
+        value = parse_prefixed_string_arg(argv[i], "--mbox=");
+        if (value && *value) *mbox_path = value;
+    }
+}
+
+static int open_runtime_mbox(u64 pacc_id, const char *mbox_path) {
+    char path[64];
+    int fd;
+
+    if (mbox_path && *mbox_path) {
+        fd = open(mbox_path, O_RDWR | O_SYNC | O_CLOEXEC);
+        if (fd < 0) {
+            fprintf(stderr, "hetgpu_pacc_runtime: open %s failed: %s\n", mbox_path, strerror(errno));
+        }
+        return fd;
+    }
+
+    snprintf(path, sizeof(path), "/dev/hetgpu_pacc_mbox%lu", (unsigned long)pacc_id);
+    fd = open(path, O_RDWR | O_SYNC | O_CLOEXEC);
+    if (fd >= 0) return fd;
+
+    fd = open("/dev/hetgpu_pacc_mbox", O_RDWR | O_SYNC | O_CLOEXEC);
+    if (fd < 0) {
+        fprintf(stderr,
+                "hetgpu_pacc_runtime: open /dev/hetgpu_pacc_mbox%lu or /dev/hetgpu_pacc_mbox failed: %s\n",
+                (unsigned long)pacc_id, strerror(errno));
+    }
+    return fd;
+}
+
+static int wait_for_control_irq(void) {
+    struct pollfd pfd;
+    int ret;
+    if (g_runtime.mbox_fd < 0) return -1;
+
+    for (;;) {
+        pfd.fd = g_runtime.mbox_fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        ret = poll(&pfd, 1, -1);
+        if (ret > 0) return 0;
+        if (ret == 0) continue;
+        if (errno == EINTR || errno == EAGAIN) continue;
+        fprintf(stderr, "hetgpu_pacc_runtime: poll mailbox failed: %s\n", strerror(errno));
+        return -1;
+    }
+}
+
+static int ioctl_get_shared_ddr(struct pacc_zluda_ddr_info *info) {
+    if (g_runtime.mbox_fd < 0 || !info) return -1;
+    if (ioctl(g_runtime.mbox_fd, PACC_IOC_ZLUDA_GET_DDR_BASE, info) < 0) {
+        fprintf(stderr, "hetgpu_pacc_runtime: ioctl GET_DDR_BASE failed: %s\n", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+static void signal_host_irq(void) {
+    if (g_runtime.mbox_fd >= 0 && ioctl(g_runtime.mbox_fd, PACC_IOC_ZLUDA_IRQ) < 0) {
+        fprintf(stderr, "hetgpu_pacc_runtime: ioctl ZLUDA_IRQ failed: %s\n", strerror(errno));
+    }
+}
+
+static int remap_shared_ddr(u64 base, u64 size) {
+    long page_long;
+    u64 page;
+    u64 delta;
+    const char *devmem;
+    int fd;
+    void *map;
+
+    if (!base || size < (g_runtime.pacc_id + 1UL) * HETGPU_PACC_CONTROL_BYTES) {
+        fprintf(stderr,
+                "hetgpu_pacc_runtime: need shared DDR base/size and pacc_id, got pacc_id=%lu base=0x%lx size=0x%lx\n",
+                (unsigned long)g_runtime.pacc_id, (unsigned long)base, (unsigned long)size);
+        return -1;
+    }
+    if (g_runtime.shared_ddr &&
+        g_runtime.shared_ddr_base == base &&
+        g_runtime.shared_ddr_size == size) {
+        return 0;
+    }
+    if (g_runtime.map_ptr && g_runtime.map_len) {
+        munmap(g_runtime.map_ptr, (size_t)g_runtime.map_len);
+        g_runtime.map_ptr = 0;
+        g_runtime.map_len = 0;
+        g_runtime.shared_ddr = 0;
+    }
+
+    page_long = sysconf(_SC_PAGESIZE);
+    page = page_long > 0 ? (u64)page_long : 4096UL;
+    g_runtime.shared_ddr_base = base;
+    g_runtime.shared_ddr_size = size;
+    g_runtime.map_phys_base = base & ~(page - 1UL);
+    delta = base - g_runtime.map_phys_base;
+    if (size > ~0UL - delta || delta + size > ~0UL - (page - 1UL)) {
+        fprintf(stderr, "hetgpu_pacc_runtime: shared DDR mmap size overflows\n");
+        return -1;
+    }
+    g_runtime.map_len = (delta + size + page - 1UL) & ~(page - 1UL);
+
+    devmem = getenv("HETGPU_PACC_DEVMEM");
+    if (!devmem || !*devmem) devmem = "/dev/mem";
+    fd = open(devmem, O_RDWR | O_SYNC | O_CLOEXEC);
+    if (fd < 0) {
+        fprintf(stderr, "hetgpu_pacc_runtime: open %s failed: %s\n", devmem, strerror(errno));
+        return -1;
+    }
+    map = mmap(0, (size_t)g_runtime.map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+               (off_t)g_runtime.map_phys_base);
+    close(fd);
+    if (map == MAP_FAILED) {
+        fprintf(stderr,
+                "hetgpu_pacc_runtime: mmap shared DDR base=0x%lx size=0x%lx failed: %s\n",
+                (unsigned long)base, (unsigned long)size, strerror(errno));
+        return -1;
+    }
+
+    g_runtime.map_ptr = map;
+    g_runtime.shared_ddr = (u8 *)map + delta;
+    return 0;
+}
+
+static int refresh_shared_ddr_from_ioctl(void) {
+    struct pacc_zluda_ddr_info info = {0, 0};
+    if (ioctl_get_shared_ddr(&info) != 0) return -1;
+    return remap_shared_ddr(info.ddr_base, info.ddr_size);
+}
+
+static int init_runtime_io(int argc, char **argv) {
+    u64 pacc_id = 0;
+    const char *mbox_path = 0;
+
+    g_runtime.mbox_fd = -1;
+    read_runtime_args(argc, argv, &pacc_id, &mbox_path);
+    if (pacc_id >= HETGPU_PACC_CORE_COUNT) {
+        fprintf(stderr, "hetgpu_pacc_runtime: invalid pacc_id=%lu\n", (unsigned long)pacc_id);
+        return -1;
+    }
+    g_runtime.pacc_id = (u32)pacc_id;
+
+    g_runtime.mbox_fd = open_runtime_mbox(pacc_id, mbox_path);
+    if (g_runtime.mbox_fd < 0) return -1;
+
+    if (wait_for_control_irq() != 0) return -1;
+    return refresh_shared_ddr_from_ioctl();
+}
+
+static void *shared_ddr_ptr(u64 phys, u64 bytes) {
+    u64 off;
+    if (!phys || !g_runtime.shared_ddr) return 0;
+    if (phys < g_runtime.shared_ddr_base) return 0;
+    off = phys - g_runtime.shared_ddr_base;
+    if (bytes == 0) bytes = 1;
+    if (off > g_runtime.shared_ddr_size || bytes > g_runtime.shared_ddr_size - off) {
+        return 0;
+    }
+    return g_runtime.shared_ddr + off;
+}
+
+static int checked_mul_u64(u64 a, u64 b, u64 *out) {
+    if (a != 0 && b > (~0UL / a)) return 0;
+    *out = a * b;
+    return 1;
+}
+
+static int checked_add_u64(u64 a, u64 b, u64 *out) {
+    if (b > ~0UL - a) return 0;
+    *out = a + b;
+    return 1;
 }
 
 static float expf_fast(float x) {
@@ -282,7 +514,45 @@ static float read_scale(const void *ptr, float default_value) {
     return ptr ? *(const float *)ptr : default_value;
 }
 
-static void gemm_scalar_block(const struct GemmJob *job,
+static int span_bytes(u64 elems, u32 dtype, u64 *bytes) {
+    return checked_mul_u64(elems, dtype_size(dtype), bytes);
+}
+
+static int matrix_span_bytes(u64 rows, u64 cols, u64 ld, u32 dtype, int transposed, u64 *bytes) {
+    u64 major;
+    u64 minor;
+    u64 ld_part;
+    u64 max_idx;
+    if (rows == 0 || cols == 0) {
+        *bytes = 0;
+        return 1;
+    }
+    major = transposed ? rows : cols;
+    minor = transposed ? cols : rows;
+    if (!checked_mul_u64(major - 1UL, ld, &ld_part)) return 0;
+    if (!checked_add_u64(ld_part, minor - 1UL, &max_idx)) return 0;
+    if (max_idx == ~0UL) return 0;
+    return span_bytes(max_idx + 1UL, dtype, bytes);
+}
+
+static int strided_batch_phys(u64 base, long stride, u64 batch, u32 dtype, u64 *phys) {
+    u64 stride_elems;
+    u64 stride_bytes;
+    if (stride <= 0) {
+        *phys = base;
+        return 1;
+    }
+    if (!checked_mul_u64((u64)stride, batch, &stride_elems)) return 0;
+    if (!span_bytes(stride_elems, dtype, &stride_bytes)) return 0;
+    return checked_add_u64(base, stride_bytes, phys);
+}
+
+static void *shared_ddr_ptr_or_null(u64 phys, u64 bytes) {
+    if (!phys) return 0;
+    return shared_ddr_ptr(phys, bytes);
+}
+
+static u32 gemm_scalar_block(const struct GemmJob *job,
                               const void *a,
                               const void *b,
                               void *c,
@@ -305,6 +575,7 @@ static void gemm_scalar_block(const struct GemmJob *job,
             store_typed(c, c_idx, job->ctype, alpha * acc + beta * old);
         }
     }
+    return 0;
 }
 
 #if defined(__clang__) && defined(__riscv_xsfvcp)
@@ -476,14 +747,37 @@ static int gemm_try_xm_native(const struct GemmJob *job,
 }
 #endif
 
-static void gemm_typed(const struct GemmJob *job) {
-    const float alpha = read_scale((const void *)job->alpha_addr, 1.0f);
-    const float beta = read_scale((const void *)job->beta_addr, 0.0f);
+static u32 gemm_typed(const struct GemmJob *job) {
+    const float *alpha_ptr = (const float *)shared_ddr_ptr_or_null(job->alpha_addr, sizeof(float));
+    const float *beta_ptr = (const float *)shared_ddr_ptr_or_null(job->beta_addr, sizeof(float));
+    const float alpha = read_scale(alpha_ptr, 1.0f);
+    const float beta = read_scale(beta_ptr, 0.0f);
+    u64 a_bytes;
+    u64 b_bytes;
+    u64 c_bytes;
+
+    if ((job->alpha_addr && !alpha_ptr) || (job->beta_addr && !beta_ptr)) return 0xffff0101U;
+    if (job->lda < 0 || job->ldb < 0 || job->ldc < 0) return 0xffff0101U;
+    if (!matrix_span_bytes(job->m, job->k, (u64)job->lda, job->atype, job->transa, &a_bytes)) return 0xffff0101U;
+    if (!matrix_span_bytes(job->k, job->n, (u64)job->ldb, job->btype, job->transb, &b_bytes)) return 0xffff0101U;
+    if (!matrix_span_bytes(job->m, job->n, (u64)job->ldc, job->ctype, 0, &c_bytes)) return 0xffff0101U;
 
     for (u64 batch = 0; batch < job->batch_count; ++batch) {
-        const void *a = (const void *)(job->a_addr + (u64)(job->stride_a > 0 ? job->stride_a : 0) * batch * dtype_size(job->atype));
-        const void *b = (const void *)(job->b_addr + (u64)(job->stride_b > 0 ? job->stride_b : 0) * batch * dtype_size(job->btype));
-        void *c = (void *)(job->c_addr + (u64)(job->stride_c > 0 ? job->stride_c : 0) * batch * dtype_size(job->ctype));
+        u64 a_phys;
+        u64 b_phys;
+        u64 c_phys;
+        const void *a;
+        const void *b;
+        void *c;
+        if (!strided_batch_phys(job->a_addr, job->stride_a, batch, job->atype, &a_phys) ||
+            !strided_batch_phys(job->b_addr, job->stride_b, batch, job->btype, &b_phys) ||
+            !strided_batch_phys(job->c_addr, job->stride_c, batch, job->ctype, &c_phys)) {
+            return 0xffff0101U;
+        }
+        a = shared_ddr_ptr(a_phys, a_bytes);
+        b = shared_ddr_ptr(b_phys, b_bytes);
+        c = shared_ddr_ptr(c_phys, c_bytes);
+        if (!a || !b || !c) return 0xffff0101U;
 
 #if defined(__clang__) && defined(__riscv_xsfvcp)
         if (gemm_try_xm_native(job, a, b, c, alpha, beta)) {
@@ -492,12 +786,24 @@ static void gemm_typed(const struct GemmJob *job) {
 #endif
         gemm_scalar_block(job, a, b, c, alpha, beta, 0, job->m, 0, job->n);
     }
+    return 0;
 }
 
-static void softmax_typed(const struct SoftmaxJob *job) {
-    const void *src = (const void *)job->src_addr;
-    void *dst = (void *)job->dst_addr;
+static u32 softmax_typed(const struct SoftmaxJob *job) {
     const u64 stride = job->stride ? job->stride : job->cols;
+    const void *src;
+    void *dst;
+    u64 last_row;
+    u64 elems;
+    u64 bytes;
+
+    if (job->rows == 0 || job->cols == 0) return 0;
+    if (!checked_mul_u64(job->rows - 1UL, stride, &last_row)) return 0xffff0101U;
+    if (!checked_add_u64(last_row, job->cols, &elems)) return 0xffff0101U;
+    if (!span_bytes(elems, job->dtype, &bytes)) return 0xffff0101U;
+    src = shared_ddr_ptr(job->src_addr, bytes);
+    dst = shared_ddr_ptr(job->dst_addr, bytes);
+    if (!src || !dst) return 0xffff0101U;
 
     for (u64 row = 0; row < job->rows; ++row) {
         const u64 base = row * stride;
@@ -516,12 +822,28 @@ static void softmax_typed(const struct SoftmaxJob *job) {
             store_typed(dst, base + col, job->dtype, e * inv);
         }
     }
+    return 0;
 }
 
-static void rmsnorm_typed(const struct RmsNormJob *job) {
-    const void *x = (const void *)job->x_addr;
-    const void *w = (const void *)job->weight_addr;
-    void *y = (void *)job->y_addr;
+static u32 rmsnorm_typed(const struct RmsNormJob *job) {
+    const void *x;
+    const void *w = 0;
+    void *y;
+    u64 elems;
+    u64 bytes;
+    u64 weight_bytes;
+
+    if (job->rows == 0 || job->hidden == 0) return 0;
+    if (!checked_mul_u64(job->rows, job->hidden, &elems)) return 0xffff0101U;
+    if (!span_bytes(elems, job->dtype, &bytes)) return 0xffff0101U;
+    if (!span_bytes(job->hidden, job->dtype, &weight_bytes)) return 0xffff0101U;
+    x = shared_ddr_ptr(job->x_addr, bytes);
+    y = shared_ddr_ptr(job->y_addr, bytes);
+    if (job->weight_addr) {
+        w = shared_ddr_ptr(job->weight_addr, weight_bytes);
+        if (!w) return 0xffff0101U;
+    }
+    if (!x || !y) return 0xffff0101U;
 
     for (u64 row = 0; row < job->rows; ++row) {
         const u64 base = row * job->hidden;
@@ -536,6 +858,7 @@ static void rmsnorm_typed(const struct RmsNormJob *job) {
             store_typed(y, base + i, job->dtype, load_typed(x, base + i, job->dtype) * scale * weight);
         }
     }
+    return 0;
 }
 
 static volatile struct ArgSlotHeader *arg_slot(volatile struct Doorbell *control, u32 job_id) {
@@ -588,22 +911,19 @@ static u32 run_job_from_table(volatile struct Doorbell *control, volatile struct
         if (!dtype_supported(job->atype) || !dtype_supported(job->btype) || !dtype_supported(job->ctype)) {
             return 0xffff0002U;
         }
-        gemm_typed(job);
-        return 0;
+        return gemm_typed(job);
     }
     if (doorbell->job_id == HETGPU_PACC_JOB_SOFTMAX) {
         const struct SoftmaxJob *job = (const struct SoftmaxJob *)&table->softmax;
         if (!table->have_softmax) return 0xffff0005U;
         if (!dtype_supported(job->dtype)) return 0xffff0003U;
-        softmax_typed(job);
-        return 0;
+        return softmax_typed(job);
     }
     if (doorbell->job_id == HETGPU_PACC_JOB_RMSNORM) {
         const struct RmsNormJob *job = (const struct RmsNormJob *)&table->rmsnorm;
         if (!table->have_rmsnorm) return 0xffff0005U;
         if (!dtype_supported(job->dtype)) return 0xffff0004U;
-        rmsnorm_typed(job);
-        return 0;
+        return rmsnorm_typed(job);
     }
     if (doorbell->job_id == HETGPU_PACC_JOB_ALLREDUCE) {
         return table->have_allreduce ? 0xffff0006U : 0xffff0005U;
@@ -625,20 +945,17 @@ static u32 run_job_from_arg_slot(volatile struct Doorbell *control, volatile str
         if (!dtype_supported(job->atype) || !dtype_supported(job->btype) || !dtype_supported(job->ctype)) {
             return 0xffff0002U;
         }
-        gemm_typed(job);
-        return 0;
+        return gemm_typed(job);
     }
     if (doorbell->job_id == HETGPU_PACC_JOB_SOFTMAX) {
         const struct SoftmaxJob *job = (const struct SoftmaxJob *)arg_payload(slot);
         if (!dtype_supported(job->dtype)) return 0xffff0003U;
-        softmax_typed(job);
-        return 0;
+        return softmax_typed(job);
     }
     if (doorbell->job_id == HETGPU_PACC_JOB_RMSNORM) {
         const struct RmsNormJob *job = (const struct RmsNormJob *)arg_payload(slot);
         if (!dtype_supported(job->dtype)) return 0xffff0004U;
-        rmsnorm_typed(job);
-        return 0;
+        return rmsnorm_typed(job);
     }
     return 0xffff00ffU;
 }
@@ -663,34 +980,33 @@ static void run_preloaded_job(volatile struct Doorbell *control, volatile void *
     fence_all();
 }
 
-__attribute__((section(".text.start")))
-void _start(void) {
-    volatile struct RuntimeBootInfo *boot =
-        (volatile struct RuntimeBootInfo *)(AP2PACC_SEC_MBSRAM + HETGPU_PACC_RUNTIME_BOOT_INFO_OFF);
-    volatile struct Doorbell *doorbell = (volatile struct Doorbell *)AP2PACC_SEC_MBSRAM;
-    volatile void *completion_base = (volatile void *)PACC2AP_SEC_MBSRAM;
-    volatile u64 *heartbeat = (volatile u64 *)PACC2AP_SEC_MBSRAM;
+static void hetgpu_pacc_runtime_loop(void) {
     u64 last_seq = 0;
     u64 last_kernel_seq = 0;
-
-    fence_all();
-    if (boot->magic == HETGPU_PACC_RUNTIME_BOOT_INFO_MAGIC &&
-        boot->version == HETGPU_PACC_RUNTIME_BOOT_INFO_VERSION &&
-        boot->pacc_id < HETGPU_PACC_CORE_COUNT &&
-        boot->shared_ddr_base != 0 &&
-        boot->shared_ddr_size >= ((u64)boot->pacc_id + 1UL) * HETGPU_PACC_CONTROL_BYTES) {
-        u64 control_base = boot->shared_ddr_base + (u64)boot->pacc_id * HETGPU_PACC_CONTROL_BYTES;
-        doorbell = (volatile struct Doorbell *)(control_base + HETGPU_PACC_DOORBELL_OFF);
-        completion_base = (volatile void *)control_base;
-        heartbeat = (volatile u64 *)(control_base + HETGPU_PACC_COMPLETION_OFF + sizeof(struct HostStatus));
-    }
-    *heartbeat = 0;
-    last_seq = doorbell->seq;
-    last_kernel_seq = ((volatile struct PaccJobDesc *)doorbell)->rsvd;
-    fence_all();
+    int have_pending_irq = 1;
 
     for (;;) {
-        volatile struct PaccJobDesc *kernel_desc = (volatile struct PaccJobDesc *)doorbell;
+        u64 control_base;
+        volatile struct Doorbell *doorbell;
+        volatile void *completion_base;
+        volatile u64 *heartbeat;
+        volatile struct PaccJobDesc *kernel_desc;
+        int did_work = 0;
+
+        if (!have_pending_irq && wait_for_control_irq() != 0) {
+            return;
+        }
+        have_pending_irq = 0;
+        if (refresh_shared_ddr_from_ioctl() != 0) {
+            continue;
+        }
+
+        control_base = (u64)g_runtime.shared_ddr + (u64)g_runtime.pacc_id * HETGPU_PACC_CONTROL_BYTES;
+        doorbell = (volatile struct Doorbell *)(control_base + HETGPU_PACC_DOORBELL_OFF);
+        completion_base = (volatile void *)control_base;
+        heartbeat =
+            (volatile u64 *)(control_base + HETGPU_PACC_COMPLETION_OFF + sizeof(struct HostStatus));
+        kernel_desc = (volatile struct PaccJobDesc *)doorbell;
         fence_all();
         if (kernel_desc->buf_info == PACC_JOB_MAGIC &&
             kernel_desc->rsvd != 0 &&
@@ -698,16 +1014,26 @@ void _start(void) {
             last_kernel_seq = kernel_desc->rsvd;
             mirror_host_status(completion_base, HETGPU_PACC_JOB_KERNEL, last_kernel_seq, 0xffff0e1fU);
             *heartbeat = last_kernel_seq;
+            did_work = 1;
             fence_all();
         }
         if (doorbell->magic == HETGPU_PACC_JOB_MAGIC && doorbell->seq != last_seq) {
             last_seq = doorbell->seq;
             run_preloaded_job(doorbell, completion_base);
             *heartbeat = last_seq;
+            did_work = 1;
             fence_all();
         }
-        for (volatile u32 i = 0; i < 1024U; ++i) {
-            __asm__ volatile("" ::: "memory");
+        if (did_work) {
+            signal_host_irq();
         }
     }
+}
+
+int main(int argc, char **argv) {
+    if (init_runtime_io(argc, argv) != 0) {
+        return 1;
+    }
+    hetgpu_pacc_runtime_loop();
+    return 0;
 }
