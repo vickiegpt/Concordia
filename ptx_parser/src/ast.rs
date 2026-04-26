@@ -6,7 +6,6 @@ use super::{
     ScalarType,
     SetpBoolPostOp,
     StateSpace,
-    VsetCompareOp,
     Tcgen05CpSrcFmt,
     // TCGen05 enums
     Tcgen05CtaGroup,
@@ -15,6 +14,7 @@ use super::{
     Tcgen05LdStShape,
     Tcgen05MmaKind,
     VectorPrefix,
+    VsetCompareOp,
 };
 use crate::{
     FunnelShiftMode, MatrixLayout, MatrixNumber, MatrixShape, Mul24Control, PtxError,
@@ -1030,6 +1030,7 @@ where
                                 relaxed_type_check,
                             )?),
                             RegOrImmediate::Imm(imm) => RegOrImmediate::Imm(imm),
+                            RegOrImmediate::Discard => RegOrImmediate::Discard,
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?,
@@ -1500,6 +1501,8 @@ pub struct ShfDetails {
 pub enum RegOrImmediate<Ident> {
     Reg(Ident),
     Imm(ImmediateValue),
+    #[display("_")]
+    Discard,
 }
 
 #[derive(Clone)]

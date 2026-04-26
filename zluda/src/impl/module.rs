@@ -2148,10 +2148,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     // Bind this CUDA module to the current logical PACC device/context.
     let device = unsafe { pacc_runtime_sys::pacc_CreateDevice(device_id as u32) };
     if device.is_null() {
-        eprintln!(
-            "[PACC Backend] Failed to create PACC device {}",
-            device_id
-        );
+        eprintln!("[PACC Backend] Failed to create PACC device {}", device_id);
         return Err(CUerror::UNKNOWN);
     }
     if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
@@ -2172,10 +2169,16 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     if is_ptx && !program_ptr.is_null() {
         let c_str = unsafe { std::ffi::CStr::from_ptr(image as *const std::ffi::c_char) };
         if let Ok(ptx_text) = c_str.to_str() {
-            eprintln!(
-                "[PACC Backend] Compiling PTX ({} bytes) through pacc runtime...",
-                ptx_text.len()
-            );
+            if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                eprintln!(
+                    "[PACC Backend] Compiling PTX ({} bytes) through pacc runtime...",
+                    ptx_text.len()
+                );
+            }
             let result = unsafe {
                 pacc_runtime_sys::pacc_LoadProgramPtx(
                     program_ptr,

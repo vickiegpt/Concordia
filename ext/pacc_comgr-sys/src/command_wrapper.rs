@@ -88,6 +88,13 @@ fn preferred_temp_roots() -> Vec<PathBuf> {
     roots
 }
 
+fn env_truthy(key: &str) -> bool {
+    matches!(
+        std::env::var(key).ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
+}
+
 fn create_action_tempdir() -> io::Result<TempDir> {
     let mut last_error: Option<io::Error> = None;
 
@@ -483,8 +490,20 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
             continue;
         }
 
+        let input_for_opt = match pacc_preopt_input(&input_file, &ctx.temp_dir) {
+            Ok(path) => path,
+            Err(err) => {
+                eprintln!(
+                    "PACC: failed to prepare {} for opt ({}); using original bitcode",
+                    input_file.display(),
+                    err
+                );
+                input_file.clone()
+            }
+        };
+
         let mut cmd = Command::new(opt_tool());
-        cmd.arg(&input_file)
+        cmd.arg(&input_for_opt)
             .arg("-o")
             .arg(&output_file)
             .arg("-O3")
@@ -492,7 +511,7 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
 
         eprintln!(
             "PACC: Running opt on {} -> {}",
-            input_file.display(),
+            input_for_opt.display(),
             output_file.display()
         );
 
@@ -531,6 +550,36 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
     }
 
     Ok(())
+}
+
+fn pacc_preopt_input(input_file: &Path, temp_dir: &Path) -> io::Result<PathBuf> {
+    if !bc_requires_sanitized_ll(input_file)? {
+        return Ok(input_file.to_path_buf());
+    }
+
+    let stem = input_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("input");
+    let ll_file = temp_dir.join(format!("{stem}_pacc_preopt.ll"));
+
+    let llvm_dis = llvm_dis_tool();
+    let mut dis_cmd = Command::new(llvm_dis);
+    dis_cmd.arg(input_file).arg("-o").arg("-");
+    let output = dis_cmd.output()?;
+    if !output.status.success() {
+        return Ok(input_file.to_path_buf());
+    }
+
+    let ll_text = String::from_utf8_lossy(&output.stdout);
+    let sanitized = sanitize_llvm23_ir_for_llvm20(&ll_text);
+    fs::write(&ll_file, sanitized)?;
+    eprintln!(
+        "PACC: prepared sanitized pre-opt LLVM IR for {} -> {}",
+        input_file.display(),
+        ll_file.display()
+    );
+    Ok(ll_file)
 }
 
 fn is_llvm23_attr_mismatch(stderr: &str) -> bool {
@@ -832,9 +881,17 @@ fn compile_bc_to_xm_object(
     output_file: &Path,
     config: &crate::PaccConfig,
 ) -> io::Result<()> {
+    if !env_truthy("HETGPU_PACC_DIRECT_BC") {
+        eprintln!(
+            "PACC: using sanitized textual IR path for {} (set HETGPU_PACC_DIRECT_BC=1 to try direct bitcode codegen)",
+            input_file.display()
+        );
+        return compile_bc_to_xm_object_via_sanitized_ll(input_file, output_file, config);
+    }
+
     if bc_requires_sanitized_ll(input_file)? {
         eprintln!(
-            "PACC: forcing sanitized textual IR path for {} due to unsupported AMDGPU intrinsics",
+            "PACC: forcing sanitized textual IR path for {} due to unsupported source target metadata",
             input_file.display()
         );
         return compile_bc_to_xm_object_via_sanitized_ll(input_file, output_file, config);
@@ -893,7 +950,10 @@ fn bc_requires_sanitized_ll(input_file: &Path) -> io::Result<bool> {
     }
     let ll = String::from_utf8_lossy(&output.stdout);
     Ok(ll.contains("@llvm.amdgcn.wave.barrier")
-        || ll.contains("call void @llvm.amdgcn.wave.barrier("))
+        || ll.contains("call void @llvm.amdgcn.wave.barrier(")
+        || ll.contains("target triple = \"amdgcn")
+        || ll.contains("\"target-cpu\"=")
+        || ll.contains("\"target-features\"="))
 }
 
 fn compile_bc_to_xm_assembly(
@@ -984,8 +1044,25 @@ fn sanitize_llvm23_ir_for_llvm20(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for line in input.lines() {
         let trimmed = line.trim_start();
+        if trimmed.starts_with("target datalayout =") {
+            out.push_str("target datalayout = \"e-m:e-p:64:64-i64:64-i128:128-n32:64-S128\"\n");
+            continue;
+        }
+        if trimmed.starts_with("target triple =") {
+            out.push_str("target triple = \"riscv64-unknown-elf\"\n");
+            continue;
+        }
         if trimmed.contains("llvm.amdgcn.wave.barrier") {
             continue;
+        }
+        if trimmed.starts_with('@') && trimmed.contains(" = external addrspace(3) global [0 x ") {
+            if let Some((name, _rhs)) = trimmed.split_once(" = ") {
+                out.push_str(name);
+                out.push_str(
+                    " = internal addrspace(3) global [65536 x i8] zeroinitializer, align 16\n",
+                );
+                continue;
+            }
         }
         if trimmed.starts_with("attributes #") {
             if let Some((lhs, _rhs)) = line.split_once('=') {
@@ -1055,6 +1132,43 @@ mod tests {
         let input = "declare void @llvm.amdgcn.wave.barrier()\ncall void @llvm.amdgcn.wave.barrier()\nret void\n";
         let output = sanitize_llvm23_ir_for_llvm20(input);
         assert_eq!(output, "ret void\n");
+    }
+
+    #[test]
+    fn sanitize_materializes_dynamic_shared_memory_symbol() {
+        let input = "@smem = external addrspace(3) global [0 x i8], align 4\n";
+        let output = sanitize_llvm23_ir_for_llvm20(input);
+        assert_eq!(
+            output,
+            "@smem = internal addrspace(3) global [65536 x i8] zeroinitializer, align 16\n"
+        );
+    }
+
+    #[test]
+    fn sanitize_materializes_named_dynamic_shared_memory_symbol() {
+        let input = "@data_mmv = external addrspace(3) global [0 x i8], align 1\n";
+        let output = sanitize_llvm23_ir_for_llvm20(input);
+        assert_eq!(
+            output,
+            "@data_mmv = internal addrspace(3) global [65536 x i8] zeroinitializer, align 16\n"
+        );
+    }
+
+    #[test]
+    fn sanitize_rewrites_amdgpu_datalayout_for_riscv_cpu_pointers() {
+        let input = "target datalayout = \"e-p:64:64-p5:32:32\"\n";
+        let output = sanitize_llvm23_ir_for_llvm20(input);
+        assert_eq!(
+            output,
+            "target datalayout = \"e-m:e-p:64:64-i64:64-i128:128-n32:64-S128\"\n"
+        );
+    }
+
+    #[test]
+    fn sanitize_rewrites_module_target_triple_before_riscv_opt() {
+        let input = "target triple = \"amdgcn-amd-amdhsa\"\n";
+        let output = sanitize_llvm23_ir_for_llvm20(input);
+        assert_eq!(output, "target triple = \"riscv64-unknown-elf\"\n");
     }
 
     #[test]

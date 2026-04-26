@@ -967,9 +967,15 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
             }
         }
     } else if allow_host_device_mem {
-        eprintln!(
-            "[PACC Backend] HETGPU_PACC_ALLOW_HOST_DEVICE_MEM=1: using host-backed CUDA memory"
-        );
+        if std::env::var("HETGPU_PACC_LOG_MEMORY")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            eprintln!(
+                "[PACC Backend] HETGPU_PACC_ALLOW_HOST_DEVICE_MEM=1: using host-backed CUDA memory"
+            );
+        }
         pacc_alloc_host(bytesize)?
     } else {
         eprintln!(
@@ -1188,9 +1194,13 @@ pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) ->
     if addr >= 0x1000 && addr < 0x1_0000_0000 {
         return Err(CUerror::INVALID_VALUE);
     }
-    let slice = unsafe { std::slice::from_raw_parts_mut(dst.0 as *mut u32, n) };
-    for x in slice {
-        *x = ui;
+    if ui == 0 {
+        unsafe {
+            std::ptr::write_bytes(dst.0 as *mut u32, 0, n);
+        }
+    } else {
+        let slice = unsafe { std::slice::from_raw_parts_mut(dst.0 as *mut u32, n) };
+        slice.fill(ui);
     }
     Ok(())
 }
@@ -1224,9 +1234,10 @@ pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize)
     if addr >= 0x1000 && addr < 0x1_0000_0000 {
         return Err(CUerror::INVALID_VALUE);
     }
-    let slice = unsafe { std::slice::from_raw_parts_mut(dst.0 as *mut u8, n) };
-    for x in slice {
-        *x = value;
+    if n != 0 {
+        unsafe {
+            std::ptr::write_bytes(dst.0 as *mut u8, value, n);
+        }
     }
     Ok(())
 }

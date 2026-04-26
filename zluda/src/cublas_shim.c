@@ -1503,6 +1503,9 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
     if (hetgpu_pacc_is_device_ptr(Aarray)) {
         tmp_Aarray = (void **)malloc(ptr_bytes);
         if (!tmp_Aarray || hetgpu_copy_pointer_array_to_host(tmp_Aarray, Aarray, ptr_bytes) != 0) {
+            fprintf(stderr,
+                    "[hetGPU cublas_shim] cublasGemmBatchedEx failed to copy A pointer array ptr=%p bytes=%zu\n",
+                    (const void *)Aarray, ptr_bytes);
             free(tmp_Aarray);
             return CUBLAS_STATUS_INVALID_VALUE;
         }
@@ -1511,6 +1514,9 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
     if (hetgpu_pacc_is_device_ptr(Barray)) {
         tmp_Barray = (void **)malloc(ptr_bytes);
         if (!tmp_Barray || hetgpu_copy_pointer_array_to_host(tmp_Barray, Barray, ptr_bytes) != 0) {
+            fprintf(stderr,
+                    "[hetGPU cublas_shim] cublasGemmBatchedEx failed to copy B pointer array ptr=%p bytes=%zu\n",
+                    (const void *)Barray, ptr_bytes);
             free(tmp_Aarray);
             free(tmp_Barray);
             return CUBLAS_STATUS_INVALID_VALUE;
@@ -1520,6 +1526,9 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
     if (hetgpu_pacc_is_device_ptr(Carray)) {
         tmp_Carray = (void **)malloc(ptr_bytes);
         if (!tmp_Carray || hetgpu_copy_pointer_array_to_host(tmp_Carray, Carray, ptr_bytes) != 0) {
+            fprintf(stderr,
+                    "[hetGPU cublas_shim] cublasGemmBatchedEx failed to copy C pointer array ptr=%p bytes=%zu\n",
+                    (const void *)Carray, ptr_bytes);
             free(tmp_Aarray);
             free(tmp_Barray);
             free(tmp_Carray);
@@ -1530,6 +1539,12 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
     DEBUG_LOG("cublasGemmBatchedEx pointer-array GEMM falls back to per-batch submit");
     for (int i = 0; i < batchCount; ++i) {
         if (!host_Aarray[i] || !host_Barray[i] || !host_Carray[i]) {
+            fprintf(stderr,
+                    "[hetGPU cublas_shim] cublasGemmBatchedEx invalid pointer table entry batch=%d/%d A=%p B=%p C=%p arrays=%p/%p/%p dims m=%d n=%d k=%d lda=%d ldb=%d ldc=%d types=%d/%d/%d\n",
+                    i, batchCount,
+                    host_Aarray[i], host_Barray[i], host_Carray[i],
+                    (const void *)Aarray, (const void *)Barray, (const void *)Carray,
+                    m, n, k, lda, ldb, ldc, Atype, Btype, Ctype);
             free(tmp_Aarray);
             free(tmp_Barray);
             free(tmp_Carray);
@@ -1543,6 +1558,11 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
                                              host_Carray[i], Ctype, ldc, 0,
                                              1, computeType);
         if (st != CUBLAS_STATUS_SUCCESS) {
+            fprintf(stderr,
+                    "[hetGPU cublas_shim] cublasGemmBatchedEx per-batch submit failed batch=%d/%d status=%d A=%p B=%p C=%p dims m=%d n=%d k=%d lda=%d ldb=%d ldc=%d types=%d/%d/%d\n",
+                    i, batchCount, (int)st,
+                    host_Aarray[i], host_Barray[i], host_Carray[i],
+                    m, n, k, lda, ldb, ldc, Atype, Btype, Ctype);
             free(tmp_Aarray);
             free(tmp_Barray);
             free(tmp_Carray);

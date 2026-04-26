@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 use std::hash::Hash;
 use std::{
     borrow::Cow,
-    collections::{HashMap, hash_map},
+    collections::{hash_map, HashMap},
     ffi::CString,
     fmt::Write,
     iter,
@@ -628,22 +628,28 @@ enum PtxSpecialRegister {
     Ctaid,
     Nctaid,
     Clock,
+    LanemaskEq,
     LanemaskLt,
+    LanemaskLe,
     LanemaskGe,
+    LanemaskGt,
     Laneid,
     Envreg(u8),
 }
 
 impl PtxSpecialRegister {
     fn iter() -> impl Iterator<Item = Self> {
-        const FIXED: [PtxSpecialRegister; 8] = [
+        const FIXED: [PtxSpecialRegister; 11] = [
             PtxSpecialRegister::Tid,
             PtxSpecialRegister::Ntid,
             PtxSpecialRegister::Ctaid,
             PtxSpecialRegister::Nctaid,
             PtxSpecialRegister::Clock,
+            PtxSpecialRegister::LanemaskEq,
             PtxSpecialRegister::LanemaskLt,
+            PtxSpecialRegister::LanemaskLe,
             PtxSpecialRegister::LanemaskGe,
+            PtxSpecialRegister::LanemaskGt,
             PtxSpecialRegister::Laneid,
         ];
         FIXED
@@ -658,8 +664,11 @@ impl PtxSpecialRegister {
             Self::Ctaid => "%ctaid",
             Self::Nctaid => "%nctaid",
             Self::Clock => "%clock",
+            Self::LanemaskEq => "%lanemask_eq",
             Self::LanemaskLt => "%lanemask_lt",
+            Self::LanemaskLe => "%lanemask_le",
             Self::LanemaskGe => "%lanemask_ge",
+            Self::LanemaskGt => "%lanemask_gt",
             Self::Laneid => "%laneid",
             Self::Envreg(0) => "%envreg0",
             Self::Envreg(1) => "%envreg1",
@@ -714,8 +723,11 @@ impl PtxSpecialRegister {
             PtxSpecialRegister::Ctaid => ast::ScalarType::U32,
             PtxSpecialRegister::Nctaid => ast::ScalarType::U32,
             PtxSpecialRegister::Clock => ast::ScalarType::U32,
+            PtxSpecialRegister::LanemaskEq => ast::ScalarType::U32,
             PtxSpecialRegister::LanemaskLt => ast::ScalarType::U32,
+            PtxSpecialRegister::LanemaskLe => ast::ScalarType::U32,
             PtxSpecialRegister::LanemaskGe => ast::ScalarType::U32,
+            PtxSpecialRegister::LanemaskGt => ast::ScalarType::U32,
             PtxSpecialRegister::Laneid => ast::ScalarType::U32,
             PtxSpecialRegister::Envreg(_) => ast::ScalarType::U32,
         }
@@ -728,8 +740,11 @@ impl PtxSpecialRegister {
             | PtxSpecialRegister::Ctaid
             | PtxSpecialRegister::Nctaid => Some(ast::ScalarType::U8),
             PtxSpecialRegister::Clock
+            | PtxSpecialRegister::LanemaskEq
             | PtxSpecialRegister::LanemaskLt
+            | PtxSpecialRegister::LanemaskLe
             | PtxSpecialRegister::LanemaskGe
+            | PtxSpecialRegister::LanemaskGt
             | PtxSpecialRegister::Laneid
             | PtxSpecialRegister::Envreg(_) => None,
         }
@@ -742,8 +757,11 @@ impl PtxSpecialRegister {
             PtxSpecialRegister::Ctaid => "sreg_ctaid",
             PtxSpecialRegister::Nctaid => "sreg_nctaid",
             PtxSpecialRegister::Clock => "sreg_clock",
+            PtxSpecialRegister::LanemaskEq => "sreg_lanemask_eq",
             PtxSpecialRegister::LanemaskLt => "sreg_lanemask_lt",
+            PtxSpecialRegister::LanemaskLe => "sreg_lanemask_le",
             PtxSpecialRegister::LanemaskGe => "sreg_lanemask_ge",
+            PtxSpecialRegister::LanemaskGt => "sreg_lanemask_gt",
             PtxSpecialRegister::Laneid => "sreg_laneid",
             PtxSpecialRegister::Envreg(0) => "sreg_envreg0",
             PtxSpecialRegister::Envreg(1) => "sreg_envreg1",
@@ -1579,7 +1597,7 @@ impl SpecialRegistersMap {
     }
 
     fn len() -> usize {
-        8 + 32
+        11 + 32
     }
 
     fn foreach_declaration<'a, 'input>(

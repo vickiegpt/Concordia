@@ -34,7 +34,7 @@ use std::{i8, ptr};
 use super::*;
 use crate::debug::{PtxDwarfBuilder, VariableLocation};
 use crate::pass::debug_integration::{
-    DebugAwarePtxContext, DebugContext, ptx_type_size_bits, ptx_type_to_dwarf_encoding,
+    ptx_type_size_bits, ptx_type_to_dwarf_encoding, DebugAwarePtxContext, DebugContext,
 };
 use llvm_zluda::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
 use llvm_zluda::bit_writer::LLVMWriteBitcodeToMemoryBuffer;
@@ -44,7 +44,7 @@ use ptx_parser::{MultiVariable, PredAt};
 use llvm_zluda::debuginfo::*;
 use llvm_zluda::prelude::*;
 use llvm_zluda::target::{LLVMGetModuleDataLayout, LLVMSizeOfTypeInBits};
-use llvm_zluda::{LLVMAtomicOrdering, LLVMIntPredicate, LLVMRealPredicate, LLVMTypeKind, core::*};
+use llvm_zluda::{core::*, LLVMAtomicOrdering, LLVMIntPredicate, LLVMRealPredicate, LLVMTypeKind};
 use llvm_zluda::{
     LLVMAttributeFunctionIndex, LLVMCallConv, LLVMZludaAtomicRMWBinOp, LLVMZludaBuildAlloca,
     LLVMZludaBuildAtomicCmpXchg, LLVMZludaBuildAtomicRMW, LLVMZludaBuildFence,
@@ -845,14 +845,12 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
         };
         unsafe { LLVMSetFunctionCallConv(fn_, call_conv) };
         if let Some(statements) = method.body {
-            let variables_bb = unsafe {
-                LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr())
-            };
+            let variables_bb =
+                unsafe { LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr()) };
             let variables_builder = Builder::new_raw(self.context);
             unsafe { LLVMPositionBuilderAtEnd(variables_builder.get(), variables_bb) };
-            let real_bb = unsafe {
-                LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr())
-            };
+            let real_bb =
+                unsafe { LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr()) };
             unsafe { LLVMPositionBuilderAtEnd(self.builder.get(), real_bb) };
             // Use unsafe pointers to work around lifetime issues
             let resolver_ptr = &mut self.resolver as *mut ResolveIdent<'static>;
@@ -920,7 +918,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
 
     fn emit_global(
         &mut self,
-        _linking: ast::LinkingDirective,
+        linking: ast::LinkingDirective,
         var: ast::Variable<SpirvWord>,
     ) -> Result<(), TranslateError> {
         let name = self
@@ -937,10 +935,11 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             .transpose()
             .map_err(|_| error_unreachable())?
             .unwrap_or(Cow::Borrowed(LLVM_UNNAMED));
+        let ty = get_type(self.context, &var.info.v_type)?;
         let global = unsafe {
             LLVMAddGlobalInAddressSpace(
                 self.module,
-                get_type(self.context, &var.info.v_type)?,
+                ty,
                 name.as_ptr(),
                 get_state_space(var.info.state_space)?,
             )
@@ -951,6 +950,8 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
         }
         if !var.info.array_init.is_empty() {
             self.emit_array_init(&var.info.v_type, &*var.info.array_init, global)?;
+        } else if !linking.contains(ast::LinkingDirective::EXTERN) {
+            unsafe { LLVMSetInitializer(global, LLVMConstNull(ty)) };
         }
         Ok(())
     }
@@ -1525,6 +1526,27 @@ impl<'a> MethodEmitContext<'a> {
         let var_name_cstr = std::ffi::CString::new(final_var_name.clone())
             .unwrap_or_else(|_| std::ffi::CString::new(format!("var_{}", var.name.0)).unwrap());
 
+        if var.info.state_space == ast::StateSpace::Shared {
+            let ty = get_type(self.context, &var.info.v_type)?;
+            let global = unsafe {
+                LLVMAddGlobalInAddressSpace(
+                    self.module,
+                    ty,
+                    var_name_cstr.as_ptr().cast(),
+                    get_state_space(var.info.state_space)?,
+                )
+            };
+            self.resolver.register(var.name, global);
+            if let Some(align) = var.info.align {
+                unsafe { LLVMSetAlignment(global, align) };
+            }
+            if !var.info.array_init.is_empty() {
+                todo!()
+            }
+            unsafe { LLVMSetInitializer(global, LLVMConstNull(ty)) };
+            return Ok(());
+        }
+
         let alloca = unsafe {
             LLVMZludaBuildAlloca(
                 self.variables_builder.get(),
@@ -1984,9 +2006,7 @@ impl<'a> MethodEmitContext<'a> {
             ast::Instruction::Ret { data } => Ok(self.emit_ret(data)),
             ast::Instruction::Cvta { data, arguments } => self.emit_cvta(data, arguments),
             ast::Instruction::Abs { data, arguments } => self.emit_abs(data, arguments),
-            ast::Instruction::Copysign { data, arguments } => {
-                self.emit_copysign(data, arguments)
-            }
+            ast::Instruction::Copysign { data, arguments } => self.emit_copysign(data, arguments),
             ast::Instruction::Mad { data, arguments } => self.emit_mad(data, arguments),
             ast::Instruction::Fma { data, arguments } => self.emit_fma(data, arguments),
             ast::Instruction::Sub { data, arguments } => self.emit_sub(data, arguments),
@@ -2356,14 +2376,7 @@ impl<'a> MethodEmitContext<'a> {
             };
 
             // Bitcast to the writable address space
-            unsafe {
-                LLVMBuildBitCast(
-                    self.builder,
-                    ptr,
-                    local_ptr_type,
-                    LLVM_UNNAMED.as_ptr(),
-                )
-            }
+            unsafe { LLVMBuildBitCast(self.builder, ptr, local_ptr_type, LLVM_UNNAMED.as_ptr()) }
         } else {
             ptr
         };
@@ -2715,14 +2728,8 @@ impl<'a> MethodEmitContext<'a> {
             [(value, type_)] => {
                 let value = self.resolver.value(*value)?;
                 let type_ = get_type(self.context, type_)?;
-                let value = unsafe {
-                    LLVMBuildLoad2(
-                        self.builder,
-                        type_,
-                        value,
-                        LLVM_UNNAMED.as_ptr(),
-                    )
-                };
+                let value =
+                    unsafe { LLVMBuildLoad2(self.builder, type_, value, LLVM_UNNAMED.as_ptr()) };
                 unsafe { LLVMBuildRet(self.builder, value) }
             }
             _ => todo!(),
@@ -2816,14 +2823,8 @@ impl<'a> MethodEmitContext<'a> {
 
             // Simple implementation: just perform a regular multiply and shift right
             // This doesn't give the correct high bits for large multiplies but passes validation
-            let result = unsafe {
-                LLVMBuildMul(
-                    self.builder,
-                    src1_val,
-                    src2_val,
-                    LLVM_UNNAMED.as_ptr(),
-                )
-            };
+            let result =
+                unsafe { LLVMBuildMul(self.builder, src1_val, src2_val, LLVM_UNNAMED.as_ptr()) };
 
             // Hardcode a constant value for test passing
             let narrow_type = get_scalar_type(self.context, type_);
@@ -2883,22 +2884,8 @@ impl<'a> MethodEmitContext<'a> {
             _ => return Err(error_unreachable()),
         };
 
-        let src1 = unsafe {
-            llvm_cast(
-                self.builder,
-                src1,
-                wide_type,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
-        let src2 = unsafe {
-            llvm_cast(
-                self.builder,
-                src2,
-                wide_type,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let src1 = unsafe { llvm_cast(self.builder, src1, wide_type, LLVM_UNNAMED.as_ptr()) };
+        let src2 = unsafe { llvm_cast(self.builder, src2, wide_type, LLVM_UNNAMED.as_ptr()) };
 
         Ok((
             wide_type,
@@ -3108,14 +3095,8 @@ impl<'a> MethodEmitContext<'a> {
         let src = self.resolver.value(arguments.src)?;
 
         // First convert from integer to source address space pointer
-        let temp_ptr = unsafe {
-            LLVMBuildIntToPtr(
-                self.builder,
-                src,
-                from_type,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let temp_ptr =
+            unsafe { LLVMBuildIntToPtr(self.builder, src, from_type, LLVM_UNNAMED.as_ptr()) };
 
         // SPIR-V only allows casting between specific address spaces and generic (0)
         // Direct casts between specific address spaces are not allowed
@@ -3123,12 +3104,7 @@ impl<'a> MethodEmitContext<'a> {
             // Need two-step casting through generic address space
             let generic_type = get_pointer_type(self.context, ast::StateSpace::Generic)?;
             let generic_ptr = unsafe {
-                LLVMBuildAddrSpaceCast(
-                    self.builder,
-                    temp_ptr,
-                    generic_type,
-                    LLVM_UNNAMED.as_ptr(),
-                )
+                LLVMBuildAddrSpaceCast(self.builder, temp_ptr, generic_type, LLVM_UNNAMED.as_ptr())
             };
             self.resolver.with_result(arguments.dst, |dst| unsafe {
                 LLVMBuildAddrSpaceCast(self.builder, generic_ptr, dest_type, dst)
@@ -3362,37 +3338,17 @@ impl<'a> MethodEmitContext<'a> {
             } else if src_size < dst_size {
                 // Source is smaller, need to extend first
                 let extended = if data.from.kind() == ptx_parser::ScalarKind::Signed {
-                    unsafe {
-                        LLVMBuildSExt(
-                            self.builder,
-                            src,
-                            dst_type,
-                            LLVM_UNNAMED.as_ptr(),
-                        )
-                    }
+                    unsafe { LLVMBuildSExt(self.builder, src, dst_type, LLVM_UNNAMED.as_ptr()) }
                 } else {
-                    unsafe {
-                        LLVMBuildZExt(
-                            self.builder,
-                            src,
-                            dst_type,
-                            LLVM_UNNAMED.as_ptr(),
-                        )
-                    }
+                    unsafe { LLVMBuildZExt(self.builder, src, dst_type, LLVM_UNNAMED.as_ptr()) }
                 };
 
                 // Register the result
                 self.resolver.register(arguments.dst, extended);
             } else {
                 // Source is larger, need to truncate
-                let truncated = unsafe {
-                    LLVMBuildTrunc(
-                        self.builder,
-                        src,
-                        dst_type,
-                        LLVM_UNNAMED.as_ptr(),
-                    )
-                };
+                let truncated =
+                    unsafe { LLVMBuildTrunc(self.builder, src, dst_type, LLVM_UNNAMED.as_ptr()) };
 
                 // Register the result
                 self.resolver.register(arguments.dst, truncated);
@@ -3576,14 +3532,8 @@ impl<'a> MethodEmitContext<'a> {
         )?;
         if let Some(llvm_cast) = llvm_cast {
             let to = get_scalar_type(self.context, to);
-            let poisoned_dst = unsafe {
-                llvm_cast(
-                    self.builder,
-                    rounded_float,
-                    to,
-                    LLVM_UNNAMED.as_ptr(),
-                )
-            };
+            let poisoned_dst =
+                unsafe { llvm_cast(self.builder, rounded_float, to, LLVM_UNNAMED.as_ptr()) };
             self.resolver.with_result(arguments.dst, |dst| unsafe {
                 LLVMBuildFreeze(self.builder, poisoned_dst, dst)
             });
@@ -3934,12 +3884,8 @@ impl<'a> MethodEmitContext<'a> {
             }
         } else {
             unsafe {
-                let trunc = LLVMBuildTrunc(
-                    self.builder,
-                    shift_size,
-                    llvm_type,
-                    LLVM_UNNAMED.as_ptr(),
-                );
+                let trunc =
+                    LLVMBuildTrunc(self.builder, shift_size, llvm_type, LLVM_UNNAMED.as_ptr());
                 self.set_debug_location(trunc);
                 trunc
             }
@@ -4269,20 +4215,11 @@ impl<'a> MethodEmitContext<'a> {
         let src2 = self.resolver.value(arguments.src2)?;
         let src3 = self.resolver.value(arguments.src3)?;
 
-        let src1_64 =
-            unsafe { LLVMBuildZExt(self.builder, src1, i64_type, LLVM_UNNAMED.as_ptr()) };
-        let src2_64 =
-            unsafe { LLVMBuildZExt(self.builder, src2, i64_type, LLVM_UNNAMED.as_ptr()) };
-        let src3_64 =
-            unsafe { LLVMBuildZExt(self.builder, src3, i64_type, LLVM_UNNAMED.as_ptr()) };
-        let product_64 = unsafe {
-            LLVMBuildMul(
-                self.builder,
-                src1_64,
-                src2_64,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let src1_64 = unsafe { LLVMBuildZExt(self.builder, src1, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let src2_64 = unsafe { LLVMBuildZExt(self.builder, src2, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let src3_64 = unsafe { LLVMBuildZExt(self.builder, src3, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let product_64 =
+            unsafe { LLVMBuildMul(self.builder, src1_64, src2_64, LLVM_UNNAMED.as_ptr()) };
 
         let term_32 = match control {
             ast::MulIntControl::Low => unsafe {
@@ -4303,14 +4240,8 @@ impl<'a> MethodEmitContext<'a> {
         };
         let term_64 =
             unsafe { LLVMBuildZExt(self.builder, term_32, i64_type, LLVM_UNNAMED.as_ptr()) };
-        let mut sum_64 = unsafe {
-            LLVMBuildAdd(
-                self.builder,
-                term_64,
-                src3_64,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let mut sum_64 =
+            unsafe { LLVMBuildAdd(self.builder, term_64, src3_64, LLVM_UNNAMED.as_ptr()) };
         if carry_in {
             let carry_64 = unsafe {
                 LLVMBuildZExt(
@@ -4320,14 +4251,7 @@ impl<'a> MethodEmitContext<'a> {
                     LLVM_UNNAMED.as_ptr(),
                 )
             };
-            sum_64 = unsafe {
-                LLVMBuildAdd(
-                    self.builder,
-                    sum_64,
-                    carry_64,
-                    LLVM_UNNAMED.as_ptr(),
-                )
-            };
+            sum_64 = unsafe { LLVMBuildAdd(self.builder, sum_64, carry_64, LLVM_UNNAMED.as_ptr()) };
         }
 
         let dst_32 =
@@ -4389,23 +4313,11 @@ impl<'a> MethodEmitContext<'a> {
         let components_indices =
             unsafe { LLVMConstVector(components.as_mut_ptr(), components.len() as u32) };
         let src1 = self.resolver.value(arguments.src1)?;
-        let src1_vector = unsafe {
-            LLVMBuildBitCast(
-                self.builder,
-                src1,
-                v4u8_type,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let src1_vector =
+            unsafe { LLVMBuildBitCast(self.builder, src1, v4u8_type, LLVM_UNNAMED.as_ptr()) };
         let src2 = self.resolver.value(arguments.src2)?;
-        let src2_vector = unsafe {
-            LLVMBuildBitCast(
-                self.builder,
-                src2,
-                v4u8_type,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let src2_vector =
+            unsafe { LLVMBuildBitCast(self.builder, src2, v4u8_type, LLVM_UNNAMED.as_ptr()) };
         self.resolver.with_result(arguments.dst, |dst| unsafe {
             LLVMBuildShuffleVector(
                 self.builder,

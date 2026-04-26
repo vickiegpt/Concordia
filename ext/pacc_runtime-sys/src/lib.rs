@@ -347,6 +347,7 @@ pub const PACC_KERNEL_ARG_KIND_SCALAR: u32 = 0;
 pub const PACC_KERNEL_ARG_KIND_POINTER: u32 = 1;
 pub const PACC_KERNEL_ARG_FLAG_SIGNED: u32 = 1 << 0;
 pub const PACC_KERNEL_ARG_FLAG_FLOAT: u32 = 1 << 1;
+pub const PACC_KERNEL_ARG_FLAG_INLINE_BLOB: u32 = 1 << 16;
 pub const PACC_KERNEL_ARG_FLAG_BUFFER_INPUT: u32 = 1 << 8;
 pub const PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT: u32 = 1 << 9;
 pub const PACC_KERNEL_ARG_FLAG_BUFFER_INOUT: u32 =
@@ -596,7 +597,17 @@ impl SharedDdrMmap {
         std::sync::atomic::fence(Ordering::SeqCst);
         let ret = unsafe { libc::msync(self.ptr.cast(), self.map_len, libc::MS_SYNC) };
         if ret < 0 {
-            Err(Error::last_os_error())
+            let err = Error::last_os_error();
+            // The mbox helper maps shared DDR with remap_pfn_range().  On this
+            // path Linux may reject msync(MS_SYNC) with EINVAL even though the
+            // mapping is valid and non-cached.  Treat that as a successful
+            // userspace doorbell staging barrier instead of falling back to
+            // slow helper read/write.
+            if err.raw_os_error() == Some(libc::EINVAL) {
+                Ok(())
+            } else {
+                Err(err)
+            }
         } else {
             Ok(())
         }
@@ -611,7 +622,13 @@ impl SharedDdrMmap {
             )
         };
         if ret < 0 {
-            Err(Error::last_os_error())
+            let err = Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINVAL) {
+                std::sync::atomic::fence(Ordering::SeqCst);
+                Ok(())
+            } else {
+                Err(err)
+            }
         } else {
             std::sync::atomic::fence(Ordering::SeqCst);
             Ok(())
@@ -624,6 +641,121 @@ impl Drop for SharedDdrMmap {
         unsafe {
             libc::munmap(self.ptr.cast(), self.map_len);
         }
+    }
+}
+
+struct SharedDdrFullMmap {
+    file: File,
+    ptr: *mut u8,
+    len: usize,
+}
+
+unsafe impl Send for SharedDdrFullMmap {}
+unsafe impl Sync for SharedDdrFullMmap {}
+
+impl SharedDdrFullMmap {
+    fn map_helper() -> std::io::Result<Self> {
+        let len = shared_ddr_bytes();
+        if len == 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "zero-length shared DDR mmap",
+            ));
+        }
+        let dev = helper_path_for_pacc(0);
+        let file = OpenOptions::new().read(true).write(true).open(&dev)?;
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(Error::last_os_error());
+        }
+        Ok(Self {
+            file,
+            ptr: ptr.cast(),
+            len,
+        })
+    }
+
+    fn check_range(&self, offset: u64, len: usize) -> std::io::Result<usize> {
+        validate_shared_ddr_window_range(offset, len)?;
+        let start = usize::try_from(offset).map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                "shared DDR full mmap offset does not fit usize",
+            )
+        })?;
+        if start.checked_add(len).filter(|&end| end <= self.len).is_none() {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "shared DDR full mmap access out of range: off=0x{offset:x} len={len} map=0x{:x}",
+                    self.len
+                ),
+            ));
+        }
+        Ok(start)
+    }
+
+    fn range_barrier(&self, offset: u64, len: usize, flags: libc::c_int) -> std::io::Result<()> {
+        std::sync::atomic::fence(Ordering::SeqCst);
+        if len == 0 {
+            return Ok(());
+        }
+        if !shared_ddr_full_mmap_msync_enabled() {
+            return Ok(());
+        }
+        let start = self.check_range(offset, len)?;
+        let page = page_size();
+        let map_base = start & !(page - 1);
+        let page_off = start - map_base;
+        let map_len = align_up(page_off + len, page);
+        let ret = unsafe { libc::msync(self.ptr.add(map_base).cast(), map_len, flags) };
+        if ret < 0 {
+            let err = Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINVAL) {
+                std::sync::atomic::fence(Ordering::SeqCst);
+                Ok(())
+            } else {
+                Err(err)
+            }
+        } else {
+            std::sync::atomic::fence(Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn copy_in(&self, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+        let start = self.check_range(offset, bytes.len())?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.ptr.add(start), bytes.len());
+        }
+        self.range_barrier(offset, bytes.len(), libc::MS_SYNC)
+    }
+
+    fn copy_out(&self, offset: u64, bytes: &mut [u8]) -> std::io::Result<()> {
+        self.range_barrier(offset, bytes.len(), libc::MS_SYNC | libc::MS_INVALIDATE)?;
+        let start = self.check_range(offset, bytes.len())?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(self.ptr.add(start), bytes.as_mut_ptr(), bytes.len());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SharedDdrFullMmap {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.ptr.cast(), self.len);
+        }
+        let _ = self.file.as_raw_fd();
     }
 }
 
@@ -1400,6 +1532,8 @@ static SHARED_DDR_STAGE_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 static SHARED_DDR_KERNEL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static SHARED_DDR_BO_ARENA: OnceLock<Mutex<Option<PaccBoMap>>> = OnceLock::new();
 static SHARED_DDR_MOCK_ARENA: OnceLock<Mutex<BTreeMap<u64, Vec<u8>>>> = OnceLock::new();
+static SHARED_DDR_FULL_MMAP: OnceLock<Result<SharedDdrFullMmap, String>> = OnceLock::new();
+static SHARED_DDR_FULL_MMAP_UNAVAILABLE: AtomicUsize = AtomicUsize::new(0);
 static SHARED_DDR_MMAP_UNAVAILABLE: AtomicUsize = AtomicUsize::new(0);
 static NVTOP_STATE: OnceLock<Mutex<NvtopProcessState>> = OnceLock::new();
 
@@ -1850,7 +1984,10 @@ fn wait_shared_ddr_job_status(
             return result;
         }
 
-        if !use_process_mock_shared_ddr_window() && !use_pacc_bo_shared_ddr() {
+        if !use_process_mock_shared_ddr_window()
+            && !use_pacc_bo_shared_ddr()
+            && response_poll_enabled()
+        {
             let elapsed = start.elapsed();
             let timeout = std::time::Duration::from_millis(timeout_ms);
             if elapsed >= timeout {
@@ -1885,7 +2022,17 @@ fn wait_shared_ddr_job_status(
 }
 
 fn response_poll_slice_ms() -> u64 {
-    parse_env_usize("HETGPU_PACC_RESPONSE_POLL_SLICE_MS", 10).max(1) as u64
+    parse_env_usize("HETGPU_PACC_RESPONSE_POLL_SLICE_MS", 10) as u64
+}
+
+fn response_poll_enabled() -> bool {
+    let enabled = !matches!(
+        std::env::var("HETGPU_PACC_RESPONSE_POLL")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase()),
+        Some(v) if v == "0" || v == "false" || v == "no" || v == "off"
+    );
+    enabled && response_poll_slice_ms() != 0
 }
 
 fn decode_pacc_arg<T: Copy>(bytes: &[u8], label: &str) -> std::io::Result<T> {
@@ -2559,6 +2706,53 @@ fn note_shared_ddr_mmap_unavailable(op: &str, dev: &str, err: &std::io::Error) {
     }
 }
 
+fn note_shared_ddr_full_mmap_unavailable(op: &str, err: &std::io::Error) {
+    if SHARED_DDR_FULL_MMAP_UNAVAILABLE.swap(1, Ordering::Relaxed) == 0
+        && zluda_irq_trace_enabled()
+    {
+        eprintln!(
+            "PACC shared DDR full mmap {op} unavailable ({err}); falling back to per-window mmap"
+        );
+    }
+}
+
+fn use_shared_ddr_full_mmap() -> bool {
+    if matches!(
+        std::env::var("HETGPU_PACC_SHARED_DDR_FULL_MMAP")
+            .ok()
+            .as_deref(),
+        Some("0" | "false" | "FALSE" | "no" | "NO")
+    ) {
+        return false;
+    }
+    SHARED_DDR_FULL_MMAP_UNAVAILABLE.load(Ordering::Relaxed) == 0
+}
+
+fn shared_ddr_full_mmap_msync_enabled() -> bool {
+    matches!(
+        std::env::var("HETGPU_PACC_SHARED_DDR_FULL_MMAP_MSYNC")
+            .ok()
+            .as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+fn shared_ddr_full_mmap() -> std::io::Result<&'static SharedDdrFullMmap> {
+    let entry = SHARED_DDR_FULL_MMAP.get_or_init(|| {
+        SharedDdrFullMmap::map_helper().map_err(|err| {
+            format!(
+                "{}: {}",
+                helper_path_for_pacc(0),
+                shared_ddr_helper_failed("full mmap", &helper_path_for_pacc(0), err)
+            )
+        })
+    });
+    match entry {
+        Ok(map) => Ok(map),
+        Err(msg) => Err(Error::new(ErrorKind::Other, msg.clone())),
+    }
+}
+
 fn shared_ddr_mmap_copy_in_with_file(
     file: &File,
     dev: &str,
@@ -2570,6 +2764,13 @@ fn shared_ddr_mmap_copy_in_with_file(
     }
     if !use_shared_ddr_mmap() {
         return Ok(false);
+    }
+
+    if use_shared_ddr_full_mmap() {
+        match shared_ddr_full_mmap().and_then(|map| map.copy_in(offset, bytes)) {
+            Ok(()) => return Ok(true),
+            Err(err) => note_shared_ddr_full_mmap_unavailable("write", &err),
+        }
     }
 
     match SharedDdrMmap::map_file(file, offset, bytes.len()) {
@@ -2606,6 +2807,13 @@ fn shared_ddr_mmap_copy_out_with_file(
     }
     if !use_shared_ddr_mmap() {
         return Ok(false);
+    }
+
+    if use_shared_ddr_full_mmap() {
+        match shared_ddr_full_mmap().and_then(|map| map.copy_out(offset, bytes)) {
+            Ok(()) => return Ok(true),
+            Err(err) => note_shared_ddr_full_mmap_unavailable("read", &err),
+        }
     }
 
     match SharedDdrMmap::map_file(file, offset, bytes.len()) {
@@ -4723,10 +4931,13 @@ unsafe fn submit_gemm_staged_single_shared_ddr(
         stride_c,
         batch_count,
     };
-    eprintln!(
-        "hetgpu_pacc_submit_gemm_staged: submit dev={} slot={} dtype A/B/C={}/{}/{} m={} n={} k={}",
-        dev_id, slot_id, job.atype, job.btype, job.ctype, job.m, job.n, job.k
-    );
+    let trace_gemm = pacc_gemm_trace_enabled();
+    if trace_gemm {
+        eprintln!(
+            "hetgpu_pacc_submit_gemm_staged: submit dev={} slot={} dtype A/B/C={}/{}/{} m={} n={} k={}",
+            dev_id, slot_id, job.atype, job.btype, job.ctype, job.m, job.n, job.k
+        );
+    }
     PaccDevice::open(dev_id)?.submit_runtime_job(hetgpu_pacc_job_id::GEMM, &job)?;
 
     let mut c_storage = vec![0u8; pacc_c_bytes];
@@ -4739,22 +4950,24 @@ unsafe fn submit_gemm_staged_single_shared_ddr(
     } else {
         std::ptr::copy_nonoverlapping(c_storage.as_ptr(), c.cast::<u8>(), c_bytes);
     }
-    eprintln!(
-        "hetgpu_pacc_submit_gemm_staged: dev={} slot={} staged {}+{} -> {} bytes via shared DDR 0x{:x}{}",
-        dev_id,
-        slot_id,
-        pacc_a_bytes,
-        pacc_b_bytes,
-        old_total,
-        shared_base + slot_off,
-        if compact_stage {
-            " (fw-f32-compact)"
-        } else if stage_as_f32 {
-            " (fw-f32-converted)"
-        } else {
-            ""
-        }
-    );
+    if trace_gemm {
+        eprintln!(
+            "hetgpu_pacc_submit_gemm_staged: dev={} slot={} staged {}+{} -> {} bytes via shared DDR 0x{:x}{}",
+            dev_id,
+            slot_id,
+            pacc_a_bytes,
+            pacc_b_bytes,
+            old_total,
+            shared_base + slot_off,
+            if compact_stage {
+                " (fw-f32-compact)"
+            } else if stage_as_f32 {
+                " (fw-f32-converted)"
+            } else {
+                ""
+            }
+        );
+    }
     Ok(())
 }
 
@@ -4947,10 +5160,12 @@ unsafe fn submit_gemm_staged_4pacc_k_reduce_shared_ddr(
             stride_c: 0,
             batch_count: 1,
         };
-        eprintln!(
-            "hetgpu_pacc_submit_gemm_staged: split submit dev={} dtype A/B/C={}/{}/{} m={} n={} k={}",
-            dev_id, gemm.atype, gemm.btype, gemm.ctype, gemm.m, gemm.n, gemm.k
-        );
+        if pacc_gemm_trace_enabled() {
+            eprintln!(
+                "hetgpu_pacc_submit_gemm_staged: split submit dev={} dtype A/B/C={}/{}/{} m={} n={} k={}",
+                dev_id, gemm.atype, gemm.btype, gemm.ctype, gemm.m, gemm.n, gemm.k
+            );
+        }
         PaccDevice::open(dev_id)?.submit_runtime_job(hetgpu_pacc_job_id::GEMM, &gemm)?;
     }
 
@@ -4984,10 +5199,12 @@ unsafe fn submit_gemm_staged_4pacc_k_reduce_shared_ddr(
         }
     }
 
-    eprintln!(
-        "hetgpu_pacc_submit_gemm_staged: 4-PACC split-k reduce m={} n={} k={} c_elems={} shared=0x{:x}",
-        m, n, k, c_elems, shared_base
-    );
+    if pacc_gemm_trace_enabled() {
+        eprintln!(
+            "hetgpu_pacc_submit_gemm_staged: 4-PACC split-k reduce m={} n={} k={} c_elems={} shared=0x{:x}",
+            m, n, k, c_elems, shared_base
+        );
+    }
     Ok(true)
 }
 
@@ -5765,10 +5982,12 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_gemm(
     };
 
     let dev_id = next_gemm_device();
-    eprintln!(
-        "hetgpu_pacc_submit_gemm: submit dev={} dtype A/B/C={}/{}/{} m={} n={} k={}",
-        dev_id, job.atype, job.btype, job.ctype, job.m, job.n, job.k
-    );
+    if pacc_gemm_trace_enabled() {
+        eprintln!(
+            "hetgpu_pacc_submit_gemm: submit dev={} dtype A/B/C={}/{}/{} m={} n={} k={}",
+            dev_id, job.atype, job.btype, job.ctype, job.m, job.n, job.k
+        );
+    }
     match PaccDevice::open(dev_id)
         .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::GEMM, &job))
     {
@@ -7029,7 +7248,13 @@ pub unsafe extern "C" fn pacc_KernelPushArgRecord(
         return pacc_Result_Error;
     }
     let record = *record;
-    if record.size == 0 || record.size > 16 {
+    if record.size == 0 {
+        return pacc_Result_Error;
+    }
+    if record.size > 16 && record.flags & PACC_KERNEL_ARG_FLAG_INLINE_BLOB == 0 {
+        return pacc_Result_Error;
+    }
+    if record.size > 4096 {
         return pacc_Result_Error;
     }
     if record.kind != PACC_KERNEL_ARG_KIND_SCALAR && record.kind != PACC_KERNEL_ARG_KIND_POINTER {

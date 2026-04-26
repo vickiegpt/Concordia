@@ -25,7 +25,7 @@
 // but it will too fail similarly, but with "unable to legalize instruction"
 
 use std::ffi::{CStr, NulError, c_char};
-use std::{i8, ptr, u64};
+use std::{collections::HashSet, i8, ptr, u64};
 
 use super::*;
 use crate::pass::*;
@@ -127,6 +127,10 @@ struct ModuleEmitContext<'a, 'input> {
     resolver: ResolveIdent,
 }
 
+fn pacc_log_ptx_emit_enabled() -> bool {
+    std::env::var("HETGPU_PACC_LOG_PTX_EMIT").ok().as_deref() == Some("1")
+}
+
 impl<'a, 'input> ModuleEmitContext<'a, 'input> {
     fn new(
         context: &Context,
@@ -176,10 +180,12 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             .or_else(|| self.id_defs.ident_map[&method.name].name.as_deref())
             .ok_or_else(|| error_unreachable())?;
         let symbol_name = format!("f_{}", sanitize_llvm_value_name(name));
-        eprintln!(
-            "[ptx emit] method name raw='{}' final='{}' kernel={}",
-            name, symbol_name, method.is_kernel
-        );
+        if pacc_log_ptx_emit_enabled() {
+            eprintln!(
+                "[ptx emit] method name raw='{}' final='{}' kernel={}",
+                name, symbol_name, method.is_kernel
+            );
+        }
         let name = CString::new(symbol_name.as_str()).map_err(|_| error_unreachable())?;
         let mut fn_ = unsafe { LLVMGetNamedFunction(self.module, name.as_ptr()) };
         if fn_ == ptr::null_mut() {
@@ -253,12 +259,14 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             Self::func_call_convention()
         };
         unsafe { LLVMSetFunctionCallConv(fn_, call_conv) };
-        eprintln!(
-            "[ptx emit] method cc final='{}' requested={} actual={}",
-            symbol_name,
-            call_conv,
-            unsafe { LLVMGetFunctionCallConv(fn_) }
-        );
+        if pacc_log_ptx_emit_enabled() {
+            eprintln!(
+                "[ptx emit] method cc final='{}' requested={} actual={}",
+                symbol_name,
+                call_conv,
+                unsafe { LLVMGetFunctionCallConv(fn_) }
+            );
+        }
         if let Some(statements) = method.body {
             let trace_needle = std::env::var("HETGPU_PACC_TRACE_EMIT_METHOD").ok();
             let trace_from = std::env::var("HETGPU_PACC_TRACE_EMIT_FROM")
@@ -287,14 +295,12 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                     symbol_name, total_statements
                 );
             }
-            let variables_bb = unsafe {
-                LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr())
-            };
+            let variables_bb =
+                unsafe { LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr()) };
             let variables_builder = Builder::new_raw(self.context);
             unsafe { LLVMPositionBuilderAtEnd(variables_builder.get(), variables_bb) };
-            let real_bb = unsafe {
-                LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr())
-            };
+            let real_bb =
+                unsafe { LLVMAppendBasicBlockInContext(self.context, fn_, LLVM_UNNAMED.as_ptr()) };
             unsafe { LLVMPositionBuilderAtEnd(self.builder.get(), real_bb) };
             let mut method_emitter = MethodEmitContext::new(self, fn_, variables_builder);
             for var in method.return_arguments {
@@ -318,9 +324,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             )?;
             for (statement_idx, statement) in statements.enumerate() {
                 let statement_no = statement_idx + 1;
-                let in_dense_range = trace_from
-                    .map(|from| statement_no >= from)
-                    .unwrap_or(false);
+                let in_dense_range = trace_from.map(|from| statement_no >= from).unwrap_or(false);
                 let is_target_statement = trace_statement == Some(statement_no);
                 if should_trace
                     && (statement_idx < 24
@@ -336,7 +340,8 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                         statement_kind_name(&statement)
                     );
                 }
-                let should_trace_enter_exit = should_trace && (is_target_statement || in_dense_range);
+                let should_trace_enter_exit =
+                    should_trace && (is_target_statement || in_dense_range);
                 if should_trace && is_target_statement {
                     eprintln!(
                         "[ptx emit trace] stmt-detail method='{}' stmt={}/{} {:?}",
@@ -375,7 +380,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
 
     fn emit_global(
         &mut self,
-        _linking: ast::LinkingDirective,
+        linking: ast::LinkingDirective,
         var: ast::Variable<SpirvWord>,
     ) -> Result<(), TranslateError> {
         let name = self
@@ -392,10 +397,11 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             .transpose()
             .map_err(|_| error_unreachable())?
             .unwrap_or(Cow::Borrowed(LLVM_UNNAMED));
+        let ty = get_type(self.context, &var.info.v_type)?;
         let global = unsafe {
             LLVMAddGlobalInAddressSpace(
                 self.module,
-                get_type(self.context, &var.info.v_type)?,
+                ty,
                 name.as_ptr(),
                 get_state_space(var.info.state_space)?,
             )
@@ -407,6 +413,8 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
         if !var.info.array_init.is_empty() {
             let initializer = self.get_array_init(&var.info.v_type, &*var.info.array_init)?;
             unsafe { LLVMSetInitializer(global, initializer) };
+        } else if !linking.contains(ast::LinkingDirective::EXTERN) {
+            unsafe { LLVMSetInitializer(global, LLVMConstNull(ty)) };
         }
         Ok(())
     }
@@ -434,6 +442,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                         ast::RegOrImmediate::Imm(imm) => {
                             Ok(get_immediate_value(self.context, scalar, imm))
                         }
+                        ast::RegOrImmediate::Discard => Err(error_mismatched_type()),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 unsafe { LLVMConstArray2(type_, elements.as_mut_ptr(), elements.len() as u64) }
@@ -474,7 +483,9 @@ fn get_immediate_value(
     let type_ = get_scalar_type(context, *scalar_type);
     match imm {
         ast::ImmediateValue::U64(x) => unsafe { llvm_const_int_width_checked(type_, *x, false) },
-        ast::ImmediateValue::S64(x) => unsafe { llvm_const_int_width_checked(type_, *x as u64, false) },
+        ast::ImmediateValue::S64(x) => unsafe {
+            llvm_const_int_width_checked(type_, *x as u64, false)
+        },
         ast::ImmediateValue::F32(x) if is_real_scalar_type(*scalar_type) => unsafe {
             LLVMConstReal(type_, *x as f64)
         },
@@ -606,20 +617,45 @@ impl<'a> MethodEmitContext<'a> {
         rounding_mode_f32: ast::RoundingMode,
         rounding_mode_f16f64: ast::RoundingMode,
     ) -> Result<(), TranslateError> {
-            if is_kernel {
-                if rounding_mode_f32 != ast::RoundingMode::NearestEven
-                    || rounding_mode_f16f64 != ast::RoundingMode::NearestEven
-                {
-                    self.emit_set_mode(ModeRegister::Rounding {
+        if is_kernel {
+            if rounding_mode_f32 != ast::RoundingMode::NearestEven
+                || rounding_mode_f16f64 != ast::RoundingMode::NearestEven
+            {
+                self.emit_set_mode(ModeRegister::Rounding {
                     f32: rounding_mode_f32,
                     f16f64: rounding_mode_f16f64,
                 })?;
-                }
             }
-            Ok(())
         }
+        Ok(())
+    }
 
     fn emit_variable(&mut self, var: ast::Variable<SpirvWord>) -> Result<(), TranslateError> {
+        if var.info.state_space == ast::StateSpace::Shared {
+            let llvm_name = self.resolver.get_or_add_raw(var.name);
+            let ty = get_type(self.context, &var.info.v_type)?;
+            let global = unsafe {
+                LLVMAddGlobalInAddressSpace(
+                    self.module,
+                    ty,
+                    llvm_name.cast(),
+                    get_state_space(var.info.state_space)?,
+                )
+            };
+            #[cfg(feature = "pacc")]
+            self.resolver.register_wide_address(var.name, global);
+            #[cfg(not(feature = "pacc"))]
+            self.resolver.register(var.name, global);
+            if let Some(align) = var.info.align {
+                unsafe { LLVMSetAlignment(global, align) };
+            }
+            if !var.info.array_init.is_empty() {
+                return Err(error_unreachable());
+            }
+            unsafe { LLVMSetInitializer(global, LLVMConstNull(ty)) };
+            return Ok(());
+        }
+
         #[cfg(feature = "pacc")]
         let llvm_name = LLVM_UNNAMED.as_ptr();
         #[cfg(not(feature = "pacc"))]
@@ -632,6 +668,13 @@ impl<'a> MethodEmitContext<'a> {
                 llvm_name.cast(),
             )
         };
+        #[cfg(feature = "pacc")]
+        if pacc_uses_64bit_address_values(var.info.state_space) {
+            self.resolver.register_wide_address(var.name, alloca);
+        } else {
+            self.resolver.register(var.name, alloca);
+        }
+        #[cfg(not(feature = "pacc"))]
         self.resolver.register(var.name, alloca);
         if let Some(align) = var.info.align {
             unsafe { LLVMSetAlignment(alloca, align) };
@@ -646,18 +689,14 @@ impl<'a> MethodEmitContext<'a> {
         #[cfg(feature = "pacc")]
         let block_name = LLVM_UNNAMED.as_ptr();
         #[cfg(not(feature = "pacc"))]
-        let llvm_name =
-            CString::new(format!("bb_{}", sanitize_llvm_value_name(self.resolver.get_or_add(label))))
-                .expect("basic block label should be sanitizable");
+        let llvm_name = CString::new(format!(
+            "bb_{}",
+            sanitize_llvm_value_name(self.resolver.get_or_add(label))
+        ))
+        .expect("basic block label should be sanitizable");
         #[cfg(not(feature = "pacc"))]
         let block_name = llvm_name.as_ptr();
-        let block = unsafe {
-            LLVMAppendBasicBlockInContext(
-                self.context,
-                self.method,
-                block_name,
-            )
-        };
+        let block = unsafe { LLVMAppendBasicBlockInContext(self.context, self.method, block_name) };
         self.resolver
             .register(label, unsafe { LLVMBasicBlockAsValue(block) });
     }
@@ -795,8 +834,7 @@ impl<'a> MethodEmitContext<'a> {
             underlying_type
         };
         let src = self.resolver.value(arguments.src)?;
-        let load =
-            unsafe { LLVMBuildLoad2(builder, op_type, src, LLVM_UNNAMED.as_ptr()) };
+        let load = unsafe { LLVMBuildLoad2(builder, op_type, src, LLVM_UNNAMED.as_ptr()) };
         apply_qualifier(load, data.qualifier)?;
         unsafe { LLVMSetAlignment(load, data.typ.layout().align() as u32) };
         if needs_cast {
@@ -809,17 +847,71 @@ impl<'a> MethodEmitContext<'a> {
         Ok(())
     }
 
+    #[cfg(feature = "pacc")]
+    fn pacc_int_to_i64(&self, value: LLVMValueRef) -> LLVMValueRef {
+        unsafe {
+            let value_type = LLVMTypeOf(value);
+            if LLVMGetTypeKind(value_type) != LLVMTypeKind::LLVMIntegerTypeKind {
+                return value;
+            }
+            let i64_type = LLVMInt64TypeInContext(self.context);
+            match LLVMGetIntTypeWidth(value_type) {
+                64 => value,
+                width if width < 64 => {
+                    LLVMBuildZExtOrBitCast(self.builder, value, i64_type, LLVM_UNNAMED.as_ptr())
+                }
+                _ => LLVMBuildTrunc(self.builder, value, i64_type, LLVM_UNNAMED.as_ptr()),
+            }
+        }
+    }
+
+    #[cfg(feature = "pacc")]
+    fn pacc_wide_binary_operands(
+        &self,
+        src1_word: SpirvWord,
+        src2_word: SpirvWord,
+        src1: LLVMValueRef,
+        src2: LLVMValueRef,
+    ) -> Option<(LLVMValueRef, LLVMValueRef)> {
+        if !(self.resolver.is_wide_address(src1_word) || self.resolver.is_wide_address(src2_word)) {
+            return None;
+        }
+        Some((self.pacc_int_to_i64(src1), self.pacc_int_to_i64(src2)))
+    }
+
+    #[cfg(feature = "pacc")]
+    fn pacc_pointer_value_uses_64bit_address(&self, value: LLVMValueRef) -> bool {
+        unsafe {
+            let value_type = LLVMTypeOf(value);
+            if LLVMGetTypeKind(value_type) != LLVMTypeKind::LLVMPointerTypeKind {
+                return false;
+            }
+            matches!(
+                LLVMGetPointerAddressSpace(value_type),
+                PRIVATE_ADDRESS_SPACE | SHARED_ADDRESS_SPACE
+            )
+        }
+    }
+
     fn emit_conversion(&mut self, conversion: ImplicitConversion) -> Result<(), TranslateError> {
         let builder = self.builder;
         match conversion.kind {
-            ConversionKind::Default => self.emit_conversion_default(
-                self.resolver.value(conversion.src)?,
-                conversion.dst,
-                &conversion.from_type,
-                conversion.from_space,
-                &conversion.to_type,
-                conversion.to_space,
-            ),
+            ConversionKind::Default => {
+                let src = self.resolver.value(conversion.src)?;
+                #[cfg(feature = "pacc")]
+                if self.resolver.is_wide_address(conversion.src) {
+                    self.resolver.register_wide_address(conversion.dst, src);
+                    return Ok(());
+                }
+                self.emit_conversion_default(
+                    src,
+                    conversion.dst,
+                    &conversion.from_type,
+                    conversion.from_space,
+                    &conversion.to_type,
+                    conversion.to_space,
+                )
+            }
             ConversionKind::SignExtend => {
                 let src = self.resolver.value(conversion.src)?;
                 let type_ = get_type(self.context, &conversion.to_type)?;
@@ -829,8 +921,12 @@ impl<'a> MethodEmitContext<'a> {
                 Ok(())
             }
             ConversionKind::BitToPtr => {
-                let src = self.resolver.value(conversion.src)?;
+                let mut src = self.resolver.value(conversion.src)?;
                 let type_ = get_pointer_type(self.context, conversion.to_space)?;
+                #[cfg(feature = "pacc")]
+                if pacc_uses_64bit_address_values(conversion.to_space) {
+                    src = self.pacc_int_to_i64(src);
+                }
                 self.resolver.with_result(conversion.dst, |dst| unsafe {
                     LLVMBuildIntToPtr(builder, src, type_, dst)
                 });
@@ -846,10 +942,16 @@ impl<'a> MethodEmitContext<'a> {
             }
             ConversionKind::AddressOf => {
                 let src = self.resolver.value(conversion.src)?;
-                let dst_type = get_type(self.context, &conversion.to_type)?;
-                self.resolver.with_result(conversion.dst, |dst| unsafe {
-                    LLVMBuildPtrToInt(self.builder, src, dst_type, dst)
-                });
+                // PACC lowers PTX to native RV64 code. Any LLVM pointer value,
+                // including PTX local/register allocas, is a real 64-bit
+                // address. Truncating address-of results to PTX's nominal b32
+                // local address type produces addw/slli/srli sequences and
+                // broken stack addresses in the generated RISC-V.
+                let dst_type = unsafe { LLVMInt64TypeInContext(self.context) };
+                let value = unsafe {
+                    LLVMBuildPtrToInt(self.builder, src, dst_type, LLVM_UNNAMED.as_ptr())
+                };
+                self.resolver.register_wide_address(conversion.dst, value);
                 Ok(())
             }
         }
@@ -1002,6 +1104,14 @@ impl<'a> MethodEmitContext<'a> {
         };
         let src1 = self.resolver.value(arguments.src1)?;
         let src2 = self.resolver.value(arguments.src2)?;
+        #[cfg(feature = "pacc")]
+        if let Some((src1, src2)) =
+            self.pacc_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
+        {
+            let value = unsafe { fn_(builder, src1, src2, LLVM_UNNAMED.as_ptr()) };
+            self.resolver.register_wide_address(arguments.dst, value);
+            return Ok(());
+        }
         self.resolver.with_result(arguments.dst, |dst| unsafe {
             fn_(builder, src1, src2, dst)
         });
@@ -1089,8 +1199,13 @@ impl<'a> MethodEmitContext<'a> {
     }
 
     fn emit_mov(&mut self, arguments: ast::MovArgs<SpirvWord>) -> Result<(), TranslateError> {
-        self.resolver
-            .register(arguments.dst, self.resolver.value(arguments.src)?);
+        let src = self.resolver.value(arguments.src)?;
+        #[cfg(feature = "pacc")]
+        if self.resolver.is_wide_address(arguments.src) {
+            self.resolver.register_wide_address(arguments.dst, src);
+            return Ok(());
+        }
+        self.resolver.register(arguments.dst, src);
         Ok(())
     }
 
@@ -1108,6 +1223,14 @@ impl<'a> MethodEmitContext<'a> {
         let builder = self.builder;
         let src1 = self.resolver.value(arguments.src1)?;
         let src2 = self.resolver.value(arguments.src2)?;
+        #[cfg(feature = "pacc")]
+        if let Some((src1, src2)) =
+            self.pacc_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
+        {
+            let value = unsafe { LLVMBuildAnd(builder, src1, src2, LLVM_UNNAMED.as_ptr()) };
+            self.resolver.register_wide_address(arguments.dst, value);
+            return Ok(());
+        }
         self.resolver.with_result(arguments.dst, |dst| unsafe {
             LLVMBuildAnd(builder, src1, src2, dst)
         });
@@ -1226,12 +1349,7 @@ impl<'a> MethodEmitContext<'a> {
                 let value = self.resolver.value(*value)?;
                 let lowered_type = get_type(self.context, type_)?;
                 let load = unsafe {
-                    LLVMBuildLoad2(
-                        self.builder,
-                        lowered_type,
-                        value,
-                        LLVM_UNNAMED.as_ptr(),
-                    )
+                    LLVMBuildLoad2(self.builder, lowered_type, value, LLVM_UNNAMED.as_ptr())
                 };
                 unsafe {
                     LLVMSetAlignment(load, type_.layout().align() as u32);
@@ -1373,22 +1491,8 @@ impl<'a> MethodEmitContext<'a> {
             ptx_parser::ScalarKind::Unsigned => LLVMBuildZExt,
             _ => return Err(error_unreachable()),
         };
-        let src1 = unsafe {
-            llvm_cast(
-                self.builder,
-                src1,
-                wide_type,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
-        let src2 = unsafe {
-            llvm_cast(
-                self.builder,
-                src2,
-                wide_type,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let src1 = unsafe { llvm_cast(self.builder, src1, wide_type, LLVM_UNNAMED.as_ptr()) };
+        let src2 = unsafe { llvm_cast(self.builder, src2, wide_type, LLVM_UNNAMED.as_ptr()) };
         Ok((
             wide_type,
             self.resolver.with_result_option(dst, |dst| unsafe {
@@ -1420,6 +1524,14 @@ impl<'a> MethodEmitContext<'a> {
     ) -> Result<(), TranslateError> {
         let src1 = self.resolver.value(arguments.src1)?;
         let src2 = self.resolver.value(arguments.src2)?;
+        #[cfg(feature = "pacc")]
+        if let Some((src1, src2)) =
+            self.pacc_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
+        {
+            let value = unsafe { LLVMBuildOr(self.builder, src1, src2, LLVM_UNNAMED.as_ptr()) };
+            self.resolver.register_wide_address(arguments.dst, value);
+            return Ok(());
+        }
         self.resolver.with_result(arguments.dst, |dst| unsafe {
             LLVMBuildOr(self.builder, src1, src2, dst)
         });
@@ -1433,6 +1545,14 @@ impl<'a> MethodEmitContext<'a> {
     ) -> Result<(), TranslateError> {
         let src1 = self.resolver.value(arguments.src1)?;
         let src2 = self.resolver.value(arguments.src2)?;
+        #[cfg(feature = "pacc")]
+        if let Some((src1, src2)) =
+            self.pacc_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
+        {
+            let value = unsafe { LLVMBuildXor(self.builder, src1, src2, LLVM_UNNAMED.as_ptr()) };
+            self.resolver.register_wide_address(arguments.dst, value);
+            return Ok(());
+        }
         self.resolver.with_result(arguments.dst, |dst| unsafe {
             LLVMBuildXor(self.builder, src1, src2, dst)
         });
@@ -1594,15 +1714,13 @@ impl<'a> MethodEmitContext<'a> {
         };
         let from_type = get_pointer_type(self.context, from_space)?;
         let dest_type = get_pointer_type(self.context, to_space)?;
-        let src = self.resolver.value(arguments.src)?;
-        let temp_ptr = unsafe {
-            LLVMBuildIntToPtr(
-                self.builder,
-                src,
-                from_type,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let mut src = self.resolver.value(arguments.src)?;
+        #[cfg(feature = "pacc")]
+        if pacc_uses_64bit_address_values(from_space) || pacc_uses_64bit_address_values(to_space) {
+            src = self.pacc_int_to_i64(src);
+        }
+        let temp_ptr =
+            unsafe { LLVMBuildIntToPtr(self.builder, src, from_type, LLVM_UNNAMED.as_ptr()) };
         self.resolver.with_result(arguments.dst, |dst| unsafe {
             LLVMBuildAddrSpaceCast(self.builder, temp_ptr, dest_type, dst)
         });
@@ -1645,6 +1763,14 @@ impl<'a> MethodEmitContext<'a> {
         }
         let src1 = self.resolver.value(arguments.src1)?;
         let src2 = self.resolver.value(arguments.src2)?;
+        #[cfg(feature = "pacc")]
+        if let Some((src1, src2)) =
+            self.pacc_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
+        {
+            let value = unsafe { LLVMBuildSub(self.builder, src1, src2, LLVM_UNNAMED.as_ptr()) };
+            self.resolver.register_wide_address(arguments.dst, value);
+            return Ok(());
+        }
         self.resolver.with_result(arguments.dst, |dst| unsafe {
             LLVMBuildSub(self.builder, src1, src2, dst)
         });
@@ -1802,17 +1928,19 @@ impl<'a> MethodEmitContext<'a> {
             ptx_parser::SetpCompareInt::SignedGreater => LLVMIntPredicate::LLVMIntSGT,
             ptx_parser::SetpCompareInt::SignedGreaterOrEq => LLVMIntPredicate::LLVMIntSGE,
         };
-        let src1 = self.resolver.value(src1)?;
-        let src2 = self.resolver.value(src2)?;
-        Ok(unsafe {
-            LLVMBuildICmp(
-                self.builder,
-                op,
-                src1,
-                src2,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        })
+        let src1_word = src1;
+        let src2_word = src2;
+        let src1 = self.resolver.value(src1_word)?;
+        let src2 = self.resolver.value(src2_word)?;
+        #[cfg(feature = "pacc")]
+        let (src1, src2) = if let Some((src1, src2)) =
+            self.pacc_wide_binary_operands(src1_word, src2_word, src1, src2)
+        {
+            (src1, src2)
+        } else {
+            (src1, src2)
+        };
+        Ok(unsafe { LLVMBuildICmp(self.builder, op, src1, src2, LLVM_UNNAMED.as_ptr()) })
     }
 
     fn emit_setp_float(
@@ -1839,15 +1967,7 @@ impl<'a> MethodEmitContext<'a> {
         };
         let src1 = self.resolver.value(src1)?;
         let src2 = self.resolver.value(src2)?;
-        Ok(unsafe {
-            LLVMBuildFCmp(
-                self.builder,
-                op,
-                src1,
-                src2,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        })
+        Ok(unsafe { LLVMBuildFCmp(self.builder, op, src1, src2, LLVM_UNNAMED.as_ptr()) })
     }
 
     fn emit_conditional(&mut self, cond: BrachCondition) -> Result<(), TranslateError> {
@@ -1961,12 +2081,7 @@ impl<'a> MethodEmitContext<'a> {
                 LLVMBuildInsertElement(
                     self.builder,
                     LLVMGetPoison(dst_type),
-                    llvm_fn(
-                        self.builder,
-                        src,
-                        packed_type,
-                        LLVM_UNNAMED.as_ptr(),
-                    ),
+                    llvm_fn(self.builder, src, packed_type, LLVM_UNNAMED.as_ptr()),
                     LLVMConstInt(LLVMInt32TypeInContext(self.context), 1, false as i32),
                     LLVM_UNNAMED.as_ptr(),
                 )
@@ -1975,12 +2090,7 @@ impl<'a> MethodEmitContext<'a> {
                 LLVMBuildInsertElement(
                     self.builder,
                     vec,
-                    llvm_fn(
-                        self.builder,
-                        src2,
-                        packed_type,
-                        LLVM_UNNAMED.as_ptr(),
-                    ),
+                    llvm_fn(self.builder, src2, packed_type, LLVM_UNNAMED.as_ptr()),
                     LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, false as i32),
                     dst,
                 )
@@ -2155,8 +2265,7 @@ impl<'a> MethodEmitContext<'a> {
             } else {
                 LLVMBuildFPToUI
             };
-            let poisoned_dst =
-                unsafe { llvm_cast(self.builder, src, to, LLVM_UNNAMED.as_ptr()) };
+            let poisoned_dst = unsafe { llvm_cast(self.builder, src, to, LLVM_UNNAMED.as_ptr()) };
             self.resolver.with_result(arguments.dst, |dst| unsafe {
                 LLVMBuildFreeze(self.builder, poisoned_dst, dst)
             });
@@ -2282,7 +2391,10 @@ impl<'a> MethodEmitContext<'a> {
         arguments: ptx_parser::RcpArgs<SpirvWord>,
     ) -> Result<(), TranslateError> {
         #[cfg(feature = "pacc")]
-        if matches!((data.type_, data.kind), (ast::ScalarType::F32, ast::RcpKind::Approx)) {
+        if matches!(
+            (data.type_, data.kind),
+            (ast::ScalarType::F32, ast::RcpKind::Approx)
+        ) {
             return self.emit_rcp_compliant(data, arguments, ast::RoundingMode::NearestEven);
         }
         let type_ = get_scalar_type(self.context, data.type_);
@@ -2362,14 +2474,8 @@ impl<'a> MethodEmitContext<'a> {
         // PTX shf.{l,r}.{wrap,clamp}.b32 uses raw bit semantics over two 32-bit
         // operands. Lower it explicitly instead of relying on llvm.fshl/fshr:
         // the intrinsic path hangs in the current PACC rope_neox workload.
-        let masked_shift = unsafe {
-            LLVMBuildAnd(
-                self.builder,
-                shift_amount,
-                const_31,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let masked_shift =
+            unsafe { LLVMBuildAnd(self.builder, shift_amount, const_31, LLVM_UNNAMED.as_ptr()) };
         if trace_shf {
             eprintln!("[ptx emit shf] built masked_shift");
         }
@@ -2395,8 +2501,7 @@ impl<'a> MethodEmitContext<'a> {
                 LLVMBuildOr(self.builder, left, right, LLVM_UNNAMED.as_ptr())
             },
             ptx_parser::ShiftDirection::R => unsafe {
-                let right =
-                    LLVMBuildLShr(self.builder, src_a, masked_shift, LLVM_UNNAMED.as_ptr());
+                let right = LLVMBuildLShr(self.builder, src_a, masked_shift, LLVM_UNNAMED.as_ptr());
                 if trace_shf {
                     eprintln!("[ptx emit shf] built right-shift");
                 }
@@ -2477,14 +2582,8 @@ impl<'a> MethodEmitContext<'a> {
                 let src1 = self.resolver.value(arguments.src1)?;
                 let shift_size =
                     unsafe { LLVMConstInt(llvm_type, (data.type_.size_of() as u64 * 8) - 1, 0) };
-                let out_of_range = unsafe {
-                    LLVMBuildAShr(
-                        self.builder,
-                        src1,
-                        shift_size,
-                        LLVM_UNNAMED.as_ptr(),
-                    )
-                };
+                let out_of_range =
+                    unsafe { LLVMBuildAShr(self.builder, src1, shift_size, LLVM_UNNAMED.as_ptr()) };
                 (out_of_range, LLVMBuildAShr)
             }
         };
@@ -2550,22 +2649,10 @@ impl<'a> MethodEmitContext<'a> {
         let llvm_type = get_scalar_type(self.context, type_);
         let normalized_shift_size = if type_.layout().size() >= 4 {
             unsafe {
-                LLVMBuildZExtOrBitCast(
-                    self.builder,
-                    shift_size,
-                    llvm_type,
-                    LLVM_UNNAMED.as_ptr(),
-                )
+                LLVMBuildZExtOrBitCast(self.builder, shift_size, llvm_type, LLVM_UNNAMED.as_ptr())
             }
         } else {
-            unsafe {
-                LLVMBuildTrunc(
-                    self.builder,
-                    shift_size,
-                    llvm_type,
-                    LLVM_UNNAMED.as_ptr(),
-                )
-            }
+            unsafe { LLVMBuildTrunc(self.builder, shift_size, llvm_type, LLVM_UNNAMED.as_ptr()) }
         };
         let shifted = unsafe {
             llvm_fn(
@@ -2888,20 +2975,11 @@ impl<'a> MethodEmitContext<'a> {
         let src2 = self.resolver.value(arguments.src2)?;
         let src3 = self.resolver.value(arguments.src3)?;
 
-        let src1_64 =
-            unsafe { LLVMBuildZExt(self.builder, src1, i64_type, LLVM_UNNAMED.as_ptr()) };
-        let src2_64 =
-            unsafe { LLVMBuildZExt(self.builder, src2, i64_type, LLVM_UNNAMED.as_ptr()) };
-        let src3_64 =
-            unsafe { LLVMBuildZExt(self.builder, src3, i64_type, LLVM_UNNAMED.as_ptr()) };
-        let product_64 = unsafe {
-            LLVMBuildMul(
-                self.builder,
-                src1_64,
-                src2_64,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let src1_64 = unsafe { LLVMBuildZExt(self.builder, src1, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let src2_64 = unsafe { LLVMBuildZExt(self.builder, src2, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let src3_64 = unsafe { LLVMBuildZExt(self.builder, src3, i64_type, LLVM_UNNAMED.as_ptr()) };
+        let product_64 =
+            unsafe { LLVMBuildMul(self.builder, src1_64, src2_64, LLVM_UNNAMED.as_ptr()) };
 
         let term_32 = match control {
             ast::MulIntControl::Low => unsafe {
@@ -2922,14 +3000,8 @@ impl<'a> MethodEmitContext<'a> {
         };
         let term_64 =
             unsafe { LLVMBuildZExt(self.builder, term_32, i64_type, LLVM_UNNAMED.as_ptr()) };
-        let mut sum_64 = unsafe {
-            LLVMBuildAdd(
-                self.builder,
-                term_64,
-                src3_64,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let mut sum_64 =
+            unsafe { LLVMBuildAdd(self.builder, term_64, src3_64, LLVM_UNNAMED.as_ptr()) };
         if carry_in {
             let carry_64 = unsafe {
                 LLVMBuildZExt(
@@ -2939,14 +3011,7 @@ impl<'a> MethodEmitContext<'a> {
                     LLVM_UNNAMED.as_ptr(),
                 )
             };
-            sum_64 = unsafe {
-                LLVMBuildAdd(
-                    self.builder,
-                    sum_64,
-                    carry_64,
-                    LLVM_UNNAMED.as_ptr(),
-                )
-            };
+            sum_64 = unsafe { LLVMBuildAdd(self.builder, sum_64, carry_64, LLVM_UNNAMED.as_ptr()) };
         }
 
         let dst_32 =
@@ -3081,22 +3146,10 @@ impl<'a> MethodEmitContext<'a> {
                 ],
             )?;
             let shift_number = unsafe { LLVMConstInt(LLVMInt32TypeInContext(self.context), 16, 0) };
-            let res_lo_shr = unsafe {
-                LLVMBuildLShr(
-                    self.builder,
-                    res_lo,
-                    shift_number,
-                    LLVM_UNNAMED.as_ptr(),
-                )
-            };
-            let res_hi_shl = unsafe {
-                LLVMBuildShl(
-                    self.builder,
-                    res_hi,
-                    shift_number,
-                    LLVM_UNNAMED.as_ptr(),
-                )
-            };
+            let res_lo_shr =
+                unsafe { LLVMBuildLShr(self.builder, res_lo, shift_number, LLVM_UNNAMED.as_ptr()) };
+            let res_hi_shl =
+                unsafe { LLVMBuildShl(self.builder, res_hi, shift_number, LLVM_UNNAMED.as_ptr()) };
 
             self.resolver
                 .with_result(arguments.dst, |dst: *const c_char| unsafe {
@@ -3220,26 +3273,12 @@ impl<'a> MethodEmitContext<'a> {
             ptx_parser::CpAsyncCpSize::Bytes16 => unsafe { LLVMInt128TypeInContext(self.context) },
         };
 
-        let load = unsafe {
-            LLVMBuildLoad2(
-                self.builder,
-                from_type,
-                from,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let load = unsafe { LLVMBuildLoad2(self.builder, from_type, from, LLVM_UNNAMED.as_ptr()) };
         unsafe {
             LLVMSetAlignment(load, cp_size.as_u64() as u32);
         }
 
-        let extended = unsafe {
-            LLVMBuildZExt(
-                self.builder,
-                load,
-                to_type,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let extended = unsafe { LLVMBuildZExt(self.builder, load, to_type, LLVM_UNNAMED.as_ptr()) };
 
         let store = unsafe { LLVMBuildStore(self.builder, extended, to) };
         unsafe {
@@ -3276,47 +3315,17 @@ impl<'a> MethodEmitContext<'a> {
         let src3 = self.resolver.value(src3)?;
         let llvm_type_s32 = get_scalar_type(self.context, ast::ScalarType::S32);
         let llvm_type_s64 = get_scalar_type(self.context, ast::ScalarType::S64);
-        let src1_wide = unsafe {
-            LLVMBuildSExt(
-                self.builder,
-                src1,
-                llvm_type_s64,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
-        let src2_wide = unsafe {
-            LLVMBuildSExt(
-                self.builder,
-                src2,
-                llvm_type_s64,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
-        let mul_wide = unsafe {
-            LLVMBuildMul(
-                self.builder,
-                src1_wide,
-                src2_wide,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let src1_wide =
+            unsafe { LLVMBuildSExt(self.builder, src1, llvm_type_s64, LLVM_UNNAMED.as_ptr()) };
+        let src2_wide =
+            unsafe { LLVMBuildSExt(self.builder, src2, llvm_type_s64, LLVM_UNNAMED.as_ptr()) };
+        let mul_wide =
+            unsafe { LLVMBuildMul(self.builder, src1_wide, src2_wide, LLVM_UNNAMED.as_ptr()) };
         let const_32 = unsafe { LLVMConstInt(llvm_type_s64, 32, 0) };
-        let mul_wide = unsafe {
-            LLVMBuildLShr(
-                self.builder,
-                mul_wide,
-                const_32,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
-        let mul_narrow = unsafe {
-            LLVMBuildTrunc(
-                self.builder,
-                mul_wide,
-                llvm_type_s32,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let mul_wide =
+            unsafe { LLVMBuildLShr(self.builder, mul_wide, const_32, LLVM_UNNAMED.as_ptr()) };
+        let mul_narrow =
+            unsafe { LLVMBuildTrunc(self.builder, mul_wide, llvm_type_s32, LLVM_UNNAMED.as_ptr()) };
         self.emit_intrinsic(
             c"llvm.sadd.sat.i32",
             Some(dst),
@@ -3367,14 +3376,7 @@ impl<'a> MethodEmitContext<'a> {
         let bool_result = self.emit_setp_impl(data.base, None, src1, src2)?;
         let bool_result = if data.negate_src3 {
             let constant = unsafe { llvm_const_all_ones(LLVMIntTypeInContext(self.context, 1)) };
-            unsafe {
-                LLVMBuildXor(
-                    self.builder,
-                    bool_result,
-                    constant,
-                    LLVM_UNNAMED.as_ptr(),
-                )
-            }
+            unsafe { LLVMBuildXor(self.builder, bool_result, constant, LLVM_UNNAMED.as_ptr()) }
         } else {
             bool_result
         };
@@ -3384,14 +3386,7 @@ impl<'a> MethodEmitContext<'a> {
             ptx_parser::SetpBoolPostOp::Or => LLVMBuildOr,
         };
         let src3 = self.resolver.value(src3)?;
-        Ok(unsafe {
-            post_op(
-                self.builder,
-                bool_result,
-                src3,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        })
+        Ok(unsafe { post_op(self.builder, bool_result, src3, LLVM_UNNAMED.as_ptr()) })
     }
 
     fn setp_to_set(
@@ -3700,14 +3695,8 @@ impl<'a> MethodEmitContext<'a> {
         let loaded_type = data.get_loaded_type();
         let llvm_type = get_type(self.context, &loaded_type)?;
 
-        let load = unsafe {
-            LLVMBuildLoad2(
-                self.builder,
-                llvm_type,
-                src_ptr,
-                LLVM_UNNAMED.as_ptr(),
-            )
-        };
+        let load =
+            unsafe { LLVMBuildLoad2(self.builder, llvm_type, src_ptr, LLVM_UNNAMED.as_ptr()) };
 
         // Shared memory loads can use relaxed alignment
         let align = data.type_.size_of() as u32;
@@ -3734,6 +3723,14 @@ fn pacc_elem_from_scalar(scalar: ast::ScalarType) -> crate::pass::emit_pacc_vcix
         ast::ScalarType::F32 => PaccElementType::Float32,
         _ => PaccElementType::Int8, // fallback
     }
+}
+
+#[cfg(feature = "pacc")]
+fn pacc_uses_64bit_address_values(space: ast::StateSpace) -> bool {
+    matches!(
+        space,
+        ast::StateSpace::Reg | ast::StateSpace::Local | ast::StateSpace::Shared
+    )
 }
 
 fn not_supported_by_atomics(qualifier: ast::LdStQualifier, underlying_type: *mut LLVMType) -> bool {
@@ -3937,6 +3934,7 @@ fn get_function_type<'a>(
 struct ResolveIdent {
     words: HashMap<SpirvWord, String>,
     values: HashMap<SpirvWord, LLVMValueRef>,
+    wide_addresses: HashSet<SpirvWord>,
 }
 
 impl ResolveIdent {
@@ -3944,6 +3942,7 @@ impl ResolveIdent {
         ResolveIdent {
             words: HashMap::new(),
             values: HashMap::new(),
+            wide_addresses: HashSet::new(),
         }
     }
 
@@ -3969,6 +3968,16 @@ impl ResolveIdent {
 
     fn register(&mut self, word: SpirvWord, v: LLVMValueRef) {
         self.values.insert(word, v);
+        self.wide_addresses.remove(&word);
+    }
+
+    fn register_wide_address(&mut self, word: SpirvWord, v: LLVMValueRef) {
+        self.values.insert(word, v);
+        self.wide_addresses.insert(word);
+    }
+
+    fn is_wide_address(&self, word: SpirvWord) -> bool {
+        self.wide_addresses.contains(&word)
     }
 
     fn value(&self, word: SpirvWord) -> Result<LLVMValueRef, TranslateError> {

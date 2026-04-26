@@ -75,10 +75,28 @@ extern "C"
         return (1U << lane_idx) - 1U;
     }
 
+    uint32_t FUNC(sreg_lanemask_eq)()
+    {
+        uint32_t lane_idx = FUNC_CALL(sreg_laneid)();
+        return 1U << lane_idx;
+    }
+
+    uint32_t FUNC(sreg_lanemask_le)()
+    {
+        uint32_t lane_idx = FUNC_CALL(sreg_laneid)();
+        return lane_idx == 31U ? ~0U : ((1U << (lane_idx + 1U)) - 1U);
+    }
+
     uint32_t FUNC(sreg_lanemask_ge)()
     {
         uint32_t lane_idx = FUNC_CALL(sreg_laneid)();
         return (~0U) << lane_idx;
+    }
+
+    uint32_t FUNC(sreg_lanemask_gt)()
+    {
+        uint32_t lane_idx = FUNC_CALL(sreg_laneid)();
+        return lane_idx == 31U ? 0U : ((~0U) << (lane_idx + 1U));
     }
 
     uint32_t __ockl_bfe_u32(uint32_t, uint32_t, uint32_t) __device__;

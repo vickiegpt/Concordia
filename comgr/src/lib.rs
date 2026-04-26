@@ -1053,16 +1053,22 @@ pub fn compile_bitcode_pacc_multi(
     main_buffer: &[u8],
     linked_modules: &[&[u8]],
 ) -> Result<Vec<u8>, pacc_comgr_status_s> {
-    eprintln!("ZLUDA DEBUG: Compiling bitcode for PACC (RISC-V IME/VCIX)");
-    eprintln!(
-        "ZLUDA DEBUG: Main buffer size: {} bytes, linked module count: {}",
-        main_buffer.len(),
-        linked_modules.len()
-    );
-    eprintln!(
-        "ZLUDA DEBUG: Target architecture: {:?}",
-        target_arch.to_string_lossy()
-    );
+    let log_debug = std::env::var("HETGPU_PACC_LOG_COMGR")
+        .ok()
+        .as_deref()
+        == Some("1");
+    if log_debug {
+        eprintln!("ZLUDA DEBUG: Compiling bitcode for PACC (RISC-V IME/VCIX)");
+        eprintln!(
+            "ZLUDA DEBUG: Main buffer size: {} bytes, linked module count: {}",
+            main_buffer.len(),
+            linked_modules.len()
+        );
+        eprintln!(
+            "ZLUDA DEBUG: Target architecture: {:?}",
+            target_arch.to_string_lossy()
+        );
+    }
 
     // Create input data set
     let mut input_data_set = unsafe { mem::zeroed() };
@@ -1118,7 +1124,9 @@ pub fn compile_bitcode_pacc_multi(
 
     // Link bitcode if needed
     let linked_data_set = if !linked_modules.is_empty() {
-        eprintln!("ZLUDA DEBUG: Linking PACC bitcode modules");
+        if log_debug {
+            eprintln!("ZLUDA DEBUG: Linking PACC bitcode modules");
+        }
         let mut linked_set = unsafe { mem::zeroed() };
         pacc_comgr_create_data_set(&mut linked_set)?;
 
@@ -1135,7 +1143,9 @@ pub fn compile_bitcode_pacc_multi(
     };
 
     // Optimize bitcode
-    eprintln!("ZLUDA DEBUG: Optimizing PACC bitcode");
+    if log_debug {
+        eprintln!("ZLUDA DEBUG: Optimizing PACC bitcode");
+    }
     let mut optimized_set = unsafe { mem::zeroed() };
     pacc_comgr_create_data_set(&mut optimized_set)?;
 
@@ -1147,7 +1157,9 @@ pub fn compile_bitcode_pacc_multi(
     )?;
 
     // Generate RISC-V object code with VCIX
-    eprintln!("ZLUDA DEBUG: Generating PACC RISC-V+VCIX executable");
+    if log_debug {
+        eprintln!("ZLUDA DEBUG: Generating PACC RISC-V+VCIX executable");
+    }
     pacc_comgr_do_action(
         pacc_comgr_action_kind_s::PACC_COMGR_ACTION_CODEGEN_BC_TO_RELOCATABLE,
         action_info,
@@ -1169,10 +1181,12 @@ pub fn compile_bitcode_pacc_multi(
     pacc_comgr_release_data_set(input_data_set)?;
     pacc_comgr_release_action_info(action_info)?;
 
-    eprintln!(
-        "ZLUDA DEBUG: PACC compilation complete, output size: {} bytes",
-        result.len()
-    );
+    if log_debug {
+        eprintln!(
+            "ZLUDA DEBUG: PACC compilation complete, output size: {} bytes",
+            result.len()
+        );
+    }
 
     Ok(result)
 }

@@ -343,6 +343,7 @@ fn reg_or_immediate<'a, 'input>(
     trace(
         "reg_or_immediate",
         alt((
+            Token::Underscore.value(ast::RegOrImmediate::Discard),
             immediate_value.map(|imm| ast::RegOrImmediate::Imm(imm)),
             ident.map(|id| ast::RegOrImmediate::Reg(id)),
         )),
@@ -1634,8 +1635,12 @@ fn parse_video_packed_lane_kind(t: ScalarType) -> Option<ast::VideoPackedLaneKin
 fn vset4<'a, 'input>(
     stream: &mut PtxParser<'a, 'input>,
 ) -> PResult<ast::Instruction<ParsedOperandStr<'input>>> {
-    scalar_type.verify(|t| *t == ScalarType::U32).parse_next(stream)?;
-    scalar_type.verify(|t| *t == ScalarType::U32).parse_next(stream)?;
+    scalar_type
+        .verify(|t| *t == ScalarType::U32)
+        .parse_next(stream)?;
+    scalar_type
+        .verify(|t| *t == ScalarType::U32)
+        .parse_next(stream)?;
     let cmp = any
         .verify_map(|(t, _)| match t {
             Token::DotEq => Some(VsetCompareOp::Eq),
@@ -1844,6 +1849,8 @@ derive_parser!(
         Semicolon,
         #[token("@")]
         At,
+        #[token("_")]
+        Underscore,
         #[regex(r"[a-zA-Z][a-zA-Z0-9_$]*|[_$%][a-zA-Z0-9_$]+", |lex| lex.slice(), priority = 0)]
         Ident(&'input str),
         #[regex(r"\.[a-zA-Z][a-zA-Z0-9_$]*|\.[_$%][a-zA-Z0-9_$]+", |lex| lex.slice(), priority = 0)]
@@ -3895,6 +3902,11 @@ derive_parser!(
     ret{.uni} => {
         Instruction::Ret { data: RetData { uniform: uni } }
     }
+    // PTX uses `exit;` for kernel termination in some nvcc-generated device code.
+    // The downstream IR path already models kernel termination as Ret.
+    exit => {
+        Instruction::Ret { data: RetData { uniform: false } }
+    }
 
     mul24.mode.type  d, a, b => {
         ast::Instruction::Mul24 {
@@ -4434,6 +4446,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_exit_instruction() {
+        let text = "
+            .version 6.5
+            .target sm_80
+            .address_size 64
+
+            .visible .entry exits()
+            {
+                exit;
+            }";
+        assert!(parse_module_checked(text).is_ok());
+    }
+
+    #[test]
     fn parse_mad_carry_integer_instructions() {
         let text = "
             .version 6.5
@@ -4485,6 +4511,27 @@ mod tests {
                 .reg .f32 %f<4>;
 
                 copysign.f32 %f1, %f2, %f3;
+                ret;
+            }";
+        let result = parse_module_checked(text);
+        if let Err(errors) = result {
+            panic!("{errors:?}");
+        }
+    }
+
+    #[test]
+    fn parse_vector_pack_discard_operand() {
+        let text = "
+            .version 6.5
+            .target sm_80
+            .address_size 64
+
+            .visible .entry discard_pack()
+            {
+                .reg .u16 %rs<2>;
+                .reg .u32 %r<2>;
+
+                mov.b32 {_, %rs1}, %r1;
                 ret;
             }";
         let result = parse_module_checked(text);
