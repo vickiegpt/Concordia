@@ -27,7 +27,7 @@
 use std::array::TryFromSliceError;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::ffi::{CStr, NulError};
+use std::ffi::{c_char, CStr, NulError};
 use std::ops::Deref;
 use std::{i8, ptr};
 
@@ -3510,7 +3510,7 @@ impl<'a> MethodEmitContext<'a> {
                 arg1: LLVMBuilderRef,
                 Val: LLVMValueRef,
                 DestTy: LLVMTypeRef,
-                Name: *const u8,
+                Name: *const c_char,
             ) -> LLVMValueRef,
         >,
     ) -> Result<(), TranslateError> {
@@ -3568,7 +3568,7 @@ impl<'a> MethodEmitContext<'a> {
             arg1: LLVMBuilderRef,
             Val: LLVMValueRef,
             DestTy: LLVMTypeRef,
-            Name: *const u8,
+            Name: *const c_char,
         ) -> LLVMValueRef,
     ) -> Result<(), TranslateError> {
         let type_ = get_scalar_type(self.context, to);
@@ -3845,7 +3845,7 @@ impl<'a> MethodEmitContext<'a> {
             LLVMBuilderRef,
             LLVMValueRef,
             LLVMValueRef,
-            *const u8,
+            *const c_char,
         ) -> LLVMValueRef,
     ) -> Result<(), TranslateError> {
         let src1 = self.resolver.value(src1)?;
@@ -4750,7 +4750,7 @@ impl<'a> ResolveIdent<'a> {
         self.get_or_ad_impl(word, |x| x)
     }
 
-    fn get_or_add_raw(&mut self, word: SpirvWord) -> *const u8 {
+    fn get_or_add_raw(&mut self, word: SpirvWord) -> *const c_char {
         self.get_or_add(word).as_ptr().cast()
     }
 
@@ -4768,7 +4768,7 @@ impl<'a> ResolveIdent<'a> {
     fn with_result(
         &mut self,
         word: SpirvWord,
-        fn_: impl FnOnce(*const u8) -> LLVMValueRef,
+        fn_: impl FnOnce(*const c_char) -> LLVMValueRef,
     ) -> LLVMValueRef {
         let t = self.get_or_ad_impl(word, |dst| fn_(dst.as_ptr().cast()));
         self.register(word, t);
@@ -4778,7 +4778,7 @@ impl<'a> ResolveIdent<'a> {
     fn with_result_option(
         &mut self,
         word: Option<SpirvWord>,
-        fn_: impl FnOnce(*const u8) -> LLVMValueRef,
+        fn_: impl FnOnce(*const c_char) -> LLVMValueRef,
     ) -> LLVMValueRef {
         match word {
             Some(word) => self.with_result(word, fn_),

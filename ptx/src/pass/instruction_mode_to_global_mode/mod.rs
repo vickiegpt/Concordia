@@ -10,10 +10,10 @@ use crate::pass::error_unreachable;
 use microlp::OptimizationDirection;
 use microlp::Problem;
 use microlp::Variable;
-use petgraph::Direction;
-use petgraph::Graph;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::IntoNodeReferences;
+use petgraph::Direction;
+use petgraph::Graph;
 use ptx_parser as ast;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
@@ -748,10 +748,7 @@ fn compute_full_mode_insertions(
             }) = directive
             {
                 basic_blocks.entry(*name).or_insert_with(|| {
-                    default_entry_state(
-                        flat_resolver,
-                        all_mode_bbs.contains(name) && !*is_kernel,
-                    )
+                    default_entry_state(flat_resolver, all_mode_bbs.contains(name) && !*is_kernel)
                 });
                 if !*is_kernel {
                     functions_exit_modes.insert(
@@ -768,10 +765,7 @@ fn compute_full_mode_insertions(
                     for statement in body.iter() {
                         if let Statement::Label(label) = statement {
                             basic_blocks.entry(*label).or_insert_with(|| {
-                                default_entry_state(
-                                    flat_resolver,
-                                    all_mode_bbs.contains(label),
-                                )
+                                default_entry_state(flat_resolver, all_mode_bbs.contains(label))
                             });
                         }
                     }
@@ -1787,46 +1781,46 @@ fn optimize_mode_insertions<
 
     #[cfg(not(feature = "pacc"))]
     {
-    let mut problem = Problem::new(OptimizationDirection::Maximize);
-    let mut kernel_modes = FxHashMap::default();
-    let basic_block_variables = partial
-        .bb_maybe_insert_mode
-        .into_iter()
-        .map(|(basic_block, (value, entry_points))| {
-            let modes = entry_points
-                .iter()
-                .map(|entry_point| {
-                    let kernel_modes = kernel_modes
-                        .entry(*entry_point)
-                        .or_insert_with(|| one_of::<N>(&mut problem));
-                    kernel_modes[value.into()]
-                })
-                .collect::<Vec<Variable>>();
-            let bb = and(&mut problem, &*modes);
-            (basic_block, bb)
-        })
-        .collect::<Vec<_>>();
-    // TODO: add fallback on Error
-    let solution = problem.solve().unwrap();
-    let mut basic_blocks = partial.bb_must_insert_mode;
-    for (basic_block, variable) in basic_block_variables {
-        if solution[variable] < 0.5 {
-            basic_blocks.insert(basic_block);
-        }
-    }
-    let mut kernels = FxHashMap::default();
-    'iterate_kernels: for (kernel, modes) in kernel_modes {
-        for (mode, var) in modes.into_iter().enumerate() {
-            if solution[var] > 0.5 {
-                kernels.insert(kernel, T::VARIANTS[mode]);
-                continue 'iterate_kernels;
+        let mut problem = Problem::new(OptimizationDirection::Maximize);
+        let mut kernel_modes = FxHashMap::default();
+        let basic_block_variables = partial
+            .bb_maybe_insert_mode
+            .into_iter()
+            .map(|(basic_block, (value, entry_points))| {
+                let modes = entry_points
+                    .iter()
+                    .map(|entry_point| {
+                        let kernel_modes = kernel_modes
+                            .entry(*entry_point)
+                            .or_insert_with(|| one_of::<N>(&mut problem));
+                        kernel_modes[value.into()]
+                    })
+                    .collect::<Vec<Variable>>();
+                let bb = and(&mut problem, &*modes);
+                (basic_block, bb)
+            })
+            .collect::<Vec<_>>();
+        // TODO: add fallback on Error
+        let solution = problem.solve().unwrap();
+        let mut basic_blocks = partial.bb_must_insert_mode;
+        for (basic_block, variable) in basic_block_variables {
+            if solution[variable] < 0.5 {
+                basic_blocks.insert(basic_block);
             }
         }
-    }
-    MandatoryModeInsertions {
-        basic_blocks,
-        kernels,
-    }
+        let mut kernels = FxHashMap::default();
+        'iterate_kernels: for (kernel, modes) in kernel_modes {
+            for (mode, var) in modes.into_iter().enumerate() {
+                if solution[var] > 0.5 {
+                    kernels.insert(kernel, T::VARIANTS[mode]);
+                    continue 'iterate_kernels;
+                }
+            }
+        }
+        MandatoryModeInsertions {
+            basic_blocks,
+            kernels,
+        }
     }
 }
 

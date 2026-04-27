@@ -45,10 +45,23 @@ fn main() {
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "on"))
             .unwrap_or(false);
 
-        let shim_so = profile_dir.join("libhetgpu_cuda_shim.so");
+        let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+        let is_macos = target_os == "macos";
+
+        let shim_so = profile_dir.join(if is_macos {
+            "libhetgpu_cuda_shim.dylib"
+        } else {
+            "libhetgpu_cuda_shim.so"
+        });
         let compiler = cc::Build::new().get_compiler();
         let mut shim_build = compiler.to_command();
-        shim_build.arg("-shared");
+        if is_macos {
+            shim_build.arg("-dynamiclib");
+            shim_build.arg("-undefined");
+            shim_build.arg("dynamic_lookup");
+        } else {
+            shim_build.arg("-shared");
+        }
         shim_build.arg("-fPIC");
         shim_build.arg("-Wno-unused-parameter");
         if enable_logs {
@@ -63,15 +76,27 @@ fn main() {
         shim_build.arg("src/cufft_shim.c");
         shim_build.arg("src/nccl_shim.c");
         shim_build.arg("src/torch_abi_shim.c");
-        shim_build.arg("-Wl,-soname,libhetgpu_cuda_shim.so");
-        shim_build.arg("-ldl");
+        if !is_macos {
+            shim_build.arg("-Wl,-soname,libhetgpu_cuda_shim.so");
+            shim_build.arg("-ldl");
+        }
         shim_build.arg("-lz");
         let status = shim_build.status().unwrap();
         assert!(status.success(), "failed to build embedded CUDA shim");
 
-        let nccl_so = profile_dir.join("libnccl.so.2");
+        let nccl_so = profile_dir.join(if is_macos {
+            "libnccl.2.dylib"
+        } else {
+            "libnccl.so.2"
+        });
         let mut nccl_build = compiler.to_command();
-        nccl_build.arg("-shared");
+        if is_macos {
+            nccl_build.arg("-dynamiclib");
+            nccl_build.arg("-undefined");
+            nccl_build.arg("dynamic_lookup");
+        } else {
+            nccl_build.arg("-shared");
+        }
         nccl_build.arg("-fPIC");
         nccl_build.arg("-Wno-unused-parameter");
         if enable_logs {
@@ -80,19 +105,38 @@ fn main() {
         nccl_build.arg("-o");
         nccl_build.arg(&nccl_so);
         nccl_build.arg("src/nccl_shim.c");
-        nccl_build.arg("-Wl,-soname,libnccl.so.2");
+        if !is_macos {
+            nccl_build.arg("-Wl,-soname,libnccl.so.2");
+        }
         let status = nccl_build.status().unwrap();
         assert!(status.success(), "failed to build embedded NCCL shim");
 
-        let nccl_link = profile_dir.join("libnccl.so");
+        let nccl_link = profile_dir.join(if is_macos {
+            "libnccl.dylib"
+        } else {
+            "libnccl.so"
+        });
         let _ = std::fs::remove_file(&nccl_link);
         #[cfg(unix)]
-        std::os::unix::fs::symlink("libnccl.so.2", &nccl_link).unwrap();
+        std::os::unix::fs::symlink(
+            if is_macos {
+                "libnccl.2.dylib"
+            } else {
+                "libnccl.so.2"
+            },
+            &nccl_link,
+        )
+        .unwrap();
 
         println!("cargo:rustc-link-search=native={}", profile_dir.display());
-        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
-        println!("cargo:rustc-link-arg=-Wl,--no-as-needed");
-        println!("cargo:rustc-link-arg=-lhetgpu_cuda_shim");
-        println!("cargo:rustc-link-arg=-Wl,--as-needed");
+        if is_macos {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path");
+            println!("cargo:rustc-link-lib=dylib=hetgpu_cuda_shim");
+        } else {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+            println!("cargo:rustc-link-arg=-Wl,--no-as-needed");
+            println!("cargo:rustc-link-arg=-lhetgpu_cuda_shim");
+            println!("cargo:rustc-link-arg=-Wl,--as-needed");
+        }
     }
 }

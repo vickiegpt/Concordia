@@ -24,14 +24,14 @@
 // shows it fails inside amdgpu-isel. You can get a little bit furthr with "-mllvm -global-isel",
 // but it will too fail similarly, but with "unable to legalize instruction"
 
-use std::ffi::{CStr, NulError, c_char};
+use std::ffi::{c_char, CStr, NulError};
 use std::{collections::HashSet, i8, ptr, u64};
 
 use super::*;
 use crate::pass::*;
-use llvm_zluda::{LLVMCallConv, LLVMZludaBuildAlloca};
-use llvm_zluda::{LLVMZludaBuildAtomicRMW, LLVMZludaSetAtomic, prelude::*};
 use llvm_zluda::{core::*, *};
+use llvm_zluda::{prelude::*, LLVMZludaBuildAtomicRMW, LLVMZludaSetAtomic};
+use llvm_zluda::{LLVMCallConv, LLVMZludaBuildAlloca};
 use ptx_parser::{CpAsyncArgs, CpAsyncDetails, FunnelShiftMode, Mul24Control, ShfArgs};
 
 struct Builder(LLVMBuilderRef);
@@ -224,7 +224,11 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             let value = unsafe { LLVMGetParam(fn_, i as u32) };
             let name = self.resolver.get_or_add(param.name);
             if let Some(align) = param.info.align {
-                unsafe { LLVMSetParamAlignment(value, align) };
+                if unsafe { LLVMGetTypeKind(LLVMTypeOf(value)) }
+                    == LLVMTypeKind::LLVMPointerTypeKind
+                {
+                    unsafe { LLVMSetParamAlignment(value, align) };
+                }
             }
             #[cfg(not(feature = "pacc"))]
             {
@@ -509,7 +513,11 @@ fn is_real_scalar_type(scalar_type: ast::ScalarType) -> bool {
 }
 
 fn llvm_ftz(ftz: bool) -> &'static str {
-    if ftz { "preserve-sign" } else { "ieee" }
+    if ftz {
+        "preserve-sign"
+    } else {
+        "ieee"
+    }
 }
 
 fn statement_kind_name(
@@ -3164,7 +3172,11 @@ impl<'a> MethodEmitContext<'a> {
             reg | (offset << 6) | ((size - 1) << 11)
         }
         fn denormal_to_value(ftz: bool) -> u32 {
-            if ftz { 0 } else { 3 }
+            if ftz {
+                0
+            } else {
+                3
+            }
         }
         fn rounding_to_value(ftz: ast::RoundingMode) -> u32 {
             match ftz {
@@ -3911,7 +3923,7 @@ fn create_struct_type(
 fn get_function_type<'a>(
     context: LLVMContextRef,
     mut return_args: impl DoubleEndedIterator<Item = &'a ast::Type>
-    + ExactSizeIterator<Item = &'a ast::Type>,
+        + ExactSizeIterator<Item = &'a ast::Type>,
     input_args: impl ExactSizeIterator<Item = Result<LLVMTypeRef, TranslateError>>,
 ) -> Result<LLVMTypeRef, TranslateError> {
     let mut input_args = input_args.collect::<Result<Vec<_>, _>>()?;

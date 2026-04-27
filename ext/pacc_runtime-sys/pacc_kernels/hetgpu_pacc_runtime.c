@@ -211,15 +211,12 @@ static const char *parse_prefixed_string_arg(const char *arg, const char *prefix
     return arg + n;
 }
 
-static int read_runtime_args(int argc, char **argv, u64 *pacc_id, const char **mbox_path) {
+static void read_runtime_args(int argc, char **argv, u64 *pacc_id, const char **mbox_path) {
     const char *value;
-    int have_pacc_id = 0;
     value = getenv("HETGPU_PACC_ID");
     if (!parse_u64_arg(value, pacc_id)) {
         value = getenv("HETGPU_PACC_DEVICE_ID");
-        have_pacc_id = parse_u64_arg(value, pacc_id);
-    } else {
-        have_pacc_id = 1;
+        parse_u64_arg(value, pacc_id);
     }
     value = getenv("HETGPU_PACC_MBOX_PATH");
     if (value && *value) *mbox_path = value;
@@ -261,7 +258,7 @@ static int open_runtime_mbox(u64 pacc_id, const char *mbox_path) {
     fd = open("/dev/hetgpu_pacc_mbox", O_RDWR | O_SYNC | O_CLOEXEC);
     if (fd < 0) {
         fprintf(stderr,
-                "hetgpu_pacc_runtime: open /dev/mbox, /dev/hetgpu_pacc_mbox%lu, or /dev/hetgpu_pacc_mbox failed: %s\n",
+                "hetgpu_pacc_runtime: open /dev/hetgpu_pacc_mbox%lu or /dev/hetgpu_pacc_mbox failed: %s\n",
                 (unsigned long)pacc_id, strerror(errno));
     }
     return fd;

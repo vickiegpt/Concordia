@@ -762,10 +762,7 @@ fn compile_c_family_source_to_bitcode(
     output_file: &Path,
 ) -> io::Result<()> {
     let config = crate::PaccConfig::rvv_linux_bf16();
-    let clang = preferred_tool(
-        "HETGPU_PACC_SOURCE_CLANG",
-        &["/usr/bin/clang-20", "clang-20", "clang"],
-    );
+    let clang = pacc_clang_tool("HETGPU_PACC_SOURCE_CLANG");
     let target = ctx
         .target
         .clone()
@@ -897,10 +894,7 @@ fn compile_bc_to_xm_object(
         return compile_bc_to_xm_object_via_sanitized_ll(input_file, output_file, config);
     }
 
-    let clang = preferred_tool(
-        "HETGPU_PACC_CLANG",
-        &["/usr/bin/clang-20", "clang-20", "clang"],
-    );
+    let clang = pacc_clang_tool("HETGPU_PACC_CLANG");
     let march = riscv_march_with_required_extensions(&config.march);
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
@@ -961,10 +955,7 @@ fn compile_bc_to_xm_assembly(
     output_file: &Path,
     config: &crate::PaccConfig,
 ) -> io::Result<()> {
-    let clang = preferred_tool(
-        "HETGPU_PACC_CLANG",
-        &["/usr/bin/clang-20", "clang-20", "clang"],
-    );
+    let clang = pacc_clang_tool("HETGPU_PACC_CLANG");
     let march = riscv_march_with_required_extensions(&config.march);
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
@@ -1009,10 +1000,7 @@ fn compile_bc_to_xm_object_via_sanitized_ll(
     let sanitized = sanitize_llvm23_ir_for_llvm20(&ll_text);
     fs::write(&sanitized_ll_file, sanitized)?;
 
-    let clang = preferred_tool(
-        "HETGPU_PACC_CLANG",
-        &["/usr/bin/clang-20", "clang-20", "clang"],
-    );
+    let clang = pacc_clang_tool("HETGPU_PACC_CLANG");
     let march = riscv_march_with_required_extensions(&config.march);
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
@@ -1227,7 +1215,7 @@ fn llvm_link_tool() -> String {
     bundled_llvm_tool(
         "HETGPU_PACC_LLVM_LINK",
         "llvm-link",
-        &["/usr/bin/llvm-link-20", "llvm-link-20", "llvm-link"],
+        &["llvm-link-21", "/usr/bin/llvm-link-21", "llvm-link"],
     )
 }
 
@@ -1235,7 +1223,7 @@ fn opt_tool() -> String {
     bundled_llvm_tool(
         "HETGPU_PACC_OPT",
         "opt",
-        &["/usr/bin/opt-20", "opt-20", "opt"],
+        &["opt-21", "/usr/bin/opt-21", "opt"],
     )
 }
 
@@ -1243,7 +1231,15 @@ fn llvm_dis_tool() -> String {
     bundled_llvm_tool(
         "HETGPU_PACC_LLVM_DIS",
         "llvm-dis",
-        &["/usr/bin/llvm-dis-20", "llvm-dis-20", "llvm-dis"],
+        &["llvm-dis-21", "/usr/bin/llvm-dis-21", "llvm-dis"],
+    )
+}
+
+fn pacc_clang_tool(env_var: &str) -> String {
+    bundled_llvm_tool(
+        env_var,
+        "clang",
+        &["clang-21", "/usr/bin/clang-21", "clang"],
     )
 }
 
@@ -1256,11 +1252,47 @@ fn existing_tool(path: PathBuf) -> Option<String> {
 }
 
 fn llvm_tool_from_build_dir(build_dir: &Path, tool_name: &str) -> Option<String> {
-    let entries = fs::read_dir(build_dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path().join("out/build/bin").join(tool_name);
-        if let Some(tool) = existing_tool(path) {
-            return Some(tool);
+    let mut roots: Vec<_> = fs::read_dir(build_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    roots.sort_by_key(|path| {
+        fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    roots.reverse();
+
+    for root in roots {
+        for path in [
+            root.join("out").join("build").join("bin").join(tool_name),
+            root.join("out").join("build").join("tools").join(tool_name),
+            root.join("out")
+                .join("build")
+                .join("Release")
+                .join("bin")
+                .join(tool_name),
+            root.join("out")
+                .join("build")
+                .join("Release")
+                .join("tools")
+                .join(tool_name),
+            root.join("out")
+                .join("build")
+                .join("Debug")
+                .join("bin")
+                .join(tool_name),
+            root.join("out")
+                .join("build")
+                .join("Debug")
+                .join("tools")
+                .join(tool_name),
+            root.join("out").join("bin").join(tool_name),
+        ] {
+            if let Some(tool) = existing_tool(path) {
+                return Some(tool);
+            }
         }
     }
     None
@@ -1292,34 +1324,17 @@ fn bundled_llvm_tool(env_var: &str, tool_name: &str, fallbacks: &[&str]) -> Stri
         }
     }
 
-    let clang = preferred_tool(
-        "HETGPU_PACC_CLANG",
-        &["/usr/bin/clang-20", "clang-20", "clang"],
-    );
-    let mut clang_candidates = vec![PathBuf::from(&clang)];
-    if let Ok(resolved) = PathBuf::from(&clang).canonicalize() {
-        if !clang_candidates.iter().any(|path| path == &resolved) {
-            clang_candidates.push(resolved);
-        }
-    }
-    for clang_path in clang_candidates {
-        if let Some(parent) = clang_path.parent() {
-            for candidate in [
-                parent.join(tool_name),
-                parent.join(format!("{tool_name}-20")),
-            ] {
-                if let Some(tool) = existing_tool(candidate) {
-                    return tool;
-                }
-            }
-        }
-    }
-
     for env in ["HETGPU_PACC_HELPER_TARGET_DIR", "CARGO_TARGET_DIR"] {
         if let Ok(dir) = std::env::var(env) {
             if let Some(tool) = llvm_tool_from_target_dir(Path::new(&dir), tool_name) {
                 return tool;
             }
+        }
+    }
+
+    if let Ok(repo_root) = workspace_root() {
+        if let Some(tool) = llvm_tool_from_target_dir(&repo_root.join("target"), tool_name) {
+            return tool;
         }
     }
 
@@ -1330,6 +1345,28 @@ fn bundled_llvm_tool(env_var: &str, tool_name: &str, fallbacks: &[&str]) -> Stri
     ] {
         if let Some(tool) = llvm_tool_from_target_dir(Path::new(dir), tool_name) {
             return tool;
+        }
+    }
+
+    if tool_name != "clang" {
+        let clang = pacc_clang_tool("HETGPU_PACC_CLANG");
+        let mut clang_candidates = vec![PathBuf::from(&clang)];
+        if let Ok(resolved) = PathBuf::from(&clang).canonicalize() {
+            if !clang_candidates.iter().any(|path| path == &resolved) {
+                clang_candidates.push(resolved);
+            }
+        }
+        for clang_path in clang_candidates {
+            if let Some(parent) = clang_path.parent() {
+                for candidate in [
+                    parent.join(tool_name),
+                    parent.join(format!("{tool_name}-21")),
+                ] {
+                    if let Some(tool) = existing_tool(candidate) {
+                        return tool;
+                    }
+                }
+            }
         }
     }
 

@@ -230,7 +230,8 @@ impl PaccConfig {
             vlen: 512,
             default_sew: 8,
             target_triple: "riscv64-unknown-elf".to_string(),
-            march: "rv64gcv_zbb_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvfwmaccqqq_xsfvqmaccqoq".to_string(),
+            march: "rv64gcv_zbb_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvfwmaccqqq_xsfvqmaccqoq"
+                .to_string(),
             mattr: "+v,+d,+f,+zbb,+zvfbfmin,+xsfvcp,+xsfvfnrclipxfqf,+xsfvfwmaccqqq,+xsfvqmaccqoq"
                 .to_string(),
             codegen_mode: PaccCodegenMode::Vcix,
