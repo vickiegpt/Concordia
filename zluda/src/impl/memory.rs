@@ -967,11 +967,7 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
             }
         }
     } else if allow_host_device_mem {
-        if std::env::var("HETGPU_PACC_LOG_MEMORY")
-            .ok()
-            .as_deref()
-            == Some("1")
-        {
+        if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
             eprintln!(
                 "[PACC Backend] HETGPU_PACC_ALLOW_HOST_DEVICE_MEM=1: using host-backed CUDA memory"
             );
