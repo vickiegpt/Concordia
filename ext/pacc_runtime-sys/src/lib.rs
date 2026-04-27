@@ -348,6 +348,7 @@ pub const PACC_KERNEL_ARG_KIND_POINTER: u32 = 1;
 pub const PACC_KERNEL_ARG_FLAG_SIGNED: u32 = 1 << 0;
 pub const PACC_KERNEL_ARG_FLAG_FLOAT: u32 = 1 << 1;
 pub const PACC_KERNEL_ARG_FLAG_INLINE_BLOB: u32 = 1 << 16;
+pub const PACC_KERNEL_ARG_FLAG_DEVICE_PHYS: u32 = 1 << 17;
 pub const PACC_KERNEL_ARG_FLAG_BUFFER_INPUT: u32 = 1 << 8;
 pub const PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT: u32 = 1 << 9;
 pub const PACC_KERNEL_ARG_FLAG_BUFFER_INOUT: u32 =
@@ -884,19 +885,20 @@ impl PaccDevice {
     }
 
     pub fn zluda_irq(&self, shared_ddr: HetgpuPaccSharedDdrInfo) -> std::io::Result<()> {
+        if zluda_irq_ioctl_skip_enabled() || zluda_irq_mock_enabled() {
+            if zluda_irq_trace_enabled() {
+                eprintln!(
+                    "PACC ZLUDA IRQ skipped: dev={} shared_ddr_base=0x{:x} shared_ddr_size=0x{:x}",
+                    self.id, shared_ddr.ddr_base, shared_ddr.ddr_size
+                );
+            }
+            return Ok(());
+        }
+
         let mut arg = shared_ddr;
         let ret = unsafe { libc::ioctl(self.fd, IOC_ZLUDA_IRQ, &mut arg as *mut _) };
         if ret < 0 {
             let err = std::io::Error::last_os_error();
-            if zluda_irq_mock_enabled() {
-                if zluda_irq_trace_enabled() {
-                    eprintln!(
-                        "PACC ZLUDA IRQ mock: ioctl 0x{:x} on /dev/pacc{} failed: {}; using CPU-side firmware mock",
-                        IOC_ZLUDA_IRQ, self.id, err
-                    );
-                }
-                return Ok(());
-            }
             return Err(err);
         }
         if zluda_irq_trace_enabled() {
@@ -1533,6 +1535,8 @@ static SHARED_DDR_KERNEL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static SHARED_DDR_BO_ARENA: OnceLock<Mutex<Option<PaccBoMap>>> = OnceLock::new();
 static SHARED_DDR_MOCK_ARENA: OnceLock<Mutex<BTreeMap<u64, Vec<u8>>>> = OnceLock::new();
 static SHARED_DDR_FULL_MMAP: OnceLock<Result<SharedDdrFullMmap, String>> = OnceLock::new();
+static SHARED_DDR_BASE_CACHE: OnceLock<u64> = OnceLock::new();
+static SHARED_DDR_BYTES_CACHE: OnceLock<usize> = OnceLock::new();
 static SHARED_DDR_FULL_MMAP_UNAVAILABLE: AtomicUsize = AtomicUsize::new(0);
 static SHARED_DDR_MMAP_UNAVAILABLE: AtomicUsize = AtomicUsize::new(0);
 static NVTOP_STATE: OnceLock<Mutex<NvtopProcessState>> = OnceLock::new();
@@ -1869,6 +1873,15 @@ fn require_runtime_ready() -> std::io::Result<()> {
 fn zluda_irq_mock_enabled() -> bool {
     matches!(
         std::env::var("HETGPU_PACC_ZLUDA_IRQ_MOCK")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase()),
+        Some(v) if v == "1" || v == "true" || v == "yes" || v == "force"
+    )
+}
+
+fn zluda_irq_ioctl_skip_enabled() -> bool {
+    matches!(
+        std::env::var("HETGPU_PACC_ZLUDA_IRQ_SKIP_IOCTL")
             .ok()
             .map(|v| v.trim().to_ascii_lowercase()),
         Some(v) if v == "1" || v == "true" || v == "yes" || v == "force"
@@ -2332,6 +2345,10 @@ fn shared_ddr_base() -> u64 {
         }
     }
 
+    *SHARED_DDR_BASE_CACHE.get_or_init(resolve_shared_ddr_base)
+}
+
+fn resolve_shared_ddr_base() -> u64 {
     read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base")
         .or_else(|| {
             std::env::var("HETGPU_PACC_SHARED_DDR_BASE")
@@ -2566,6 +2583,10 @@ fn shared_ddr_mock_copy_out(offset: u64, bytes: &mut [u8]) -> std::io::Result<()
 }
 
 fn shared_ddr_bytes() -> usize {
+    *SHARED_DDR_BYTES_CACHE.get_or_init(resolve_shared_ddr_bytes)
+}
+
+fn resolve_shared_ddr_bytes() -> usize {
     read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_bytes")
         .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_size"))
         .or_else(|| {
@@ -7802,6 +7823,9 @@ fn pacc_kernel_binding_needs_stage(
         return false;
     }
     if binding.flags & PACC_KERNEL_ARG_FLAG_BUFFER_INOUT == 0 {
+        return false;
+    }
+    if binding.flags & PACC_KERNEL_ARG_FLAG_DEVICE_PHYS != 0 {
         return false;
     }
     let shared_end = shared_base.saturating_add(shared_bytes as u64);

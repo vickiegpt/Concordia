@@ -24,7 +24,7 @@ cat > "${inject}/etc/rcS.d/S99hetgpu-pacc-jobd" <<'EOF'
 case "$1" in
   start|"")
     echo "Starting hetgpu_pacc_jobd"
-    /usr/sbin/hetgpu_pacc_jobd --strict-job-id-only >/dev/kmsg 2>&1 &
+    /usr/sbin/hetgpu_pacc_jobd --mbox=/dev/mbox >/dev/kmsg 2>&1 &
     ;;
   stop)
     killall hetgpu_pacc_jobd 2>/dev/null || true

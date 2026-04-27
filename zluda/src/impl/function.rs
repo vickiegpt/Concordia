@@ -3284,6 +3284,14 @@ unsafe fn configure_pacc_launch_abi(
             && pacc_looks_like_pointer(value)
             && pacc_kernel_arg_can_be_pointer(kernel_name, i)
             && super::memory::pacc_allocation_remaining_addr(value).is_some();
+        let (record_value, binding_addr, direct_device_binding) = if is_pointer {
+            let resolved =
+                super::memory::pacc_resolve_device_addr(value as *const ::core::ffi::c_void)
+                    .unwrap_or(value);
+            (resolved, resolved, resolved != value)
+        } else {
+            (value, value, false)
+        };
         let record = pacc_runtime_sys::PaccKernelArgRecord {
             kind: if is_pointer {
                 pacc_runtime_sys::PACC_KERNEL_ARG_KIND_POINTER
@@ -3293,7 +3301,7 @@ unsafe fn configure_pacc_launch_abi(
             size: arg_size as u32,
             flags: record_flags,
             reserved: 0,
-            value,
+            value: record_value,
             value_hi,
         };
         let rc = pacc_runtime_sys::pacc_KernelPushArgRecord(kernel_ptr, &record);
@@ -3302,7 +3310,7 @@ unsafe fn configure_pacc_launch_abi(
         }
 
         if is_pointer {
-            let (size, flags) = pacc_kernel_binding_metadata(
+            let (size, mut flags) = pacc_kernel_binding_metadata(
                 kernel_name,
                 kernel_params,
                 grid_dim_x,
@@ -3319,10 +3327,13 @@ unsafe fn configure_pacc_launch_abi(
                 ))
             })
             .unwrap_or((0, 0));
+            if direct_device_binding {
+                flags |= pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_DEVICE_PHYS;
+            }
             let binding = pacc_runtime_sys::PaccKernelBufferBinding {
                 arg_index: i as u32,
                 flags,
-                addr: value,
+                addr: binding_addr,
                 size,
             };
             let rc = pacc_runtime_sys::pacc_KernelAddBufferBinding(kernel_ptr, &binding);
