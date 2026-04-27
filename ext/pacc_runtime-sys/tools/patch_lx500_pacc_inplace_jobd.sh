@@ -13,6 +13,7 @@ jobs_conf="${4:-}"
 
 python3 - "$src" "$jobd" "$out" "$jobs_conf" <<'PY'
 from pathlib import Path
+import os
 import sys
 
 src = Path(sys.argv[1])
@@ -77,16 +78,20 @@ def patch_payload(entries, label: str, name: str, payload: bytes, pad: int = 0, 
     print(f"patched {label}:{name}: {len(payload)} bytes into {size}-byte slot")
     return True
 
-rcs = b"""#!/bin/sh
-exec /home/root/pacc_skl_test --strict-job-id-only --config /etc/skel/.bashrc </dev/console >/dev/console 2>&1
-for i in /etc/rcS.d/S??* /etc/rc5.d/S??*;do
-[ ! -f "$i" ]&&continue
-case "$i" in
-*.sh)(trap - INT QUIT TSTP;set start;. $i);;
-*)$i start;;
-esac
-done
-"""
+rcs_lines = [
+    "#!/bin/sh",
+    "export HETGPU_PACC_JOBD_KERNEL_THREADS=${HETGPU_PACC_JOBD_KERNEL_THREADS:-4}",
+    "export HETGPU_PACC_JOBD_TRACE=${HETGPU_PACC_JOBD_TRACE:-1}",
+    "export HETGPU_PACC_JOBD_KMSG=${HETGPU_PACC_JOBD_KMSG:-1}",
+]
+shared_ddr_base = os.environ.get("PACC_JOBD_SHARED_DDR_BASE", "").strip()
+shared_ddr_size = os.environ.get("PACC_JOBD_SHARED_DDR_SIZE", "").strip()
+if shared_ddr_base:
+    rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_BASE={shared_ddr_base}")
+if shared_ddr_size:
+    rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_BYTES={shared_ddr_size}")
+rcs_lines.append("exec /home/root/pacc_skl_test --mbox=/dev/mbox </dev/console >/dev/console 2>&1")
+rcs = ("\n".join(rcs_lines) + "\n").encode()
 
 default_conf = b"""gemm 2 2 2 0x20000800 0x20000840 0x20002800 2 2 2 0 0 1
 softmax 0x20000900 0x20002900 1 4 4
@@ -95,7 +100,6 @@ rmsnorm 0x20000a00 0x20000a40 0x20002a00 1 4 0.00001
 
 outer = parse_newc(image)
 patched = 0
-patched += patch_payload(outer, "outer", "bin/busybox.nosuid", jobd_bytes, 0, required=False)
 patched += patch_payload(outer, "outer", "home/root/pacc_skl_test", jobd_bytes, 0)
 patched += patch_payload(outer, "outer", "etc/init.d/rcS", rcs, ord("\n"))
 patched += patch_payload(outer, "outer", "etc/skel/.bashrc", conf_bytes or default_conf, ord("\n"))
@@ -104,7 +108,6 @@ inner_name = "core-image-minimal-qemuriscv64.cpio"
 if inner_name in outer:
     inner = outer[inner_name]
     inner_entries = parse_newc(image, inner["data"], inner["size"])
-    patched += patch_payload(inner_entries, "inner", "bin/busybox.nosuid", jobd_bytes, 0, required=False)
     patched += patch_payload(inner_entries, "inner", "home/root/pacc_skl_test", jobd_bytes, 0)
     patched += patch_payload(inner_entries, "inner", "etc/init.d/rcS", rcs, ord("\n"))
     patched += patch_payload(inner_entries, "inner", "etc/skel/.bashrc", conf_bytes or default_conf, ord("\n"))

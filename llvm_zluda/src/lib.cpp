@@ -19,6 +19,14 @@
 
 using namespace llvm;
 
+namespace llvm {
+// Some LLVM builds keep this deprecated conversion out-of-line in Support,
+// while the prebuilt llvm-zluda archive we link against may not expose it.
+// IRBuilder headers can still emit references to the symbol, so provide the
+// ABI shim here and keep the bridge self-contained.
+TypeSize::operator TypeSize::ScalarTy() const { return getKnownMinValue(); }
+} // namespace llvm
+
 typedef enum {
   LLVMZludaAtomicRMWBinOpXchg, /**< Set the new value and return the one old */
   LLVMZludaAtomicRMWBinOpAdd,  /**< Add a value and return the old one */
@@ -137,8 +145,13 @@ LLVM_C_EXTERN_C_BEGIN
 
 LLVMValueRef LLVMZludaBuildAlloca(LLVMBuilderRef B, LLVMTypeRef Ty,
                                   unsigned AddrSpace, const char *Name) {
-  return llvm::wrap(llvm::unwrap(B)->CreateAlloca(llvm::unwrap(Ty), AddrSpace,
-                                                  nullptr, Name));
+  auto *InsertBlock = llvm::unwrap(LLVMGetInsertBlock(B));
+  auto *Inst =
+      new llvm::AllocaInst(llvm::unwrap(Ty), AddrSpace, nullptr, llvm::Align(1));
+  if (InsertBlock)
+    Inst->insertInto(InsertBlock, InsertBlock->end());
+  Inst->setName(Name ? Name : "");
+  return llvm::wrap(Inst);
 }
 
 LLVMValueRef LLVMZludaBuildAtomicRMW(LLVMBuilderRef B,
@@ -257,13 +270,13 @@ extern "C" LLVMDbgRecordRef LLVMZludaDIBuilderInsertDeclareRecordAtEnd(
 
 unsigned long long LLVMZludaSizeOfTypeInBits(LLVMTargetDataRef TD,
                                              LLVMTypeRef Ty) {
-  return LLVMSizeOfTypeInBits(TD, Ty);
+  return unwrap(TD)->getTypeSizeInBits(unwrap(Ty)).getKnownMinValue();
 }
 
 void LLVMZludaSetAtomic(LLVMValueRef MemAccessInst, LLVMAtomicOrdering Ordering,
                         char *Scope) {
   Value *Inst = unwrap<Value>(MemAccessInst);
-  LLVMContext &Context = Inst->getContext();
+  LLVMContext &Context = Inst->getType()->getContext();
 
   if (auto *LI = dyn_cast<LoadInst>(Inst)) {
     LI->setAtomic(mapFromLLVMOrdering(Ordering));

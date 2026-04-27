@@ -23,8 +23,12 @@ cat > "${inject}/etc/rcS.d/S99hetgpu-pacc-jobd" <<'EOF'
 #!/bin/sh
 case "$1" in
   start|"")
-    echo "Starting hetgpu_pacc_jobd"
-    /usr/sbin/hetgpu_pacc_jobd --mbox=/dev/mbox >/dev/kmsg 2>&1 &
+    echo "Starting hetgpu_pacc_jobd after host probe settles"
+    (
+      sleep "${HETGPU_PACC_JOBD_START_DELAY:-8}"
+      export HETGPU_PACC_JOBD_KERNEL_THREADS="${HETGPU_PACC_JOBD_KERNEL_THREADS:-4}"
+      exec /usr/sbin/hetgpu_pacc_jobd --mbox=/dev/mbox
+    ) >/dev/kmsg 2>&1 &
     ;;
   stop)
     killall hetgpu_pacc_jobd 2>/dev/null || true

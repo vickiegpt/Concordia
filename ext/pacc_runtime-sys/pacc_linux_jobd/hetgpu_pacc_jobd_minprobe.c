@@ -2340,15 +2340,7 @@ struct KernelGridWorker {
 
 static unsigned kernel_worker_threads(uint64_t total_threads) {
     uint64_t requested = parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_THREADS", 0);
-    long online = sysconf(_SC_NPROCESSORS_ONLN);
     unsigned default_threads = 4;
-
-    if (online > 0 && (unsigned long)online < default_threads) {
-        default_threads = (unsigned)online;
-    }
-    if (total_threads < 4096) {
-        default_threads = 1;
-    }
 
     if (requested == 0) {
         requested = default_threads;

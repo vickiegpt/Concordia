@@ -361,9 +361,9 @@ pub const PACC_KERNEL_ARG_KIND_POINTER: u32 = 1;
 pub const PACC_KERNEL_ARG_FLAG_SIGNED: u32 = 1 << 0;
 pub const PACC_KERNEL_ARG_FLAG_FLOAT: u32 = 1 << 1;
 pub const PACC_KERNEL_ARG_FLAG_INLINE_BLOB: u32 = 1 << 16;
-pub const PACC_KERNEL_ARG_FLAG_DEVICE_PHYS: u32 = 1 << 17;
 pub const PACC_KERNEL_ARG_FLAG_BUFFER_INPUT: u32 = 1 << 8;
 pub const PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT: u32 = 1 << 9;
+pub const PACC_KERNEL_ARG_FLAG_DEVICE_PHYS: u32 = 1 << 10;
 pub const PACC_KERNEL_ARG_FLAG_BUFFER_INOUT: u32 =
     PACC_KERNEL_ARG_FLAG_BUFFER_INPUT | PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT;
 
@@ -919,6 +919,15 @@ impl PaccDevice {
         let ret = unsafe { libc::ioctl(self.fd, IOC_ZLUDA_IRQ, &mut arg as *mut _) };
         if ret < 0 {
             let err = std::io::Error::last_os_error();
+            if zluda_irq_mock_enabled() {
+                if zluda_irq_trace_enabled() {
+                    eprintln!(
+                        "PACC ZLUDA IRQ mock: ioctl 0x{:x} on /dev/pacc{} failed: {}; using CPU-side firmware mock",
+                        IOC_ZLUDA_IRQ, self.id, err
+                    );
+                }
+                return Ok(());
+            }
             return Err(err);
         }
         if zluda_irq_trace_enabled() {
@@ -1573,12 +1582,11 @@ static RUNTIME_BOOTED: OnceLock<Mutex<[bool; 4]>> = OnceLock::new();
 static SHARED_DDR_REDUCE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const SHARED_DDR_STAGE_LOCK_COUNT: usize = 64;
 static SHARED_DDR_STAGE_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
-static SHARED_DDR_KERNEL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+const SHARED_DDR_KERNEL_LOCK_COUNT: usize = 64;
+static SHARED_DDR_KERNEL_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 static SHARED_DDR_BO_ARENA: OnceLock<Mutex<Option<PaccBoMap>>> = OnceLock::new();
 static SHARED_DDR_MOCK_ARENA: OnceLock<Mutex<BTreeMap<u64, Vec<u8>>>> = OnceLock::new();
 static SHARED_DDR_FULL_MMAP: OnceLock<Result<SharedDdrFullMmap, String>> = OnceLock::new();
-static SHARED_DDR_BASE_CACHE: OnceLock<u64> = OnceLock::new();
-static SHARED_DDR_BYTES_CACHE: OnceLock<usize> = OnceLock::new();
 static SHARED_DDR_FULL_MMAP_UNAVAILABLE: AtomicUsize = AtomicUsize::new(0);
 static SHARED_DDR_MMAP_UNAVAILABLE: AtomicUsize = AtomicUsize::new(0);
 static NVTOP_STATE: OnceLock<Mutex<NvtopProcessState>> = OnceLock::new();
@@ -1915,15 +1923,6 @@ fn require_runtime_ready() -> std::io::Result<()> {
 fn zluda_irq_mock_enabled() -> bool {
     matches!(
         std::env::var("HETGPU_PACC_ZLUDA_IRQ_MOCK")
-            .ok()
-            .map(|v| v.trim().to_ascii_lowercase()),
-        Some(v) if v == "1" || v == "true" || v == "yes" || v == "force"
-    )
-}
-
-fn zluda_irq_ioctl_skip_enabled() -> bool {
-    matches!(
-        std::env::var("HETGPU_PACC_ZLUDA_IRQ_SKIP_IOCTL")
             .ok()
             .map(|v| v.trim().to_ascii_lowercase()),
         Some(v) if v == "1" || v == "true" || v == "yes" || v == "force"
@@ -2351,8 +2350,13 @@ fn lock_shared_ddr_stage(slot_id: usize, label: &str) -> std::io::Result<MutexGu
     }
 }
 
-fn shared_ddr_kernel_lock() -> &'static Mutex<()> {
-    SHARED_DDR_KERNEL_LOCK.get_or_init(|| Mutex::new(()))
+fn shared_ddr_kernel_lock(slot_id: usize) -> &'static Mutex<()> {
+    let locks = SHARED_DDR_KERNEL_LOCKS.get_or_init(|| {
+        (0..SHARED_DDR_KERNEL_LOCK_COUNT)
+            .map(|_| Mutex::new(()))
+            .collect()
+    });
+    &locks[slot_id % locks.len()]
 }
 
 fn parse_u64_text(value: &str) -> Option<u64> {
@@ -2387,11 +2391,9 @@ fn shared_ddr_base() -> u64 {
         }
     }
 
-    *SHARED_DDR_BASE_CACHE.get_or_init(resolve_shared_ddr_base)
-}
-
-fn resolve_shared_ddr_base() -> u64 {
     read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base")
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_live/shared_ddr_base"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_live/shared_ddr_base"))
         .or_else(|| {
             std::env::var("HETGPU_PACC_SHARED_DDR_BASE")
                 .ok()
@@ -2625,12 +2627,12 @@ fn shared_ddr_mock_copy_out(offset: u64, bytes: &mut [u8]) -> std::io::Result<()
 }
 
 fn shared_ddr_bytes() -> usize {
-    *SHARED_DDR_BYTES_CACHE.get_or_init(resolve_shared_ddr_bytes)
-}
-
-fn resolve_shared_ddr_bytes() -> usize {
     read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_bytes")
         .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_size"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_live/shared_ddr_bytes"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_live/shared_ddr_size"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_live/shared_ddr_bytes"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_live/shared_ddr_size"))
         .or_else(|| {
             std::env::var("HETGPU_PACC_SHARED_DDR_BYTES")
                 .ok()
@@ -2641,12 +2643,30 @@ fn resolve_shared_ddr_bytes() -> usize {
 }
 
 fn helper_path_for_pacc(pacc_id: usize) -> String {
-    std::env::var("HETGPU_PACC_MBOX_DEVICE").unwrap_or_else(|_| {
+    std::env::var("HETGPU_PACC_MBOX_DEVICE").map_or_else(|_| {
+        let per_pacc_live = format!("/dev/hetgpu_pacc_mbox_live{}", pacc_id);
+        if std::path::Path::new(&per_pacc_live).exists() {
+            return per_pacc_live;
+        }
+        let per_pacc_live = format!("/dev/hetgpu_pacc_live{}", pacc_id);
+        if std::path::Path::new(&per_pacc_live).exists() {
+            return per_pacc_live;
+        }
         let per_pacc = format!("/dev/hetgpu_pacc_mbox{}", pacc_id);
         if std::path::Path::new(&per_pacc).exists() {
             per_pacc
-        } else {
+        } else if std::path::Path::new("/dev/hetgpu_pacc_mbox").exists() {
             "/dev/hetgpu_pacc_mbox".to_string()
+        } else {
+            format!("/dev/pacc{}", pacc_id)
+        }
+    }, |dev| {
+        if dev.contains("{}") {
+            dev.replace("{}", &pacc_id.to_string())
+        } else if dev.contains("%d") {
+            dev.replace("%d", &pacc_id.to_string())
+        } else {
+            dev
         }
     })
 }
@@ -7787,7 +7807,7 @@ fn align_down(value: usize, align: usize) -> usize {
 fn kernel_submit_slot_layout(
     dev_id: usize,
     required_bytes: usize,
-) -> std::io::Result<(u64, usize)> {
+) -> std::io::Result<(u64, usize, usize)> {
     let shared_bytes = shared_ddr_bytes();
     let control_reserved = shared_ddr_control_reserved_bytes();
     let usable_bytes = shared_bytes.saturating_sub(control_reserved);
@@ -7843,8 +7863,9 @@ fn kernel_submit_slot_layout(
         ));
     }
     let base_off = control_reserved as u64 + (usable_bytes - reserved) as u64;
+    let slot_id = dev_id % slot_count;
     let slot_off = base_off
-        .checked_add((dev_id % slot_count) as u64 * slot_bytes as u64)
+        .checked_add(slot_id as u64 * slot_bytes as u64)
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "kernel slot offset overflow"))?;
     if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
         .ok()
@@ -7852,11 +7873,11 @@ fn kernel_submit_slot_layout(
         == Some("1")
     {
         eprintln!(
-            "pacc_LaunchKernel: helper slot layout dev={} slot_count={} slot_bytes={} slot_off=0x{:x} required={}",
-            dev_id, slot_count, slot_bytes, slot_off, min_slot_bytes
+            "pacc_LaunchKernel: helper slot layout dev={} slot={} slot_count={} slot_bytes={} slot_off=0x{:x} required={}",
+            dev_id, slot_id, slot_count, slot_bytes, slot_off, min_slot_bytes
         );
     }
-    Ok((slot_off, slot_bytes))
+    Ok((slot_off, slot_bytes, slot_id))
 }
 
 #[derive(Debug)]
@@ -8062,9 +8083,6 @@ fn submit_pacc_kernel_image_via_helper(
     block_y: u32,
     block_z: u32,
 ) -> std::io::Result<usize> {
-    let _guard = shared_ddr_kernel_lock()
-        .lock()
-        .map_err(|_| Error::new(ErrorKind::Other, "PACC kernel helper mutex poisoned"))?;
     let shared_base = shared_ddr_base();
     if shared_base == 0 || shared_ddr_bytes() == 0 {
         return Err(Error::new(
@@ -8089,7 +8107,10 @@ fn submit_pacc_kernel_image_via_helper(
     let required_bytes = submit_len
         .checked_add(staging_bytes)
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "PACC helper submit size overflow"))?;
-    let (slot_off, slot_bytes) = kernel_submit_slot_layout(dev.id, required_bytes)?;
+    let (slot_off, slot_bytes, slot_id) = kernel_submit_slot_layout(dev.id, required_bytes)?;
+    let _slot_guard = shared_ddr_kernel_lock(slot_id)
+        .lock()
+        .map_err(|_| Error::new(ErrorKind::Other, "PACC kernel helper slot mutex poisoned"))?;
     if submit_len > slot_bytes {
         return Err(Error::new(
             ErrorKind::OutOfMemory,
@@ -8186,12 +8207,13 @@ fn submit_pacc_kernel_image_via_helper(
         == Some("1")
     {
         eprintln!(
-            "pacc_LaunchKernel: helper-submit kernel='{}' seq={} shared=0x{:x} submit={} bytes on pacc{}",
+            "pacc_LaunchKernel: helper-submit kernel='{}' seq={} shared=0x{:x} submit={} bytes on pacc{} slot{}",
             kernel_name,
             seq,
             shared_base + slot_off,
             submit_len,
-            dev.id
+            dev.id,
+            slot_id
         );
     }
     Ok(submit_len)

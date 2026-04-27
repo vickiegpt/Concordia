@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +44,8 @@ typedef signed int s32;
 #define HETGPU_PACC_RUNTIME_TABLE_VERSION 1U
 #define HETGPU_PACC_COMPLETION_OFF 0x1f20UL
 #define HETGPU_PACC_CORE_COUNT 4U
+#define HETGPU_PACC_WORKER_THREADS 4U
+#define HETGPU_PACC_MAX_WORKER_THREADS 64U
 
 #define PACC_IOC_MAGIC 'p'
 #define PACC_IOC_ZLUDA_IRQ _IO(PACC_IOC_MAGIC, 5)
@@ -195,6 +198,21 @@ static int parse_u64_arg(const char *s, u64 *out) {
     return 1;
 }
 
+static unsigned runtime_worker_threads(u64 work_items) {
+    u64 requested = 0;
+    const char *value = getenv("HETGPU_PACC_JOBD_KERNEL_THREADS");
+    if (!parse_u64_arg(value, &requested) || requested == 0) {
+        requested = HETGPU_PACC_WORKER_THREADS;
+    }
+    if (requested > HETGPU_PACC_MAX_WORKER_THREADS) {
+        requested = HETGPU_PACC_MAX_WORKER_THREADS;
+    }
+    if (work_items > 0 && requested > work_items) {
+        requested = work_items;
+    }
+    return requested ? (unsigned)requested : 1U;
+}
+
 static int parse_prefixed_arg(const char *arg, const char *prefix, u64 *out) {
     size_t n;
     if (!arg || !prefix) return 0;
@@ -211,12 +229,15 @@ static const char *parse_prefixed_string_arg(const char *arg, const char *prefix
     return arg + n;
 }
 
-static void read_runtime_args(int argc, char **argv, u64 *pacc_id, const char **mbox_path) {
+static int read_runtime_args(int argc, char **argv, u64 *pacc_id, const char **mbox_path) {
     const char *value;
+    int have_pacc_id = 0;
     value = getenv("HETGPU_PACC_ID");
     if (!parse_u64_arg(value, pacc_id)) {
         value = getenv("HETGPU_PACC_DEVICE_ID");
-        parse_u64_arg(value, pacc_id);
+        have_pacc_id = parse_u64_arg(value, pacc_id);
+    } else {
+        have_pacc_id = 1;
     }
     value = getenv("HETGPU_PACC_MBOX_PATH");
     if (value && *value) *mbox_path = value;
@@ -258,7 +279,7 @@ static int open_runtime_mbox(u64 pacc_id, const char *mbox_path) {
     fd = open("/dev/hetgpu_pacc_mbox", O_RDWR | O_SYNC | O_CLOEXEC);
     if (fd < 0) {
         fprintf(stderr,
-                "hetgpu_pacc_runtime: open /dev/hetgpu_pacc_mbox%lu or /dev/hetgpu_pacc_mbox failed: %s\n",
+                "hetgpu_pacc_runtime: open /dev/mbox, /dev/hetgpu_pacc_mbox%lu, or /dev/hetgpu_pacc_mbox failed: %s\n",
                 (unsigned long)pacc_id, strerror(errno));
     }
     return fd;
@@ -682,16 +703,20 @@ static int gemm_try_xm_native(const struct GemmJob *job,
                               const void *b,
                               void *c,
                               float alpha,
-                              float beta) {
+                              float beta,
+                              u64 row_begin,
+                              u64 row_end) {
     if (job->transa || job->transb) {
         return 0;
     }
+    if (row_end > job->m) row_end = job->m;
+    if (row_begin >= row_end) return 1;
 
     if ((job->atype == PACC_DTYPE_INT8 || job->atype == PACC_DTYPE_UINT8) &&
         (job->btype == PACC_DTYPE_INT8 || job->btype == PACC_DTYPE_UINT8)) {
-        for (u64 row0 = 0; row0 < job->m; row0 += XM_INT8_TILE_M) {
+        for (u64 row0 = row_begin; row0 < row_end; row0 += XM_INT8_TILE_M) {
             for (u64 col0 = 0; col0 < job->n; col0 += XM_INT8_TILE_N) {
-                u64 row1 = row0 + XM_INT8_TILE_M <= job->m ? row0 + XM_INT8_TILE_M : job->m;
+                u64 row1 = row0 + XM_INT8_TILE_M <= row_end ? row0 + XM_INT8_TILE_M : row_end;
                 u64 col1 = col0 + XM_INT8_TILE_N <= job->n ? col0 + XM_INT8_TILE_N : job->n;
                 if (row1 - row0 != XM_INT8_TILE_M || col1 - col0 != XM_INT8_TILE_N) {
                     gemm_scalar_block(job, a, b, c, alpha, beta, row0, row1, col0, col1);
@@ -723,9 +748,9 @@ static int gemm_try_xm_native(const struct GemmJob *job,
     }
 
     if (job->atype == PACC_DTYPE_BF16 && job->btype == PACC_DTYPE_BF16) {
-        for (u64 row0 = 0; row0 < job->m; row0 += XM_BF16_TILE_M) {
+        for (u64 row0 = row_begin; row0 < row_end; row0 += XM_BF16_TILE_M) {
             for (u64 col0 = 0; col0 < job->n; col0 += XM_BF16_TILE_N) {
-                u64 row1 = row0 + XM_BF16_TILE_M <= job->m ? row0 + XM_BF16_TILE_M : job->m;
+                u64 row1 = row0 + XM_BF16_TILE_M <= row_end ? row0 + XM_BF16_TILE_M : row_end;
                 u64 col1 = col0 + XM_BF16_TILE_N <= job->n ? col0 + XM_BF16_TILE_N : job->n;
                 if (row1 - row0 != XM_BF16_TILE_M || col1 - col0 != XM_BF16_TILE_N) {
                     gemm_scalar_block(job, a, b, c, alpha, beta, row0, row1, col0, col1);
@@ -760,6 +785,88 @@ static int gemm_try_xm_native(const struct GemmJob *job,
 }
 #endif
 
+struct GemmWorker {
+    const struct GemmJob *job;
+    const void *a;
+    const void *b;
+    void *c;
+    float alpha;
+    float beta;
+    u64 row0;
+    u64 row1;
+    u32 status;
+};
+
+static void *gemm_worker_main(void *opaque) {
+    struct GemmWorker *worker = (struct GemmWorker *)opaque;
+    worker->status = 0;
+    if (worker->row0 >= worker->row1) {
+        return 0;
+    }
+#if defined(__clang__) && defined(__riscv_xsfvcp)
+    if (gemm_try_xm_native(worker->job, worker->a, worker->b, worker->c,
+                           worker->alpha, worker->beta,
+                           worker->row0, worker->row1)) {
+        return 0;
+    }
+#endif
+    worker->status = gemm_scalar_block(worker->job, worker->a, worker->b, worker->c,
+                                       worker->alpha, worker->beta,
+                                       worker->row0, worker->row1, 0, worker->job->n);
+    return 0;
+}
+
+static u32 gemm_run_parallel(const struct GemmJob *job,
+                             const void *a,
+                             const void *b,
+                             void *c,
+                             float alpha,
+                             float beta) {
+    unsigned nthreads = runtime_worker_threads(job->m);
+    pthread_t threads[HETGPU_PACC_MAX_WORKER_THREADS];
+    struct GemmWorker workers[HETGPU_PACC_MAX_WORKER_THREADS];
+    unsigned created = 0;
+    u32 status = 0;
+
+    if (nthreads <= 1) {
+#if defined(__clang__) && defined(__riscv_xsfvcp)
+        if (gemm_try_xm_native(job, a, b, c, alpha, beta, 0, job->m)) {
+            return 0;
+        }
+#endif
+        return gemm_scalar_block(job, a, b, c, alpha, beta, 0, job->m, 0, job->n);
+    }
+
+    memset(workers, 0, sizeof(workers));
+    for (unsigned i = 0; i < nthreads; ++i) {
+        u64 row0 = job->m * (u64)i / (u64)nthreads;
+        u64 row1 = job->m * (u64)(i + 1U) / (u64)nthreads;
+        if (row0 >= row1) continue;
+        workers[i].job = job;
+        workers[i].a = a;
+        workers[i].b = b;
+        workers[i].c = c;
+        workers[i].alpha = alpha;
+        workers[i].beta = beta;
+        workers[i].row0 = row0;
+        workers[i].row1 = row1;
+        workers[i].status = 0;
+        if (pthread_create(&threads[i], 0, gemm_worker_main, &workers[i]) != 0) {
+            status = 0xffff0102U;
+            break;
+        }
+        created++;
+    }
+
+    for (unsigned i = 0; i < created; ++i) {
+        pthread_join(threads[i], 0);
+        if (workers[i].status && !status) {
+            status = workers[i].status;
+        }
+    }
+    return status;
+}
+
 static u32 gemm_typed(const struct GemmJob *job) {
     const float *alpha_ptr = (const float *)shared_ddr_ptr_or_null(job->alpha_addr, sizeof(float));
     const float *beta_ptr = (const float *)shared_ddr_ptr_or_null(job->beta_addr, sizeof(float));
@@ -792,14 +899,94 @@ static u32 gemm_typed(const struct GemmJob *job) {
         c = shared_ddr_ptr(c_phys, c_bytes);
         if (!a || !b || !c) return 0xffff0101U;
 
-#if defined(__clang__) && defined(__riscv_xsfvcp)
-        if (gemm_try_xm_native(job, a, b, c, alpha, beta)) {
-            continue;
-        }
-#endif
-        gemm_scalar_block(job, a, b, c, alpha, beta, 0, job->m, 0, job->n);
+        u32 status = gemm_run_parallel(job, a, b, c, alpha, beta);
+        if (status) return status;
     }
     return 0;
+}
+
+struct SoftmaxWorker {
+    const struct SoftmaxJob *job;
+    const void *src;
+    void *dst;
+    u64 stride;
+    u64 row0;
+    u64 row1;
+    u32 status;
+};
+
+static u32 softmax_rows(const struct SoftmaxJob *job,
+                        const void *src,
+                        void *dst,
+                        u64 stride,
+                        u64 row0,
+                        u64 row1) {
+    for (u64 row = row0; row < row1; ++row) {
+        const u64 base = row * stride;
+        float max_v = load_typed(src, base, job->dtype);
+        for (u64 col = 1; col < job->cols; ++col) {
+            float v = load_typed(src, base + col, job->dtype);
+            max_v = v > max_v ? v : max_v;
+        }
+        float sum = 0.0f;
+        for (u64 col = 0; col < job->cols; ++col) {
+            sum += expf_fast(load_typed(src, base + col, job->dtype) - max_v);
+        }
+        float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
+        for (u64 col = 0; col < job->cols; ++col) {
+            float e = expf_fast(load_typed(src, base + col, job->dtype) - max_v);
+            store_typed(dst, base + col, job->dtype, e * inv);
+        }
+    }
+    return 0;
+}
+
+static void *softmax_worker_main(void *opaque) {
+    struct SoftmaxWorker *worker = (struct SoftmaxWorker *)opaque;
+    worker->status = softmax_rows(worker->job, worker->src, worker->dst,
+                                  worker->stride, worker->row0, worker->row1);
+    return 0;
+}
+
+static u32 softmax_run_parallel(const struct SoftmaxJob *job,
+                                const void *src,
+                                void *dst,
+                                u64 stride) {
+    unsigned nthreads = runtime_worker_threads(job->rows);
+    pthread_t threads[HETGPU_PACC_MAX_WORKER_THREADS];
+    struct SoftmaxWorker workers[HETGPU_PACC_MAX_WORKER_THREADS];
+    unsigned created = 0;
+    u32 status = 0;
+
+    if (nthreads <= 1) {
+        return softmax_rows(job, src, dst, stride, 0, job->rows);
+    }
+
+    memset(workers, 0, sizeof(workers));
+    for (unsigned i = 0; i < nthreads; ++i) {
+        u64 row0 = job->rows * (u64)i / (u64)nthreads;
+        u64 row1 = job->rows * (u64)(i + 1U) / (u64)nthreads;
+        if (row0 >= row1) continue;
+        workers[i].job = job;
+        workers[i].src = src;
+        workers[i].dst = dst;
+        workers[i].stride = stride;
+        workers[i].row0 = row0;
+        workers[i].row1 = row1;
+        if (pthread_create(&threads[i], 0, softmax_worker_main, &workers[i]) != 0) {
+            status = 0xffff0202U;
+            break;
+        }
+        created++;
+    }
+
+    for (unsigned i = 0; i < created; ++i) {
+        pthread_join(threads[i], 0);
+        if (workers[i].status && !status) {
+            status = workers[i].status;
+        }
+    }
+    return status;
 }
 
 static u32 softmax_typed(const struct SoftmaxJob *job) {
@@ -818,24 +1005,88 @@ static u32 softmax_typed(const struct SoftmaxJob *job) {
     dst = shared_ddr_ptr(job->dst_addr, bytes);
     if (!src || !dst) return 0xffff0101U;
 
-    for (u64 row = 0; row < job->rows; ++row) {
-        const u64 base = row * stride;
-        float max_v = load_typed(src, base, job->dtype);
-        for (u64 col = 1; col < job->cols; ++col) {
-            float v = load_typed(src, base + col, job->dtype);
-            max_v = v > max_v ? v : max_v;
+    return softmax_run_parallel(job, src, dst, stride);
+}
+
+struct RmsNormWorker {
+    const struct RmsNormJob *job;
+    const void *x;
+    const void *w;
+    void *y;
+    u64 row0;
+    u64 row1;
+    u32 status;
+};
+
+static u32 rmsnorm_rows(const struct RmsNormJob *job,
+                        const void *x,
+                        const void *w,
+                        void *y,
+                        u64 row0,
+                        u64 row1) {
+    for (u64 row = row0; row < row1; ++row) {
+        const u64 base = row * job->hidden;
+        float sumsq = 0.0f;
+        for (u64 i = 0; i < job->hidden; ++i) {
+            float v = load_typed(x, base + i, job->dtype);
+            sumsq += v * v;
         }
-        float sum = 0.0f;
-        for (u64 col = 0; col < job->cols; ++col) {
-            sum += expf_fast(load_typed(src, base + col, job->dtype) - max_v);
-        }
-        float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
-        for (u64 col = 0; col < job->cols; ++col) {
-            float e = expf_fast(load_typed(src, base + col, job->dtype) - max_v);
-            store_typed(dst, base + col, job->dtype, e * inv);
+        float scale = rsqrtf_newton(sumsq / (float)job->hidden + job->eps);
+        for (u64 i = 0; i < job->hidden; ++i) {
+            float weight = w ? load_typed(w, i, job->dtype) : 1.0f;
+            store_typed(y, base + i, job->dtype,
+                        load_typed(x, base + i, job->dtype) * scale * weight);
         }
     }
     return 0;
+}
+
+static void *rmsnorm_worker_main(void *opaque) {
+    struct RmsNormWorker *worker = (struct RmsNormWorker *)opaque;
+    worker->status = rmsnorm_rows(worker->job, worker->x, worker->w, worker->y,
+                                  worker->row0, worker->row1);
+    return 0;
+}
+
+static u32 rmsnorm_run_parallel(const struct RmsNormJob *job,
+                                const void *x,
+                                const void *w,
+                                void *y) {
+    unsigned nthreads = runtime_worker_threads(job->rows);
+    pthread_t threads[HETGPU_PACC_MAX_WORKER_THREADS];
+    struct RmsNormWorker workers[HETGPU_PACC_MAX_WORKER_THREADS];
+    unsigned created = 0;
+    u32 status = 0;
+
+    if (nthreads <= 1) {
+        return rmsnorm_rows(job, x, w, y, 0, job->rows);
+    }
+
+    memset(workers, 0, sizeof(workers));
+    for (unsigned i = 0; i < nthreads; ++i) {
+        u64 row0 = job->rows * (u64)i / (u64)nthreads;
+        u64 row1 = job->rows * (u64)(i + 1U) / (u64)nthreads;
+        if (row0 >= row1) continue;
+        workers[i].job = job;
+        workers[i].x = x;
+        workers[i].w = w;
+        workers[i].y = y;
+        workers[i].row0 = row0;
+        workers[i].row1 = row1;
+        if (pthread_create(&threads[i], 0, rmsnorm_worker_main, &workers[i]) != 0) {
+            status = 0xffff0302U;
+            break;
+        }
+        created++;
+    }
+
+    for (unsigned i = 0; i < created; ++i) {
+        pthread_join(threads[i], 0);
+        if (workers[i].status && !status) {
+            status = workers[i].status;
+        }
+    }
+    return status;
 }
 
 static u32 rmsnorm_typed(const struct RmsNormJob *job) {
@@ -858,20 +1109,7 @@ static u32 rmsnorm_typed(const struct RmsNormJob *job) {
     }
     if (!x || !y) return 0xffff0101U;
 
-    for (u64 row = 0; row < job->rows; ++row) {
-        const u64 base = row * job->hidden;
-        float sumsq = 0.0f;
-        for (u64 i = 0; i < job->hidden; ++i) {
-            float v = load_typed(x, base + i, job->dtype);
-            sumsq += v * v;
-        }
-        float scale = rsqrtf_newton(sumsq / (float)job->hidden + job->eps);
-        for (u64 i = 0; i < job->hidden; ++i) {
-            float weight = w ? load_typed(w, i, job->dtype) : 1.0f;
-            store_typed(y, base + i, job->dtype, load_typed(x, base + i, job->dtype) * scale * weight);
-        }
-    }
-    return 0;
+    return rmsnorm_run_parallel(job, x, w, y);
 }
 
 static volatile struct ArgSlotHeader *arg_slot(volatile struct Doorbell *control, u32 job_id) {

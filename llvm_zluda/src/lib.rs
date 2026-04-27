@@ -1,5 +1,6 @@
 #![allow(non_upper_case_globals)]
 use llvm_sys::prelude::*;
+use llvm_sys::target::LLVMTargetDataRef;
 pub use llvm_sys::*;
 
 // 添加LLVMDbgRecordRef类型
@@ -109,7 +110,7 @@ extern "C" {
         InsertAtEnd: LLVMBasicBlockRef,
     ) -> LLVMDbgRecordRef;
 
-    pub fn LLVMZludaSizeOfTypeInBits(TD: LLVMContextRef, Ty: LLVMTypeRef) -> u64;
+    pub fn LLVMZludaSizeOfTypeInBits(TD: LLVMTargetDataRef, Ty: LLVMTypeRef) -> u64;
 
     pub fn LLVMZludaSetAtomic(
         MemAccessInst: LLVMValueRef,

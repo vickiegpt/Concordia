@@ -15,7 +15,9 @@
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
 
+#ifndef HETGPU_PACC_MBOX_DEV
 #define HETGPU_PACC_MBOX_DEV "hetgpu_pacc_mbox"
+#endif
 #define PACC_COUNT 4
 #define PACC_HOST_MBOX_SRAM_OFF 0x210000ULL
 #define MBOX_SIZE 0x2000UL

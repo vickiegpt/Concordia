@@ -43,13 +43,13 @@ use ptx_parser::{MultiVariable, PredAt};
 // use llvm_zluda::debuginfo::*;
 use llvm_zluda::debuginfo::*;
 use llvm_zluda::prelude::*;
-use llvm_zluda::target::{LLVMGetModuleDataLayout, LLVMSizeOfTypeInBits};
+use llvm_zluda::target::LLVMGetModuleDataLayout;
 use llvm_zluda::{core::*, LLVMAtomicOrdering, LLVMIntPredicate, LLVMRealPredicate, LLVMTypeKind};
 use llvm_zluda::{
     LLVMAttributeFunctionIndex, LLVMCallConv, LLVMZludaAtomicRMWBinOp, LLVMZludaBuildAlloca,
     LLVMZludaBuildAtomicCmpXchg, LLVMZludaBuildAtomicRMW, LLVMZludaBuildFence,
     LLVMZludaFastMathAllowReciprocal, LLVMZludaFastMathApproxFunc, LLVMZludaFastMathNone,
-    LLVMZludaSetFastMathFlags,
+    LLVMZludaSetFastMathFlags, LLVMZludaSizeOfTypeInBits,
 };
 
 const LLVM_UNNAMED: &CStr = c"";
@@ -3327,8 +3327,8 @@ impl<'a> MethodEmitContext<'a> {
             // Check if bitcast is valid between these types
             // Bitcast requires same size types
             let data_layout = unsafe { LLVMGetModuleDataLayout(self.module) };
-            let src_size = unsafe { LLVMSizeOfTypeInBits(data_layout, src_type) };
-            let dst_size = unsafe { LLVMSizeOfTypeInBits(data_layout, dst_type) };
+            let src_size = unsafe { LLVMZludaSizeOfTypeInBits(data_layout, src_type) };
+            let dst_size = unsafe { LLVMZludaSizeOfTypeInBits(data_layout, dst_type) };
 
             if src_size == dst_size {
                 // Same size, we can use bitcast

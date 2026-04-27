@@ -1053,10 +1053,7 @@ pub fn compile_bitcode_pacc_multi(
     main_buffer: &[u8],
     linked_modules: &[&[u8]],
 ) -> Result<Vec<u8>, pacc_comgr_status_s> {
-    let log_debug = std::env::var("HETGPU_PACC_LOG_COMGR")
-        .ok()
-        .as_deref()
-        == Some("1");
+    let log_debug = std::env::var("HETGPU_PACC_LOG_COMGR").ok().as_deref() == Some("1");
     if log_debug {
         eprintln!("ZLUDA DEBUG: Compiling bitcode for PACC (RISC-V IME/VCIX)");
         eprintln!(
@@ -1203,8 +1200,8 @@ unsafe fn pacc_copy_first_output_bytes(
     }
 
     let preferred_kinds = [
-        pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_RELOCATABLE,
         pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_EXECUTABLE,
+        pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_RELOCATABLE,
     ];
 
     let mut output_data = mem::zeroed();

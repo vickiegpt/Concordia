@@ -64,6 +64,8 @@
 #define PACC_DTYPE_F32 4U
 #define PACC_DTYPE_BF16 5U
 #define PACC_GEMM_THREADS 4U
+#define PACC_KERNEL_DEFAULT_THREADS 4U
+#define PACC_KERNEL_MAX_THREADS 64U
 #define PACC_MAX_KERNEL_ARGS 64U
 #define PACC_MAX_KERNEL_BINDINGS 16U
 
@@ -597,6 +599,27 @@ static uint64_t shared_ddr_control_phys(uint64_t off, size_t len) {
 
 static uint64_t parse_u64(const char *s) {
     return strtoull(s, NULL, 0);
+}
+
+static uint64_t parse_env_u64_default(const char *name, uint64_t fallback) {
+    const char *value = getenv(name);
+    char *end = NULL;
+    unsigned long long parsed;
+    if (!value || !*value) {
+        return fallback;
+    }
+    errno = 0;
+    parsed = strtoull(value, &end, 0);
+    if (errno || end == value) {
+        return fallback;
+    }
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+        end++;
+    }
+    if (*end) {
+        return fallback;
+    }
+    return (uint64_t)parsed;
 }
 
 static const char *job_name(uint32_t job_id) {
@@ -1253,7 +1276,7 @@ static const char kernel_host_stubs_c[] =
 "#include <stdint.h>\n"
 "#include <stdbool.h>\n"
 "#include <math.h>\n"
-"#define WEAK __attribute__((weak))\n"
+"#define WEAK __attribute__((weak, visibility(\"hidden\")))\n"
 "struct ShflSyncResult { uint32_t x; uint32_t pred; };\n"
 "struct DivF32Part1Result { float fma_4; float fma_1; float fma_3; uint8_t numerator_scaled_flag; };\n"
 "static uint32_t lane_u8(uint32_t x, unsigned lane) { return (x >> (lane * 8)) & 0xffu; }\n"
@@ -1291,10 +1314,10 @@ static const char kernel_host_stubs_c[] =
 "WEAK bool f___zluda_ptx_impl_bar_red_and_pred(uint32_t barrier_id, bool predicate, bool invert_predicate) { (void)barrier_id; __sync_synchronize(); return predicate ^ invert_predicate; }\n"
 "WEAK bool f___zluda_ptx_impl_bar_red_or_pred(uint32_t barrier_id, bool predicate, bool invert_predicate) { (void)barrier_id; __sync_synchronize(); return predicate ^ invert_predicate; }\n"
 "WEAK uint32_t f___zluda_ptx_impl_activemask(void) { return 1u; }\n"
-"static uint32_t hetgpu_sreg_tid[3] = {0u, 0u, 0u};\n"
-"static uint32_t hetgpu_sreg_ntid[3] = {1u, 1u, 1u};\n"
-"static uint32_t hetgpu_sreg_ctaid[3] = {0u, 0u, 0u};\n"
-"static uint32_t hetgpu_sreg_nctaid[3] = {1u, 1u, 1u};\n"
+"static __thread uint32_t hetgpu_sreg_tid[3] = {0u, 0u, 0u};\n"
+"static __thread uint32_t hetgpu_sreg_ntid[3] = {1u, 1u, 1u};\n"
+"static __thread uint32_t hetgpu_sreg_ctaid[3] = {0u, 0u, 0u};\n"
+"static __thread uint32_t hetgpu_sreg_nctaid[3] = {1u, 1u, 1u};\n"
 "WEAK void f___zluda_ptx_impl_set_launch(uint32_t tid_x, uint32_t tid_y, uint32_t tid_z, uint32_t ntid_x, uint32_t ntid_y, uint32_t ntid_z, uint32_t ctaid_x, uint32_t ctaid_y, uint32_t ctaid_z, uint32_t nctaid_x, uint32_t nctaid_y, uint32_t nctaid_z) {\n"
 "    hetgpu_sreg_tid[0] = tid_x; hetgpu_sreg_tid[1] = tid_y; hetgpu_sreg_tid[2] = tid_z;\n"
 "    hetgpu_sreg_ntid[0] = ntid_x ? ntid_x : 1u; hetgpu_sreg_ntid[1] = ntid_y ? ntid_y : 1u; hetgpu_sreg_ntid[2] = ntid_z ? ntid_z : 1u;\n"
@@ -1498,7 +1521,7 @@ static int build_kernel_tmp_shared_stubs(const char *input_obj,
     size_t bytes = kernel_tmp_shared_stub_bytes();
     for (size_t i = 0; i < symbol_count; i++) {
         fprintf(out,
-                "__attribute__((weak, aligned(16))) unsigned char %s[%zu];\n",
+                "__attribute__((weak, visibility(\"hidden\"), aligned(16))) unsigned char %s[%zu];\n",
                 symbols[i], bytes);
     }
     if (fclose(out) != 0) return -1;
@@ -1963,6 +1986,89 @@ static uint32_t pacc_nonzero_dim(uint32_t value) {
     return value ? value : 1u;
 }
 
+struct KernelGridWorker {
+    const char *symbol;
+    void *fn;
+    const uint64_t *args;
+    const struct PaccJobImage *job;
+    size_t argc;
+    PaccSetLaunchFn set_launch;
+    uint32_t gx;
+    uint32_t gy;
+    uint32_t gz;
+    uint32_t bx;
+    uint32_t by;
+    uint32_t bz;
+    uint64_t begin;
+    uint64_t end;
+    int status;
+};
+
+static unsigned kernel_worker_threads(uint64_t total_threads) {
+    uint64_t requested = parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_THREADS", 0);
+    unsigned default_threads = PACC_KERNEL_DEFAULT_THREADS;
+
+    if (requested == 0) {
+        requested = default_threads;
+    }
+    if (requested < 1) {
+        requested = 1;
+    }
+    if (requested > PACC_KERNEL_MAX_THREADS) {
+        requested = PACC_KERNEL_MAX_THREADS;
+    }
+    if (requested > total_threads && total_threads > 0) {
+        requested = total_threads;
+    }
+    return (unsigned)requested;
+}
+
+static void kernel_decode_flat_index(uint64_t idx,
+                                     uint32_t gx, uint32_t gy, uint32_t gz,
+                                     uint32_t bx, uint32_t by, uint32_t bz,
+                                     uint32_t *tid_x, uint32_t *tid_y, uint32_t *tid_z,
+                                     uint32_t *cta_x, uint32_t *cta_y, uint32_t *cta_z) {
+    (void)gz;
+    *tid_x = (uint32_t)(idx % bx);
+    idx /= bx;
+    *tid_y = (uint32_t)(idx % by);
+    idx /= by;
+    *tid_z = (uint32_t)(idx % bz);
+    idx /= bz;
+    *cta_x = (uint32_t)(idx % gx);
+    idx /= gx;
+    *cta_y = (uint32_t)(idx % gy);
+    idx /= gy;
+    *cta_z = (uint32_t)idx;
+}
+
+static void *kernel_grid_worker_main(void *opaque) {
+    struct KernelGridWorker *worker = (struct KernelGridWorker *)opaque;
+    for (uint64_t idx = worker->begin; idx < worker->end; idx++) {
+        uint32_t tid_x, tid_y, tid_z;
+        uint32_t cta_x, cta_y, cta_z;
+        kernel_decode_flat_index(idx,
+                                 worker->gx, worker->gy, worker->gz,
+                                 worker->bx, worker->by, worker->bz,
+                                 &tid_x, &tid_y, &tid_z,
+                                 &cta_x, &cta_y, &cta_z);
+        if (worker->set_launch) {
+            worker->set_launch(tid_x, tid_y, tid_z,
+                               worker->bx, worker->by, worker->bz,
+                               cta_x, cta_y, cta_z,
+                               worker->gx, worker->gy, worker->gz);
+        }
+        worker->status = invoke_kernel_symbol(worker->symbol, worker->fn,
+                                              worker->args, worker->job,
+                                              worker->argc);
+        if (worker->status != 0) {
+            return NULL;
+        }
+    }
+    worker->status = 0;
+    return NULL;
+}
+
 static int invoke_kernel_symbol_grid(const char *symbol, void *fn,
                                      const uint64_t *args,
                                      const struct PaccJobImage *job,
@@ -1981,6 +2087,58 @@ static int invoke_kernel_symbol_grid(const char *symbol, void *fn,
                 " logical threads, but helper is missing; clear stale kernel cache",
                 symbol ? symbol : "<unknown>", total_threads);
         return -1;
+    }
+
+    unsigned workers = kernel_worker_threads(total_threads);
+    if (workers > 1) {
+        pthread_t threads[PACC_KERNEL_MAX_THREADS];
+        struct KernelGridWorker worker[PACC_KERNEL_MAX_THREADS];
+        unsigned created = 0;
+        uint64_t chunk = (total_threads + workers - 1u) / workers;
+
+        trace_msg("kernel dispatch %s replaying %" PRIu64
+                  " logical threads with %u workers",
+                  symbol ? symbol : "<unknown>", total_threads, workers);
+        memset(worker, 0, sizeof(worker));
+        for (unsigned i = 0; i < workers; i++) {
+            uint64_t begin = (uint64_t)i * chunk;
+            uint64_t end = begin + chunk;
+            if (begin >= total_threads) break;
+            if (end > total_threads) end = total_threads;
+            worker[i].symbol = symbol;
+            worker[i].fn = fn;
+            worker[i].args = args;
+            worker[i].job = job;
+            worker[i].argc = argc;
+            worker[i].set_launch = set_launch;
+            worker[i].gx = gx;
+            worker[i].gy = gy;
+            worker[i].gz = gz;
+            worker[i].bx = bx;
+            worker[i].by = by;
+            worker[i].bz = bz;
+            worker[i].begin = begin;
+            worker[i].end = end;
+            worker[i].status = 0;
+            if (pthread_create(&threads[i], NULL, kernel_grid_worker_main, &worker[i]) != 0) {
+                log_msg("kernel dispatch %s failed to create worker %u",
+                        symbol ? symbol : "<unknown>", i);
+                for (unsigned j = 0; j < created; j++) {
+                    pthread_join(threads[j], NULL);
+                }
+                return -1;
+            }
+            created++;
+        }
+
+        int status = 0;
+        for (unsigned i = 0; i < created; i++) {
+            pthread_join(threads[i], NULL);
+            if (worker[i].status != 0 && status == 0) {
+                status = worker[i].status;
+            }
+        }
+        return status;
     }
 
     for (uint32_t cta_z = 0; cta_z < gz; cta_z++) {
@@ -2468,7 +2626,7 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
 
 int main(int argc, char **argv) {
     const char *devmem = "/dev/mem";
-    const char *mbox_path = "/dev/pacc0";
+    const char *mbox_path = "/dev/mbox";
     const char *config = "/etc/hetgpu_pacc_jobs.conf";
     bool strict = false;
 
@@ -2485,10 +2643,18 @@ int main(int argc, char **argv) {
             strict = true;
         } else if (!strcmp(argv[i], "--devmem") && i + 1 < argc) {
             devmem = argv[++i];
+        } else if (!strncmp(argv[i], "--devmem=", 9)) {
+            devmem = argv[i] + 9;
         } else if (!strcmp(argv[i], "--config") && i + 1 < argc) {
             config = argv[++i];
+        } else if (!strncmp(argv[i], "--config=", 9)) {
+            config = argv[i] + 9;
         } else if ((!strcmp(argv[i], "--mbox") || !strcmp(argv[i], "--pacc-dev")) && i + 1 < argc) {
             mbox_path = argv[++i];
+        } else if (!strncmp(argv[i], "--mbox=", 7)) {
+            mbox_path = argv[i] + 7;
+        } else if (!strncmp(argv[i], "--pacc-dev=", 11)) {
+            mbox_path = argv[i] + 11;
         }
     }
 

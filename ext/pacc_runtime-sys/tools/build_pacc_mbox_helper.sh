@@ -7,6 +7,8 @@ out_dir="${repo_root}/target"
 kernel_release="${KERNELRELEASE:-$(uname -r)}"
 kernel_build="${KERNEL_BUILD:-/lib/modules/${kernel_release}/build}"
 out="${out_dir}/hetgpu_pacc_mbox.ko"
+ld="${LD:-}"
+modpost_warn="${KBUILD_MODPOST_WARN:-1}"
 
 mkdir -p "${out_dir}"
 
@@ -24,7 +26,20 @@ EOF
   exit 1
 fi
 
-make -C "${kernel_build}" M="${src_dir}" modules
+if [[ -z "${ld}" && -x /usr/bin/ld.bfd ]]; then
+  ld=/usr/bin/ld.bfd
+fi
+
+make_args=(
+  -C "${kernel_build}"
+  "M=${src_dir}"
+  "KBUILD_MODPOST_WARN=${modpost_warn}"
+)
+if [[ -n "${ld}" ]]; then
+  make_args+=("LD=${ld}")
+fi
+
+make "${make_args[@]}" modules
 cp "${src_dir}/hetgpu_pacc_mbox.ko" "${out}"
 modinfo "${out}" || true
 printf 'output=%s\n' "${out}"

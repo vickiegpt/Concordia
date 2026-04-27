@@ -55,6 +55,7 @@ outer_root="${tmp}/outer"
 inner_root="${tmp}/inner"
 new_inner="${tmp}/new-inner.cpio"
 new_outer="${tmp}/new-outer.cpio"
+outer_list="${tmp}/outer-list.txt"
 pad="${tmp}/pad.bin"
 
 input_size="$(stat -c '%s' "${input_bin}")"
@@ -91,7 +92,17 @@ cp "${new_inner}" "${outer_root}/${inner_name}"
 
 (
   cd "${outer_root}"
-  find . -print0 | LC_ALL=C sort -z | cpio --null -o -H newc --quiet > "${new_outer}"
+  # The PACC loader path for the LX500 image is sensitive to the nested
+  # initramfs appearing immediately after the outer root entry.  Keep that
+  # placement instead of purely sorting the archive, otherwise even an empty
+  # repack can boot far enough for pacc->id but never complete probe.
+  {
+    printf '.\0'
+    printf './%s\0' "${inner_name}"
+    find . -print0 | LC_ALL=C sort -z | \
+      awk -v RS='\0' -v ORS='\0' -v inner="./${inner_name}" '$0 != "." && $0 != inner { print }'
+  } > "${outer_list}"
+  cpio --null -o -H newc --quiet < "${outer_list}" > "${new_outer}"
 )
 
 new_outer_size="$(stat -c '%s' "${new_outer}")"

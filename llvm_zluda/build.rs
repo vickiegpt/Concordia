@@ -43,16 +43,16 @@ fn main() {
         let (cxxflags, ldflags, libdir, lib_names, system_libs) =
             llvm_config_from_path(&llvm_config_path).expect("Failed to run llvm-config");
 
-        println!("cargo:rustc-link-arg={ldflags}");
-        println!("cargo:rustc-link-search=native={libdir}");
-        for lib in system_libs.split_ascii_whitespace() {
-            println!("cargo:rustc-link-arg={lib}");
-        }
-        link_llvm_components(lib_names);
         compile_cxx_lib_with_include(
             cxxflags,
             llvm_prefix.join("include").to_str().unwrap().to_string(),
         );
+        println!("cargo:rustc-link-arg={ldflags}");
+        println!("cargo:rustc-link-search=native={libdir}");
+        link_llvm_components(lib_names);
+        for lib in system_libs.split_ascii_whitespace() {
+            println!("cargo:rustc-link-arg={lib}");
+        }
 
         let llc_path = llvm_prefix.join("bin").join("llc");
         let llvm_dis_path = llvm_prefix.join("bin").join("llvm-dis");
@@ -121,16 +121,16 @@ fn main() {
         llvm_config(&llvm_dir, &["build", "bin", "llvm-config"])
             .or_else(|_| llvm_config(&llvm_dir, &["build", cmake_profile, "bin", "llvm-config"]))
             .unwrap();
+    compile_cxx_lib(cxxflags);
     println!("cargo:rustc-link-arg={ldflags}");
     println!("cargo:rustc-link-search=native={libdir}");
     println!(
         "cargo:rustc-link-search=native={libdir}/../../../../../../../ext/llvm-project/build/lib"
     );
+    link_llvm_components(lib_names);
     for lib in system_libs.split_ascii_whitespace() {
         println!("cargo:rustc-link-arg={lib}");
     }
-    link_llvm_components(lib_names);
-    compile_cxx_lib(cxxflags);
 
     // Export LLVM tool paths for debug round-trip testing
     // Try multiple possible locations for the built tools
@@ -291,13 +291,15 @@ fn compile_cxx_lib_with_include(cxxflags: String, include_path: String) {
         cc.archiver("ar");
     }
 
+    let forced_include = format!("-I{include_path}");
+    cc.flag(&forced_include);
     for flag in cxxflags.split_whitespace() {
+        if flag == forced_include {
+            continue;
+        }
         cc.flag(flag);
     }
     cc.cpp(true).file("src/lib.cpp");
-
-    // Add required includes for LLVM
-    cc.include(&include_path);
 
     println!("cargo:warning=About to compile lib.cpp");
     cc.compile("llvm_zluda_cpp");
