@@ -307,6 +307,7 @@ static int mbox_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	unsigned long map_size;
 	u64 map_off;
+	phys_addr_t phys;
 
 	(void)file;
 	map_size = vma->vm_end - vma->vm_start;
@@ -323,8 +324,10 @@ static int mbox_mmap(struct file *file, struct vm_area_struct *vma)
 
 	if (!g_shared_ddr_mem || !g_pdev)
 		return -ENXIO;
-	return dma_mmap_coherent(&g_pdev->dev, vma, g_shared_ddr_mem,
-				 g_shared_ddr_dma, shared_ddr_size);
+
+	phys = (phys_addr_t)g_shared_ddr_dma + map_off;
+	return remap_pfn_range(vma, vma->vm_start, phys >> PAGE_SHIFT,
+			       map_size, vma->vm_page_prot);
 }
 
 static const struct file_operations mbox_fops = {

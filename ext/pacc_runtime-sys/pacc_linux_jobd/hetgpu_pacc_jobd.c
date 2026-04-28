@@ -334,6 +334,9 @@ static bool g_map_uses_shared_ddr_offsets;
 static uint64_t g_shared_ddr_mmap_user_off;
 static struct Map g_shared_ddr_full_map;
 static bool g_shared_ddr_full_map_valid;
+static volatile uint8_t *g_control_window;
+static void *g_control_map_base;
+static size_t g_control_map_len;
 static const char *g_current_kernel_symbol = NULL;
 static uint64_t g_current_kernel_seq = 0;
 static uint32_t g_kernel_load_error = 0;
@@ -5354,6 +5357,24 @@ static void pid1_bootstrap_devices(void) {
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status) {
     struct Map map = {0};
     uint64_t phys = shared_ddr_control_phys(HETGPU_PACC_COMPLETION_OFF, sizeof(struct HostStatus));
+    if (g_control_window &&
+        HETGPU_PACC_COMPLETION_OFF <= HETGPU_PACC_CONTROL_BYTES &&
+        sizeof(struct HostStatus) <= HETGPU_PACC_CONTROL_BYTES - HETGPU_PACC_COMPLETION_OFF) {
+        volatile struct HostStatus *host =
+            (volatile struct HostStatus *)(g_control_window + HETGPU_PACC_COMPLETION_OFF);
+        host->magic = HETGPU_PACC_JOB_MAGIC;
+        host->version = HETGPU_PACC_JOB_VERSION;
+        host->job_id = job_id;
+        host->status = status;
+        host->seq = seq;
+        __sync_synchronize();
+        if (g_control_map_base && g_control_map_len) {
+            (void)msync(g_control_map_base, g_control_map_len, MS_SYNC);
+        }
+        trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+                  job_id, job_name(job_id), seq, status);
+        return;
+    }
     if (map_phys(fd, phys, sizeof(struct HostStatus), &map)) {
         log_msg("map host status 0x%" PRIx64 " failed: %s", phys, strerror(errno));
         return;
@@ -5471,6 +5492,9 @@ int main(int argc, char **argv) {
         close(mbox_fd);
         return 1;
     }
+    g_control_window = (volatile uint8_t *)ctl;
+    g_control_map_base = control_map.base;
+    g_control_map_len = control_map.map_len;
     seed_last_seen_sequences(ctl, &last_seq, &last_kernel_seq);
     for (;;) {
         enum DispatchPollResult poll_result;

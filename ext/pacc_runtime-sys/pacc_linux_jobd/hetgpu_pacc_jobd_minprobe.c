@@ -314,6 +314,9 @@ static struct pacc_zluda_ddr_info g_ddr_info;
 static unsigned g_pacc_id = 0;
 static const char *g_current_kernel_symbol = NULL;
 static uint64_t g_current_kernel_seq = 0;
+static volatile uint8_t *g_control_window = NULL;
+static void *g_control_map_base = NULL;
+static size_t g_control_map_len = 0;
 
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static void write_stage_beacon(int fd, uint64_t off, uint32_t phase, uint32_t job_id, uint64_t seq);
@@ -3045,6 +3048,24 @@ static void pid1_bootstrap_devices(void) {
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status) {
     struct Map map = {0};
     uint64_t phys = shared_ddr_control_phys(HETGPU_PACC_COMPLETION_OFF, sizeof(struct HostStatus));
+    if (g_control_window &&
+        HETGPU_PACC_COMPLETION_OFF <= HETGPU_PACC_CONTROL_BYTES &&
+        sizeof(struct HostStatus) <= HETGPU_PACC_CONTROL_BYTES - HETGPU_PACC_COMPLETION_OFF) {
+        volatile struct HostStatus *host =
+            (volatile struct HostStatus *)(g_control_window + HETGPU_PACC_COMPLETION_OFF);
+        host->magic = HETGPU_PACC_JOB_MAGIC;
+        host->version = HETGPU_PACC_JOB_VERSION;
+        host->job_id = job_id;
+        host->status = status;
+        host->seq = seq;
+        __sync_synchronize();
+        if (g_control_map_base && g_control_map_len) {
+            (void)msync(g_control_map_base, g_control_map_len, MS_SYNC);
+        }
+        trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+                  job_id, job_name(job_id), seq, status);
+        return;
+    }
     if (map_phys(fd, phys, sizeof(struct HostStatus), &map)) {
         log_msg("map host status 0x%" PRIx64 " failed: %s", phys, strerror(errno));
         return;
@@ -3056,7 +3077,7 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
     host->status = status;
     host->seq = seq;
     __sync_synchronize();
-    msync(map.base, map.map_len, MS_SYNC);
+    (void)flush_map(&map);
     trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
               job_id, job_name(job_id), seq, status);
     unmap_phys(&map);
@@ -3065,6 +3086,22 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
 static void write_startup_beacon(int fd, uint32_t phase) {
     struct Map map = {0};
     uint64_t phys = shared_ddr_control_phys(HETGPU_PACC_STARTUP_BEACON_OFF, 32);
+    if (g_control_window &&
+        HETGPU_PACC_STARTUP_BEACON_OFF <= HETGPU_PACC_CONTROL_BYTES &&
+        32 <= HETGPU_PACC_CONTROL_BYTES - HETGPU_PACC_STARTUP_BEACON_OFF) {
+        volatile uint64_t *slot =
+            (volatile uint64_t *)(g_control_window + HETGPU_PACC_STARTUP_BEACON_OFF);
+        slot[0] = HETGPU_PACC_STARTUP_BEACON_MAGIC;
+        slot[1] = (uint64_t)getpid();
+        slot[2] = (uint64_t)phase;
+        slot[3] = (uint64_t)time(NULL);
+        __sync_synchronize();
+        if (g_control_map_base && g_control_map_len) {
+            (void)msync(g_control_map_base, g_control_map_len, MS_SYNC);
+        }
+        log_msg("startup beacon: off=0x%x pid=%d phase=0x%x", (unsigned)HETGPU_PACC_STARTUP_BEACON_OFF, getpid(), phase);
+        return;
+    }
     if (map_phys(fd, phys, 32, &map)) {
         log_msg("map startup beacon 0x%" PRIx64 " failed: %s", phys, strerror(errno));
         return;
@@ -3075,7 +3112,7 @@ static void write_startup_beacon(int fd, uint32_t phase) {
     slot[2] = (uint64_t)phase;
     slot[3] = (uint64_t)time(NULL);
     __sync_synchronize();
-    msync(map.base, map.map_len, MS_SYNC);
+    (void)flush_map(&map);
     log_msg("startup beacon: off=0x%x pid=%d phase=0x%x", (unsigned)HETGPU_PACC_STARTUP_BEACON_OFF, getpid(), phase);
     unmap_phys(&map);
 }
@@ -3083,6 +3120,19 @@ static void write_startup_beacon(int fd, uint32_t phase) {
 static void write_stage_beacon(int fd, uint64_t off, uint32_t phase, uint32_t job_id, uint64_t seq) {
     struct Map map = {0};
     uint64_t phys = shared_ddr_control_phys(off, 32);
+    if (g_control_window && off <= HETGPU_PACC_CONTROL_BYTES &&
+        32 <= HETGPU_PACC_CONTROL_BYTES - off) {
+        volatile uint64_t *slot = (volatile uint64_t *)(g_control_window + off);
+        slot[0] = HETGPU_PACC_STARTUP_BEACON_MAGIC;
+        slot[1] = ((uint64_t)job_id << 32) | phase;
+        slot[2] = seq;
+        slot[3] = (uint64_t)time(NULL);
+        __sync_synchronize();
+        if (g_control_map_base && g_control_map_len) {
+            (void)msync(g_control_map_base, g_control_map_len, MS_SYNC);
+        }
+        return;
+    }
     if (map_phys(fd, phys, 32, &map)) {
         log_msg("map stage beacon 0x%" PRIx64 " failed: %s", phys, strerror(errno));
         return;
@@ -3093,13 +3143,26 @@ static void write_stage_beacon(int fd, uint64_t off, uint32_t phase, uint32_t jo
     slot[2] = seq;
     slot[3] = (uint64_t)time(NULL);
     __sync_synchronize();
-    msync(map.base, map.map_len, MS_SYNC);
+    (void)flush_map(&map);
     unmap_phys(&map);
 }
 
 static void write_quad_beacon(int fd, uint64_t off, uint64_t v0, uint64_t v1, uint64_t v2, uint64_t v3) {
     struct Map map = {0};
     uint64_t phys = shared_ddr_control_phys(off, 32);
+    if (g_control_window && off <= HETGPU_PACC_CONTROL_BYTES &&
+        32 <= HETGPU_PACC_CONTROL_BYTES - off) {
+        volatile uint64_t *slot = (volatile uint64_t *)(g_control_window + off);
+        slot[0] = v0;
+        slot[1] = v1;
+        slot[2] = v2;
+        slot[3] = v3;
+        __sync_synchronize();
+        if (g_control_map_base && g_control_map_len) {
+            (void)msync(g_control_map_base, g_control_map_len, MS_SYNC);
+        }
+        return;
+    }
     if (map_phys(fd, phys, 32, &map)) {
         log_msg("map quad beacon 0x%" PRIx64 " failed: %s", phys, strerror(errno));
         return;
@@ -3110,7 +3173,7 @@ static void write_quad_beacon(int fd, uint64_t off, uint64_t v0, uint64_t v1, ui
     slot[2] = v2;
     slot[3] = v3;
     __sync_synchronize();
-    msync(map.base, map.map_len, MS_SYNC);
+    (void)flush_map(&map);
     unmap_phys(&map);
 }
 
@@ -3191,6 +3254,9 @@ int main(int argc, char **argv) {
         close(fd);
         return 1;
     }
+    g_control_window = (volatile uint8_t *)ctl;
+    g_control_map_base = control_map.base;
+    g_control_map_len = control_map.map_len;
     /*
      * The first poll wake can be the host's first real job doorbell. Do not
      * clear the control page here, or startup races will erase that job before
@@ -3203,6 +3269,9 @@ int main(int argc, char **argv) {
         if (refresh_map(&control_map) != 0) {
             log_msg("failed to refresh shared DDR control page for pacc=%u: %s",
                     g_pacc_id, strerror(errno));
+            g_control_window = NULL;
+            g_control_map_base = NULL;
+            g_control_map_len = 0;
             unmap_phys(&control_map);
             if (helper_fd >= 0) close(helper_fd);
             close(mbox_fd);
