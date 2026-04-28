@@ -3813,9 +3813,11 @@ static int invoke_kernel_mmvf_native(const char *symbol,
     if (ctx.ncols2 <= 0) return 0;
     void *local_x = NULL;
     float *local_y = NULL;
-    if (ctx.x_type == PACC_MMVF_F16 && ctx.ncols_dst == 1) {
+    uint64_t local_x_max = parse_env_u64_default("PACC_JOBD_MMVF_LOCAL_X_MAX_BYTES", 0);
+    uint64_t local_y_max = parse_env_u64_default("PACC_JOBD_MMVF_LOCAL_Y_MAX_BYTES", 0);
+    if (ctx.x_type == PACC_MMVF_F16 && ctx.ncols_dst == 1 && local_x_max != 0) {
         uint64_t x_bytes = kernel_binding_size_for_arg(job, 0);
-        if (x_bytes > 0 && x_bytes <= (512ULL << 20)) {
+        if (x_bytes > 0 && x_bytes <= local_x_max) {
             local_x = malloc((size_t)x_bytes);
             if (local_x) {
                 memcpy(local_x, ctx.x, (size_t)x_bytes);
@@ -3823,11 +3825,11 @@ static int invoke_kernel_mmvf_native(const char *symbol,
             }
         }
     }
-    if (ctx.stride_col_y2 > 0) {
+    if (ctx.stride_col_y2 > 0 && local_y_max != 0) {
         uint64_t y_elems = 2u * ((uint64_t)(ctx.ncols_dst - 1u) *
                                  (uint64_t)ctx.stride_col_y2 +
                                  (uint64_t)ctx.ncols2);
-        if (y_elems > 0 && y_elems <= (1u << 20)) {
+        if (y_elems > 0 && y_elems <= local_y_max / sizeof(float)) {
             size_t y_bytes = (size_t)y_elems * sizeof(float);
             local_y = (float *)malloc(y_bytes);
             if (local_y) {
@@ -3915,14 +3917,18 @@ static int run_mmvf_ctx(struct MmvfNativeCtx *ctx,
         return 0xffff5003;
     }
 
-    if (ctx->x_type == PACC_MMVF_F16 && ctx->ncols_dst == 1 && x_bytes > 0 && x_bytes <= (512ULL << 20)) {
+    uint64_t local_x_max = parse_env_u64_default("PACC_JOBD_MMVF_LOCAL_X_MAX_BYTES", 0);
+    uint64_t local_y_max = parse_env_u64_default("PACC_JOBD_MMVF_LOCAL_Y_MAX_BYTES", 0);
+
+    if (ctx->x_type == PACC_MMVF_F16 && ctx->ncols_dst == 1 &&
+        local_x_max != 0 && x_bytes > 0 && x_bytes <= local_x_max) {
         local_x = malloc((size_t)x_bytes);
         if (local_x) {
             memcpy(local_x, ctx->x, (size_t)x_bytes);
             ctx->x = local_x;
         }
     }
-    if (y_bytes > 0 && y_bytes <= (16ULL << 20)) {
+    if (local_y_max != 0 && y_bytes > 0 && y_bytes <= local_y_max) {
         local_y = (float *)malloc((size_t)y_bytes);
         if (local_y) {
             memcpy(local_y, ctx->y, (size_t)y_bytes);
