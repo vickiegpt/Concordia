@@ -388,6 +388,43 @@ static bool jobd_force_pread_enabled(void) {
     return env_flag_true(getenv("HETGPU_PACC_JOBD_FORCE_PREAD"));
 }
 
+static bool jobd_force_devmem_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_FORCE_DEVMEM"));
+}
+
+static bool jobd_cbo_inval_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_CBO_INVAL"));
+}
+
+static bool jobd_heartbeat_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_HEARTBEAT"));
+}
+
+static void jobd_cbo_inval_line(const void *ptr) {
+#if defined(__riscv)
+    __asm__ volatile(".insn i 15, 2, x0, %0, 0" :: "r"(ptr) : "memory");
+#else
+    (void)ptr;
+#endif
+}
+
+static void jobd_invalidate_for_cpu(const void *ptr, size_t len) {
+    uintptr_t start;
+    uintptr_t end;
+
+    if (!jobd_cbo_inval_enabled() || !ptr || !len) {
+        return;
+    }
+
+    start = (uintptr_t)ptr & ~(uintptr_t)63;
+    end = ((uintptr_t)ptr + len + 63) & ~(uintptr_t)63;
+    __sync_synchronize();
+    for (uintptr_t p = start; p < end; p += 64) {
+        jobd_cbo_inval_line((const void *)p);
+    }
+    __sync_synchronize();
+}
+
 static bool jobd_notify_irq_enabled(void) {
     const char *value = getenv("HETGPU_PACC_JOBD_NOTIFY_IRQ");
     if (value && *value) {
@@ -901,6 +938,9 @@ static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out) {
                 out->base = p;
                 out->map_len = map_len;
                 out->ptr = (char *)p + off;
+                out->fd = fd;
+                out->phys = phys;
+                out->len = len;
                 return 0;
             }
         } else {
@@ -920,6 +960,9 @@ static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out) {
         out->map_len = ((sync_off + len + page - 1) / page) * page;
         out->ptr = (void *)ptr;
         out->borrowed = true;
+        out->fd = fd;
+        out->phys = phys;
+        out->len = len;
         return 0;
     }
 
@@ -934,6 +977,9 @@ static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out) {
     out->base = p;
     out->map_len = map_len;
     out->ptr = (char *)p + off;
+    out->fd = fd;
+    out->phys = phys;
+    out->len = len;
     return 0;
 }
 
@@ -989,6 +1035,7 @@ static int read_phys_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
                 trace_msg("shared DDR read invalidate failed: %s", strerror(errno));
             }
             __sync_synchronize();
+            jobd_invalidate_for_cpu((char *)p + off, len);
             memcpy(buf, (char *)p + off, len);
             munmap(p, map_len);
             *out = buf;
@@ -1123,14 +1170,15 @@ static bool probe_shared_ddr_mmap_at(int fd, uint64_t user_off) {
 static bool probe_shared_ddr_mmap(int fd) {
     uint64_t fallback_off = parse_env_u64_default("HETGPU_PACC_SHARED_DDR_USER_OFF",
                                                   HETGPU_PACC_SHARED_DDR_USER_OFF);
-    if (probe_shared_ddr_mmap_at(fd, 0)) {
+    if (probe_shared_ddr_mmap_at(fd, fallback_off)) {
         return true;
     }
-    if (fallback_off != 0 && probe_shared_ddr_mmap_at(fd, fallback_off)) {
+    if (fallback_off != HETGPU_PACC_SHARED_DDR_USER_OFF &&
+        probe_shared_ddr_mmap_at(fd, HETGPU_PACC_SHARED_DDR_USER_OFF)) {
         return true;
     }
-    if (fallback_off != HETGPU_PACC_SHARED_DDR_USER_OFF) {
-        return probe_shared_ddr_mmap_at(fd, HETGPU_PACC_SHARED_DDR_USER_OFF);
+    if (fallback_off != 0 && probe_shared_ddr_mmap_at(fd, 0)) {
+        return true;
     }
     return false;
 }
@@ -1157,6 +1205,15 @@ static void sync_map_for_cpu(struct Map *m) {
     }
     if (msync(m->base, m->map_len, MS_SYNC | MS_INVALIDATE) != 0 && errno != EINVAL) {
         trace_msg("shared DDR msync invalidate failed: %s", strerror(errno));
+    }
+    if (m->ptr && m->len) {
+        jobd_invalidate_for_cpu(m->ptr, m->len);
+    } else if (m->ptr && m->base && m->map_len) {
+        uintptr_t base = (uintptr_t)m->base;
+        uintptr_t ptr = (uintptr_t)m->ptr;
+        size_t off = ptr >= base ? (size_t)(ptr - base) : 0;
+        size_t len = off < m->map_len ? m->map_len - off : m->map_len;
+        jobd_invalidate_for_cpu(m->ptr, len);
     }
     __sync_synchronize();
 }
@@ -5304,6 +5361,32 @@ static enum DispatchPollResult dispatch_any_job(
     return DISPATCH_INVALID;
 }
 
+static void maybe_heartbeat_control(int fd, const uint8_t *snapshot, uint64_t tick) {
+    const volatile struct Doorbell *head;
+    const struct PaccJobDesc *kernel_head;
+    uint32_t status = 0x7000;
+    uint32_t job_id = 0;
+    uint64_t seq = 0;
+
+    if (!jobd_heartbeat_enabled() || !snapshot || (tick % 1000) != 0) {
+        return;
+    }
+
+    head = (const volatile struct Doorbell *)(const void *)snapshot;
+    kernel_head = (const struct PaccJobDesc *)(const void *)snapshot;
+    if (head->magic == HETGPU_PACC_JOB_MAGIC &&
+        head->version == HETGPU_PACC_JOB_VERSION) {
+        status = 0x7001;
+        job_id = head->job_id;
+        seq = head->seq;
+    } else if (kernel_head->buf_info == PACC_JOB_MAGIC) {
+        status = 0x7002;
+        job_id = PACC_KERNEL_JOB_ID;
+        seq = kernel_head->seq;
+    }
+    mirror_host_status(fd, job_id, seq, status);
+}
+
 static volatile struct Doorbell *scan_for_control(int fd, const struct pacc_zluda_ddr_info *ddr_info, struct Map *map) {
     uint64_t control_off = g_pacc_id * HETGPU_PACC_CONTROL_BYTES;
     if (!ddr_info || !ddr_info->ddr_base ||
@@ -5453,7 +5536,7 @@ int main(int argc, char **argv) {
     read_pacc_id_from_mbox(mbox_fd);
     int map_fd = mbox_fd;
     bool close_map_fd = false;
-    if (probe_shared_ddr_mmap(mbox_fd)) {
+    if (!jobd_force_devmem_enabled() && probe_shared_ddr_mmap(mbox_fd)) {
         g_map_uses_shared_ddr_offsets = true;
         log_msg("using %s mmap with shared-DDR-relative offsets user_off=0x%" PRIx64,
                 mbox_path, g_shared_ddr_mmap_user_off);
@@ -5492,6 +5575,7 @@ int main(int argc, char **argv) {
     uint64_t last_seq = 0;
     uint64_t last_table_seq = 0;
     uint64_t last_kernel_seq = 0;
+    uint64_t heartbeat_tick = 0;
     uint8_t control_snapshot[HETGPU_PACC_CONTROL_BYTES];
     ctl = scan_for_control(map_fd, &g_ddr_info, &control_map);
     if (!ctl) {
@@ -5527,6 +5611,7 @@ int main(int argc, char **argv) {
         } else {
             sync_map_for_cpu(&control_map);
         }
+        maybe_heartbeat_control(map_fd, control_snapshot, ++heartbeat_tick);
         poll_result = dispatch_any_job(
             map_fd,
             dispatch_ctl,

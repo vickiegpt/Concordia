@@ -987,6 +987,44 @@ impl PaccDevice {
                     Some(libc::ENOTTY | libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP)
                 )
             {
+                let pacc_path = format!("/dev/pacc{}", self.id);
+                if let Ok(pacc_file) = OpenOptions::new().read(true).write(true).open(&pacc_path) {
+                    let pacc_fd = pacc_file.as_raw_fd();
+                    let pacc_ret = unsafe { libc::ioctl(pacc_fd, IOC_ZLUDA_IRQ, 0usize) };
+                    if pacc_ret == 0 {
+                        if zluda_irq_trace_enabled() {
+                            eprintln!(
+                                "PACC ZLUDA IRQ: dev={} helper fd unsupported; woke PACC via {} ioctl 0x{:x}",
+                                self.id, pacc_path, IOC_ZLUDA_IRQ
+                            );
+                        }
+                        return Ok(());
+                    }
+                    let pacc_primary_err = std::io::Error::last_os_error();
+                    let mut pacc_arg = shared_ddr;
+                    let pacc_legacy_ret = unsafe {
+                        libc::ioctl(pacc_fd, IOC_ZLUDA_IRQ_LEGACY, &mut pacc_arg as *mut _)
+                    };
+                    if pacc_legacy_ret == 0 {
+                        if zluda_irq_trace_enabled() {
+                            eprintln!(
+                                "PACC ZLUDA IRQ: dev={} helper fd unsupported; woke PACC via {} legacy ioctl 0x{:x}",
+                                self.id, pacc_path, IOC_ZLUDA_IRQ_LEGACY
+                            );
+                        }
+                        return Ok(());
+                    }
+                    if zluda_irq_trace_enabled() {
+                        eprintln!(
+                            "PACC ZLUDA IRQ: helper fd unsupported; {} primary ioctl 0x{:x} failed: {}; legacy ioctl 0x{:x} failed: {}",
+                            pacc_path,
+                            IOC_ZLUDA_IRQ,
+                            pacc_primary_err,
+                            IOC_ZLUDA_IRQ_LEGACY,
+                            std::io::Error::last_os_error()
+                        );
+                    }
+                }
                 if zluda_irq_trace_enabled() {
                     eprintln!(
                         "PACC ZLUDA IRQ: fd for dev={} does not implement ioctl 0x{:x}; relying on shared-DDR polling",
