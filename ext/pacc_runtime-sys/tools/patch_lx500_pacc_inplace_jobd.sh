@@ -85,6 +85,7 @@ jobd_mbox_poll = os.environ.get("PACC_JOBD_MBOX_POLL", "0").strip() or "0"
 jobd_force_elf = os.environ.get("PACC_JOBD_FORCE_ELF", "0").strip() or "0"
 jobd_full_ddr_map = os.environ.get("PACC_JOBD_FULL_DDR_MAP", "1").strip() or "1"
 jobd_claim_id = os.environ.get("PACC_JOBD_CLAIM_ID", "0").strip() or "0"
+jobd_force_pread = os.environ.get("PACC_JOBD_FORCE_PREAD", "0").strip() or "0"
 
 rcs_lines = [
     "#!/bin/sh",
@@ -103,6 +104,8 @@ if jobd_full_ddr_map != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FULL_DDR_MAP={jobd_full_ddr_map}")
 if jobd_claim_id != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_CLAIM_ID={jobd_claim_id}")
+if jobd_force_pread != "0":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_FORCE_PREAD={jobd_force_pread}")
 shared_ddr_base = os.environ.get("PACC_JOBD_SHARED_DDR_BASE", "").strip()
 shared_ddr_size = os.environ.get("PACC_JOBD_SHARED_DDR_SIZE", "").strip()
 if shared_ddr_base:

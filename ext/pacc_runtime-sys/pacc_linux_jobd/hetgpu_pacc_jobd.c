@@ -384,6 +384,10 @@ static bool jobd_full_ddr_map_enabled(void) {
     return env_flag_true(getenv("HETGPU_PACC_JOBD_FULL_DDR_MAP"));
 }
 
+static bool jobd_force_pread_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_FORCE_PREAD"));
+}
+
 static bool jobd_notify_irq_enabled(void) {
     const char *value = getenv("HETGPU_PACC_JOBD_NOTIFY_IRQ");
     if (value && *value) {
@@ -394,7 +398,10 @@ static bool jobd_notify_irq_enabled(void) {
 
 static bool jobd_seed_current_jobs_enabled(void) {
     const char *value = getenv("HETGPU_PACC_JOBD_SEED_CURRENT_JOBS");
-    return !value || !*value || env_flag_true(value);
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return !jobd_initial_mbox_poll_enabled();
 }
 
 static bool jobd_claim_pacc_id_enabled(void) {
@@ -963,7 +970,7 @@ static int read_phys_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
         (uint64_t)len <= g_ddr_info.ddr_size &&
         phys - g_ddr_info.ddr_base <= g_ddr_info.ddr_size - (uint64_t)len) {
         uint64_t ddr_off = phys - g_ddr_info.ddr_base;
-        if (g_map_uses_shared_ddr_offsets) {
+        if (g_map_uses_shared_ddr_offsets && !jobd_force_pread_enabled()) {
             uint64_t page = (uint64_t)g_page_size;
             uint64_t mmap_addr = g_shared_ddr_mmap_user_off + ddr_off;
             uint64_t base = mmap_addr & ~(page - 1);
@@ -5495,6 +5502,7 @@ int main(int argc, char **argv) {
     g_control_window = (volatile uint8_t *)ctl;
     g_control_map_base = control_map.base;
     g_control_map_len = control_map.map_len;
+    mirror_host_status(map_fd, 0, 0, 0x6aa6);
     seed_last_seen_sequences(ctl, &last_seq, &last_kernel_seq);
     for (;;) {
         enum DispatchPollResult poll_result;
