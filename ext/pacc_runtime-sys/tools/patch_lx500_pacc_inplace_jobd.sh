@@ -89,6 +89,7 @@ jobd_force_pread = os.environ.get("PACC_JOBD_FORCE_PREAD", "0").strip() or "0"
 jobd_force_devmem = os.environ.get("PACC_JOBD_FORCE_DEVMEM", "0").strip() or "0"
 jobd_cbo_inval = os.environ.get("PACC_JOBD_CBO_INVAL", "0").strip() or "0"
 jobd_heartbeat = os.environ.get("PACC_JOBD_HEARTBEAT", "0").strip() or "0"
+jobd_shared_ddr_user_off = os.environ.get("PACC_JOBD_SHARED_DDR_USER_OFF", "0").strip() or "0"
 
 rcs_lines = [
     "#!/bin/sh",
@@ -115,6 +116,7 @@ if jobd_cbo_inval != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_CBO_INVAL={jobd_cbo_inval}")
 if jobd_heartbeat != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_HEARTBEAT={jobd_heartbeat}")
+rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_USER_OFF={jobd_shared_ddr_user_off}")
 shared_ddr_base = os.environ.get("PACC_JOBD_SHARED_DDR_BASE", "").strip()
 shared_ddr_size = os.environ.get("PACC_JOBD_SHARED_DDR_SIZE", "").strip()
 if shared_ddr_base:
