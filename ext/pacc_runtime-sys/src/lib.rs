@@ -2973,7 +2973,16 @@ fn prefer_mailbox_helper() -> bool {
 }
 
 fn helper_io_chunk_bytes() -> usize {
-    parse_env_usize("HETGPU_PACC_HELPER_IO_CHUNK_BYTES", 1 << 20).max(1)
+    parse_env_usize("HETGPU_PACC_HELPER_IO_CHUNK_BYTES", 32).max(1)
+}
+
+fn shared_ddr_control_mmap_enabled() -> bool {
+    !matches!(
+        std::env::var("HETGPU_PACC_SHARED_DDR_CONTROL_MMAP")
+            .ok()
+            .as_deref(),
+        Some("0" | "false" | "FALSE" | "no" | "NO")
+    )
 }
 
 fn prefer_physmap_shared_ddr() -> bool {
@@ -3323,6 +3332,12 @@ fn write_shared_ddr_control_window_cached(
     bytes: &[u8],
 ) -> std::io::Result<()> {
     let offset = shared_ddr_control_offset(pacc_id, offset, bytes.len())?;
+    if !shared_ddr_control_mmap_enabled() {
+        if let Some(file) = file.as_mut() {
+            helper_write_all(file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)?;
+            return Ok(());
+        }
+    }
     write_shared_ddr_window_cached(file, offset, bytes)
 }
 
@@ -3348,6 +3363,12 @@ fn read_shared_ddr_control_window_cached(
     bytes: &mut [u8],
 ) -> std::io::Result<()> {
     let offset = shared_ddr_control_offset(pacc_id, offset, bytes.len())?;
+    if !shared_ddr_control_mmap_enabled() {
+        if let Some(file) = file.as_mut() {
+            helper_read_exact(file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)?;
+            return Ok(());
+        }
+    }
     read_shared_ddr_window_cached(file, offset, bytes)
 }
 
@@ -8491,6 +8512,38 @@ fn submit_pacc_kernel_image_via_helper(
         ));
     }
     write_pacc_kernel_submit_image_cached(&mut shared_file, slot_off, &buf[..submit_len])?;
+    if std::env::var("HETGPU_PACC_KERNEL_METADATA_HELPER_WRITE")
+        .ok()
+        .as_deref()
+        != Some("0")
+    {
+        let metadata_prefix = compute_pacc_kernel_image_layout(
+            kernel_name,
+            elf_bytes,
+            &staging.launch_state,
+        )
+        .map(|layout| layout.elf_offset.min(submit_len))
+        .unwrap_or_else(|_| submit_len.min(4096));
+        if metadata_prefix > 0 {
+            if let Some(file) = shared_file.as_mut() {
+                helper_write_all(
+                    file,
+                    HETGPU_PACC_SHARED_DDR_HELPER_OFF + slot_off,
+                    &buf[..metadata_prefix],
+                )?;
+                if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+                    .ok()
+                    .as_deref()
+                    == Some("1")
+                {
+                    eprintln!(
+                        "pacc_LaunchKernel: helper-refreshed metadata kernel='{}' bytes={} slot_off=0x{:x}",
+                        kernel_name, metadata_prefix, slot_off
+                    );
+                }
+            }
+        }
+    }
     std::sync::atomic::fence(Ordering::SeqCst);
     write_control_window_cached(
         &mut shared_file,

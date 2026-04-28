@@ -42,6 +42,8 @@
 #define PACC_KERNEL_LAUNCH_ABI_VERSION 1U
 #define PACC_JOB_IMAGE_HEADER_WIRE_BYTES 72U
 #define PACC_KERNEL_LAUNCH_ABI_WIRE_BYTES 48U
+#define PACC_KERNEL_ARG_RECORD_WIRE_BYTES 32U
+#define PACC_KERNEL_BUFFER_BINDING_WIRE_BYTES 24U
 #define PACC_KERNEL_ARG_FLAG_INLINE_BLOB (1U << 16)
 #define PACC_KERNEL_ARG_FLAG_BUFFER_INPUT (1U << 8)
 #define PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT (1U << 9)
@@ -65,6 +67,7 @@
 #define PACC2AP_MBOX_PHYS 0x20002000ULL
 #define HETGPU_PACC_DEFAULT_SHARED_DDR_BYTES 0x01000000ULL
 #define HETGPU_PACC_SHARED_DDR_USER_OFF 0ULL
+#define HETGPU_PACC_SHARED_DDR_FD_USER_OFF 0ULL
 #define HETGPU_PACC_COMPLETION_OFF 0x1f20ULL
 #define PACC_DTYPE_INT8 0U
 #define PACC_DTYPE_UINT8 1U
@@ -274,9 +277,12 @@ struct PaccJobImage {
     struct PaccJobImageHeader header;
     const uint8_t *elf;
     size_t elf_len;
+    struct PaccKernelLaunchAbiHeader abi_storage;
     const struct PaccKernelLaunchAbiHeader *abi;
+    struct PaccKernelArgRecord arg_records_storage[PACC_MAX_KERNEL_ARGS];
     const struct PaccKernelArgRecord *arg_records;
     size_t arg_count;
+    struct PaccKernelBufferBinding bindings_storage[PACC_MAX_KERNEL_BINDINGS];
     const struct PaccKernelBufferBinding *bindings;
     size_t binding_count;
     const uint8_t *raw_params;
@@ -332,6 +338,7 @@ static struct pacc_zluda_ddr_info g_ddr_info;
 static uint64_t g_pacc_id;
 static bool g_map_uses_shared_ddr_offsets;
 static uint64_t g_shared_ddr_mmap_user_off;
+static uint64_t g_shared_ddr_fd_user_off;
 static struct Map g_shared_ddr_full_map;
 static bool g_shared_ddr_full_map_valid;
 static volatile uint8_t *g_control_window;
@@ -346,12 +353,21 @@ static uint32_t g_kernel_parse_error = 0;
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out);
 static void unmap_phys(struct Map *m);
+static uint64_t parse_env_u64_default(const char *name, uint64_t fallback);
 
 static bool env_flag_true(const char *value) {
     return value && *value && strcmp(value, "0") != 0 &&
            strcasecmp(value, "false") != 0 &&
            strcasecmp(value, "off") != 0 &&
            strcasecmp(value, "no") != 0;
+}
+
+static bool env_flag_default_true(const char *name) {
+    const char *value = getenv(name);
+    if (!value || !*value) {
+        return true;
+    }
+    return env_flag_true(value);
 }
 
 static bool jobd_trace_enabled(void) {
@@ -384,6 +400,19 @@ static bool jobd_full_ddr_map_enabled(void) {
     return env_flag_true(getenv("HETGPU_PACC_JOBD_FULL_DDR_MAP"));
 }
 
+static uint64_t jobd_full_ddr_map_bytes(void) {
+    uint64_t requested = parse_env_u64_default("HETGPU_PACC_JOBD_FULL_DDR_MAP_BYTES", 0);
+    uint64_t default_window = 0x20000000ULL;
+
+    if (requested != 0) {
+        return requested;
+    }
+    if (g_ddr_info.ddr_size != 0 && g_ddr_info.ddr_size < default_window) {
+        return g_ddr_info.ddr_size;
+    }
+    return default_window;
+}
+
 static bool jobd_force_pread_enabled(void) {
     return env_flag_true(getenv("HETGPU_PACC_JOBD_FORCE_PREAD"));
 }
@@ -396,13 +425,36 @@ static bool jobd_cbo_inval_enabled(void) {
     return env_flag_true(getenv("HETGPU_PACC_JOBD_CBO_INVAL"));
 }
 
+static bool jobd_cbo_flush_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_CBO_FLUSH"));
+}
+
 static bool jobd_heartbeat_enabled(void) {
     return env_flag_true(getenv("HETGPU_PACC_JOBD_HEARTBEAT"));
+}
+
+static size_t jobd_helper_io_chunk_bytes(void) {
+    uint64_t value = parse_env_u64_default("HETGPU_PACC_JOBD_HELPER_IO_CHUNK_BYTES", 32);
+    if (value == 0) {
+        return 1;
+    }
+    if (value > (uint64_t)SIZE_MAX) {
+        return SIZE_MAX;
+    }
+    return (size_t)value;
 }
 
 static void jobd_cbo_inval_line(const void *ptr) {
 #if defined(__riscv)
     __asm__ volatile(".insn i 15, 2, x0, %0, 0" :: "r"(ptr) : "memory");
+#else
+    (void)ptr;
+#endif
+}
+
+static void jobd_cbo_flush_line(const void *ptr) {
+#if defined(__riscv)
+    __asm__ volatile(".insn i 15, 2, x0, %0, 2" :: "r"(ptr) : "memory");
 #else
     (void)ptr;
 #endif
@@ -421,6 +473,23 @@ static void jobd_invalidate_for_cpu(const void *ptr, size_t len) {
     __sync_synchronize();
     for (uintptr_t p = start; p < end; p += 64) {
         jobd_cbo_inval_line((const void *)p);
+    }
+    __sync_synchronize();
+}
+
+static void jobd_flush_for_device(const void *ptr, size_t len) {
+    uintptr_t start;
+    uintptr_t end;
+
+    if (!jobd_cbo_flush_enabled() || !ptr || !len) {
+        return;
+    }
+
+    start = (uintptr_t)ptr & ~(uintptr_t)63;
+    end = ((uintptr_t)ptr + len + 63) & ~(uintptr_t)63;
+    __sync_synchronize();
+    for (uintptr_t p = start; p < end; p += 64) {
+        jobd_cbo_flush_line((const void *)p);
     }
     __sync_synchronize();
 }
@@ -565,6 +634,14 @@ static void sleep_when_idle(void) {
             return;
         }
     }
+}
+
+static uint64_t monotonic_us(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
 static bool parse_u64_checked(const char *s, uint64_t *out) {
@@ -925,6 +1002,24 @@ static uint64_t hash_bytes_fnv64(const uint8_t *data, size_t len) {
 static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out) {
     uint64_t page = (uint64_t)g_page_size;
     uint64_t mmap_addr = phys;
+    if (g_shared_ddr_full_map_valid && g_ddr_info.ddr_base &&
+        phys >= g_ddr_info.ddr_base &&
+        (uint64_t)len <= (uint64_t)g_shared_ddr_full_map.len &&
+        phys - g_ddr_info.ddr_base <= (uint64_t)g_shared_ddr_full_map.len - (uint64_t)len) {
+        uintptr_t ptr = (uintptr_t)((char *)g_shared_ddr_full_map.ptr +
+                                    (phys - g_ddr_info.ddr_base));
+        uintptr_t sync_base = ptr & ~((uintptr_t)page - 1u);
+        size_t sync_off = (size_t)(ptr - sync_base);
+        out->base = (void *)sync_base;
+        out->map_len = ((sync_off + len + page - 1) / page) * page;
+        out->ptr = (void *)ptr;
+        out->borrowed = true;
+        out->fd = fd;
+        out->phys = phys;
+        out->len = len;
+        return 0;
+    }
+
     if (g_map_uses_shared_ddr_offsets && g_ddr_info.ddr_base && phys >= g_ddr_info.ddr_base) {
         uint64_t ddr_off = phys - g_ddr_info.ddr_base;
         if ((uint64_t)len <= g_ddr_info.ddr_size &&
@@ -948,24 +1043,6 @@ static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out) {
         }
     }
 
-    if (g_shared_ddr_full_map_valid && g_ddr_info.ddr_base &&
-        phys >= g_ddr_info.ddr_base &&
-        (uint64_t)len <= g_ddr_info.ddr_size &&
-        phys - g_ddr_info.ddr_base <= g_ddr_info.ddr_size - (uint64_t)len) {
-        uintptr_t ptr = (uintptr_t)((char *)g_shared_ddr_full_map.ptr +
-                                    (phys - g_ddr_info.ddr_base));
-        uintptr_t sync_base = ptr & ~((uintptr_t)page - 1u);
-        size_t sync_off = (size_t)(ptr - sync_base);
-        out->base = (void *)sync_base;
-        out->map_len = ((sync_off + len + page - 1) / page) * page;
-        out->ptr = (void *)ptr;
-        out->borrowed = true;
-        out->fd = fd;
-        out->phys = phys;
-        out->len = len;
-        return 0;
-    }
-
     mmap_addr = phys;
     uint64_t base = mmap_addr & ~(page - 1);
     size_t off = (size_t)(mmap_addr - base);
@@ -986,15 +1063,37 @@ static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out) {
 static void unmap_phys(struct Map *m);
 static void sync_map_for_cpu(struct Map *m);
 
+static int read_phys_mmap_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
+    struct Map map = {0};
+    uint8_t *buf;
+
+    if (!out || len == 0) {
+        return -1;
+    }
+    if (map_phys(fd, phys, len, &map) != 0) {
+        return -1;
+    }
+    sync_map_for_cpu(&map);
+    buf = (uint8_t *)malloc(len);
+    if (!buf) {
+        unmap_phys(&map);
+        return -1;
+    }
+    memcpy(buf, map.ptr, len);
+    unmap_phys(&map);
+    *out = buf;
+    return 0;
+}
+
 static bool phys_to_fd_offset(uint64_t phys, size_t len, uint64_t *out) {
     if (!out) {
         return false;
     }
-    if (g_map_uses_shared_ddr_offsets && g_ddr_info.ddr_base && phys >= g_ddr_info.ddr_base) {
+    if (g_ddr_info.ddr_base && phys >= g_ddr_info.ddr_base) {
         uint64_t ddr_off = phys - g_ddr_info.ddr_base;
         if ((uint64_t)len <= g_ddr_info.ddr_size &&
             ddr_off <= g_ddr_info.ddr_size - (uint64_t)len) {
-            *out = g_shared_ddr_mmap_user_off + ddr_off;
+            *out = g_shared_ddr_fd_user_off + ddr_off;
             return true;
         }
         return false;
@@ -1003,10 +1102,39 @@ static bool phys_to_fd_offset(uint64_t phys, size_t len, uint64_t *out) {
     return true;
 }
 
+static int read_phys_copy_pread_only(int fd, uint64_t phys, size_t len, uint8_t **out) {
+    uint64_t fd_off = 0;
+    uint8_t *buf;
+    size_t done = 0;
+    size_t chunk = jobd_helper_io_chunk_bytes();
+
+    if (!out || len == 0 || !phys_to_fd_offset(phys, len, &fd_off)) {
+        return -1;
+    }
+    buf = (uint8_t *)malloc(len);
+    if (!buf) {
+        return -1;
+    }
+    while (done < len) {
+        size_t want = len - done;
+        if (want > chunk) want = chunk;
+        ssize_t got = pread(fd, buf + done, want, (off_t)(fd_off + done));
+        if (got <= 0) {
+            free(buf);
+            return -1;
+        }
+        done += (size_t)got;
+    }
+    __sync_synchronize();
+    *out = buf;
+    return 0;
+}
+
 static int read_phys_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
     uint64_t fd_off = 0;
     uint8_t *buf;
     size_t done = 0;
+    size_t chunk = jobd_helper_io_chunk_bytes();
 
     if (!out || len == 0) {
         return -1;
@@ -1016,6 +1144,11 @@ static int read_phys_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
         (uint64_t)len <= g_ddr_info.ddr_size &&
         phys - g_ddr_info.ddr_base <= g_ddr_info.ddr_size - (uint64_t)len) {
         uint64_t ddr_off = phys - g_ddr_info.ddr_base;
+        if (g_shared_ddr_full_map_valid &&
+            ddr_off <= (uint64_t)g_shared_ddr_full_map.len &&
+            (uint64_t)len <= (uint64_t)g_shared_ddr_full_map.len - ddr_off) {
+            return read_phys_mmap_copy(fd, phys, len, out);
+        }
         if (g_map_uses_shared_ddr_offsets && !jobd_force_pread_enabled()) {
             uint64_t page = (uint64_t)g_page_size;
             uint64_t mmap_addr = g_shared_ddr_mmap_user_off + ddr_off;
@@ -1053,10 +1186,12 @@ pread_fallback:
         return -1;
     }
     while (done < len) {
-        ssize_t got = pread(fd, buf + done, len - done, (off_t)(fd_off + done));
+        size_t want = len - done;
+        if (want > chunk) want = chunk;
+        ssize_t got = pread(fd, buf + done, want, (off_t)(fd_off + done));
         if (got <= 0) {
             free(buf);
-            return -1;
+            return read_phys_mmap_copy(fd, phys, len, out);
         }
         done += (size_t)got;
     }
@@ -1069,6 +1204,7 @@ static int write_phys_copy(int fd, uint64_t phys, const void *src, size_t len) {
     uint64_t fd_off = 0;
     const uint8_t *buf = (const uint8_t *)src;
     size_t done = 0;
+    size_t chunk = jobd_helper_io_chunk_bytes();
 
     if (!src || len == 0) {
         return -1;
@@ -1086,6 +1222,7 @@ static int write_phys_copy(int fd, uint64_t phys, const void *src, size_t len) {
                     trace_msg("shared DDR msync write failed: %s", strerror(errno));
                 }
             }
+            jobd_flush_for_device(map.ptr, map.len);
             unmap_phys(&map);
             return 0;
         }
@@ -1097,7 +1234,9 @@ static int write_phys_copy(int fd, uint64_t phys, const void *src, size_t len) {
 
     __sync_synchronize();
     while (done < len) {
-        ssize_t put = pwrite(fd, buf + done, len - done, (off_t)(fd_off + done));
+        size_t want = len - done;
+        if (want > chunk) want = chunk;
+        ssize_t put = pwrite(fd, buf + done, want, (off_t)(fd_off + done));
         if (put <= 0) {
             return -1;
         }
@@ -1168,7 +1307,7 @@ static bool probe_shared_ddr_mmap_at(int fd, uint64_t user_off) {
 }
 
 static bool probe_shared_ddr_mmap(int fd) {
-    uint64_t fallback_off = parse_env_u64_default("HETGPU_PACC_SHARED_DDR_USER_OFF",
+    uint64_t fallback_off = parse_env_u64_default("HETGPU_PACC_SHARED_DDR_MMAP_USER_OFF",
                                                   HETGPU_PACC_SHARED_DDR_USER_OFF);
     if (probe_shared_ddr_mmap_at(fd, fallback_off)) {
         return true;
@@ -1651,6 +1790,7 @@ static int run_softmax(int fd, const struct SoftmaxJob *job) {
 }
 
 static int run_rmsnorm(int fd, const struct RmsNormJob *job) {
+    uint64_t t0 = monotonic_us();
     if (!job->x_addr || !job->y_addr || !job->rows || !job->hidden) {
         log_msg("RMSNorm invalid job x=0x%" PRIx64 " w=0x%" PRIx64
                 " y=0x%" PRIx64 " rows=%" PRIu64 " hidden=%" PRIu64
@@ -1691,6 +1831,9 @@ static int run_rmsnorm(int fd, const struct RmsNormJob *job) {
     }
     msync(my.base, my.map_len, MS_SYNC);
     unmap_phys(&mx); unmap_phys(&mw); unmap_phys(&my);
+    trace_msg("RMSNorm done: rows=%" PRIu64 " hidden=%" PRIu64
+              " dtype=%u elapsed_us=%" PRIu64,
+              job->rows, job->hidden, job->dtype, monotonic_us() - t0);
     return 0;
 }
 
@@ -3119,9 +3262,10 @@ static int invoke_kernel_bin_bcast_native(const char *symbol,
                                           const uint64_t *argv,
                                           const struct PaccJobImage *job,
                                           size_t argc) {
+    uint64_t t0 = monotonic_us();
     (void)job;
     if (!symbol || !strstr(symbol, "_ZL11k_bin_bcast")) return 1;
-    if (!env_flag_true(getenv("HETGPU_PACC_ENABLE_NATIVE_BIN_BCAST"))) return 1;
+    if (!env_flag_default_true("HETGPU_PACC_ENABLE_NATIVE_BIN_BCAST")) return 1;
     if (strstr(symbol, "k_bin_bcast_unravel")) return 1;
     if (!strstr(symbol, "EEfffJ")) return 1;
     if (argc < 22 || argc > PACC_MAX_KERNEL_ARGS) return -1;
@@ -3179,6 +3323,8 @@ static int invoke_kernel_bin_bcast_native(const char *symbol,
             .status = 0,
         };
         bin_bcast_native_worker_main(&worker);
+        trace_msg("native bin_bcast done %s status=%d elapsed_us=%" PRIu64,
+                  symbol, worker.status, monotonic_us() - t0);
         return worker.status;
     }
 
@@ -3213,6 +3359,8 @@ static int invoke_kernel_bin_bcast_native(const char *symbol,
             status = worker[i].status;
         }
     }
+    trace_msg("native bin_bcast done %s status=%d elapsed_us=%" PRIu64,
+              symbol, status, monotonic_us() - t0);
     return status;
 }
 
@@ -3324,6 +3472,16 @@ static enum PaccMmvfXType mmvf_type_from_symbol(const char *symbol) {
     if (strstr(symbol, "mul_mat_vec_fI6__half")) return PACC_MMVF_F16;
     if (strstr(symbol, "mul_mat_vec_fIff")) return PACC_MMVF_F32;
     return PACC_MMVF_UNSUPPORTED;
+}
+
+static uint64_t kernel_binding_size_for_arg(const struct PaccJobImage *job, uint32_t arg_index) {
+    if (!job || !job->bindings) return 0;
+    for (size_t i = 0; i < job->binding_count; i++) {
+        if (job->bindings[i].arg_index == arg_index) {
+            return job->bindings[i].size;
+        }
+    }
+    return 0;
 }
 
 static bool mmvf_parse_template(const char *symbol,
@@ -3467,6 +3625,7 @@ static int invoke_kernel_mmvf_native(const char *symbol,
                                      const uint64_t *argv,
                                      const struct PaccJobImage *job,
                                      size_t argc) {
+    uint64_t t0 = monotonic_us();
     if (!symbol || !strstr(symbol, "mul_mat_vec_f")) return 1;
     if (!job || argc < 19) return -1;
 
@@ -3509,7 +3668,18 @@ static int invoke_kernel_mmvf_native(const char *symbol,
     ctx.grid_z = pacc_nonzero_dim(job->header.grid_z);
 
     if (ctx.ncols2 <= 0) return 0;
+    void *local_x = NULL;
     float *local_y = NULL;
+    if (ctx.x_type == PACC_MMVF_F16 && ctx.ncols_dst == 1) {
+        uint64_t x_bytes = kernel_binding_size_for_arg(job, 0);
+        if (x_bytes > 0 && x_bytes <= (512ULL << 20)) {
+            local_x = malloc((size_t)x_bytes);
+            if (local_x) {
+                memcpy(local_x, ctx.x, (size_t)x_bytes);
+                ctx.x = local_x;
+            }
+        }
+    }
     if (ctx.stride_col_y2 > 0) {
         uint64_t y_elems = 2u * ((uint64_t)(ctx.ncols_dst - 1u) *
                                  (uint64_t)ctx.stride_col_y2 +
@@ -3538,6 +3708,9 @@ static int invoke_kernel_mmvf_native(const char *symbol,
         };
         mmvf_native_worker_main(&worker);
         int worker_status = worker.status;
+        trace_msg("native mmvf done %s status=%d elapsed_us=%" PRIu64,
+                  symbol, worker_status, monotonic_us() - t0);
+        free(local_x);
         free(local_y);
         return worker_status;
     }
@@ -3561,6 +3734,7 @@ static int invoke_kernel_mmvf_native(const char *symbol,
             for (unsigned j = 0; j < created; j++) {
                 pthread_join(threads[j], NULL);
             }
+            free(local_x);
             free(local_y);
             return -1;
         }
@@ -3574,6 +3748,9 @@ static int invoke_kernel_mmvf_native(const char *symbol,
             status = worker[i].status;
         }
     }
+    trace_msg("native mmvf done %s status=%d elapsed_us=%" PRIu64,
+              symbol, status, monotonic_us() - t0);
+    free(local_x);
     free(local_y);
     return status;
 }
@@ -3767,7 +3944,7 @@ static int invoke_kernel_convert_unary_native(const char *symbol,
                                               const struct PaccJobImage *job,
                                               size_t argc) {
     if (!symbol || !strstr(symbol, "convert_unary")) return 1;
-    if (!env_flag_true(getenv("HETGPU_PACC_ENABLE_NATIVE_CONVERT_UNARY"))) return 1;
+    if (!env_flag_default_true("HETGPU_PACC_ENABLE_NATIVE_CONVERT_UNARY")) return 1;
     if (argc < 9) return -1;
 
     struct ConvertUnaryNativeCtx ctx;
@@ -4674,6 +4851,7 @@ static void release_kernel_binding_maps(struct KernelBindingMap *maps, size_t co
             if (maps[i].map.base) {
                 msync(maps[i].map.base, maps[i].map.map_len, MS_SYNC);
             }
+            jobd_flush_for_device(maps[i].map.ptr, maps[i].map.len);
         }
         unmap_phys(&maps[i].map);
     }
@@ -4700,14 +4878,14 @@ static int build_kernel_launch_args(
 
     g_kernel_arg_error = 0;
     if (!job || !argv_out || !argc_out || !arg_storage || !maps || !map_count_out) {
-        g_kernel_arg_error = 0x01;
+        g_kernel_arg_error = 0xe1;
         return -1;
     }
     if (job->arg_count > PACC_MAX_KERNEL_ARGS || job->binding_count > PACC_MAX_KERNEL_BINDINGS) {
         log_msg("kernel launch ABI too large: args=%zu/%u bindings=%zu/%u",
                 job->arg_count, PACC_MAX_KERNEL_ARGS,
                 job->binding_count, PACC_MAX_KERNEL_BINDINGS);
-        g_kernel_arg_error = 0x02;
+        g_kernel_arg_error = 0xe2;
         return -1;
     }
 
@@ -4717,7 +4895,7 @@ static int build_kernel_launch_args(
         if (map_count >= PACC_MAX_KERNEL_BINDINGS) {
             log_msg("kernel binding map limit reached: bindings=%zu map_count=%zu max=%u",
                     job->binding_count, map_count, PACC_MAX_KERNEL_BINDINGS);
-            g_kernel_arg_error = 0x30u | (uint32_t)(i & 0x0fu);
+            g_kernel_arg_error = 0xa0u | (uint32_t)(i & 0x0fu);
             return -1;
         }
         if (binding->addr == 0) continue;
@@ -4727,7 +4905,7 @@ static int build_kernel_launch_args(
                     " size=%zu flags=0x%x",
                     binding->arg_index, binding->addr, bind_bytes, binding->flags);
             release_kernel_binding_maps(maps, map_count);
-            g_kernel_arg_error = 0x40u | (uint32_t)(i & 0x0fu);
+            g_kernel_arg_error = 0xb0u | (uint32_t)(i & 0x0fu);
             return -1;
         }
         maps[map_count].arg_index = binding->arg_index;
@@ -4739,18 +4917,22 @@ static int build_kernel_launch_args(
         for (size_t i = 0; i < job->arg_count; i++) {
             const struct PaccKernelArgRecord *rec = &job->arg_records[i];
             uint64_t value = rec->value;
-            if (rec->flags & PACC_KERNEL_ARG_FLAG_INLINE_BLOB) {
+            if ((rec->flags & PACC_KERNEL_ARG_FLAG_INLINE_BLOB) && rec->size > 16U) {
                 if (!job->raw_params || value > job->raw_param_size ||
                     rec->size > job->raw_param_size - value) {
                     log_msg("kernel inline arg %zu out of raw-param bounds off=%" PRIu64
                             " size=%u raw=%zu",
                             i, value, rec->size, job->raw_param_size);
                     release_kernel_binding_maps(maps, map_count);
-                    g_kernel_arg_error = 0x50u | (uint32_t)(i & 0x0fu);
+                    g_kernel_arg_error = 0xc0u | (uint32_t)(i & 0x0fu);
                     return -1;
                 }
                 argv_out[argc++] = (uint64_t)(uintptr_t)(job->raw_params + value);
                 continue;
+            }
+            if ((rec->flags & PACC_KERNEL_ARG_FLAG_INLINE_BLOB) && rec->size <= 16U) {
+                trace_msg("kernel arg %zu ignoring inline flag for small by-value arg: size=%u flags=0x%x",
+                          i, rec->size, rec->flags);
             }
             if (rec->kind == 1U) {
                 struct KernelBindingMap *binding = find_binding_map(maps, map_count, (uint32_t)i);
@@ -4761,7 +4943,7 @@ static int build_kernel_launch_args(
             if (rec->size > 16U) {
                 log_msg("kernel arg %zu too large for byref slot: size=%u", i, rec->size);
                 release_kernel_binding_maps(maps, map_count);
-                g_kernel_arg_error = 0x60u | (uint32_t)(i & 0x1fu);
+                g_kernel_arg_error = 0xd0u | (uint32_t)(i & 0x0fu);
                 return -1;
             }
             size_t slot = argc;
@@ -4781,7 +4963,7 @@ static int build_kernel_launch_args(
         size_t words = job->raw_param_size / sizeof(uint64_t);
         if (words > PACC_MAX_KERNEL_ARGS) {
             release_kernel_binding_maps(maps, map_count);
-            g_kernel_arg_error = 0x07;
+            g_kernel_arg_error = 0xe7;
             return -1;
         }
         for (size_t i = 0; i < words; i++) {
@@ -4882,7 +5064,19 @@ static int parse_kernel_job_image(const uint8_t *image, size_t image_len, struct
             g_kernel_parse_error = 0x04;
             return -1;
         }
-        out->abi = (const struct PaccKernelLaunchAbiHeader *)(image + PACC_JOB_IMAGE_HEADER_WIRE_BYTES);
+        const uint8_t *abi = image + PACC_JOB_IMAGE_HEADER_WIRE_BYTES;
+        out->abi_storage.magic = read_u64_le(abi + 0);
+        out->abi_storage.version = read_u32_le(abi + 8);
+        out->abi_storage.flags = read_u32_le(abi + 12);
+        out->abi_storage.arg_records_offset = read_u32_le(abi + 16);
+        out->abi_storage.arg_record_count = read_u32_le(abi + 20);
+        out->abi_storage.bindings_offset = read_u32_le(abi + 24);
+        out->abi_storage.binding_count = read_u32_le(abi + 28);
+        out->abi_storage.raw_param_offset = read_u32_le(abi + 32);
+        out->abi_storage.raw_param_size = read_u32_le(abi + 36);
+        out->abi_storage.kernel_name_offset = read_u32_le(abi + 40);
+        out->abi_storage.kernel_name_size = read_u32_le(abi + 44);
+        out->abi = &out->abi_storage;
         if (out->abi->magic != PACC_KERNEL_LAUNCH_ABI_MAGIC ||
             out->abi->version != PACC_KERNEL_LAUNCH_ABI_VERSION) {
             log_msg("kernel image parse failed: bad ABI magic=0x%" PRIx64
@@ -4898,7 +5092,13 @@ static int parse_kernel_job_image(const uint8_t *image, size_t image_len, struct
             return -1;
         }
         if (out->abi->arg_record_count) {
-            size_t bytes = (size_t)out->abi->arg_record_count * sizeof(struct PaccKernelArgRecord);
+            size_t bytes = (size_t)out->abi->arg_record_count * PACC_KERNEL_ARG_RECORD_WIRE_BYTES;
+            if (out->abi->arg_record_count > PACC_MAX_KERNEL_ARGS) {
+                log_msg("kernel image parse failed: too many arg records count=%u max=%u",
+                        out->abi->arg_record_count, PACC_MAX_KERNEL_ARGS);
+                g_kernel_parse_error = 0x0a;
+                return -1;
+            }
             if (!elf64_bounds_ok(out->abi->arg_records_offset, bytes, image_len)) {
                 log_msg("kernel image parse failed: arg record bounds off=0x%x bytes=0x%zx len=0x%zx count=%u",
                         out->abi->arg_records_offset, bytes, image_len,
@@ -4906,11 +5106,27 @@ static int parse_kernel_job_image(const uint8_t *image, size_t image_len, struct
                 g_kernel_parse_error = 0x06;
                 return -1;
             }
-            out->arg_records = (const struct PaccKernelArgRecord *)(image + out->abi->arg_records_offset);
+            for (uint32_t i = 0; i < out->abi->arg_record_count; i++) {
+                const uint8_t *rec = image + out->abi->arg_records_offset +
+                                     (size_t)i * PACC_KERNEL_ARG_RECORD_WIRE_BYTES;
+                out->arg_records_storage[i].kind = read_u32_le(rec + 0);
+                out->arg_records_storage[i].size = read_u32_le(rec + 4);
+                out->arg_records_storage[i].flags = read_u32_le(rec + 8);
+                out->arg_records_storage[i].reserved = read_u32_le(rec + 12);
+                out->arg_records_storage[i].value = read_u64_le(rec + 16);
+                out->arg_records_storage[i].value_hi = read_u64_le(rec + 24);
+            }
+            out->arg_records = out->arg_records_storage;
             out->arg_count = out->abi->arg_record_count;
         }
         if (out->abi->binding_count) {
-            size_t bytes = (size_t)out->abi->binding_count * sizeof(struct PaccKernelBufferBinding);
+            size_t bytes = (size_t)out->abi->binding_count * PACC_KERNEL_BUFFER_BINDING_WIRE_BYTES;
+            if (out->abi->binding_count > PACC_MAX_KERNEL_BINDINGS) {
+                log_msg("kernel image parse failed: too many bindings count=%u max=%u",
+                        out->abi->binding_count, PACC_MAX_KERNEL_BINDINGS);
+                g_kernel_parse_error = 0x0b;
+                return -1;
+            }
             if (!elf64_bounds_ok(out->abi->bindings_offset, bytes, image_len)) {
                 log_msg("kernel image parse failed: binding bounds off=0x%x bytes=0x%zx len=0x%zx count=%u",
                         out->abi->bindings_offset, bytes, image_len,
@@ -4918,7 +5134,15 @@ static int parse_kernel_job_image(const uint8_t *image, size_t image_len, struct
                 g_kernel_parse_error = 0x07;
                 return -1;
             }
-            out->bindings = (const struct PaccKernelBufferBinding *)(image + out->abi->bindings_offset);
+            for (uint32_t i = 0; i < out->abi->binding_count; i++) {
+                const uint8_t *binding = image + out->abi->bindings_offset +
+                                         (size_t)i * PACC_KERNEL_BUFFER_BINDING_WIRE_BYTES;
+                out->bindings_storage[i].arg_index = read_u32_le(binding + 0);
+                out->bindings_storage[i].flags = read_u32_le(binding + 4);
+                out->bindings_storage[i].addr = read_u64_le(binding + 8);
+                out->bindings_storage[i].size = read_u64_le(binding + 16);
+            }
+            out->bindings = out->bindings_storage;
             out->binding_count = out->abi->binding_count;
         }
         if (out->abi->raw_param_size) {
@@ -5267,6 +5491,8 @@ static enum DispatchPollResult maybe_dispatch_kernel_job(
     int fd,
     volatile struct Doorbell *ctl,
     uint64_t *last_kernel_seq) {
+    static uint64_t last_idle_report_seq;
+    static uint64_t last_invalid_report_seq;
     const struct PaccJobDesc *kernel_desc = (const struct PaccJobDesc *)(const void *)ctl;
     struct PaccJobDesc desc;
     int status;
@@ -5283,9 +5509,25 @@ static enum DispatchPollResult maybe_dispatch_kernel_job(
 
     if (desc.buf_info != PACC_JOB_MAGIC ||
         desc.len < sizeof(struct PaccJobImageHeader)) {
+        if (jobd_trace_enabled() && desc.seq != 0 && desc.seq != last_invalid_report_seq) {
+            last_invalid_report_seq = desc.seq;
+            trace_msg("kernel doorbell invalid: seq=%" PRIu64
+                      " addr=0x%" PRIx64 " len=%" PRIu64
+                      " buf_info=0x%" PRIx64 " last=%" PRIu64,
+                      desc.seq, desc.addr, desc.len, desc.buf_info,
+                      last_kernel_seq ? *last_kernel_seq : 0);
+        }
         return DISPATCH_INVALID;
     }
     if (desc.seq == 0 || desc.seq == *last_kernel_seq) {
+        if (jobd_trace_enabled() && desc.seq != 0 && desc.seq != last_idle_report_seq) {
+            last_idle_report_seq = desc.seq;
+            trace_msg("kernel doorbell idle: seq=%" PRIu64
+                      " addr=0x%" PRIx64 " len=%" PRIu64
+                      " last=%" PRIu64,
+                      desc.seq, desc.addr, desc.len,
+                      last_kernel_seq ? *last_kernel_seq : 0);
+        }
         return DISPATCH_IDLE;
     }
 
@@ -5361,7 +5603,10 @@ static enum DispatchPollResult dispatch_any_job(
     return DISPATCH_INVALID;
 }
 
-static void maybe_heartbeat_control(int fd, const uint8_t *snapshot, uint64_t tick) {
+static void maybe_heartbeat_control(int fd,
+                                    const uint8_t *snapshot,
+                                    uint64_t tick,
+                                    uint64_t last_kernel_seq) {
     const volatile struct Doorbell *head;
     const struct PaccJobDesc *kernel_head;
     uint32_t status = 0x7000;
@@ -5380,9 +5625,17 @@ static void maybe_heartbeat_control(int fd, const uint8_t *snapshot, uint64_t ti
         job_id = head->job_id;
         seq = head->seq;
     } else if (kernel_head->buf_info == PACC_JOB_MAGIC) {
-        status = 0x7002;
+        status = kernel_head->seq == last_kernel_seq ? 0x7102 : 0x7202;
         job_id = PACC_KERNEL_JOB_ID;
         seq = kernel_head->seq;
+    } else {
+        job_id = PACC_KERNEL_JOB_ID;
+        seq = kernel_head->seq;
+        status = 0x7000;
+        if (kernel_head->addr != 0) status |= 0x1;
+        if (kernel_head->len != 0) status |= 0x2;
+        if (kernel_head->seq != 0) status |= 0x4;
+        if (kernel_head->buf_info != 0) status |= 0x8;
     }
     mirror_host_status(fd, job_id, seq, status);
 }
@@ -5458,6 +5711,7 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
         host->status = status;
         host->seq = seq;
         __sync_synchronize();
+        jobd_flush_for_device((const void *)host, sizeof(*host));
         if (g_control_map_base && g_control_map_len) {
             (void)msync(g_control_map_base, g_control_map_len, MS_SYNC);
         }
@@ -5476,6 +5730,7 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
     host->status = status;
     host->seq = seq;
     __sync_synchronize();
+    jobd_flush_for_device((const void *)host, sizeof(*host));
     msync(map.base, map.map_len, MS_SYNC);
     trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
               job_id, job_name(job_id), seq, status);
@@ -5534,12 +5789,17 @@ int main(int argc, char **argv) {
     wait_for_initial_control(mbox_fd);
     read_shared_ddr_info_from_mbox(mbox_fd);
     read_pacc_id_from_mbox(mbox_fd);
+    g_shared_ddr_fd_user_off =
+        parse_env_u64_default("HETGPU_PACC_SHARED_DDR_FD_USER_OFF",
+                              parse_env_u64_default("HETGPU_PACC_SHARED_DDR_USER_OFF",
+                                                    HETGPU_PACC_SHARED_DDR_FD_USER_OFF));
     int map_fd = mbox_fd;
     bool close_map_fd = false;
     if (!jobd_force_devmem_enabled() && probe_shared_ddr_mmap(mbox_fd)) {
         g_map_uses_shared_ddr_offsets = true;
-        log_msg("using %s mmap with shared-DDR-relative offsets user_off=0x%" PRIx64,
-                mbox_path, g_shared_ddr_mmap_user_off);
+        log_msg("using %s mmap with shared-DDR-relative offsets mmap_user_off=0x%" PRIx64
+                " fd_user_off=0x%" PRIx64,
+                mbox_path, g_shared_ddr_mmap_user_off, g_shared_ddr_fd_user_off);
     } else {
         map_fd = open(devmem, O_RDWR | O_SYNC | O_CLOEXEC);
         if (map_fd < 0) {
@@ -5555,17 +5815,22 @@ int main(int argc, char **argv) {
     if (jobd_claim_pacc_id_enabled()) {
         claim_pacc_id_from_shared_ddr(map_fd);
     }
-    if (jobd_full_ddr_map_enabled() &&
-        g_ddr_info.ddr_base && g_ddr_info.ddr_size &&
-        map_phys(map_fd, g_ddr_info.ddr_base, (size_t)g_ddr_info.ddr_size,
-                 &g_shared_ddr_full_map) == 0) {
-        g_shared_ddr_full_map_valid = true;
-        log_msg("mapped full shared DDR once: base=0x%" PRIx64
-                " size=0x%" PRIx64 " ptr=%p",
-                g_ddr_info.ddr_base, g_ddr_info.ddr_size,
-                g_shared_ddr_full_map.ptr);
-    } else if (jobd_full_ddr_map_enabled()) {
-        log_msg("full shared DDR mmap unavailable; falling back to per-access mmap");
+    if (jobd_full_ddr_map_enabled() && g_ddr_info.ddr_base && g_ddr_info.ddr_size) {
+        uint64_t map_bytes = jobd_full_ddr_map_bytes();
+        if (map_bytes > g_ddr_info.ddr_size) {
+            map_bytes = g_ddr_info.ddr_size;
+        }
+        if (map_bytes != 0 &&
+            map_phys(map_fd, g_ddr_info.ddr_base, (size_t)map_bytes,
+                     &g_shared_ddr_full_map) == 0) {
+            g_shared_ddr_full_map_valid = true;
+            log_msg("mapped shared DDR window once: base=0x%" PRIx64
+                    " size=0x%" PRIx64 " total=0x%" PRIx64 " ptr=%p",
+                    g_ddr_info.ddr_base, map_bytes, g_ddr_info.ddr_size,
+                    g_shared_ddr_full_map.ptr);
+        } else {
+            log_msg("shared DDR window mmap unavailable; falling back to per-access mmap");
+        }
     } else {
         log_msg("full shared DDR mmap disabled; using per-access mmap");
     }
@@ -5611,7 +5876,7 @@ int main(int argc, char **argv) {
         } else {
             sync_map_for_cpu(&control_map);
         }
-        maybe_heartbeat_control(map_fd, control_snapshot, ++heartbeat_tick);
+        maybe_heartbeat_control(map_fd, control_snapshot, ++heartbeat_tick, last_kernel_seq);
         poll_result = dispatch_any_job(
             map_fd,
             dispatch_ctl,
@@ -5631,6 +5896,8 @@ int main(int argc, char **argv) {
         } else {
             sleep_when_idle();
         }
-        wait_for_control(mbox_fd);
+        if (jobd_mbox_poll_enabled()) {
+            wait_for_control(mbox_fd);
+        }
     }
 }
