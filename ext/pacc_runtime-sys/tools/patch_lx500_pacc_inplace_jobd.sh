@@ -78,12 +78,31 @@ def patch_payload(entries, label: str, name: str, payload: bytes, pad: int = 0, 
     print(f"patched {label}:{name}: {len(payload)} bytes into {size}-byte slot")
     return True
 
+jobd_threads = os.environ.get("PACC_JOBD_KERNEL_THREADS", "4").strip() or "4"
+jobd_trace = os.environ.get("PACC_JOBD_TRACE", "0").strip() or "0"
+jobd_kmsg = os.environ.get("PACC_JOBD_KMSG", "0").strip() or "0"
+jobd_mbox_poll = os.environ.get("PACC_JOBD_MBOX_POLL", "0").strip() or "0"
+jobd_force_elf = os.environ.get("PACC_JOBD_FORCE_ELF", "0").strip() or "0"
+jobd_full_ddr_map = os.environ.get("PACC_JOBD_FULL_DDR_MAP", "1").strip() or "1"
+jobd_claim_id = os.environ.get("PACC_JOBD_CLAIM_ID", "0").strip() or "0"
+
 rcs_lines = [
     "#!/bin/sh",
-    "export HETGPU_PACC_JOBD_KERNEL_THREADS=${HETGPU_PACC_JOBD_KERNEL_THREADS:-4}",
-    "export HETGPU_PACC_JOBD_TRACE=${HETGPU_PACC_JOBD_TRACE:-1}",
-    "export HETGPU_PACC_JOBD_KMSG=${HETGPU_PACC_JOBD_KMSG:-1}",
 ]
+if jobd_threads != "4":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_KERNEL_THREADS={jobd_threads}")
+if jobd_trace != "0":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_TRACE={jobd_trace}")
+if jobd_kmsg != "1":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_KMSG={jobd_kmsg}")
+if jobd_mbox_poll != "0":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_MBOX_POLL={jobd_mbox_poll}")
+if jobd_force_elf != "0":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_FORCE_ELF={jobd_force_elf}")
+if jobd_full_ddr_map != "0":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_FULL_DDR_MAP={jobd_full_ddr_map}")
+if jobd_claim_id != "0":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_CLAIM_ID={jobd_claim_id}")
 shared_ddr_base = os.environ.get("PACC_JOBD_SHARED_DDR_BASE", "").strip()
 shared_ddr_size = os.environ.get("PACC_JOBD_SHARED_DDR_SIZE", "").strip()
 if shared_ddr_base:

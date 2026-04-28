@@ -7,3 +7,5 @@ Cargo.lock
 *.py
 *.pyc
 ze_runner*
+*sb
+*ppt

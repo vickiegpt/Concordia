@@ -7,7 +7,9 @@
 //!   PACC_IOC_CREATE_BO     = _IOWR('p', 2, struct pacc_bo)
 //!   PACC_IOC_SUBMIT_OP     = _IOW ('p', 3, struct pacc_op)
 //!   PACC_IOC_FREE_BO       = _IOW ('p', 4, struct pacc_bo)
-//!   PACC_IOC_ZLUDA_IRQ     = _IOW ('p', 5, struct HetgpuPaccSharedDdrInfo)
+//!   PACC_IOC_ZLUDA_IRQ     = _IO  ('p', 5)
+//!   PACC_IOC_ZLUDA_GET_DDR_BASE = _IOR('p', 6, struct HetgpuPaccSharedDdrInfo)
+//!   PACC_IOC_GET_PACC_ID   = _IOR ('p', 7, unsigned long)
 //!
 //! Mailbox SRAM (accessible from Pcore side via mmap or physical):
 //!   AP→PACC : 0x20000000  (8KB)
@@ -36,6 +38,12 @@ const fn _iowr(ty: u64, nr: u64, size: u64) -> u64 {
 }
 const fn _iow(ty: u64, nr: u64, size: u64) -> u64 {
     (1 << 30) | (size << 16) | (ty << 8) | nr
+}
+const fn _ior(ty: u64, nr: u64, size: u64) -> u64 {
+    (2 << 30) | (size << 16) | (ty << 8) | nr
+}
+const fn _io(ty: u64, nr: u64) -> u64 {
+    (ty << 8) | nr
 }
 
 pub const PACC_MAGIC: u64 = 0x70; // 'p'
@@ -101,11 +109,19 @@ pub const PACC_IOC_GET_INFO: u64 = _iowr(PACC_MAGIC, 1, std::mem::size_of::<pacc
 pub const PACC_IOC_CREATE_BO: u64 = _iowr(PACC_MAGIC, 2, std::mem::size_of::<pacc_bo>() as u64);
 pub const PACC_IOC_SUBMIT_OP: u64 = _iow(PACC_MAGIC, 3, std::mem::size_of::<pacc_op>() as u64);
 pub const PACC_IOC_FREE_BO: u64 = _iow(PACC_MAGIC, 4, std::mem::size_of::<pacc_bo>() as u64);
-pub const PACC_IOC_ZLUDA_IRQ: u64 = _iow(
+pub const PACC_IOC_ZLUDA_IRQ_LEGACY: u64 = _iow(
     PACC_MAGIC,
     5,
     std::mem::size_of::<HetgpuPaccSharedDdrInfo>() as u64,
 );
+pub const PACC_IOC_ZLUDA_IRQ: u64 = _io(PACC_MAGIC, 5);
+pub const PACC_IOC_ZLUDA_GET_DDR_BASE: u64 = _ior(
+    PACC_MAGIC,
+    6,
+    std::mem::size_of::<HetgpuPaccSharedDdrInfo>() as u64,
+);
+pub const PACC_IOC_GET_PACC_ID: u64 =
+    _ior(PACC_MAGIC, 7, std::mem::size_of::<u64>() as u64);
 
 // Backward-compatible aliases for older local call sites.
 pub const PACC_IOC_GET_INFO_EX: u64 = PACC_IOC_GET_INFO;
@@ -120,6 +136,9 @@ pub const IOC_SUBMIT_OP: u64 = PACC_IOC_SUBMIT_OP;
 pub const IOC_BO_SUBMIT: u64 = PACC_IOC_SUBMIT_OP;
 pub const IOC_FREE_BO: u64 = PACC_IOC_FREE_BO;
 pub const IOC_ZLUDA_IRQ: u64 = PACC_IOC_ZLUDA_IRQ;
+pub const IOC_ZLUDA_IRQ_LEGACY: u64 = PACC_IOC_ZLUDA_IRQ_LEGACY;
+pub const IOC_ZLUDA_GET_DDR_BASE: u64 = PACC_IOC_ZLUDA_GET_DDR_BASE;
+pub const IOC_GET_PACC_ID: u64 = PACC_IOC_GET_PACC_ID;
 
 /// Reduce operation types for NCCL AllReduce
 #[repr(u32)]
@@ -834,14 +853,38 @@ pub struct PaccDevice {
     pub id: usize,
     pub fd: RawFd,
     file: File,
+    is_mbox_helper: bool,
 }
 
 impl PaccDevice {
     pub fn open(id: usize) -> std::io::Result<Self> {
         let path = format!("/dev/pacc{}", id);
-        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let (file, is_mbox_helper) = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => (file, false),
+            Err(pacc_err) if pacc_err.kind() == ErrorKind::NotFound => {
+                let helper = helper_path_for_pacc(id);
+                match OpenOptions::new().read(true).write(true).open(&helper) {
+                    Ok(file) => {
+                        if zluda_irq_trace_enabled() {
+                            eprintln!(
+                                "PACC device {}: {} missing, using shared-DDR helper {}",
+                                id, path, helper
+                            );
+                        }
+                        (file, true)
+                    }
+                    Err(_) => return Err(pacc_err),
+                }
+            }
+            Err(err) => return Err(err),
+        };
         let fd = file.as_raw_fd();
-        let dev = PaccDevice { id, fd, file };
+        let dev = PaccDevice {
+            id,
+            fd,
+            file,
+            is_mbox_helper,
+        };
         if std::env::var("HETGPU_PACC_BOOT_RUNTIME").ok().as_deref() == Some("1") {
             dev.boot_runtime_from_env()?;
         }
@@ -882,6 +925,12 @@ impl PaccDevice {
 
     /// PACC_IOC_CREATE_BO — allocate a contiguous BO and return its physical base.
     pub fn mem_alloc(&self, size: u64) -> std::io::Result<u64> {
+        if self.is_mbox_helper {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "PACC BO allocation requires /dev/pacc; current device is shared-DDR helper",
+            ));
+        }
         let mut request = self.bo_request(size as usize)?;
         let requested_size = request.size;
         let ret = unsafe { libc::ioctl(self.fd, IOC_CREATE_BO, &mut request as *mut _) };
@@ -916,19 +965,52 @@ impl PaccDevice {
             return Ok(());
         }
         let mut arg = shared_ddr;
-        let ret = unsafe { libc::ioctl(self.fd, IOC_ZLUDA_IRQ, &mut arg as *mut _) };
+        let ret = unsafe { libc::ioctl(self.fd, IOC_ZLUDA_IRQ, 0usize) };
         if ret < 0 {
-            let err = std::io::Error::last_os_error();
-            if zluda_irq_mock_enabled() {
+            let primary_err = std::io::Error::last_os_error();
+            let legacy_ret =
+                unsafe { libc::ioctl(self.fd, IOC_ZLUDA_IRQ_LEGACY, &mut arg as *mut _) };
+            if legacy_ret == 0 {
                 if zluda_irq_trace_enabled() {
                     eprintln!(
-                        "PACC ZLUDA IRQ mock: ioctl 0x{:x} on /dev/pacc{} failed: {}; using CPU-side firmware mock",
-                        IOC_ZLUDA_IRQ, self.id, err
+                        "PACC ZLUDA IRQ: dev={} shared_ddr_base=0x{:x} shared_ddr_size=0x{:x} via legacy ioctl 0x{:x}",
+                        self.id, shared_ddr.ddr_base, shared_ddr.ddr_size, IOC_ZLUDA_IRQ_LEGACY
                     );
                 }
                 return Ok(());
             }
-            return Err(err);
+            let legacy_err = std::io::Error::last_os_error();
+            if self.is_mbox_helper
+                && use_shared_ddr_control_window()
+                && matches!(
+                    primary_err.raw_os_error(),
+                    Some(libc::ENOTTY | libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP)
+                )
+            {
+                if zluda_irq_trace_enabled() {
+                    eprintln!(
+                        "PACC ZLUDA IRQ: fd for dev={} does not implement ioctl 0x{:x}; relying on shared-DDR polling",
+                        self.id, IOC_ZLUDA_IRQ
+                    );
+                }
+                return Ok(());
+            }
+            if zluda_irq_mock_enabled() {
+                if zluda_irq_trace_enabled() {
+                    eprintln!(
+                        "PACC ZLUDA IRQ mock: ioctl 0x{:x} on /dev/pacc{} failed: {}; legacy 0x{:x} failed: {}; using CPU-side firmware mock",
+                        IOC_ZLUDA_IRQ, self.id, primary_err, IOC_ZLUDA_IRQ_LEGACY, legacy_err
+                    );
+                }
+                return Ok(());
+            }
+            return Err(Error::new(
+                primary_err.kind(),
+                format!(
+                    "PACC ZLUDA IRQ ioctl 0x{:x} failed on dev{}: {}; legacy ioctl 0x{:x} also failed: {}",
+                    IOC_ZLUDA_IRQ, self.id, primary_err, IOC_ZLUDA_IRQ_LEGACY, legacy_err
+                ),
+            ));
         }
         if zluda_irq_trace_enabled() {
             eprintln!(
@@ -992,6 +1074,12 @@ impl PaccDevice {
     }
 
     pub fn bo_alloc_map(&self, len: usize) -> std::io::Result<PaccBoMap> {
+        if self.is_mbox_helper {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "PACC BO mmap requires /dev/pacc; current device is shared-DDR helper",
+            ));
+        }
         if len == 0 {
             return Err(Error::new(ErrorKind::InvalidInput, "zero-length PACC BO"));
         }
@@ -1043,6 +1131,12 @@ impl PaccDevice {
     }
 
     pub fn submit_current_bo(&self) -> std::io::Result<()> {
+        if self.is_mbox_helper {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "legacy PACC BO submit requires /dev/pacc; current device is shared-DDR helper",
+            ));
+        }
         if std::env::var("HETGPU_PACC_ALLOW_UNSAFE_IOCTL3_SUBMIT")
             .ok()
             .as_deref()
@@ -1119,6 +1213,7 @@ impl PaccDevice {
         {
             require_runtime_ready()?;
         }
+        let _control_guard = lock_pacc_control(self.id as usize, "PACC runtime job")?;
 
         let seq = next_runtime_job_seq();
 
@@ -1214,13 +1309,10 @@ impl PaccDevice {
         if use_shared_ddr_control_window() {
             return write_shared_ddr_control_window(self.id, HETGPU_PACC_DOORBELL_OFF, bytes);
         }
-        if write_ap2pacc_mailbox(self.id as usize, 0, bytes)? {
-            return Ok(());
-        }
-        let mut map = PhysMap::map_rw(AP2PACC_MBOX_PHYS, HETGPU_PACC_DOORBELL_BYTES)?;
-        let dst = map.as_mut_slice();
-        dst.copy_from_slice(bytes);
-        map.flush()
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "PACC doorbell requires shared DDR control window; mailbox SRAM is disabled",
+        ))
     }
 
     fn stage_preloaded_job_args(
@@ -1236,7 +1328,8 @@ impl PaccDevice {
                 != Some("1")
             && preloaded_arg_slot(job_id).is_some()
         {
-            return self.stage_runtime_job_table(job_id, seq, arg_bytes);
+            self.stage_runtime_job_table(job_id, seq, arg_bytes)?;
+            return self.stage_preloaded_arg_slot(job_id, seq, arg_bytes);
         }
         if std::env::var("HETGPU_PACC_FIRMWARE_ARGS_PRELOADED")
             .ok()
@@ -1245,6 +1338,15 @@ impl PaccDevice {
         {
             return Ok(());
         }
+        self.stage_preloaded_arg_slot(job_id, seq, arg_bytes)
+    }
+
+    fn stage_preloaded_arg_slot(
+        &self,
+        job_id: u32,
+        seq: u64,
+        arg_bytes: &[u8],
+    ) -> std::io::Result<()> {
         let slot = match preloaded_arg_slot(job_id) {
             Some(slot) => slot,
             None => {
@@ -1286,23 +1388,10 @@ impl PaccDevice {
         if use_shared_ddr_control_window() {
             return write_shared_ddr_control_window(self.id, slot_off, &helper_payload);
         }
-        if write_ap2pacc_mailbox(
-            self.id as usize,
-            HETGPU_PACC_ARG_BASE - AP2PACC_MBOX_PHYS + (slot * HETGPU_PACC_ARG_SLOT_BYTES) as u64,
-            &helper_payload,
-        )? {
-            return Ok(());
-        }
-        let mut map = PhysMap::map_rw(
-            HETGPU_PACC_ARG_BASE + (slot * HETGPU_PACC_ARG_SLOT_BYTES) as u64,
-            HETGPU_PACC_ARG_SLOT_BYTES,
-        )?;
-        let dst = map.as_mut_slice();
-        dst.fill(0);
-        dst[..HETGPU_PACC_ARG_HEADER_BYTES].copy_from_slice(header_bytes);
-        dst[HETGPU_PACC_ARG_HEADER_BYTES..HETGPU_PACC_ARG_HEADER_BYTES + arg_bytes.len()]
-            .copy_from_slice(arg_bytes);
-        map.flush()
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "PACC job args require shared DDR control window; mailbox SRAM is disabled",
+        ))
     }
 
     fn stage_runtime_job_table(
@@ -1399,15 +1488,10 @@ impl PaccDevice {
         if use_shared_ddr_control_window() {
             return write_shared_ddr_control_window(self.id, HETGPU_PACC_RUNTIME_TABLE_OFF, bytes);
         }
-        if write_ap2pacc_mailbox(self.id as usize, HETGPU_PACC_RUNTIME_TABLE_OFF, bytes)? {
-            return Ok(());
-        }
-        let mut map = PhysMap::map_rw(
-            AP2PACC_MBOX_PHYS + HETGPU_PACC_RUNTIME_TABLE_OFF,
-            bytes.len(),
-        )?;
-        map.as_mut_slice().copy_from_slice(bytes);
-        map.flush()
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "PACC runtime table requires shared DDR control window; mailbox SRAM is disabled",
+        ))
     }
 
     fn wait_preloaded_job_status(&self, job_id: u32, seq: u64) -> std::io::Result<()> {
@@ -1419,7 +1503,6 @@ impl PaccDevice {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(30_000);
         let start = std::time::Instant::now();
-        let mut buf = [0u8; 32];
         if use_shared_ddr_control_window() {
             let mut shared_file = open_shared_ddr_window_file(self.id);
             return wait_shared_ddr_job_status(
@@ -1431,43 +1514,10 @@ impl PaccDevice {
                 &mut shared_file,
             );
         }
-        loop {
-            if read_pacc2ap_mailbox(self.id as usize, HETGPU_PACC_COMPLETION_OFF, &mut buf)? {
-                let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
-                let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
-                let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
-                let status = u32::from_le_bytes(buf[16..20].try_into().unwrap());
-                let status_seq = u64::from_le_bytes(buf[24..32].try_into().unwrap());
-                if magic == HETGPU_PACC_JOB_MAGIC
-                    && version == HETGPU_PACC_JOB_VERSION
-                    && status_job_id == job_id
-                    && status_seq == seq
-                {
-                    if status == 0 {
-                        return Ok(());
-                    }
-                    if status != 1 {
-                        return Err(Error::new(
-                            ErrorKind::Other,
-                            format!(
-                                "PACC job_id {} seq {} failed with firmware status 0x{:x}",
-                                job_id, seq, status
-                            ),
-                        ));
-                    }
-                }
-            }
-            if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
-                return Err(Error::new(
-                    ErrorKind::TimedOut,
-                    format!(
-                        "timed out waiting for PACC job_id {} seq {} completion",
-                        job_id, seq
-                    ),
-                ));
-            }
-            std::thread::sleep(std::time::Duration::from_micros(500));
-        }
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "PACC job status wait requires shared DDR control window; mailbox SRAM is disabled",
+        ))
     }
 
     pub fn boot_runtime_from_env(&self) -> std::io::Result<()> {
@@ -1519,10 +1569,17 @@ impl PaccDevice {
                 std::mem::size_of::<HetgpuPaccRuntimeBootInfo>(),
             )
         };
-        if write_ap2pacc_mailbox(self.id, HETGPU_PACC_RUNTIME_BOOT_INFO_OFF, bytes)? {
-            return Ok(());
+        if use_shared_ddr_control_window() {
+            return write_shared_ddr_control_window(
+                self.id,
+                HETGPU_PACC_RUNTIME_BOOT_INFO_OFF,
+                bytes,
+            );
         }
-        write_ap2pacc_mailbox_phys(self.id, HETGPU_PACC_RUNTIME_BOOT_INFO_OFF, bytes)
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "PACC runtime boot info requires shared DDR control window; mailbox SRAM is disabled",
+        ))
     }
 
     /// Boot/release this PACC cluster using the Pcore-visible top registers
@@ -1538,11 +1595,23 @@ impl PaccDevice {
 
     pub fn ap2pacc_mailbox(&self) -> std::io::Result<PhysMap> {
         let _ = self;
+        if !mailbox_sram_enabled() {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "AP2PACC mailbox SRAM mapping is disabled; use shared DDR control",
+            ));
+        }
         PhysMap::map_rw(AP2PACC_MBOX_PHYS, MBOX_SRAM_SIZE)
     }
 
     pub fn pacc2ap_mailbox(&self) -> std::io::Result<PhysMap> {
         let _ = self;
+        if !mailbox_sram_enabled() {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "PACC2AP mailbox SRAM mapping is disabled; use shared DDR control",
+            ));
+        }
         PhysMap::map_rw(PACC2AP_MBOX_PHYS, MBOX_SRAM_SIZE)
     }
 
@@ -1579,11 +1648,14 @@ fn normalize_pacc_device_id(dev_id: i32) -> usize {
 }
 
 static RUNTIME_BOOTED: OnceLock<Mutex<[bool; 4]>> = OnceLock::new();
+static PACC_CONTROL_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 static SHARED_DDR_REDUCE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const SHARED_DDR_STAGE_LOCK_COUNT: usize = 64;
 static SHARED_DDR_STAGE_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 const SHARED_DDR_KERNEL_LOCK_COUNT: usize = 64;
 static SHARED_DDR_KERNEL_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
+static NEXT_KERNEL_SUBMIT_SLOT: AtomicUsize = AtomicUsize::new(0);
+static KERNEL_SUBMIT_SLOT_SEED: OnceLock<usize> = OnceLock::new();
 static SHARED_DDR_BO_ARENA: OnceLock<Mutex<Option<PaccBoMap>>> = OnceLock::new();
 static SHARED_DDR_MOCK_ARENA: OnceLock<Mutex<BTreeMap<u64, Vec<u8>>>> = OnceLock::new();
 static SHARED_DDR_FULL_MMAP: OnceLock<Result<SharedDdrFullMmap, String>> = OnceLock::new();
@@ -2006,6 +2078,12 @@ fn decode_pacc_host_status(
     if status == 0 {
         return Some(Ok(()));
     }
+    if expected_job_id == hetgpu_pacc_job_id::KERNEL && (status & 0xffff) == 0x5109 {
+        return Some(Ok(()));
+    }
+    if status == 1 || (status & 0xff00) == 0x5100 {
+        return None;
+    }
     if status != 1 {
         return Some(Err(Error::new(
             ErrorKind::Other,
@@ -2027,6 +2105,13 @@ fn wait_shared_ddr_job_status(
     shared_file: &mut Option<File>,
 ) -> std::io::Result<()> {
     let mut buf = [0u8; 32];
+    let reirq_ms = zluda_reirq_interval_ms();
+    let reirq_interval = std::time::Duration::from_millis(reirq_ms);
+    let mut last_reirq = start;
+    let status_trace = env_flag_enabled("HETGPU_PACC_STATUS_TRACE")
+        || env_flag_enabled("HETGPU_PACC_KERNEL_TIMING")
+        || env_flag_enabled("HETGPU_PACC_TIMING");
+    let mut last_status: Option<(u64, u32, u32, u64)> = None;
     loop {
         read_shared_ddr_control_window_cached(
             shared_file,
@@ -2034,12 +2119,49 @@ fn wait_shared_ddr_job_status(
             HETGPU_PACC_COMPLETION_OFF,
             &mut buf,
         )?;
+        if status_trace {
+            let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+            let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+            let status = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+            let status_seq = u64::from_le_bytes(buf[24..32].try_into().unwrap());
+            let current = (magic, status_job_id, status, status_seq);
+            if last_status != Some(current)
+                && magic == HETGPU_PACC_JOB_MAGIC
+                && status_job_id == expected_job_id
+                && status_seq == seq
+            {
+                eprintln!(
+                    "PACC status: pacc{} job_id={} seq={} status=0x{:x} elapsed_us={}",
+                    dev.id,
+                    expected_job_id,
+                    seq,
+                    status,
+                    start.elapsed().as_micros()
+                );
+            }
+            last_status = Some(current);
+        }
         if let Some(result) = decode_pacc_host_status(&buf, expected_job_id, seq) {
             return result;
         }
 
+        if reirq_ms != 0 && last_reirq.elapsed() >= reirq_interval {
+            if zluda_irq_trace_enabled() {
+                eprintln!(
+                    "PACC ZLUDA IRQ: dev={} re-kick job_id={} seq={} after {} ms without completion",
+                    dev.id,
+                    expected_job_id,
+                    seq,
+                    last_reirq.elapsed().as_millis()
+                );
+            }
+            dev.zluda_irq(shared_ddr_info())?;
+            last_reirq = std::time::Instant::now();
+        }
+
         if !use_process_mock_shared_ddr_window()
             && !use_pacc_bo_shared_ddr()
+            && !dev.is_mbox_helper
             && response_poll_enabled()
         {
             let elapsed = start.elapsed();
@@ -2063,11 +2185,16 @@ fn wait_shared_ddr_job_status(
         }
 
         if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
+            let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+            let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
+            let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+            let status = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+            let status_seq = u64::from_le_bytes(buf[24..32].try_into().unwrap());
             return Err(Error::new(
                 ErrorKind::TimedOut,
                 format!(
-                    "timed out waiting for PACC job_id {} seq {} completion",
-                    expected_job_id, seq
+                    "timed out waiting for PACC job_id {} seq {} completion; completion slot magic=0x{:x} version={} job_id={} status=0x{:x} seq={} raw={:02x?}",
+                    expected_job_id, seq, magic, version, status_job_id, status, status_seq, buf
                 ),
             ));
         }
@@ -2087,6 +2214,23 @@ fn response_poll_enabled() -> bool {
         Some(v) if v == "0" || v == "false" || v == "no" || v == "off"
     );
     enabled && response_poll_slice_ms() != 0
+}
+
+fn zluda_reirq_interval_ms() -> u64 {
+    parse_env_usize("HETGPU_PACC_REIRQ_MS", 100) as u64
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    matches!(
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase()),
+        Some(value)
+            if value == "1"
+                || value == "true"
+                || value == "yes"
+                || value == "on"
+    )
 }
 
 fn decode_pacc_arg<T: Copy>(bytes: &[u8], label: &str) -> std::io::Result<T> {
@@ -2177,18 +2321,14 @@ fn mock_runtime_job(job_id: u32, arg_bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn write_ap2pacc_mailbox(pacc_id: usize, offset: u64, bytes: &[u8]) -> std::io::Result<bool> {
+    if !mailbox_sram_enabled() {
+        return Ok(false);
+    }
     if !prefer_mailbox_helper() {
         write_ap2pacc_mailbox_phys(pacc_id, offset, bytes)?;
         return Ok(true);
     }
-    let dev = std::env::var("HETGPU_PACC_MBOX_DEVICE").unwrap_or_else(|_| {
-        let per_pacc = format!("/dev/hetgpu_pacc_mbox{}", pacc_id);
-        if std::path::Path::new(&per_pacc).exists() {
-            per_pacc
-        } else {
-            "/dev/hetgpu_pacc_mbox".to_string()
-        }
-    });
+    let dev = helper_path_for_pacc(pacc_id);
     if !std::path::Path::new(&dev).exists() {
         return Ok(false);
     }
@@ -2198,18 +2338,14 @@ fn write_ap2pacc_mailbox(pacc_id: usize, offset: u64, bytes: &[u8]) -> std::io::
 }
 
 fn read_pacc2ap_mailbox(pacc_id: usize, offset: u64, bytes: &mut [u8]) -> std::io::Result<bool> {
+    if !mailbox_sram_enabled() {
+        return Ok(false);
+    }
     if !prefer_mailbox_helper() {
         read_pacc2ap_mailbox_phys(pacc_id, offset, bytes)?;
         return Ok(true);
     }
-    let dev = std::env::var("HETGPU_PACC_MBOX_DEVICE").unwrap_or_else(|_| {
-        let per_pacc = format!("/dev/hetgpu_pacc_mbox{}", pacc_id);
-        if std::path::Path::new(&per_pacc).exists() {
-            per_pacc
-        } else {
-            "/dev/hetgpu_pacc_mbox".to_string()
-        }
-    });
+    let dev = helper_path_for_pacc(pacc_id);
     if std::path::Path::new(&dev).exists() {
         let mut file = OpenOptions::new().read(true).open(&dev)?;
         helper_read_exact(&mut file, offset, bytes)?;
@@ -2243,6 +2379,13 @@ fn pacc2ap_mbox_phys(pacc_id: usize) -> std::io::Result<u64> {
     Ok(ap2pacc_mbox_phys(pacc_id)? + MBOX_SRAM_SIZE as u64)
 }
 
+fn mailbox_sram_enabled() -> bool {
+    std::env::var("HETGPU_PACC_ALLOW_MAILBOX_SRAM")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
 fn validate_mbox_access(offset: u64, len: usize, label: &str) -> std::io::Result<()> {
     if len == 0 {
         return Ok(());
@@ -2263,6 +2406,12 @@ fn validate_mbox_access(offset: u64, len: usize, label: &str) -> std::io::Result
 }
 
 fn write_ap2pacc_mailbox_phys(pacc_id: usize, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+    if !mailbox_sram_enabled() {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "AP2PACC mailbox SRAM writes are disabled; use shared DDR control",
+        ));
+    }
     validate_mbox_access(offset, bytes.len(), "AP2PACC")?;
     if bytes.is_empty() {
         return Ok(());
@@ -2276,6 +2425,12 @@ fn write_ap2pacc_mailbox_phys(pacc_id: usize, offset: u64, bytes: &[u8]) -> std:
 }
 
 fn read_pacc2ap_mailbox_phys(pacc_id: usize, offset: u64, bytes: &mut [u8]) -> std::io::Result<()> {
+    if !mailbox_sram_enabled() {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "PACC2AP mailbox SRAM reads are disabled; use shared DDR control",
+        ));
+    }
     validate_mbox_access(offset, bytes.len(), "PACC2AP")?;
     if bytes.is_empty() {
         return Ok(());
@@ -2290,6 +2445,46 @@ fn read_pacc2ap_mailbox_phys(pacc_id: usize, offset: u64, bytes: &mut [u8]) -> s
 
 fn shared_ddr_reduce_lock() -> &'static Mutex<()> {
     SHARED_DDR_REDUCE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn pacc_control_lock(pacc_id: usize) -> &'static Mutex<()> {
+    let locks = PACC_CONTROL_LOCKS
+        .get_or_init(|| (0..PACC_CORE_NUM.max(1)).map(|_| Mutex::new(())).collect());
+    &locks[pacc_id % locks.len()]
+}
+
+fn lock_pacc_control(pacc_id: usize, label: &str) -> std::io::Result<MutexGuard<'static, ()>> {
+    let lock = pacc_control_lock(pacc_id);
+    let timeout_ms = shared_ddr_stage_lock_timeout_ms();
+    let start = std::time::Instant::now();
+    let mut logged_wait = false;
+    loop {
+        match lock.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!("PACC control lock poisoned for device {}", pacc_id),
+                ));
+            }
+            Err(TryLockError::WouldBlock) => {
+                if !logged_wait {
+                    eprintln!("{}: waiting for PACC{} control lock", label, pacc_id);
+                    logged_wait = true;
+                }
+                if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
+                    return Err(Error::new(
+                        ErrorKind::TimedOut,
+                        format!(
+                            "{}: timed out waiting for PACC{} control lock after {} ms",
+                            label, pacc_id, timeout_ms
+                        ),
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_micros(500));
+            }
+        }
+    }
 }
 
 fn shared_ddr_stage_lock(slot_id: usize) -> &'static Mutex<()> {
@@ -2359,6 +2554,24 @@ fn shared_ddr_kernel_lock(slot_id: usize) -> &'static Mutex<()> {
     &locks[slot_id % locks.len()]
 }
 
+fn next_kernel_submit_slot(slot_count: usize, dev_id: usize) -> usize {
+    if slot_count <= 1 {
+        return 0;
+    }
+    let seed = *KERNEL_SUBMIT_SLOT_SEED.get_or_init(|| {
+        if let Ok(value) = std::env::var("HETGPU_PACC_KERNEL_SLOT_START") {
+            return parse_env_usize_value(&value).unwrap_or(0);
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as usize)
+            .unwrap_or(0);
+        nanos ^ (std::process::id() as usize)
+    });
+    let counter = NEXT_KERNEL_SUBMIT_SLOT.fetch_add(1, Ordering::Relaxed);
+    (seed + counter + dev_id) % slot_count
+}
+
 fn parse_u64_text(value: &str) -> Option<u64> {
     let value = value.trim();
     if let Some(hex) = value
@@ -2391,7 +2604,10 @@ fn shared_ddr_base() -> u64 {
         }
     }
 
-    read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base")
+    read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr_coh/shared_ddr_base")
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr/shared_ddr_base"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_full/shared_ddr_base"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base"))
         .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_live/shared_ddr_base"))
         .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_live/shared_ddr_base"))
         .or_else(|| {
@@ -2473,7 +2689,12 @@ fn open_pacc_device_no_boot(id: usize) -> std::io::Result<PaccDevice> {
     let path = format!("/dev/pacc{}", id);
     let file = OpenOptions::new().read(true).write(true).open(&path)?;
     let fd = file.as_raw_fd();
-    Ok(PaccDevice { id, fd, file })
+    Ok(PaccDevice {
+        id,
+        fd,
+        file,
+        is_mbox_helper: false,
+    })
 }
 
 fn with_shared_ddr_bo<R>(
@@ -2627,7 +2848,13 @@ fn shared_ddr_mock_copy_out(offset: u64, bytes: &mut [u8]) -> std::io::Result<()
 }
 
 fn shared_ddr_bytes() -> usize {
-    read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_bytes")
+    read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr_coh/shared_ddr_bytes")
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr_coh/shared_ddr_size"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr/shared_ddr_bytes"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr/shared_ddr_size"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_full/shared_ddr_bytes"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_full/shared_ddr_size"))
+        .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_bytes"))
         .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_size"))
         .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_live/shared_ddr_bytes"))
         .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_live/shared_ddr_size"))
@@ -2643,32 +2870,59 @@ fn shared_ddr_bytes() -> usize {
 }
 
 fn helper_path_for_pacc(pacc_id: usize) -> String {
-    std::env::var("HETGPU_PACC_MBOX_DEVICE").map_or_else(|_| {
-        let per_pacc_live = format!("/dev/hetgpu_pacc_mbox_live{}", pacc_id);
-        if std::path::Path::new(&per_pacc_live).exists() {
-            return per_pacc_live;
-        }
-        let per_pacc_live = format!("/dev/hetgpu_pacc_live{}", pacc_id);
-        if std::path::Path::new(&per_pacc_live).exists() {
-            return per_pacc_live;
-        }
-        let per_pacc = format!("/dev/hetgpu_pacc_mbox{}", pacc_id);
-        if std::path::Path::new(&per_pacc).exists() {
-            per_pacc
-        } else if std::path::Path::new("/dev/hetgpu_pacc_mbox").exists() {
-            "/dev/hetgpu_pacc_mbox".to_string()
-        } else {
-            format!("/dev/pacc{}", pacc_id)
-        }
-    }, |dev| {
-        if dev.contains("{}") {
-            dev.replace("{}", &pacc_id.to_string())
-        } else if dev.contains("%d") {
-            dev.replace("%d", &pacc_id.to_string())
-        } else {
-            dev
-        }
-    })
+    std::env::var("HETGPU_PACC_MBOX_DEVICE").map_or_else(
+        |_| {
+            let per_pacc_ddr_coh = format!("/dev/hetgpu_pacc_mbox_ddr_coh{}", pacc_id);
+            if std::path::Path::new(&per_pacc_ddr_coh).exists() {
+                return per_pacc_ddr_coh;
+            }
+            if std::path::Path::new("/dev/hetgpu_pacc_mbox_ddr_coh").exists() {
+                return "/dev/hetgpu_pacc_mbox_ddr_coh".to_string();
+            }
+            let per_pacc_ddr = format!("/dev/hetgpu_pacc_mbox_ddr{}", pacc_id);
+            if std::path::Path::new(&per_pacc_ddr).exists() {
+                return per_pacc_ddr;
+            }
+            if std::path::Path::new("/dev/hetgpu_pacc_mbox_ddr").exists() {
+                return "/dev/hetgpu_pacc_mbox_ddr".to_string();
+            }
+            let per_pacc_full = format!("/dev/hetgpu_pacc_mbox_full{}", pacc_id);
+            if std::path::Path::new(&per_pacc_full).exists() {
+                return per_pacc_full;
+            }
+            if std::path::Path::new("/dev/hetgpu_pacc_mbox_full").exists() {
+                return "/dev/hetgpu_pacc_mbox_full".to_string();
+            }
+            if !mailbox_sram_enabled() {
+                return per_pacc_ddr;
+            }
+            let per_pacc_live = format!("/dev/hetgpu_pacc_mbox_live{}", pacc_id);
+            if std::path::Path::new(&per_pacc_live).exists() {
+                return per_pacc_live;
+            }
+            let per_pacc_live = format!("/dev/hetgpu_pacc_live{}", pacc_id);
+            if std::path::Path::new(&per_pacc_live).exists() {
+                return per_pacc_live;
+            }
+            let per_pacc = format!("/dev/hetgpu_pacc_mbox{}", pacc_id);
+            if std::path::Path::new(&per_pacc).exists() {
+                per_pacc
+            } else if std::path::Path::new("/dev/hetgpu_pacc_mbox").exists() {
+                "/dev/hetgpu_pacc_mbox".to_string()
+            } else {
+                format!("/dev/pacc{}", pacc_id)
+            }
+        },
+        |dev| {
+            if dev.contains("{}") {
+                dev.replace("{}", &pacc_id.to_string())
+            } else if dev.contains("%d") {
+                dev.replace("%d", &pacc_id.to_string())
+            } else {
+                dev
+            }
+        },
+    )
 }
 
 fn prefer_mailbox_helper() -> bool {
@@ -2712,7 +2966,10 @@ fn prefer_physmap_shared_ddr() -> bool {
         .and_then(|v| parse_u64_text(&v))
         .filter(|&base| base != 0)
         .is_some()
-        || read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base")
+        || read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr_coh/shared_ddr_base")
+            .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr/shared_ddr_base"))
+            .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox_full/shared_ddr_base"))
+            .or_else(|| read_debugfs_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base"))
             .filter(|&base| base != 0)
             .is_some()
 }
@@ -2799,11 +3056,11 @@ fn note_shared_ddr_full_mmap_unavailable(op: &str, err: &std::io::Error) {
 }
 
 fn use_shared_ddr_full_mmap() -> bool {
-    if matches!(
+    if !matches!(
         std::env::var("HETGPU_PACC_SHARED_DDR_FULL_MMAP")
             .ok()
             .as_deref(),
-        Some("0" | "false" | "FALSE" | "no" | "NO")
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
     ) {
         return false;
     }
@@ -3061,7 +3318,7 @@ fn pacc_gemm_trace_enabled() -> bool {
 }
 
 fn open_pacc_mailbox_file(pacc_id: usize) -> Option<File> {
-    if !prefer_mailbox_helper() {
+    if !prefer_mailbox_helper() || !mailbox_sram_enabled() {
         return None;
     }
     let dev = helper_path_for_pacc(pacc_id);
@@ -3073,6 +3330,12 @@ fn open_pacc_mailbox_file(pacc_id: usize) -> Option<File> {
 }
 
 fn open_pacc_mailbox_helper_file(pacc_id: usize) -> std::io::Result<File> {
+    if !mailbox_sram_enabled() {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "PACC mailbox SRAM helper is disabled; use shared DDR control",
+        ));
+    }
     let dev = helper_path_for_pacc(pacc_id);
     if !std::path::Path::new(&dev).exists() {
         return Err(Error::new(
@@ -3089,6 +3352,9 @@ fn write_ap2pacc_mailbox_cached(
     offset: u64,
     bytes: &[u8],
 ) -> std::io::Result<bool> {
+    if !mailbox_sram_enabled() {
+        return Ok(false);
+    }
     if let Some(file) = file.as_mut() {
         helper_write_all(file, offset, bytes)?;
         return Ok(true);
@@ -3102,6 +3368,9 @@ fn read_pacc2ap_mailbox_cached(
     offset: u64,
     bytes: &mut [u8],
 ) -> std::io::Result<bool> {
+    if !mailbox_sram_enabled() {
+        return Ok(false);
+    }
     if let Some(file) = file.as_mut() {
         helper_read_exact(file, offset, bytes)?;
         return Ok(true);
@@ -3118,6 +3387,12 @@ fn write_control_window_cached(
 ) -> std::io::Result<()> {
     if use_shared_ddr_control_window() {
         return write_shared_ddr_control_window_cached(shared_file, pacc_id, offset, bytes);
+    }
+    if !mailbox_sram_enabled() {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "PACC control window requires shared DDR; mailbox SRAM is disabled",
+        ));
     }
     write_ap2pacc_mailbox_cached(mailbox_file, pacc_id, offset, bytes).and_then(|ok| {
         if ok {
@@ -3157,6 +3432,12 @@ fn wait_mailbox_job_status_cached(
             start,
             shared_file,
         );
+    }
+    if !mailbox_sram_enabled() {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "PACC job status wait requires shared DDR; mailbox SRAM is disabled",
+        ));
     }
     loop {
         if read_pacc2ap_mailbox_cached(mailbox_file, dev.id, HETGPU_PACC_COMPLETION_OFF, &mut buf)?
@@ -3521,95 +3802,10 @@ impl PaccComm {
         })?;
 
         if std::env::var("HETGPU_PACC_REDUCE_MAILBOX").ok().as_deref() == Some("1") {
-            const REDUCE_SRC_OFF: u64 = 0x1800;
-            const REDUCE_DST_OFF: u64 = 0x1000;
-            const REDUCE_SRC_BYTES: usize = 0x0800;
-            let max_chunk = (REDUCE_SRC_BYTES / (nranks * std::mem::size_of::<f32>())).max(1);
-            let mut reduced = vec![0.0f32; per_rank_count];
-
-            for start in (0..per_rank_count).step_by(max_chunk) {
-                let chunk = std::cmp::min(max_chunk, per_rank_count - start);
-                let mut in_storage = vec![0u8; chunk * nranks * std::mem::size_of::<f32>()];
-                for rank in 0..nranks {
-                    let rank_base = rank * per_rank_count + start;
-                    let rank_slice = &src[rank_base..rank_base + chunk];
-                    let rank_bytes = unsafe {
-                        std::slice::from_raw_parts(
-                            rank_slice.as_ptr().cast::<u8>(),
-                            chunk * std::mem::size_of::<f32>(),
-                        )
-                    };
-                    let dst_off = rank * chunk * std::mem::size_of::<f32>();
-                    in_storage[dst_off..dst_off + rank_bytes.len()].copy_from_slice(rank_bytes);
-                }
-                write_ap2pacc_mailbox(reduce_device, REDUCE_SRC_OFF, &in_storage)
-                    .and_then(|ok| {
-                        if ok {
-                            Ok(())
-                        } else {
-                            Err(Error::new(
-                                ErrorKind::NotFound,
-                                "PACC mailbox helper is not loaded",
-                            ))
-                        }
-                    })
-                    .map_err(|e| {
-                        PaccError::Io(Error::new(
-                            e.kind(),
-                            format!("PACC mailbox reduce write failed: {e}"),
-                        ))
-                    })?;
-
-                let job = HetgpuPaccAllReduceJob {
-                    src_addr: AP2PACC_MBOX_PHYS + REDUCE_SRC_OFF,
-                    dst_addr: PACC2AP_MBOX_PHYS + REDUCE_DST_OFF,
-                    count: chunk as u64,
-                    nranks: nranks as u32,
-                    reduce_op: PaccReduceOp::Sum as u32,
-                    dtype: PaccDataType::Float32 as u32,
-                    reserved: 0,
-                };
-                dev_guard
-                    .submit_runtime_job(hetgpu_pacc_job_id::ALLREDUCE, &job)
-                    .map_err(|e| {
-                        PaccError::Io(Error::new(
-                            e.kind(),
-                            format!("PACC mailbox all_reduce job submit failed: {e}"),
-                        ))
-                    })?;
-
-                let mut out_storage = vec![0u8; chunk * std::mem::size_of::<f32>()];
-                read_pacc2ap_mailbox(reduce_device, REDUCE_DST_OFF, &mut out_storage)
-                    .and_then(|ok| {
-                        if ok {
-                            Ok(())
-                        } else {
-                            Err(Error::new(
-                                ErrorKind::NotFound,
-                                "PACC mailbox helper is not loaded",
-                            ))
-                        }
-                    })
-                    .map_err(|e| {
-                        PaccError::Io(Error::new(
-                            e.kind(),
-                            format!("PACC mailbox reduce read failed: {e}"),
-                        ))
-                    })?;
-                let chunk_result = unsafe {
-                    std::slice::from_raw_parts(out_storage.as_ptr().cast::<f32>(), chunk)
-                };
-                reduced[start..start + chunk].copy_from_slice(chunk_result);
-            }
-
-            if nranks == 1 {
-                dst.copy_from_slice(&reduced);
-            } else {
-                for chunk in dst.chunks_mut(per_rank_count) {
-                    chunk.copy_from_slice(&reduced);
-                }
-            }
-            return Ok(());
+            return Err(PaccError::Io(Error::new(
+                ErrorKind::Unsupported,
+                "HETGPU_PACC_REDUCE_MAILBOX uses mailbox SRAM and is disabled; use shared DDR reduce",
+            )));
         }
 
         let stage_base = shared_ddr_payload_base_off();
@@ -3662,14 +3858,12 @@ impl PaccComm {
         Ok(())
     }
 
-    /// Broadcast: device 0 → all other devices via mailbox signaling
+    /// Broadcast placeholder; shared-DDR implementation is not wired here yet.
     pub fn broadcast(&self, _buf: &mut [u8], _root: usize) -> Result<(), PaccError> {
-        // Pcore writes to AP2PACC mailbox SRAM, PACC firmware handles DMA copy
-        // Full impl requires mapping /dev/mem at 0x20000000 or using driver ioctl
         Ok(())
     }
 
-    /// Barrier: wait for all PACCs via mailbox ping-pong
+    /// Barrier: wait for all PACC device handles to be reachable.
     pub fn barrier(&self) -> Result<(), PaccError> {
         for dev_lock in &self.devices {
             let dev = dev_lock.lock().map_err(|_| PaccError::InvalidArg)?;
@@ -4617,15 +4811,17 @@ unsafe fn pack_gemm_c_block_colmajor_padded_f32_bytes(
 fn parse_env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
-        .and_then(|v| {
-            let value = v.trim();
-            value
-                .strip_prefix("0x")
-                .or_else(|| value.strip_prefix("0X"))
-                .map(|hex| usize::from_str_radix(hex, 16).ok())
-                .unwrap_or_else(|| value.parse().ok())
-        })
+        .and_then(|v| parse_env_usize_value(&v))
         .unwrap_or(default)
+}
+
+fn parse_env_usize_value(value: &str) -> Option<usize> {
+    let value = value.trim();
+    value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .map(|hex| usize::from_str_radix(hex, 16).ok())
+        .unwrap_or_else(|| value.parse().ok())
 }
 
 fn append_aligned_region(cursor: &mut u64, len: usize, align: u64) -> std::io::Result<u64> {
@@ -6810,7 +7006,7 @@ unsafe fn set_program_compile_error(
     pacc_Result_Error
 }
 
-const HETGPU_PACC_ELF_CACHE_VERSION: &[u8] = b"hetgpu-pacc-elf-cache-v3";
+const HETGPU_PACC_ELF_CACHE_VERSION: &[u8] = b"hetgpu-pacc-elf-cache-v5";
 
 fn pacc_program_load_logs_enabled() -> bool {
     std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
@@ -6853,6 +7049,14 @@ fn compute_pacc_elf_cache_key(
     let mut hash = 0xcbf29ce484222325u64;
     hash = fnv1a64_with_len(hash, HETGPU_PACC_ELF_CACHE_VERSION);
     hash = fnv1a64_with_len(hash, target_arch.to_bytes());
+    for var in [
+        "HETGPU_PACC_CODEGEN_MARCH",
+        "HETGPU_PACC_DIRECT_BC",
+        "HETGPU_PACC_CLANG",
+    ] {
+        hash = fnv1a64_with_len(hash, var.as_bytes());
+        hash = fnv1a64_with_len(hash, std::env::var(var).unwrap_or_default().as_bytes());
+    }
     hash = fnv1a64_with_len(hash, ptx_bytes);
     hash = fnv1a64_with_len(hash, linked_bitcode);
     format!("{hash:016x}")
@@ -7093,6 +7297,25 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
         try_load_cached_pacc_elf(target_arch, module_name, ptx_bytes, external_linked)
     {
         return load_program_elf_bytes(program, elf_bytes);
+    }
+
+    if std::env::var("HETGPU_PACC_ELF_CACHE_ONLY")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        let cache_dir = pacc_elf_cache_dir();
+        let cache_key = compute_pacc_elf_cache_key(target_arch, ptx_bytes, external_linked);
+        let cache_path = pacc_elf_cache_path(&cache_dir, &cache_key);
+        return set_program_compile_error(
+            program,
+            "elf_cache",
+            format!(
+                "{}: cache-only mode requested but no ELF cache entry at {}",
+                module_name.to_string_lossy(),
+                cache_path.display()
+            ),
+        );
     }
 
     let ptx_text = match std::str::from_utf8(ptx_bytes) {
@@ -7375,6 +7598,24 @@ pub unsafe extern "C" fn pacc_KernelAddBufferBinding(
     let binding = *binding;
     if binding.arg_index as usize >= (*kernel).launch_state.arg_records.len() {
         return pacc_Result_Error;
+    }
+    if std::env::var("HETGPU_PACC_LOG_KERNEL_ARGS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        let kernel_name = &(*kernel).name;
+        if kernel_name.contains("k_bin_bcast")
+            || std::env::var("HETGPU_PACC_LOG_ALL_KERNEL_BINDINGS")
+                .ok()
+                .as_deref()
+                == Some("1")
+        {
+            eprintln!(
+                "[PACC Backend] kernel binding kernel='{}' arg={} addr=0x{:x} size=0x{:x} flags=0x{:x}",
+                kernel_name, binding.arg_index, binding.addr, binding.size, binding.flags
+            );
+        }
     }
     (*kernel).launch_state.bindings.push(binding);
     pacc_Result_Success
@@ -7814,8 +8055,15 @@ fn kernel_submit_slot_layout(
     let min_slot_bytes = align_up(required_bytes, 64).max(64);
     let explicit_slot_count =
         parse_optional_env_usize("HETGPU_PACC_KERNEL_SLOT_COUNT").filter(|&v| v > 0);
+    let explicit_total_slot_count =
+        parse_optional_env_usize("HETGPU_PACC_KERNEL_TOTAL_SLOTS").filter(|&v| v > 0);
+    let slot_base = parse_optional_env_usize("HETGPU_PACC_KERNEL_SLOT_BASE").unwrap_or(0);
     let explicit_slot_bytes =
         parse_optional_env_usize("HETGPU_PACC_KERNEL_SLOT_BYTES").filter(|&v| v > 0);
+    let shared_device_mem = std::env::var("HETGPU_PACC_SHARED_DEVICE_MEM")
+        .ok()
+        .as_deref()
+        == Some("1");
 
     if usable_bytes < min_slot_bytes {
         return Err(Error::new(
@@ -7827,18 +8075,40 @@ fn kernel_submit_slot_layout(
         ));
     }
 
-    let mut slot_count = explicit_slot_count.unwrap_or_else(|| {
+    let mut active_slot_count = explicit_slot_count.unwrap_or_else(|| {
         let max_count_for_image = (usable_bytes / min_slot_bytes).max(1);
         PACC_CORE_NUM.max(1).min(max_count_for_image)
     });
     if explicit_slot_count.is_none() {
-        slot_count = slot_count.max(1);
+        active_slot_count = active_slot_count.max(1);
+    }
+
+    let min_total_slot_count = slot_base
+        .checked_add(active_slot_count)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "kernel slot range overflow"))?;
+    let total_slot_count = explicit_total_slot_count
+        .unwrap_or(min_total_slot_count.max(active_slot_count))
+        .max(1);
+    if total_slot_count < min_total_slot_count {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "kernel slot range base={} count={} exceeds total slots {}",
+                slot_base, active_slot_count, total_slot_count
+            ),
+        ));
     }
 
     let slot_bytes = if let Some(slot_bytes) = explicit_slot_bytes {
         slot_bytes
+    } else if shared_device_mem {
+        let default_slot_bytes =
+            parse_optional_env_usize("HETGPU_PACC_KERNEL_DEFAULT_SLOT_BYTES")
+                .unwrap_or(64 * 1024 * 1024);
+        let max_slot_bytes = align_down(usable_bytes / total_slot_count, 64);
+        align_up(min_slot_bytes.max(default_slot_bytes), 64).min(max_slot_bytes)
     } else {
-        align_down(usable_bytes / slot_count.max(1), 64)
+        align_down(usable_bytes / total_slot_count, 64)
     };
     if slot_bytes < min_slot_bytes {
         return Err(Error::new(
@@ -7851,7 +8121,7 @@ fn kernel_submit_slot_layout(
         ));
     }
     let reserved = slot_bytes
-        .checked_mul(slot_count)
+        .checked_mul(total_slot_count)
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "kernel slot reservation overflow"))?;
     if reserved > usable_bytes {
         return Err(Error::new(
@@ -7863,7 +8133,10 @@ fn kernel_submit_slot_layout(
         ));
     }
     let base_off = control_reserved as u64 + (usable_bytes - reserved) as u64;
-    let slot_id = dev_id % slot_count;
+    let logical_slot_id = next_kernel_submit_slot(active_slot_count, dev_id);
+    let slot_id = slot_base
+        .checked_add(logical_slot_id)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "kernel slot id overflow"))?;
     let slot_off = base_off
         .checked_add(slot_id as u64 * slot_bytes as u64)
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "kernel slot offset overflow"))?;
@@ -7873,8 +8146,9 @@ fn kernel_submit_slot_layout(
         == Some("1")
     {
         eprintln!(
-            "pacc_LaunchKernel: helper slot layout dev={} slot={} slot_count={} slot_bytes={} slot_off=0x{:x} required={}",
-            dev_id, slot_id, slot_count, slot_bytes, slot_off, min_slot_bytes
+            "pacc_LaunchKernel: helper slot layout dev={} slot={} logical_slot={} slot_base={} active_slots={} total_slots={} slot_bytes={} slot_off=0x{:x} required={}",
+            dev_id, slot_id, logical_slot_id, slot_base, active_slot_count,
+            total_slot_count, slot_bytes, slot_off, min_slot_bytes
         );
     }
     Ok((slot_off, slot_bytes, slot_id))
@@ -8111,6 +8385,7 @@ fn submit_pacc_kernel_image_via_helper(
     let _slot_guard = shared_ddr_kernel_lock(slot_id)
         .lock()
         .map_err(|_| Error::new(ErrorKind::Other, "PACC kernel helper slot mutex poisoned"))?;
+    let _control_guard = lock_pacc_control(dev.id, "PACC kernel job")?;
     if submit_len > slot_bytes {
         return Err(Error::new(
             ErrorKind::OutOfMemory,
@@ -8141,6 +8416,7 @@ fn submit_pacc_kernel_image_via_helper(
     } else {
         Some(open_pacc_mailbox_helper_file(dev.id)?)
     };
+    clear_pacc_kernel_doorbell_cached(&mut shared_file, &mut mailbox_file, dev.id)?;
     let staging = unsafe {
         prepare_pacc_kernel_shared_ddr_staging(
             kernel_name,
@@ -8176,7 +8452,8 @@ fn submit_pacc_kernel_image_via_helper(
             "PACC staged launch ABI changed kernel image size unexpectedly",
         ));
     }
-    write_shared_ddr_window_cached(&mut shared_file, slot_off, &buf[..submit_len])?;
+    write_pacc_kernel_submit_image_cached(&mut shared_file, slot_off, &buf[..submit_len])?;
+    std::sync::atomic::fence(Ordering::SeqCst);
     write_control_window_cached(
         &mut shared_file,
         &mut mailbox_file,
@@ -8189,13 +8466,35 @@ fn submit_pacc_kernel_image_via_helper(
     }
 
     if kernel_launch_wait_enabled() {
-        wait_mailbox_job_status_cached(
+        let wait_start = std::time::Instant::now();
+        let wait_result = wait_mailbox_job_status_cached(
             dev,
             hetgpu_pacc_job_id::KERNEL,
             seq,
             &mut shared_file,
             &mut mailbox_file,
-        )?;
+        );
+        if env_flag_enabled("HETGPU_PACC_KERNEL_TIMING") || env_flag_enabled("HETGPU_PACC_TIMING")
+        {
+            eprintln!(
+                "PACC timing: kernel='{}' pacc{} seq={} status={} wait_us={} submit={} staging={} grid=({}, {}, {}) block=({}, {}, {}) slot={}",
+                kernel_name,
+                dev.id,
+                seq,
+                if wait_result.is_ok() { "ok" } else { "err" },
+                wait_start.elapsed().as_micros(),
+                submit_len,
+                staging_bytes,
+                grid_x,
+                grid_y,
+                grid_z,
+                block_x,
+                block_y,
+                block_z,
+                slot_id
+            );
+        }
+        wait_result?;
         unsafe {
             complete_pacc_kernel_shared_ddr_staging(&staging, &mut shared_file)?;
         }
@@ -8217,6 +8516,49 @@ fn submit_pacc_kernel_image_via_helper(
         );
     }
     Ok(submit_len)
+}
+
+fn clear_pacc_kernel_doorbell_cached(
+    shared_file: &mut Option<File>,
+    mailbox_file: &mut Option<File>,
+    pacc_id: usize,
+) -> std::io::Result<()> {
+    let empty_desc = pacc_mbox_job_desc::default();
+    let empty_desc_bytes = unsafe {
+        std::slice::from_raw_parts(
+            (&empty_desc as *const pacc_mbox_job_desc).cast::<u8>(),
+            std::mem::size_of::<pacc_mbox_job_desc>(),
+        )
+    };
+    write_control_window_cached(
+        shared_file,
+        mailbox_file,
+        pacc_id,
+        HETGPU_PACC_DOORBELL_OFF,
+        empty_desc_bytes,
+    )
+}
+
+fn write_pacc_kernel_submit_image_cached(
+    file: &mut Option<File>,
+    slot_off: u64,
+    image: &[u8],
+) -> std::io::Result<()> {
+    if image.len() <= PACC_JOB_HEADER_BYTES {
+        return write_shared_ddr_window_cached(file, slot_off, image);
+    }
+
+    let mut header = [0u8; PACC_JOB_HEADER_BYTES];
+    header.copy_from_slice(&image[..PACC_JOB_HEADER_BYTES]);
+    write_shared_ddr_window_cached(
+        file,
+        slot_off + PACC_JOB_HEADER_BYTES as u64,
+        &image[PACC_JOB_HEADER_BYTES..],
+    )?;
+    std::sync::atomic::fence(Ordering::SeqCst);
+    write_shared_ddr_window_cached(file, slot_off, &header)?;
+    std::sync::atomic::fence(Ordering::SeqCst);
+    Ok(())
 }
 
 fn submit_pacc_kernel_image(
@@ -8608,6 +8950,9 @@ mod tests {
         assert_eq!(IOC_CREATE_BO, 0xc010_7002u64);
         assert_eq!(IOC_SUBMIT_OP, 0x4008_7003u64);
         assert_eq!(IOC_FREE_BO, 0x4010_7004u64);
-        assert_eq!(IOC_ZLUDA_IRQ, 0x4010_7005u64);
+        assert_eq!(IOC_ZLUDA_IRQ, 0x7005u64);
+        assert_eq!(IOC_ZLUDA_IRQ_LEGACY, 0x4010_7005u64);
+        assert_eq!(IOC_ZLUDA_GET_DDR_BASE, 0x8010_7006u64);
+        assert_eq!(IOC_GET_PACC_ID, 0x8008_7007u64);
     }
 }

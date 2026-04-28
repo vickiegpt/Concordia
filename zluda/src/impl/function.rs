@@ -2931,7 +2931,7 @@ fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
     if name.contains("k_bin_bcast") {
         return Some(22 + pacc_bin_bcast_fuse_count(kernel_name));
     }
-    if name.contains("rope_multi") {
+    if name.contains("rope_norm") || name.contains("rope_neox") || name.contains("rope_multi") {
         return Some(21);
     }
     if name.contains("unary_op_kernel") {
@@ -3225,6 +3225,12 @@ unsafe fn configure_pacc_launch_abi(
         .ok()
         .as_deref()
         == Some("1");
+    let log_arg_records = log_launches
+        && (kernel_name.contains("k_bin_bcast")
+            || std::env::var("HETGPU_PACC_LOG_KERNEL_ARGS")
+                .ok()
+                .as_deref()
+                == Some("1"));
     let _ = (grid_dim_x, grid_dim_y);
     let mut pushed = 0usize;
     let mut pointer_like = 0usize;
@@ -3284,14 +3290,6 @@ unsafe fn configure_pacc_launch_abi(
             && pacc_looks_like_pointer(value)
             && pacc_kernel_arg_can_be_pointer(kernel_name, i)
             && super::memory::pacc_allocation_remaining_addr(value).is_some();
-        let (record_value, binding_addr, direct_device_binding) = if is_pointer {
-            let resolved =
-                super::memory::pacc_resolve_device_addr(value as *const ::core::ffi::c_void)
-                    .unwrap_or(value);
-            (resolved, resolved, resolved != value)
-        } else {
-            (value, value, false)
-        };
         let record = pacc_runtime_sys::PaccKernelArgRecord {
             kind: if is_pointer {
                 pacc_runtime_sys::PACC_KERNEL_ARG_KIND_POINTER
@@ -3301,7 +3299,7 @@ unsafe fn configure_pacc_launch_abi(
             size: arg_size as u32,
             flags: record_flags,
             reserved: 0,
-            value: record_value,
+            value,
             value_hi,
         };
         let rc = pacc_runtime_sys::pacc_KernelPushArgRecord(kernel_ptr, &record);
@@ -3309,8 +3307,23 @@ unsafe fn configure_pacc_launch_abi(
             return rc;
         }
 
+        if log_arg_records {
+            eprintln!(
+                "[PACC Backend] launch arg kernel='{}' idx={} param={:p} inline={} size={} kind={} flags=0x{:x} value=0x{:x} hi=0x{:x}",
+                kernel_name,
+                i,
+                param,
+                inline_immediate,
+                record.size,
+                record.kind,
+                record.flags,
+                record.value,
+                record.value_hi,
+            );
+        }
+
         if is_pointer {
-            let (size, mut flags) = pacc_kernel_binding_metadata(
+            let (size, flags) = pacc_kernel_binding_metadata(
                 kernel_name,
                 kernel_params,
                 grid_dim_x,
@@ -3327,13 +3340,19 @@ unsafe fn configure_pacc_launch_abi(
                 ))
             })
             .unwrap_or((0, 0));
-            if direct_device_binding {
-                flags |= pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_DEVICE_PHYS;
-            }
+            let (addr, flags) = if let Some(phys) = super::memory::pacc_driver_physical_addr(value)
+            {
+                (
+                    phys,
+                    flags | pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_DEVICE_PHYS,
+                )
+            } else {
+                (value, flags)
+            };
             let binding = pacc_runtime_sys::PaccKernelBufferBinding {
                 arg_index: i as u32,
                 flags,
-                addr: binding_addr,
+                addr,
                 size,
             };
             let rc = pacc_runtime_sys::pacc_KernelAddBufferBinding(kernel_ptr, &binding);
@@ -3393,6 +3412,9 @@ fn pacc_kernel_arg_can_be_pointer(kernel_name: &str, index: usize) -> bool {
     if name.contains("softmax") || name.contains("soft_max") {
         return index <= 3;
     }
+    if name.contains("convert_unary") {
+        return index <= 1;
+    }
     if name.contains("cpy_scalar") {
         return index <= 1;
     }
@@ -3450,6 +3472,13 @@ fn pacc_kernel_arg_size(kernel_name: &str, index: usize) -> usize {
         }
         if matches!(index, 6..=10) {
             return 12;
+        }
+    } else if name.contains("rope_norm") || name.contains("rope_neox") {
+        if matches!(index, 2..=11 | 13..=15 | 17 | 20) {
+            return 4;
+        }
+        if index == 16 {
+            return 8;
         }
     } else if name.contains("rope_multi") {
         if matches!(index, 2..=11 | 13..=15 | 17) {
@@ -3606,7 +3635,7 @@ unsafe fn pacc_kernel_binding_metadata(
     if name.contains("k_set_rows") && !name.contains("k_set_rows_quant") {
         return pacc_set_rows_binding_metadata(kernel_name, kernel_params, index);
     }
-    if name.contains("rope_multi") {
+    if name.contains("rope_norm") || name.contains("rope_neox") || name.contains("rope_multi") {
         return pacc_rope_multi_binding_metadata(kernel_name, kernel_params, grid_dim_z, index);
     }
     if name.contains("unary_op_kernel") {
@@ -4331,12 +4360,29 @@ unsafe fn pacc_cpy_scalar_binding_metadata(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_rope_element_size(kernel_name: &str) -> u64 {
-    if kernel_name.contains("6__half") || kernel_name.contains("13__nv_bfloat16") {
-        2
+fn pacc_rope_element_sizes(kernel_name: &str) -> (u64, u64) {
+    if kernel_name.contains("E6__halfS0_") || kernel_name.contains("E13__nv_bfloat16S0_") {
+        (2, 2)
+    } else if kernel_name.contains("Ef6__half") || kernel_name.contains("Ef13__nv_bfloat16") {
+        (4, 2)
+    } else if kernel_name.contains("E6__halff") || kernel_name.contains("E13__nv_bfloat16f") {
+        (2, 4)
+    } else if kernel_name.contains("6__half") || kernel_name.contains("13__nv_bfloat16") {
+        (2, 2)
     } else {
-        4
+        (4, 4)
     }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_rope_element_size(kernel_name: &str) -> u64 {
+    let (src_elem_size, dst_elem_size) = pacc_rope_element_sizes(kernel_name);
+    src_elem_size.max(dst_elem_size)
 }
 
 #[cfg(all(
@@ -4966,7 +5012,7 @@ unsafe fn pacc_rope_multi_binding_metadata(
     grid_dim_x: u32,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let elem_size = pacc_rope_element_size(kernel_name);
+    let (src_elem_size, dst_elem_size) = pacc_rope_element_sizes(kernel_name);
     let ne00 = read_param_i32(kernel_params, 2)?.max(0) as u64;
     let ne01 = read_param_i32(kernel_params, 3)?.max(0) as u64;
     let ne02 = read_param_i32(kernel_params, 4)?.max(0) as u64;
@@ -4980,10 +5026,14 @@ unsafe fn pacc_rope_multi_binding_metadata(
     let plane = ne01.saturating_mul(ne02).max(1);
     let ne03 = rows.saturating_add(plane - 1) / plane;
     let src_bytes =
-        pacc_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], elem_size);
-    let dst_bytes = pacc_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s1, s2, s3], elem_size);
+        pacc_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], src_elem_size);
+    let dst_bytes =
+        pacc_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s1, s2, s3], dst_elem_size);
     let pos_bytes = ne02.saturating_mul(4).max(1).saturating_mul(4);
     let freq_bytes = ne00.saturating_add(1) / 2 * std::mem::size_of::<f32>() as u64;
+    let row_indices_bytes = ne02
+        .max(1)
+        .saturating_mul(std::mem::size_of::<i64>() as u64);
 
     let (bytes, flags) = match index {
         0 => (
@@ -5000,6 +5050,10 @@ unsafe fn pacc_rope_multi_binding_metadata(
         ),
         18 => (
             freq_bytes,
+            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+        ),
+        19 if kernel_name.contains("rope_norm") || kernel_name.contains("rope_neox") => (
+            row_indices_bytes,
             pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         _ => return None,
@@ -6855,14 +6909,20 @@ unsafe fn try_offload_named_pacc_kernel(
         }
         if !PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE.swap(true, Ordering::Relaxed) {
             eprintln!(
-                "[PACC Backend] RMSNorm '{}' offload failed with rc={}; using host fallback for named-only launch",
+                "[PACC Backend] RMSNorm '{}' offload failed with rc={}; refusing host fallback unless HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK=1",
                 kernel_name, rc
             );
         }
-        if let Some(result) =
-            execute_rmsnorm_f32_host_fallback(kernel_name, x, weight, y, rows, hidden, eps)
+        if std::env::var("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
+            .ok()
+            .as_deref()
+            == Some("1")
         {
-            return Some(result);
+            if let Some(result) =
+                execute_rmsnorm_f32_host_fallback(kernel_name, x, weight, y, rows, hidden, eps)
+            {
+                return Some(result);
+            }
         }
         return if allow_normal_fallback {
             None

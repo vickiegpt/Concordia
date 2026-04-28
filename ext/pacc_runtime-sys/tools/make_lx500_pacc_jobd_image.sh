@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 vendor_image="${1:-/lib/firmware/lanxin/lx500_pacc.bin}"
 output_image="${2:-${repo_root}/target/lx500_pacc_hetgpu_jobd.bin}"
-jobd="${repo_root}/target/hetgpu_pacc_jobd"
+jobd="${PACC_LINUX_JOBD_OUT:-${repo_root}/target/hetgpu_pacc_jobd}"
 inject="$(mktemp -d)"
 trap 'rm -rf "${inject}"' EXIT
 
@@ -37,7 +37,7 @@ esac
 EOF
 chmod 0755 "${inject}/etc/rcS.d/S99hetgpu-pacc-jobd"
 
-sudo -n "${repo_root}/tools/repack_lx500_pacc_nested_initramfs.sh" \
+sudo -n env TMPDIR="${TMPDIR:-/tmp}" "${repo_root}/tools/repack_lx500_pacc_nested_initramfs.sh" \
   "${vendor_image}" "${inject}" "${output_image}"
 
 sha256sum "${output_image}"

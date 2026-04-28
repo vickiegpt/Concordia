@@ -879,6 +879,7 @@ use cuda_types::cuda::*;
 enum PaccAllocKind {
     Host { align: usize },
     Driver { bo: pacc_runtime_sys::PaccBoMap },
+    SharedDdr,
 }
 
 #[cfg(all(
@@ -902,6 +903,256 @@ struct PaccAlloc {
 static PACC_ALLOC_MAP: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<u64, PaccAlloc>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+struct PaccSharedDdrArena {
+    ptr: usize,
+    phys: u64,
+    size: usize,
+    cursor: usize,
+    heap_end: usize,
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe impl Send for PaccSharedDdrArena {}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+static PACC_SHARED_DDR_ARENA: std::sync::LazyLock<std::sync::Mutex<Option<PaccSharedDdrArena>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_parse_u64_text(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        value.parse::<u64>().ok()
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_read_u64(path: &str) -> Option<u64> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|v| pacc_parse_u64_text(&v))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_shared_ddr_base() -> Option<u64> {
+    pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr_coh/shared_ddr_base")
+        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr/shared_ddr_base"))
+        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_full/shared_ddr_base"))
+        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base"))
+        .or_else(|| {
+            std::env::var("HETGPU_PACC_SHARED_DDR_BASE")
+                .ok()
+                .and_then(|v| pacc_parse_u64_text(&v))
+        })
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_shared_ddr_bytes() -> Option<usize> {
+    pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr_coh/shared_ddr_size")
+        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr/shared_ddr_size"))
+        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_full/shared_ddr_size"))
+        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_size"))
+        .or_else(|| {
+            std::env::var("HETGPU_PACC_SHARED_DDR_BYTES")
+                .ok()
+                .and_then(|v| pacc_parse_u64_text(&v))
+        })
+        .and_then(|v| usize::try_from(v).ok())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_parse_env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| pacc_parse_u64_text(&v))
+        .and_then(|v| usize::try_from(v).ok())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_helper_path_for_device0() -> String {
+    match std::env::var("HETGPU_PACC_MBOX_DEVICE") {
+        Ok(pattern) if pattern.contains("%d") => pattern.replace("%d", "0"),
+        Ok(path) => path,
+        Err(_) => "/dev/hetgpu_pacc_mbox_ddr_coh0".to_string(),
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_align_up(value: usize, align: usize) -> Option<usize> {
+    if align == 0 {
+        return Some(value);
+    }
+    value
+        .checked_add(align - 1)
+        .map(|v| v - (v % align))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_shared_ddr_kernel_reserve(bytes: usize) -> usize {
+    if let Some(reserve) = pacc_parse_env_usize("HETGPU_PACC_SHARED_DEVICE_MEM_KERNEL_RESERVE") {
+        return reserve.min(bytes);
+    }
+    let slot_count = pacc_parse_env_usize("HETGPU_PACC_KERNEL_TOTAL_SLOTS")
+        .or_else(|| pacc_parse_env_usize("HETGPU_PACC_KERNEL_SLOT_COUNT"))
+        .unwrap_or(4)
+        .max(1);
+    let slot_bytes = pacc_parse_env_usize("HETGPU_PACC_KERNEL_SLOT_BYTES")
+        .or_else(|| pacc_parse_env_usize("HETGPU_PACC_KERNEL_DEFAULT_SLOT_BYTES"))
+        .unwrap_or(64 * 1024 * 1024)
+        .max(64 * 1024);
+    slot_count.saturating_mul(slot_bytes).min(bytes)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
+    use std::fs::OpenOptions;
+    use std::os::fd::AsRawFd;
+
+    let mut guard = PACC_SHARED_DDR_ARENA.lock().map_err(|_| CUerror::UNKNOWN)?;
+    if guard.is_none() {
+        let phys = pacc_shared_ddr_base().ok_or(CUerror::OUT_OF_MEMORY)?;
+        let size = pacc_shared_ddr_bytes().ok_or(CUerror::OUT_OF_MEMORY)?;
+        let path = pacc_helper_path_for_device0();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|_| CUerror::OUT_OF_MEMORY)?;
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(CUerror::OUT_OF_MEMORY);
+        }
+
+        let control_reserved = 4usize * 0x2000usize;
+        let kernel_reserved = pacc_shared_ddr_kernel_reserve(size);
+        let heap_end = size.saturating_sub(kernel_reserved);
+        if heap_end <= control_reserved {
+            unsafe {
+                libc::munmap(ptr, size);
+            }
+            return Err(CUerror::OUT_OF_MEMORY);
+        }
+        if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+            eprintln!(
+                "[PACC Backend] shared-DDR CUDA heap mmap {} phys=0x{:x} bytes={} heap=[0x{:x},0x{:x}) kernel_reserve={}",
+                path, phys, size, control_reserved, heap_end, kernel_reserved
+            );
+        }
+        *guard = Some(PaccSharedDdrArena {
+            ptr: ptr as usize,
+            phys,
+            size,
+            cursor: control_reserved,
+            heap_end,
+        });
+    }
+
+    let arena = guard.as_mut().ok_or(CUerror::OUT_OF_MEMORY)?;
+    let alloc_size = bytesize.max(1);
+    let offset = pacc_align_up(arena.cursor, 256).ok_or(CUerror::OUT_OF_MEMORY)?;
+    let end = offset
+        .checked_add(alloc_size)
+        .ok_or(CUerror::OUT_OF_MEMORY)?;
+    if end > arena.heap_end || end > arena.size {
+        return Err(CUerror::OUT_OF_MEMORY);
+    }
+    arena.cursor = end;
+    let addr = (arena.ptr + offset) as u64;
+    let phys = arena.phys.saturating_add(offset as u64);
+    if std::env::var("HETGPU_PACC_SHARED_DEVICE_MEM_ZERO")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        unsafe {
+            std::ptr::write_bytes(addr as *mut u8, 0, alloc_size);
+        }
+    }
+    Ok((
+        addr,
+        PaccAlloc {
+            size: alloc_size,
+            phys,
+            kind: PaccAllocKind::SharedDdr,
+        },
+    ))
+}
 
 #[cfg(all(
     feature = "pacc",
@@ -942,6 +1193,10 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
 
     let real_driver_alloc =
         std::env::var("HETGPU_PACC_REAL_DEVICE_MEM").ok().as_deref() == Some("1");
+    let shared_device_mem = std::env::var("HETGPU_PACC_SHARED_DEVICE_MEM")
+        .ok()
+        .as_deref()
+        == Some("1");
     let allow_host_device_mem = std::env::var("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM")
         .ok()
         .as_deref()
@@ -965,6 +1220,17 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
                 eprintln!("[PACC Backend] cuMemAlloc real device memory failed: {}", e);
                 return Err(CUerror::OUT_OF_MEMORY);
             }
+        }
+    } else if shared_device_mem {
+        match pacc_alloc_shared_ddr(bytesize) {
+            Ok((addr, alloc)) => (addr, alloc),
+            Err(e) if allow_host_device_mem => {
+                eprintln!(
+                    "[PACC Backend] shared-DDR CUDA memory failed; falling back to host-backed memory"
+                );
+                pacc_alloc_host(bytesize).map_err(|_| e)?
+            }
+            Err(e) => return Err(e),
         }
     } else if allow_host_device_mem {
         if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
@@ -1013,6 +1279,11 @@ pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
                 // Dropping PaccBoMap unmaps the userspace view. The current
                 // driver does not expose a safe free ioctl; ioctl nr=3 is BO
                 // submit and is deliberately safety-gated in pacc_runtime_sys.
+            }
+            PaccAllocKind::SharedDdr => {
+                // Shared-DDR allocations come from a monotonic process-local
+                // arena. The mmap stays alive until process exit so outstanding
+                // kernel bindings cannot dangle.
             }
         }
     }
@@ -1254,7 +1525,32 @@ pub(crate) fn pacc_resolve_device_addr(ptr: *const ::core::ffi::c_void) -> Optio
             let offset = addr.saturating_sub(start);
             match &alloc.kind {
                 PaccAllocKind::Driver { .. } => Some(alloc.phys.saturating_add(offset)),
+                PaccAllocKind::SharedDdr => Some(alloc.phys.saturating_add(offset)),
                 PaccAllocKind::Host { .. } => Some(addr),
+            }
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn pacc_driver_physical_addr(addr: u64) -> Option<u64> {
+    let map = PACC_ALLOC_MAP.lock().unwrap();
+    map.iter().find_map(|(base, alloc)| {
+        let start = *base;
+        let end = start.saturating_add(alloc.size as u64);
+        if addr >= start && addr < end {
+            let offset = addr.saturating_sub(start);
+            match &alloc.kind {
+                PaccAllocKind::Driver { .. } => Some(alloc.phys.saturating_add(offset)),
+                PaccAllocKind::SharedDdr => Some(alloc.phys.saturating_add(offset)),
+                PaccAllocKind::Host { .. } => None,
             }
         } else {
             None
@@ -1305,7 +1601,12 @@ pub unsafe extern "C" fn hetgpu_pacc_is_device_ptr(ptr: *const ::core::ffi::c_vo
     if map.iter().any(|(base, alloc)| {
         let start = *base;
         let end = start.saturating_add(alloc.size as u64);
-        addr >= start && addr < end && matches!(&alloc.kind, PaccAllocKind::Driver { .. })
+        addr >= start
+            && addr < end
+            && matches!(
+                &alloc.kind,
+                PaccAllocKind::Driver { .. } | PaccAllocKind::SharedDdr
+            )
     }) {
         1
     } else {

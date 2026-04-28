@@ -1562,7 +1562,7 @@ pub(crate) fn get_attribute(
         }
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CONCURRENT_KERNELS => 1,
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_ECC_ENABLED => 0,
-        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_BUS_ID => 0,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_BUS_ID => 0x02 + dev,
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID => 0,
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID => 0,
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_TCC_DRIVER => 0,
@@ -2398,6 +2398,9 @@ pub(crate) fn get_attribute(
         CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR => {
             COMPUTE_CAPABILITY_MINOR
         }
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_BUS_ID => 0x02 + dev,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID => 0,
+        CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID => 0,
         _ => return Err(CUerror::INVALID_VALUE),
     };
     unsafe { *pi = result };

@@ -165,6 +165,7 @@ macro_rules! from_cuda_object {
 
 // Common type conversions that work for both AMD and Intel implementations
 from_cuda_nop!(
+    *mut u8,
     *mut i8,
     *mut i32,
     *mut usize,
@@ -903,19 +904,6 @@ impl<'a> FromCuda<'a, CUfunction_attribute_enum> for CUfunction_attribute_enum {
 ))]
 impl<'a> FromCuda<'a, CUlimit> for CUlimit {
     fn from_cuda(x: &'a CUlimit) -> Result<Self, CUerror> {
-        Ok(*x)
-    }
-}
-
-// PACC-specific FromCuda: *mut u8 (llvm-sys 201 changed i8->u8)
-#[cfg(all(
-    feature = "pacc",
-    not(feature = "amd"),
-    not(feature = "intel"),
-    not(feature = "tenstorrent")
-))]
-impl<'a> FromCuda<'a, *mut u8> for *mut u8 {
-    fn from_cuda(x: &'a *mut u8) -> Result<Self, CUerror> {
         Ok(*x)
     }
 }

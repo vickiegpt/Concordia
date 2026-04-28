@@ -6,7 +6,7 @@ use std::io;
 use std::mem;
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::Mutex;
 use tempfile::{Builder, TempDir, tempdir};
 
@@ -266,11 +266,25 @@ fn add_outputs_to_set(
             if !path.is_file() {
                 continue;
             }
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if file_name.contains(".host_stubs.") || file_name.contains(".tmp_shared_stubs.") {
+                continue;
+            }
 
             if let Some(extension) = path.extension() {
                 let ext = extension.to_string_lossy().to_lowercase();
 
-                if ext == "o" || ext == "elf" {
+                if ext == "so" {
+                    add_file_to_set(
+                        &path,
+                        pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_EXECUTABLE,
+                        output_set,
+                    )?;
+                    added_files = true;
+                } else if ext == "o" || ext == "elf" {
                     add_file_to_set(
                         &path,
                         pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_RELOCATABLE,
@@ -435,7 +449,7 @@ fn link_bc_to_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
     }
     cmd.arg("-o").arg(&output_file);
 
-    match cmd.output() {
+    match tool_output(&mut cmd) {
         Ok(output) if output.status.success() => {
             eprintln!("PACC: Successfully linked bitcode files");
             Ok(())
@@ -515,7 +529,7 @@ fn optimize_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
             output_file.display()
         );
 
-        match cmd.output() {
+        match tool_output(&mut cmd) {
             Ok(output) if output.status.success() => {
                 eprintln!("PACC: Optimized bitcode: {}", output_file.display());
             }
@@ -566,7 +580,7 @@ fn pacc_preopt_input(input_file: &Path, temp_dir: &Path) -> io::Result<PathBuf> 
     let llvm_dis = llvm_dis_tool();
     let mut dis_cmd = Command::new(llvm_dis);
     dis_cmd.arg(input_file).arg("-o").arg("-");
-    let output = dis_cmd.output()?;
+    let output = tool_output(&mut dis_cmd)?;
     if !output.status.success() {
         return Ok(input_file.to_path_buf());
     }
@@ -620,6 +634,7 @@ fn codegen_to_riscv_pacc(ctx: &ActionContext) -> pacc_comgr_status_t {
             .and_then(|s| s.to_str())
             .unwrap_or("input");
         let output_file = ctx.temp_dir.join(format!("{}_pacc.o", file_stem));
+        let shared_file = ctx.temp_dir.join(format!("{}_pacc.so", file_stem));
 
         let used_config = match compile_bc_to_pacc_object(&input_file, &output_file) {
             Ok(config) => config,
@@ -639,6 +654,21 @@ fn codegen_to_riscv_pacc(ctx: &ActionContext) -> pacc_comgr_status_t {
             used_config.march,
             output_file.display()
         );
+
+        if host_link_pacc_shared_enabled() {
+            if let Err(e) = link_pacc_object_to_shared(&output_file, &shared_file) {
+                eprintln!(
+                    "PACC/XM: failed to host-link PACC shared object from {}: {}",
+                    output_file.display(),
+                    e
+                );
+                return Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR);
+            }
+            eprintln!(
+                "PACC/XM: Host-linked launchable RISC-V shared object: {}",
+                shared_file.display()
+            );
+        }
     }
 
     Ok(())
@@ -829,6 +859,340 @@ fn riscv_march_with_required_extensions(march: &str) -> String {
     }
 }
 
+fn pacc_codegen_march(config: &crate::PaccConfig) -> String {
+    std::env::var("HETGPU_PACC_CODEGEN_MARCH")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| config.march.clone())
+}
+
+fn host_link_pacc_shared_enabled() -> bool {
+    std::env::var("HETGPU_PACC_HOST_LINK_SHARED")
+        .ok()
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            !matches!(v.as_str(), "0" | "false" | "no" | "off")
+        })
+        .unwrap_or(true)
+}
+
+const PACC_KERNEL_HOST_STUBS_C: &str = r#"
+#include <stdint.h>
+#include <stdbool.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <math.h>
+#define WEAK __attribute__((weak, visibility("hidden")))
+#define WEAK_EXPORT __attribute__((weak, visibility("default")))
+struct ShflSyncResult { uint32_t x; uint32_t pred; };
+struct DivF32Part1Result { float fma_4; float fma_1; float fma_3; uint8_t numerator_scaled_flag; };
+static uint32_t lane_u8(uint32_t x, unsigned lane) { return (x >> (lane * 8)) & 0xffu; }
+static int32_t lane_s8(uint32_t x, unsigned lane) { return (int8_t)lane_u8(x, lane); }
+static uint32_t pack_lane_u8(uint32_t base, unsigned lane, uint32_t value) {
+    uint32_t shift = lane * 8;
+    return (base & ~(0xffu << shift)) | ((value & 0xffu) << shift);
+}
+static uint32_t sat_u8(int32_t v) { return v < 0 ? 0u : (v > 255 ? 255u : (uint32_t)v); }
+static int32_t sat_s8(int32_t v) { return v < -128 ? -128 : (v > 127 ? 127 : v); }
+WEAK uint32_t f___zluda_ptx_impl_vsub4_u32_u32_u32(uint32_t a, uint32_t b, uint32_t c) {
+    (void)c; uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) r = pack_lane_u8(r, i, lane_u8(a, i) - lane_u8(b, i)); return r;
+}
+WEAK uint32_t f___zluda_ptx_impl_vsub4_u32_u32_u32_sat(uint32_t a, uint32_t b, uint32_t c) {
+    (void)c; uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) r = pack_lane_u8(r, i, sat_u8((int32_t)lane_u8(a, i) - (int32_t)lane_u8(b, i))); return r;
+}
+WEAK uint32_t f___zluda_ptx_impl_vsub4_s32_s32_s32(uint32_t a, uint32_t b, uint32_t c) {
+    (void)c; uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) r = pack_lane_u8(r, i, (uint8_t)(lane_s8(a, i) - lane_s8(b, i))); return r;
+}
+WEAK uint32_t f___zluda_ptx_impl_vsub4_s32_s32_s32_sat(uint32_t a, uint32_t b, uint32_t c) {
+    (void)c; uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) r = pack_lane_u8(r, i, (uint8_t)sat_s8(lane_s8(a, i) - lane_s8(b, i))); return r;
+}
+static uint32_t vset_cmp(uint32_t a, uint32_t b, int op) {
+    uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) { uint32_t x = lane_u8(a, i), y = lane_u8(b, i); int p = 0;
+    switch (op) { case 0: p = x == y; break; case 1: p = x != y; break; case 2: p = x < y; break; case 3: p = x <= y; break; case 4: p = x > y; break; default: p = x >= y; break; }
+    r = pack_lane_u8(r, i, p ? 1u : 0u); } return r;
+}
+WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_eq(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 0); }
+WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_ne(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 1); }
+WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_lt(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 2); }
+WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_le(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 3); }
+WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_gt(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 4); }
+WEAK uint32_t f___zluda_ptx_impl_vset4_u32_u32_ge(uint32_t a, uint32_t b, uint32_t c) { (void)c; return vset_cmp(a, b, 5); }
+WEAK void f___zluda_ptx_impl_bar_sync(uint32_t barrier_id) { (void)barrier_id; __sync_synchronize(); }
+WEAK bool f___zluda_ptx_impl_bar_red_and_pred(uint32_t barrier_id, bool predicate, bool invert_predicate) { (void)barrier_id; __sync_synchronize(); return predicate ^ invert_predicate; }
+WEAK bool f___zluda_ptx_impl_bar_red_or_pred(uint32_t barrier_id, bool predicate, bool invert_predicate) { (void)barrier_id; __sync_synchronize(); return predicate ^ invert_predicate; }
+WEAK uint32_t f___zluda_ptx_impl_activemask(void) { return 1u; }
+struct HetgpuLaunchState {
+    uint32_t tid[3];
+    uint32_t ntid[3];
+    uint32_t ctaid[3];
+    uint32_t nctaid[3];
+};
+static struct HetgpuLaunchState hetgpu_launch_states[64];
+static unsigned hetgpu_launch_slot(void) {
+#if defined(__riscv)
+    uintptr_t id = 0;
+    __asm__ volatile("mv %0, tp" : "=r"(id));
+#else
+    uintptr_t id = (uintptr_t)&id;
+#endif
+    return (unsigned)((id ^ (id >> 6)) & 63u);
+}
+static struct HetgpuLaunchState *hetgpu_launch_state(void) {
+    return &hetgpu_launch_states[hetgpu_launch_slot()];
+}
+WEAK_EXPORT void f___zluda_ptx_impl_set_launch(uint32_t tid_x, uint32_t tid_y, uint32_t tid_z, uint32_t ntid_x, uint32_t ntid_y, uint32_t ntid_z, uint32_t ctaid_x, uint32_t ctaid_y, uint32_t ctaid_z, uint32_t nctaid_x, uint32_t nctaid_y, uint32_t nctaid_z) {
+    struct HetgpuLaunchState *s = hetgpu_launch_state();
+    s->tid[0] = tid_x; s->tid[1] = tid_y; s->tid[2] = tid_z;
+    s->ntid[0] = ntid_x ? ntid_x : 1u; s->ntid[1] = ntid_y ? ntid_y : 1u; s->ntid[2] = ntid_z ? ntid_z : 1u;
+    s->ctaid[0] = ctaid_x; s->ctaid[1] = ctaid_y; s->ctaid[2] = ctaid_z;
+    s->nctaid[0] = nctaid_x ? nctaid_x : 1u; s->nctaid[1] = nctaid_y ? nctaid_y : 1u; s->nctaid[2] = nctaid_z ? nctaid_z : 1u;
+}
+WEAK uint32_t f___zluda_ptx_impl_sreg_tid(uint8_t member) { struct HetgpuLaunchState *s = hetgpu_launch_state(); return member < 3u ? s->tid[member] : 0u; }
+WEAK uint32_t f___zluda_ptx_impl_sreg_ntid(uint8_t member) { struct HetgpuLaunchState *s = hetgpu_launch_state(); return member < 3u && s->ntid[member] ? s->ntid[member] : 1u; }
+WEAK uint32_t f___zluda_ptx_impl_sreg_ctaid(uint8_t member) { struct HetgpuLaunchState *s = hetgpu_launch_state(); return member < 3u ? s->ctaid[member] : 0u; }
+WEAK uint32_t f___zluda_ptx_impl_sreg_nctaid(uint8_t member) { struct HetgpuLaunchState *s = hetgpu_launch_state(); return member < 3u && s->nctaid[member] ? s->nctaid[member] : 1u; }
+WEAK uint32_t f___zluda_ptx_impl_sreg_laneid(void) { struct HetgpuLaunchState *s = hetgpu_launch_state(); return s->tid[0] & 31u; }
+WEAK uint32_t f___zluda_ptx_impl_sreg_lanemask_eq(void) { struct HetgpuLaunchState *s = hetgpu_launch_state(); uint32_t lane = s->tid[0] & 31u; return 1u << lane; }
+WEAK uint32_t f___zluda_ptx_impl_sreg_lanemask_lt(void) { struct HetgpuLaunchState *s = hetgpu_launch_state(); uint32_t lane = s->tid[0] & 31u; return lane == 0u ? 0u : ((1u << lane) - 1u); }
+WEAK uint32_t f___zluda_ptx_impl_sreg_lanemask_le(void) { struct HetgpuLaunchState *s = hetgpu_launch_state(); uint32_t lane = s->tid[0] & 31u; return lane == 31u ? ~0u : ((1u << (lane + 1u)) - 1u); }
+WEAK uint32_t f___zluda_ptx_impl_sreg_lanemask_ge(void) { struct HetgpuLaunchState *s = hetgpu_launch_state(); uint32_t lane = s->tid[0] & 31u; return ~((lane == 0u ? 0u : ((1u << lane) - 1u))); }
+WEAK uint32_t f___zluda_ptx_impl_sreg_lanemask_gt(void) { struct HetgpuLaunchState *s = hetgpu_launch_state(); uint32_t lane = s->tid[0] & 31u; return lane == 31u ? 0u : (~0u << (lane + 1u)); }
+WEAK uint32_t f___zluda_ptx_impl_sreg_clock(void) { return 0u; }
+WEAK float f___zluda_ptx_impl_sqrt_approx_f32(float x) { return sqrtf(x); }
+WEAK float f___zluda_ptx_impl_rsqrt_approx_f32(float x) { return 1.0f / sqrtf(x); }
+WEAK float f___zluda_ptx_impl_ex2_approx_f32(float x) { return exp2f(x); }
+WEAK float f___zluda_ptx_impl_lg2_approx_f32(float x) { return log2f(x); }
+WEAK float f___zluda_ptx_impl_rcp_approx_f32(float x) { return 1.0f / x; }
+WEAK void f___zluda_ptx_impl_nanosleep_u32(uint32_t nanoseconds) { (void)nanoseconds; }
+WEAK bool f___zluda_ptx_impl_vote_sync_any_pred(bool value, uint32_t membermask) { (void)membermask; return value; }
+WEAK bool f___zluda_ptx_impl_vote_sync_any_pred_negate(bool value, uint32_t membermask) { (void)membermask; return !value; }
+WEAK bool f___zluda_ptx_impl_vote_sync_all_pred(bool value, uint32_t membermask) { (void)membermask; return value; }
+WEAK bool f___zluda_ptx_impl_vote_sync_all_pred_negate(bool value, uint32_t membermask) { (void)membermask; return !value; }
+WEAK uint32_t f___zluda_ptx_impl_vote_sync_ballot_b32(bool value, uint32_t membermask) { return value ? (membermask ? membermask : 1u) : 0u; }
+WEAK uint32_t f___zluda_ptx_impl_vote_sync_ballot_b32_negate(bool value, uint32_t membermask) { return !value ? (membermask ? membermask : 1u) : 0u; }
+WEAK uint32_t f___zluda_ptx_impl_bfe_u32(uint32_t base, uint32_t pos_32, uint32_t len_32) {
+    uint32_t pos = pos_32 & 0xffu, len = len_32 & 0xffu; if (pos >= 32u || len == 0u) return 0u; if (len >= 32u) return base >> pos; if (len > 31u) len = 31u; return (base >> pos) & ((1u << len) - 1u);
+}
+WEAK int32_t f___zluda_ptx_impl_bfe_s32(int32_t base, uint32_t pos_32, uint32_t len_32) {
+    uint32_t pos = pos_32 & 0xffu, len = len_32 & 0xffu; if (len == 0u) return 0; if (pos >= 32u) return base >> 31; if (len >= 32u || pos + len >= 32u) return base >> pos; return (base << (32u - pos - len)) >> (32u - len);
+}
+WEAK uint64_t f___zluda_ptx_impl_bfe_u64(uint64_t base, uint32_t pos, uint32_t len) { if (pos >= 64u || len == 0u) return 0u; if (len >= 64u) return base >> pos; return (base >> pos) & ((1ull << len) - 1ull); }
+WEAK int64_t f___zluda_ptx_impl_bfe_s64(int64_t base, uint32_t pos, uint32_t len) { if (len == 0u) return 0; if (pos >= 64u) return base >> 63; if (len >= 64u || pos + len >= 64u) return base >> pos; return (base << (64u - pos - len)) >> (64u - len); }
+WEAK uint32_t f___zluda_ptx_impl_bfi_b32(uint32_t insert, uint32_t base, uint32_t pos_32, uint32_t len_32) { uint32_t pos = pos_32 & 0xffu, len = len_32 & 0xffu; if (pos >= 32u || len == 0u) return base; uint32_t mask = (len >= 32u || pos + len >= 32u) ? (~0u << pos) : (((1u << len) - 1u) << pos); return (base & ~mask) | ((insert << pos) & mask); }
+WEAK uint64_t f___zluda_ptx_impl_bfi_b64(uint64_t insert, uint64_t base, uint32_t pos, uint32_t len) { if (pos >= 64u || len == 0u) return base; uint64_t mask = (len >= 64u || pos + len >= 64u) ? (~0ull << pos) : (((1ull << len) - 1ull) << pos); return (base & ~mask) | ((insert << pos) & mask); }
+WEAK uint32_t f___zluda_ptx_impl_prmt_b32(uint32_t a, uint32_t b, uint32_t c) { uint32_t r = 0; for (unsigned i = 0; i < 4; ++i) { uint32_t sel = (c >> (4 * i)) & 0xfu; uint32_t src = (sel & 4u) ? b : a; uint32_t val = (src >> (8 * (sel & 3u))) & 0xffu; if (sel & 8u) val = (val & 0x80u) ? 0xffu : 0u; r |= val << (8 * i); } return r; }
+WEAK struct DivF32Part1Result f___zluda_ptx_impl_div_f32_part1(float lhs, float rhs) { (void)lhs; (void)rhs; return (struct DivF32Part1Result){ 0.0f, 0.0f, 0.0f, 0u }; }
+WEAK float f___zluda_ptx_impl_div_f32_part2(float x, float y, float fma_4, float fma_1, float fma_3, uint8_t numerator_scaled_flag) { (void)fma_4; (void)fma_1; (void)fma_3; (void)numerator_scaled_flag; return x / y; }
+WEAK struct ShflSyncResult f___zluda_ptx_impl_shfl_sync_bfly_b32_pred(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return (struct ShflSyncResult){ input, 1u }; }
+WEAK struct ShflSyncResult f___zluda_ptx_impl_shfl_sync_up_b32_pred(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return (struct ShflSyncResult){ input, 1u }; }
+WEAK struct ShflSyncResult f___zluda_ptx_impl_shfl_sync_down_b32_pred(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return (struct ShflSyncResult){ input, 1u }; }
+WEAK struct ShflSyncResult f___zluda_ptx_impl_shfl_sync_idx_b32_pred(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return (struct ShflSyncResult){ input, 1u }; }
+WEAK uint32_t f___zluda_ptx_impl_shfl_sync_bfly_b32(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return input; }
+WEAK uint32_t f___zluda_ptx_impl_shfl_sync_up_b32(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return input; }
+WEAK uint32_t f___zluda_ptx_impl_shfl_sync_down_b32(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return input; }
+WEAK uint32_t f___zluda_ptx_impl_shfl_sync_idx_b32(uint32_t input, int32_t delta, uint32_t opts, uint32_t membermask) { (void)delta; (void)opts; (void)membermask; return input; }
+"#;
+
+fn pacc_link_cc_tool() -> String {
+    if let Ok(tool) = std::env::var("HETGPU_PACC_HOST_LINK_CC") {
+        if !tool.trim().is_empty() {
+            return tool;
+        }
+    }
+    preferred_tool(
+        "HETGPU_PACC_HOST_LINK_CC",
+        &[
+            "riscv64-linux-gnu-gcc",
+            "/usr/bin/riscv64-linux-gnu-gcc",
+            "gcc",
+            "cc",
+            "clang",
+        ],
+    )
+}
+
+fn command_is_clang(tool: &str) -> bool {
+    Path::new(tool)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.contains("clang"))
+        .unwrap_or(false)
+}
+
+fn add_riscv_linux_clang_args(cmd: &mut Command) {
+    cmd.arg("--target=riscv64-unknown-linux-gnu");
+    if let Ok(sysroot) = std::env::var("HETGPU_PACC_SOURCE_SYSROOT") {
+        if !sysroot.trim().is_empty() {
+            cmd.arg(format!("--sysroot={sysroot}"));
+        }
+    }
+    if let Ok(toolchain) = std::env::var("HETGPU_PACC_SOURCE_GCC_TOOLCHAIN") {
+        if !toolchain.trim().is_empty() {
+            cmd.arg(format!("--gcc-toolchain={toolchain}"));
+        }
+    }
+}
+
+fn compile_pacc_host_stub(src: &Path, obj: &Path) -> io::Result<()> {
+    let cc = pacc_link_cc_tool();
+    let mut cmd = Command::new(&cc);
+    if command_is_clang(&cc) {
+        add_riscv_linux_clang_args(&mut cmd);
+    }
+    cmd.arg("-O2")
+        .arg("-fPIC")
+        .arg("-c")
+        .arg(src)
+        .arg("-o")
+        .arg(obj);
+    run_command(&mut cmd, "PACC host stub compile")
+}
+
+fn nm_tool() -> String {
+    bundled_llvm_tool(
+        "HETGPU_PACC_NM",
+        "llvm-nm",
+        &[
+            "riscv64-linux-gnu-nm",
+            "/usr/bin/riscv64-linux-gnu-nm",
+            "llvm-nm",
+            "nm",
+        ],
+    )
+}
+
+fn is_valid_c_symbol_name(symbol: &str) -> bool {
+    let mut chars = symbol.chars();
+    match chars.next() {
+        Some('_') | Some('A'..='Z') | Some('a'..='z') => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+fn object_undefined_symbols(input_obj: &Path) -> io::Result<Vec<String>> {
+    let mut cmd = Command::new(nm_tool());
+    cmd.arg("-u").arg(input_obj);
+    let output = tool_output(&mut cmd)?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "nm failed while scanning {}: {}",
+            input_obj.display(),
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    let mut symbols = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some(symbol) = line.split_whitespace().last() {
+            if !symbols.iter().any(|existing| existing == symbol) {
+                symbols.push(symbol.to_string());
+            }
+        }
+    }
+    Ok(symbols)
+}
+
+fn kernel_tmp_shared_stub_bytes() -> usize {
+    std::env::var("HETGPU_PACC_KERNEL_TMP_SHARED_BYTES")
+        .ok()
+        .and_then(|v| {
+            let trimmed = v.trim();
+            let parsed = trimmed
+                .strip_prefix("0x")
+                .or_else(|| trimmed.strip_prefix("0X"))
+                .map(|hex| usize::from_str_radix(hex, 16).ok())
+                .unwrap_or_else(|| trimmed.parse().ok())?;
+            (4096..=(16 << 20)).contains(&parsed).then_some(parsed)
+        })
+        .unwrap_or(64 << 10)
+}
+
+fn write_tmp_shared_stub_source(input_obj: &Path, stub_src: &Path) -> io::Result<()> {
+    let mut out = String::from(
+        "#include <stdint.h>\n__attribute__((used)) static unsigned char hetgpu_pacc_tmp_shared_anchor;\n",
+    );
+    let bytes = kernel_tmp_shared_stub_bytes();
+    for symbol in object_undefined_symbols(input_obj)? {
+        if !symbol.contains("tmp_shared") || !is_valid_c_symbol_name(&symbol) {
+            continue;
+        }
+        out.push_str(&format!(
+            "__attribute__((weak, visibility(\"hidden\"), aligned(16))) unsigned char {symbol}[{bytes}];\n"
+        ));
+    }
+    fs::write(stub_src, out)
+}
+
+fn find_riscv_builtins_archive() -> Option<String> {
+    if let Ok(path) = std::env::var("HETGPU_PACC_DEVICE_BUILTINS") {
+        if !path.trim().is_empty() && Path::new(&path).is_file() {
+            return Some(path);
+        }
+    }
+
+    for candidate in [
+        "/usr/lib/llvm-23/lib/clang/23/lib/linux/libclang_rt.builtins-riscv64.a",
+        "/usr/lib/llvm-22/lib/clang/22/lib/linux/libclang_rt.builtins-riscv64.a",
+        "/usr/lib/llvm-21/lib/clang/21/lib/linux/libclang_rt.builtins-riscv64.a",
+        "/usr/lib/llvm-20/lib/clang/20/lib/linux/libclang_rt.builtins-riscv64.a",
+        "/usr/lib/llvm-19/lib/clang/19/lib/linux/libclang_rt.builtins-riscv64.a",
+        "/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.builtins-riscv64.a",
+    ] {
+        if Path::new(candidate).is_file() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+fn link_pacc_object_to_shared(input_obj: &Path, output_so: &Path) -> io::Result<()> {
+    let stem = output_so
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("pacc_kernel");
+    let dir = output_so.parent().unwrap_or_else(|| Path::new("."));
+    let host_stub_src = dir.join(format!("{stem}.host_stubs.c"));
+    let host_stub_obj = dir.join(format!("{stem}.host_stubs.o"));
+    let tmp_shared_src = dir.join(format!("{stem}.tmp_shared_stubs.c"));
+    let tmp_shared_obj = dir.join(format!("{stem}.tmp_shared_stubs.o"));
+
+    fs::write(&host_stub_src, PACC_KERNEL_HOST_STUBS_C)?;
+    compile_pacc_host_stub(&host_stub_src, &host_stub_obj)?;
+    write_tmp_shared_stub_source(input_obj, &tmp_shared_src)?;
+    compile_pacc_host_stub(&tmp_shared_src, &tmp_shared_obj)?;
+
+    let cc = pacc_link_cc_tool();
+    let mut cmd = Command::new(&cc);
+    if command_is_clang(&cc) {
+        add_riscv_linux_clang_args(&mut cmd);
+    }
+    if let Ok(linker) = std::env::var("HETGPU_PACC_HOST_LINKER") {
+        if !linker.trim().is_empty() {
+            cmd.arg(format!("-fuse-ld={}", linker.trim()));
+        }
+    } else {
+        // mold rejects the experimental vendor ISA names emitted for PACC
+        // objects in .riscv.attributes. GNU ld.bfd links the same objects.
+        cmd.arg("-fuse-ld=bfd");
+    }
+    if let Ok(flags) = std::env::var("HETGPU_PACC_HOST_LINK_FLAGS") {
+        cmd.args(flags.split_ascii_whitespace());
+    }
+    cmd.arg("-shared")
+        .arg("-fPIC")
+        .arg("-o")
+        .arg(output_so)
+        .arg(input_obj)
+        .arg(&host_stub_obj)
+        .arg(&tmp_shared_obj);
+    if let Some(builtins) = find_riscv_builtins_archive() {
+        cmd.arg(builtins);
+    }
+    cmd.arg("-lm").arg("-ldl");
+    run_command(&mut cmd, "PACC host object -> shared object")
+}
+
 fn resolve_original_input_path(
     file_name: &str,
     working_directory: Option<&Path>,
@@ -895,7 +1259,7 @@ fn compile_bc_to_xm_object(
     }
 
     let clang = pacc_clang_tool("HETGPU_PACC_CLANG");
-    let march = riscv_march_with_required_extensions(&config.march);
+    let march = riscv_march_with_required_extensions(&pacc_codegen_march(config));
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
         .arg(&config.target_triple)
@@ -934,11 +1298,9 @@ fn compile_bc_to_xm_object(
 
 fn bc_requires_sanitized_ll(input_file: &Path) -> io::Result<bool> {
     let llvm_dis = llvm_dis_tool();
-    let output = Command::new(llvm_dis)
-        .arg(input_file)
-        .arg("-o")
-        .arg("-")
-        .output()?;
+    let mut cmd = Command::new(llvm_dis);
+    cmd.arg(input_file).arg("-o").arg("-");
+    let output = tool_output(&mut cmd)?;
     if !output.status.success() {
         return Ok(false);
     }
@@ -956,7 +1318,7 @@ fn compile_bc_to_xm_assembly(
     config: &crate::PaccConfig,
 ) -> io::Result<()> {
     let clang = pacc_clang_tool("HETGPU_PACC_CLANG");
-    let march = riscv_march_with_required_extensions(&config.march);
+    let march = riscv_march_with_required_extensions(&pacc_codegen_march(config));
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
         .arg(&config.target_triple)
@@ -1001,7 +1363,7 @@ fn compile_bc_to_xm_object_via_sanitized_ll(
     fs::write(&sanitized_ll_file, sanitized)?;
 
     let clang = pacc_clang_tool("HETGPU_PACC_CLANG");
-    let march = riscv_march_with_required_extensions(&config.march);
+    let march = riscv_march_with_required_extensions(&pacc_codegen_march(config));
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
         .arg(&config.target_triple)
@@ -1439,7 +1801,7 @@ fn workspace_root() -> io::Result<PathBuf> {
 }
 
 fn run_command(cmd: &mut Command, what: &str) -> io::Result<()> {
-    let output = cmd.output()?;
+    let output = tool_output(cmd)?;
     if output.status.success() {
         return Ok(());
     }
@@ -1449,6 +1811,15 @@ fn run_command(cmd: &mut Command, what: &str) -> io::Result<()> {
         what,
         String::from_utf8_lossy(&output.stderr)
     )))
+}
+
+fn tool_output(cmd: &mut Command) -> io::Result<Output> {
+    // llama.cpp starts this runtime via LD_PRELOAD=libnvcuda.so. Compiler and
+    // binutils subprocesses must not inherit that preload, or the CUDA shim can
+    // be injected into clang/gcc/nm and crash inside their allocators.
+    cmd.env_remove("LD_PRELOAD")
+        .env_remove("DYLD_INSERT_LIBRARIES");
+    cmd.output()
 }
 
 fn shell_escape_path(path: &Path) -> String {

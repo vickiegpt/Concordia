@@ -85,8 +85,20 @@ static void install_sigfpe_handler(void) {
     }
 }
 
+static int hetgpu_cudart_debug_logs_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *env = getenv("HETGPU_CUDART_DEBUG_LOGS");
+        if (!env || !env[0]) {
+            env = getenv("HETGPU_DEBUG_LOGS");
+        }
+        enabled = env && strcmp(env, "1") == 0;
+    }
+    return enabled;
+}
+
 #if defined(HETGPU_DEBUG_LOGS)
-#define HETGPU_LOG(...) fprintf(stderr, __VA_ARGS__)
+#define HETGPU_LOG(...) do { if (hetgpu_cudart_debug_logs_enabled()) fprintf(stderr, __VA_ARGS__); } while (0)
 #else
 #define HETGPU_LOG(...) ((void)0)
 #endif
@@ -120,6 +132,15 @@ static cudaError_t g_last_cuda_error = HETGPU_CUDA_SUCCESS;
 static int hetgpu_strict_pacc(void) {
     const char* strict = getenv("HETGPU_PACC_STRICT");
     return strict && strcmp(strict, "1") == 0;
+}
+
+static int hetgpu_pacc_requires_tracked_allocations(void) {
+    const char* shared_mem = getenv("HETGPU_PACC_SHARED_DEVICE_MEM");
+    const char* kernel_submit = getenv("HETGPU_PACC_KERNEL_MBOX_SUBMIT");
+    const char* control_backend = getenv("HETGPU_PACC_CONTROL_BACKEND");
+    return (shared_mem && strcmp(shared_mem, "1") == 0) ||
+           (kernel_submit && strcmp(kernel_submit, "1") == 0) ||
+           (control_backend && strcmp(control_backend, "shared_ddr") == 0);
 }
 
 static int hetgpu_allow_skip_null_registered_kernel(void) {
@@ -522,12 +543,38 @@ extern int cuDeviceGetCount(int* count);
 extern int cuDriverGetVersion(int* version);
 extern int cuInit(unsigned int flags);
 
+static int hetgpu_pacc_normalize_device_ordinal(int device) {
+    if (device < 0) {
+        return 0;
+    }
+    return device;
+}
+
+static int hetgpu_pacc_pci_bus_id(int device) {
+    return 0x02 + hetgpu_pacc_normalize_device_ordinal(device);
+}
+
+static int hetgpu_pacc_pci_device_id(int device) {
+    (void)device;
+    return 0;
+}
+
+static int hetgpu_pacc_pci_domain_id(int device) {
+    (void)device;
+    return 0;
+}
+
 cudaError_t cudaGetDeviceCount(int* count) {
     if (!count) return 1; // cudaErrorInvalidValue
-    fprintf(stderr, "[hetGPU] cudaGetDeviceCount called\n");
+    const char* log_count = getenv("HETGPU_CUDART_LOG_DEVICE_COUNT");
+    if (log_count && strcmp(log_count, "1") == 0) {
+        fprintf(stderr, "[hetGPU] cudaGetDeviceCount called\n");
+    }
     cuInit(0);
     int result = cuDeviceGetCount(count);
-    fprintf(stderr, "[hetGPU] cudaGetDeviceCount: %d devices\n", count ? *count : -1);
+    if (log_count && strcmp(log_count, "1") == 0) {
+        fprintf(stderr, "[hetGPU] cudaGetDeviceCount: %d devices\n", count ? *count : -1);
+    }
     return (result == 0) ? 0 : 2; // cudaSuccess or cudaErrorMemoryAllocation
 }
 
@@ -557,10 +604,10 @@ typedef struct {
     size_t totalConstMem;            // 352-359
     int    major;                    // 360-363 ← This is the key field!
     int    minor;                    // 364-367 ← This is the key field!
-    int    textureAlignment;         // 368-371
-    int    texturePitchAlignment;    // 372-375
-    int    deviceOverlap;            // 376-379
-    int    multiProcessorCount;      // 380-383
+    size_t textureAlignment;         // 368-375
+    size_t texturePitchAlignment;    // 376-383
+    int    deviceOverlap;            // 384-387
+    int    multiProcessorCount;      // 388-391
     int    kernelExecTimeoutEnabled; // 384-387
     int    integrated;               // 388-391
     int    canMapHostMemory;         // 392-395
@@ -585,14 +632,14 @@ typedef struct {
     int    maxSurface2DLayered[3];   // 536-547
     int    maxSurfaceCubemap;        // 548-551
     int    maxSurfaceCubemapLayered[2]; // 552-559
-    size_t surfaceAlignment;         // 560-567
-    int    concurrentKernels;        // 568-571
-    int    ECCEnabled;               // 572-575
-    int    pciBusID;                 // 576-579
-    int    pciDeviceID;              // 580-583
-    int    pciDomainID;              // 584-587
-    int    tccDriver;                // 588-591
-    int    asyncEngineCount;         // 592-595
+    size_t surfaceAlignment;         // 568-575
+    int    concurrentKernels;        // 576-579
+    int    ECCEnabled;               // 580-583
+    int    pciBusID;                 // 584-587
+    int    pciDeviceID;              // 588-591
+    int    pciDomainID;              // 592-595
+    int    tccDriver;                // 596-599
+    int    asyncEngineCount;         // 600-603
     int    unifiedAddressing;        // 596-599
     int    memoryClockRate;          // 600-603
     int    memoryBusWidth;           // 604-607
@@ -636,6 +683,8 @@ cudaError_t cudaGetDeviceProperties(cudaDeviceProp_t prop, int device) {
     p.sharedMemPerMultiprocessor = 64 * 1024;      // 64KB
     p.totalConstMem = 64 * 1024;                   // 64KB
     p.memPitch = 2147483647;
+    p.textureAlignment = 512;
+    p.texturePitchAlignment = 512;
     p.surfaceAlignment = 512;
 
     // Compute resources
@@ -691,10 +740,10 @@ cudaError_t cudaGetDeviceProperties(cudaDeviceProp_t prop, int device) {
     p.maxTexture3D[1] = 16384;
     p.maxTexture3D[2] = 16384;
 
-    // PCI info (fake but valid)
-    p.pciBusID = 0;
-    p.pciDeviceID = 0;
-    p.pciDomainID = 0;
+    // PCI info (fake but stable): llama.cpp uses this to de-duplicate devices.
+    p.pciBusID = hetgpu_pacc_pci_bus_id(device);
+    p.pciDeviceID = hetgpu_pacc_pci_device_id(device);
+    p.pciDomainID = hetgpu_pacc_pci_domain_id(device);
 
     // Copy full struct to caller's buffer
     memcpy(prop, &p, sizeof(p));
@@ -871,9 +920,9 @@ cudaError_t cudaDeviceGetAttribute(int* value, int attr, int device) {
         case 33: // cudaDevAttrEccEnabled
             *value = 0; break;
         case 34: // cudaDevAttrPciBusId
-            *value = 0; break;
+            *value = hetgpu_pacc_pci_bus_id(device); break;
         case 35: // cudaDevAttrPciDeviceId
-            *value = 0; break;
+            *value = hetgpu_pacc_pci_device_id(device); break;
         case 36: // cudaDevAttrTccDriver
             *value = 0; break;
         case 37: // cudaDevAttrMemoryClockRate
@@ -892,6 +941,8 @@ cudaError_t cudaDeviceGetAttribute(int* value, int attr, int device) {
             *value = 32768; break;
         case 45: // cudaDevAttrMaxTexture1DLayeredLayers
             *value = 2048; break;
+        case 50: // cudaDevAttrPciDomainId
+            *value = hetgpu_pacc_pci_domain_id(device); break;
         case 53: // cudaDevAttrMaxTexture2DGatherWidth
             *value = 32768; break;
         case 54: // cudaDevAttrMaxTexture2DGatherHeight
@@ -965,7 +1016,6 @@ cudaError_t cudaDeviceGetAttribute(int* value, int attr, int device) {
     if (log_attrs && strcmp(log_attrs, "1") == 0) {
         fprintf(stderr, "[cudart_shim] cudaDeviceGetAttribute(attr=%d) = %d\n", attr, *value);
     }
-    (void)device;
     return 0;
 }
 
@@ -1015,12 +1065,23 @@ cudaError_t cudaHostGetDevicePointer(void** pDevice, void* pHost, unsigned int f
 
 // PCI bus id helpers
 cudaError_t cudaDeviceGetPCIBusId(char* pciBusId, int len, int device) {
-    (void)device; if (pciBusId && len>0) pciBusId[0] = '\0'; return 0;
+    if (!pciBusId || len <= 0) return 1;
+    snprintf(pciBusId, (size_t)len, "%04x:%02x:%02x.0",
+             hetgpu_pacc_pci_domain_id(device),
+             hetgpu_pacc_pci_bus_id(device),
+             hetgpu_pacc_pci_device_id(device));
+    return 0;
 }
 
 cudaError_t cudaDeviceGetByPCIBusId(int* device, const char* pciBusId) {
-    (void)pciBusId;
-    if (device) *device = 0;  // Return device 0 for any PCI bus ID
+    if (!device || !pciBusId) return 1;
+    unsigned int domain = 0, bus = 0, dev = 0, func = 0;
+    if (sscanf(pciBusId, "%x:%x:%x.%x", &domain, &bus, &dev, &func) == 4 &&
+        domain == 0 && dev == 0 && func == 0 && bus >= 0x02 && bus < 0x06) {
+        *device = (int)(bus - 0x02);
+        return 0;
+    }
+    *device = 0;
     return 0;
 }
 
@@ -3100,7 +3161,13 @@ cudaError_t cudaMalloc(void** devPtr, size_t size) {
     CUresult result = cuMemAlloc_v2(&dptr, size);
     if (result != 0) {
         const char* real_mem = getenv("HETGPU_PACC_REAL_DEVICE_MEM");
-        if (hetgpu_strict_pacc() || (real_mem && strcmp(real_mem, "1") == 0)) {
+        if (hetgpu_strict_pacc() ||
+            hetgpu_pacc_requires_tracked_allocations() ||
+            (real_mem && strcmp(real_mem, "1") == 0)) {
+            fprintf(stderr,
+                    "[cudart_shim] cudaMalloc(%zu) cuMemAlloc_v2 failed (%d); "
+                    "refusing untracked host allocation in PACC mode\n",
+                    size, result);
             return hetgpu_set_last_error(2); // cudaErrorMemoryAllocation
         }
         // Fallback: host allocation (zeroed)

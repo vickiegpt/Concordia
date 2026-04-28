@@ -334,6 +334,11 @@ static void signal_host_irq(void) {
 
 static int remap_shared_ddr(u64 base, u64 size) {
     void *map;
+    u64 map_base;
+    u64 map_delta;
+    u64 map_size;
+    long page_size;
+    int mem_fd;
 
     if (!base || size < HETGPU_PACC_CONTROL_BYTES) {
         fprintf(stderr,
@@ -355,19 +360,41 @@ static int remap_shared_ddr(u64 base, u64 size) {
 
     g_runtime.shared_ddr_base = base;
     g_runtime.shared_ddr_size = size;
-    g_runtime.map_len = size;
+
+    page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) page_size = 4096;
+    map_base = base & ~((u64)page_size - 1UL);
+    map_delta = base - map_base;
+    map_size = size + map_delta;
+    g_runtime.map_len = map_size;
 
     map = mmap(0, (size_t)g_runtime.map_len, PROT_READ | PROT_WRITE, MAP_SHARED,
                g_runtime.mbox_fd, 0);
     if (map == MAP_FAILED) {
-        fprintf(stderr,
-                "hetgpu_pacc_runtime: mmap mailbox shared DDR base=0x%lx size=0x%lx failed: %s\n",
-                (unsigned long)base, (unsigned long)size, strerror(errno));
-        return -1;
+        int mbox_errno = errno;
+        mem_fd = open("/dev/mem", O_RDWR | O_SYNC | O_CLOEXEC);
+        if (mem_fd < 0) {
+            fprintf(stderr,
+                    "hetgpu_pacc_runtime: mmap /dev/mbox shared DDR base=0x%lx size=0x%lx failed: %s; open /dev/mem failed: %s\n",
+                    (unsigned long)base, (unsigned long)size,
+                    strerror(mbox_errno), strerror(errno));
+            return -1;
+        }
+        map = mmap(0, (size_t)g_runtime.map_len, PROT_READ | PROT_WRITE, MAP_SHARED,
+                   mem_fd, (off_t)map_base);
+        close(mem_fd);
+        if (map == MAP_FAILED) {
+            fprintf(stderr,
+                    "hetgpu_pacc_runtime: mmap /dev/mbox shared DDR base=0x%lx size=0x%lx failed: %s; mmap /dev/mem off=0x%lx len=0x%lx failed: %s\n",
+                    (unsigned long)base, (unsigned long)size,
+                    strerror(mbox_errno), (unsigned long)map_base,
+                    (unsigned long)g_runtime.map_len, strerror(errno));
+            return -1;
+        }
     }
 
     g_runtime.map_ptr = map;
-    g_runtime.shared_ddr = (u8 *)map;
+    g_runtime.shared_ddr = (u8 *)map + map_delta;
     return 0;
 }
 

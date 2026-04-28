@@ -1206,18 +1206,20 @@ unsafe fn pacc_copy_first_output_bytes(
 
     let mut output_data = mem::zeroed();
     let mut selected_index = None;
-    for i in 0..count {
-        let mut candidate = mem::zeroed();
-        pacc_comgr_get_data(data_set, i, &mut candidate)?;
+    for preferred_kind in preferred_kinds {
+        for i in 0..count {
+            let mut candidate = mem::zeroed();
+            pacc_comgr_get_data(data_set, i, &mut candidate)?;
 
-        let mut candidate_kind = pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_UNDEF;
-        pacc_comgr_get_data_kind(candidate, &mut candidate_kind)?;
-        if preferred_kinds
-            .iter()
-            .any(|kind| kind.0 == candidate_kind.0)
-        {
-            output_data = candidate;
-            selected_index = Some(i);
+            let mut candidate_kind = pacc_comgr_data_kind_s::PACC_COMGR_DATA_KIND_UNDEF;
+            pacc_comgr_get_data_kind(candidate, &mut candidate_kind)?;
+            if candidate_kind.0 == preferred_kind.0 {
+                output_data = candidate;
+                selected_index = Some(i);
+                break;
+            }
+        }
+        if selected_index.is_some() {
             break;
         }
     }

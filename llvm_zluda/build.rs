@@ -28,6 +28,7 @@ const COMPONENTS: &[&'static str] = &[
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LLVM_ZLUDA_PREBUILT");
+    println!("cargo:rerun-if-env-changed=LLVM_ZLUDA_CMAKE_PROFILE");
     println!("cargo:rerun-if-env-changed=LLVM_ZLUDA_COMPILER_LAUNCHER");
     println!("cargo:rerun-if-env-changed=CMAKE_C_COMPILER_LAUNCHER");
     println!("cargo:rerun-if-env-changed=CMAKE_CXX_COMPILER_LAUNCHER");
@@ -68,6 +69,9 @@ fn main() {
     let mut cmake = Config::new(r"../ext/llvm-project/llvm");
     try_use_ninja(&mut cmake);
     configure_compiler_launcher(&mut cmake);
+    let cmake_profile =
+        std::env::var("LLVM_ZLUDA_CMAKE_PROFILE").unwrap_or_else(|_| "Release".to_string());
+    cmake.profile(&cmake_profile);
     cmake
         // It's not like we can do anything about the warnings
         .define("LLVM_ENABLE_WARNINGS", "OFF")
