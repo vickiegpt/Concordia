@@ -120,8 +120,7 @@ pub const PACC_IOC_ZLUDA_GET_DDR_BASE: u64 = _ior(
     6,
     std::mem::size_of::<HetgpuPaccSharedDdrInfo>() as u64,
 );
-pub const PACC_IOC_GET_PACC_ID: u64 =
-    _ior(PACC_MAGIC, 7, std::mem::size_of::<u64>() as u64);
+pub const PACC_IOC_GET_PACC_ID: u64 = _ior(PACC_MAGIC, 7, std::mem::size_of::<u64>() as u64);
 
 // Backward-compatible aliases for older local call sites.
 pub const PACC_IOC_GET_INFO_EX: u64 = PACC_IOC_GET_INFO;
@@ -245,6 +244,7 @@ pub mod hetgpu_pacc_job_id {
     pub const SOFTMAX: u32 = 2;
     pub const RMSNORM: u32 = 3;
     pub const ALLREDUCE: u32 = 4;
+    pub const MMVF: u32 = 5;
 }
 
 #[repr(C)]
@@ -330,6 +330,46 @@ pub struct HetgpuPaccRmsNormJob {
 
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
+pub struct HetgpuPaccUint3 {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct HetgpuPaccMmvfJob {
+    pub x_addr: u64,
+    pub y_addr: u64,
+    pub ids_addr: u64,
+    pub dst_addr: u64,
+    pub x_bytes: u64,
+    pub y_bytes: u64,
+    pub dst_bytes: u64,
+    pub grid_x: u32,
+    pub grid_y: u32,
+    pub grid_z: u32,
+    pub ncols_dst: u32,
+    pub x_type: u32,
+    pub reserved0: u32,
+    pub ncols2: i32,
+    pub nchannels_y: HetgpuPaccUint3,
+    pub stride_row: i32,
+    pub stride_col_y2: i32,
+    pub stride_col_dst: i32,
+    pub channel_ratio: HetgpuPaccUint3,
+    pub stride_channel_x: i32,
+    pub stride_channel_y: i32,
+    pub stride_channel_dst: i32,
+    pub sample_ratio: HetgpuPaccUint3,
+    pub stride_sample_x: i32,
+    pub stride_sample_y: i32,
+    pub stride_sample_dst: i32,
+    pub ids_stride: i32,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct HetgpuPaccRuntimeJobTable {
     pub magic: u64,
     pub version: u32,
@@ -339,10 +379,13 @@ pub struct HetgpuPaccRuntimeJobTable {
     pub have_softmax: u32,
     pub have_rmsnorm: u32,
     pub have_allreduce: u32,
+    pub have_mmvf: u32,
+    pub reserved0: u32,
     pub gemm: HetgpuPaccGemmJob,
     pub softmax: HetgpuPaccSoftmaxJob,
     pub rmsnorm: HetgpuPaccRmsNormJob,
     pub allreduce: HetgpuPaccAllReduceJob,
+    pub mmvf: HetgpuPaccMmvfJob,
 }
 
 #[repr(C)]
@@ -1301,6 +1344,14 @@ impl PaccDevice {
             return result;
         }
         self.stage_preloaded_job_args(job_id, seq, arg_bytes)?;
+        if env_flag_enabled("HETGPU_PACC_PRE_DOORBELL_IRQ") {
+            self.zluda_irq(shared_ddr_info())?;
+            let sleep_us = parse_env_usize("HETGPU_PACC_PRE_DOORBELL_IRQ_SLEEP_US", 1000);
+            if sleep_us != 0 {
+                std::thread::sleep(std::time::Duration::from_micros(sleep_us as u64));
+            }
+            self.stage_preloaded_job_args(job_id, seq, arg_bytes)?;
+        }
         self.stage_preloaded_doorbell(doorbell).map_err(|e| {
             if e.raw_os_error() == Some(libc::EPERM) || e.kind() == ErrorKind::PermissionDenied {
                 Error::new(
@@ -1364,10 +1415,13 @@ impl PaccDevice {
                 .ok()
                 .as_deref()
                 != Some("1")
-            && preloaded_arg_slot(job_id).is_some()
+            && runtime_table_job_supported(job_id)
         {
             self.stage_runtime_job_table(job_id, seq, arg_bytes)?;
-            return self.stage_preloaded_arg_slot(job_id, seq, arg_bytes);
+            if preloaded_arg_slot(job_id).is_some() {
+                return self.stage_preloaded_arg_slot(job_id, seq, arg_bytes);
+            }
+            return Ok(());
         }
         if std::env::var("HETGPU_PACC_FIRMWARE_ARGS_PRELOADED")
             .ok()
@@ -1417,7 +1471,8 @@ impl PaccDevice {
                 HETGPU_PACC_ARG_HEADER_BYTES,
             )
         };
-        let mut helper_payload = vec![0u8; HETGPU_PACC_ARG_SLOT_BYTES];
+        let helper_len = align_up(total, helper_io_chunk_bytes()).min(HETGPU_PACC_ARG_SLOT_BYTES);
+        let mut helper_payload = vec![0u8; helper_len];
         helper_payload[..HETGPU_PACC_ARG_HEADER_BYTES].copy_from_slice(header_bytes);
         helper_payload
             [HETGPU_PACC_ARG_HEADER_BYTES..HETGPU_PACC_ARG_HEADER_BYTES + arg_bytes.len()]
@@ -1507,6 +1562,21 @@ impl PaccDevice {
                         want,
                     );
                     table.have_allreduce = 1;
+                }
+                hetgpu_pacc_job_id::MMVF => {
+                    let want = std::mem::size_of::<HetgpuPaccMmvfJob>();
+                    if arg_bytes.len() < want {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "short PACC MMVF runtime table payload",
+                        ));
+                    }
+                    std::ptr::copy_nonoverlapping(
+                        arg_bytes.as_ptr(),
+                        (&mut table.mmvf as *mut HetgpuPaccMmvfJob).cast::<u8>(),
+                        want,
+                    );
+                    table.have_mmvf = 1;
                 }
                 _ => {
                     return Err(Error::new(
@@ -1810,6 +1880,7 @@ fn nvtop_job_name(job_id: u32) -> &'static str {
         hetgpu_pacc_job_id::SOFTMAX => "SOFTMAX",
         hetgpu_pacc_job_id::RMSNORM => "RMSNORM",
         hetgpu_pacc_job_id::ALLREDUCE => "ALLREDUCE",
+        hetgpu_pacc_job_id::MMVF => "MMVF",
         _ => "UNKNOWN",
     }
 }
@@ -2010,8 +2081,20 @@ fn preloaded_arg_slot(job_id: u32) -> Option<usize> {
         hetgpu_pacc_job_id::SOFTMAX => Some(1),
         hetgpu_pacc_job_id::RMSNORM => Some(2),
         hetgpu_pacc_job_id::ALLREDUCE => Some(3),
+        hetgpu_pacc_job_id::MMVF => Some(4),
         _ => None,
     }
+}
+
+fn runtime_table_job_supported(job_id: u32) -> bool {
+    matches!(
+        job_id,
+        hetgpu_pacc_job_id::GEMM
+            | hetgpu_pacc_job_id::SOFTMAX
+            | hetgpu_pacc_job_id::RMSNORM
+            | hetgpu_pacc_job_id::ALLREDUCE
+            | hetgpu_pacc_job_id::MMVF
+    )
 }
 
 fn require_runtime_ready() -> std::io::Result<()> {
@@ -3322,6 +3405,14 @@ fn write_shared_ddr_control_window(
     bytes: &[u8],
 ) -> std::io::Result<()> {
     let offset = shared_ddr_control_offset(pacc_id, offset, bytes.len())?;
+    if !shared_ddr_control_mmap_enabled() {
+        let dev = helper_path_for_pacc(pacc_id);
+        if std::path::Path::new(&dev).exists() {
+            let mut file = OpenOptions::new().read(true).write(true).open(&dev)?;
+            helper_write_all(&mut file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)?;
+            return Ok(());
+        }
+    }
     write_shared_ddr_window(offset, bytes)
 }
 
@@ -6849,6 +6940,40 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_rmsnorm_bf16(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn hetgpu_pacc_submit_mmvf_on(
+    dev_id: i32,
+    job: *const HetgpuPaccMmvfJob,
+) -> i32 {
+    if dev_id < 0 || job.is_null() {
+        eprintln!("hetgpu_pacc_submit_mmvf_on: invalid argument");
+        return -1;
+    }
+    let job = *job;
+    match PaccDevice::open(dev_id as usize)
+        .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::MMVF, &job))
+    {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!(
+                "hetgpu_pacc_submit_mmvf_on: PACC MMVF submit failed dev={} x=0x{:x} y=0x{:x} dst=0x{:x} grid={}x{}x{} ncols2={} ncols_dst={} x_type={}: {}",
+                dev_id,
+                job.x_addr,
+                job.y_addr,
+                job.dst_addr,
+                job.grid_x,
+                job.grid_y,
+                job.grid_z,
+                job.ncols2,
+                job.ncols_dst,
+                job.x_type,
+                e
+            );
+            -1
+        }
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn hetgpu_pacc_nccl_all_reduce_f32(
     sendbuff: *const f32,
     recvbuff: *mut f32,
@@ -7358,11 +7483,7 @@ pub unsafe extern "C" fn pacc_LoadProgramPtx(
         return load_program_elf_bytes(program, elf_bytes);
     }
 
-    if std::env::var("HETGPU_PACC_ELF_CACHE_ONLY")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
+    if std::env::var("HETGPU_PACC_ELF_CACHE_ONLY").ok().as_deref() == Some("1") {
         let cache_dir = pacc_elf_cache_dir();
         let cache_key = compute_pacc_elf_cache_key(target_arch, ptx_bytes, external_linked);
         let cache_path = pacc_elf_cache_path(&cache_dir, &cache_key);
@@ -7658,11 +7779,7 @@ pub unsafe extern "C" fn pacc_KernelAddBufferBinding(
     if binding.arg_index as usize >= (*kernel).launch_state.arg_records.len() {
         return pacc_Result_Error;
     }
-    if std::env::var("HETGPU_PACC_LOG_KERNEL_ARGS")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
+    if std::env::var("HETGPU_PACC_LOG_KERNEL_ARGS").ok().as_deref() == Some("1") {
         let kernel_name = &(*kernel).name;
         if kernel_name.contains("k_bin_bcast")
             || std::env::var("HETGPU_PACC_LOG_ALL_KERNEL_BINDINGS")
@@ -8161,9 +8278,8 @@ fn kernel_submit_slot_layout(
     let slot_bytes = if let Some(slot_bytes) = explicit_slot_bytes {
         slot_bytes
     } else if shared_device_mem {
-        let default_slot_bytes =
-            parse_optional_env_usize("HETGPU_PACC_KERNEL_DEFAULT_SLOT_BYTES")
-                .unwrap_or(64 * 1024 * 1024);
+        let default_slot_bytes = parse_optional_env_usize("HETGPU_PACC_KERNEL_DEFAULT_SLOT_BYTES")
+            .unwrap_or(64 * 1024 * 1024);
         let max_slot_bytes = align_down(usable_bytes / total_slot_count, 64);
         align_up(min_slot_bytes.max(default_slot_bytes), 64).min(max_slot_bytes)
     } else {
@@ -8517,13 +8633,10 @@ fn submit_pacc_kernel_image_via_helper(
         .as_deref()
         != Some("0")
     {
-        let metadata_prefix = compute_pacc_kernel_image_layout(
-            kernel_name,
-            elf_bytes,
-            &staging.launch_state,
-        )
-        .map(|layout| layout.elf_offset.min(submit_len))
-        .unwrap_or_else(|_| submit_len.min(4096));
+        let metadata_prefix =
+            compute_pacc_kernel_image_layout(kernel_name, elf_bytes, &staging.launch_state)
+                .map(|layout| layout.elf_offset.min(submit_len))
+                .unwrap_or_else(|_| submit_len.min(4096));
         if metadata_prefix > 0 {
             if let Some(file) = shared_file.as_mut() {
                 helper_write_all(
@@ -8565,8 +8678,7 @@ fn submit_pacc_kernel_image_via_helper(
             &mut shared_file,
             &mut mailbox_file,
         );
-        if env_flag_enabled("HETGPU_PACC_KERNEL_TIMING") || env_flag_enabled("HETGPU_PACC_TIMING")
-        {
+        if env_flag_enabled("HETGPU_PACC_KERNEL_TIMING") || env_flag_enabled("HETGPU_PACC_TIMING") {
             eprintln!(
                 "PACC timing: kernel='{}' pacc{} seq={} status={} wait_us={} submit={} staging={} grid=({}, {}, {}) block=({}, {}, {}) slot={}",
                 kernel_name,

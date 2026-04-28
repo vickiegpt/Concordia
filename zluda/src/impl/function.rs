@@ -3227,10 +3227,7 @@ unsafe fn configure_pacc_launch_abi(
         == Some("1");
     let log_arg_records = log_launches
         && (kernel_name.contains("k_bin_bcast")
-            || std::env::var("HETGPU_PACC_LOG_KERNEL_ARGS")
-                .ok()
-                .as_deref()
-                == Some("1"));
+            || std::env::var("HETGPU_PACC_LOG_KERNEL_ARGS").ok().as_deref() == Some("1"));
     let _ = (grid_dim_x, grid_dim_y);
     let mut pushed = 0usize;
     let mut pointer_like = 0usize;
@@ -4833,7 +4830,7 @@ unsafe fn pacc_mul_mat_vec_q_moe_binding_metadata(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_mmvf_template(kernel_name: &str) -> Option<(u64, bool)> {
+fn pacc_parse_mmvf_template(kernel_name: &str) -> Option<(u64, bool, bool)> {
     let marker = "mul_mat_vec_f";
     let after = &kernel_name[kernel_name.find(marker)? + marker.len()..];
     let li = after.find("Li")? + 2;
@@ -4848,11 +4845,12 @@ fn pacc_parse_mmvf_template(kernel_name: &str) -> Option<(u64, bool)> {
 
     let after_ncols = &after[li + digits..];
     let first_bool = after_ncols.find("ELb")? + 3;
+    let has_fusion = after_ncols.as_bytes().get(first_bool).copied() == Some(b'1');
     let after_first_bool = &after_ncols[first_bool + 1..];
     let second_bool = after_first_bool.find("ELb")? + 3;
     let is_multi_token_id = after_first_bool.as_bytes().get(second_bool).copied() == Some(b'1');
 
-    Some((ncols_dst, is_multi_token_id))
+    Some((ncols_dst, has_fusion, is_multi_token_id))
 }
 
 #[cfg(all(
@@ -4879,6 +4877,47 @@ fn pacc_mmvf_x_elem_bytes(kernel_name: &str) -> u64 {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+fn pacc_mmvf_x_type(kernel_name: &str) -> Option<u32> {
+    if kernel_name.contains("mul_mat_vec_fI6__half") {
+        Some(2)
+    } else if kernel_name.contains("mul_mat_vec_fIff") {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn read_param_uint3_value(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+) -> Option<pacc_runtime_sys::HetgpuPaccUint3> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    let param = *kernel_params.add(index);
+    if param.is_null() || (param as usize) < 0x1_0000 {
+        return None;
+    }
+    let p = param as *const u32;
+    Some(pacc_runtime_sys::HetgpuPaccUint3 {
+        x: p.read_unaligned(),
+        y: p.add(1).read_unaligned(),
+        z: p.add(2).read_unaligned(),
+    })
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn pacc_mul_mat_vec_f_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
@@ -4887,7 +4926,7 @@ unsafe fn pacc_mul_mat_vec_f_binding_metadata(
     grid_dim_z: u32,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let (ncols_dst, is_multi_token_id) = pacc_parse_mmvf_template(kernel_name)?;
+    let (ncols_dst, _has_fusion, is_multi_token_id) = pacc_parse_mmvf_template(kernel_name)?;
     let x_elem_bytes = pacc_mmvf_x_elem_bytes(kernel_name);
     let ncols2 = read_param_u32(kernel_params, 5)? as u64;
     let nchannels_y = read_param_uint3_z(kernel_params, 6)?.max(1) as u64;
@@ -4998,6 +5037,148 @@ unsafe fn pacc_mul_mat_vec_f_binding_metadata(
 
     let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn try_offload_mmvf_named_pacc_kernel(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    grid_dim_y: ::core::ffi::c_uint,
+    grid_dim_z: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    use cuda_types::cuda::*;
+
+    if std::env::var("HETGPU_PACC_MMVF_NAMED_OFFLOAD")
+        .ok()
+        .as_deref()
+        == Some("0")
+    {
+        return None;
+    }
+
+    let (ncols_dst, has_fusion, is_multi_token_id) = pacc_parse_mmvf_template(kernel_name)?;
+    if has_fusion || is_multi_token_id || ncols_dst == 0 || ncols_dst > 8 {
+        return None;
+    }
+    let x_type = pacc_mmvf_x_type(kernel_name)?;
+
+    let x_host = read_param_u64(kernel_params, 0)?;
+    let y_host = read_param_u64(kernel_params, 1)?;
+    let ids_host = read_param_u64(kernel_params, 2).unwrap_or(0);
+    let dst_host = read_param_u64(kernel_params, 4)?;
+    if ids_host != 0 {
+        return None;
+    }
+
+    let x_addr = match super::memory::pacc_driver_physical_addr(x_host) {
+        Some(addr) => addr,
+        None => return None,
+    };
+    let y_addr = match super::memory::pacc_driver_physical_addr(y_host) {
+        Some(addr) => addr,
+        None => return None,
+    };
+    let dst_addr = match super::memory::pacc_driver_physical_addr(dst_host) {
+        Some(addr) => addr,
+        None => return None,
+    };
+
+    let x_bytes = pacc_mul_mat_vec_f_binding_metadata(
+        kernel_name,
+        kernel_params,
+        grid_dim_x,
+        grid_dim_y,
+        grid_dim_z,
+        0,
+    )?
+    .0;
+    let y_bytes = pacc_mul_mat_vec_f_binding_metadata(
+        kernel_name,
+        kernel_params,
+        grid_dim_x,
+        grid_dim_y,
+        grid_dim_z,
+        1,
+    )?
+    .0;
+    let dst_bytes = pacc_mul_mat_vec_f_binding_metadata(
+        kernel_name,
+        kernel_params,
+        grid_dim_x,
+        grid_dim_y,
+        grid_dim_z,
+        4,
+    )?
+    .0;
+
+    let job = pacc_runtime_sys::HetgpuPaccMmvfJob {
+        x_addr,
+        y_addr,
+        ids_addr: 0,
+        dst_addr,
+        x_bytes,
+        y_bytes,
+        dst_bytes,
+        grid_x: grid_dim_x.max(1),
+        grid_y: grid_dim_y.max(1),
+        grid_z: grid_dim_z.max(1),
+        ncols_dst: ncols_dst as u32,
+        x_type,
+        reserved0: 0,
+        ncols2: read_param_u32(kernel_params, 5).unwrap_or(0) as i32,
+        nchannels_y: read_param_uint3_value(kernel_params, 6)?,
+        stride_row: read_param_u32(kernel_params, 7).unwrap_or(0) as i32,
+        stride_col_y2: read_param_u32(kernel_params, 8).unwrap_or(0) as i32,
+        stride_col_dst: read_param_u32(kernel_params, 9).unwrap_or(0) as i32,
+        channel_ratio: read_param_uint3_value(kernel_params, 10)?,
+        stride_channel_x: read_param_u32(kernel_params, 11).unwrap_or(0) as i32,
+        stride_channel_y: read_param_u32(kernel_params, 12).unwrap_or(0) as i32,
+        stride_channel_dst: read_param_u32(kernel_params, 13).unwrap_or(0) as i32,
+        sample_ratio: read_param_uint3_value(kernel_params, 14)?,
+        stride_sample_x: read_param_u32(kernel_params, 15).unwrap_or(0) as i32,
+        stride_sample_y: read_param_u32(kernel_params, 16).unwrap_or(0) as i32,
+        stride_sample_dst: read_param_u32(kernel_params, 17).unwrap_or(0) as i32,
+        ids_stride: read_param_u32(kernel_params, 18).unwrap_or(0) as i32,
+    };
+
+    if job.ncols2 <= 0 || job.x_bytes == 0 || job.y_bytes == 0 || job.dst_bytes == 0 {
+        return Some(Err(CUerror::UNKNOWN));
+    }
+
+    let dev_id = current_pacc_device_id_or_zero();
+    let rc = pacc_runtime_sys::hetgpu_pacc_submit_mmvf_on(dev_id, &job as *const _);
+    if rc == 0 {
+        if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            eprintln!(
+                "[PACC Backend] offloaded MMVF '{}' dev={} grid={}x{}x{} ncols2={} ncols_dst={} x_type={}",
+                kernel_name,
+                dev_id,
+                job.grid_x,
+                job.grid_y,
+                job.grid_z,
+                job.ncols2,
+                job.ncols_dst,
+                job.x_type
+            );
+        }
+        return Some(Ok(()));
+    }
+
+    eprintln!(
+        "[PACC Backend] MMVF '{}' offload failed with rc={}; refusing normal launch",
+        kernel_name, rc
+    );
+    Some(Err(CUerror::UNKNOWN))
 }
 
 #[cfg(all(
@@ -6743,6 +6924,17 @@ unsafe fn try_offload_named_pacc_kernel(
         .unwrap_or(true);
     if !named_pacc_enabled {
         return None;
+    }
+    if name_lower.contains("mul_mat_vec_f") {
+        if let Some(result) = try_offload_mmvf_named_pacc_kernel(
+            kernel_name,
+            grid_dim_x,
+            grid_dim_y,
+            grid_dim_z,
+            kernel_params,
+        ) {
+            return Some(result);
+        }
     }
     if name_lower.contains("softmax") || name_lower.contains("soft_max") {
         let (x, mask, sinks, dst, params) = match read_softmax_named_args(kernel_params) {

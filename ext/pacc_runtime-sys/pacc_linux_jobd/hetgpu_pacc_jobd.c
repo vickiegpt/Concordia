@@ -53,6 +53,7 @@
 #define HETGPU_PACC_JOB_SOFTMAX 2U
 #define HETGPU_PACC_JOB_RMSNORM 3U
 #define HETGPU_PACC_JOB_ALLREDUCE 4U
+#define HETGPU_PACC_JOB_MMVF 5U
 
 #define HETGPU_PACC_ARG_SLOT_BYTES 0x400UL
 #define HETGPU_PACC_CONTROL_BYTES 0x2000UL
@@ -194,15 +195,53 @@ struct AllReduceJob {
     uint32_t reserved;
 };
 
+struct PaccUint3 {
+    uint32_t x;
+    uint32_t y;
+    uint32_t z;
+};
+
+struct MmvfJob {
+    uint64_t x_addr;
+    uint64_t y_addr;
+    uint64_t ids_addr;
+    uint64_t dst_addr;
+    uint64_t x_bytes;
+    uint64_t y_bytes;
+    uint64_t dst_bytes;
+    uint32_t grid_x;
+    uint32_t grid_y;
+    uint32_t grid_z;
+    uint32_t ncols_dst;
+    uint32_t x_type;
+    uint32_t reserved0;
+    int32_t ncols2;
+    struct PaccUint3 nchannels_y;
+    int32_t stride_row;
+    int32_t stride_col_y2;
+    int32_t stride_col_dst;
+    struct PaccUint3 channel_ratio;
+    int32_t stride_channel_x;
+    int32_t stride_channel_y;
+    int32_t stride_channel_dst;
+    struct PaccUint3 sample_ratio;
+    int32_t stride_sample_x;
+    int32_t stride_sample_y;
+    int32_t stride_sample_dst;
+    int32_t ids_stride;
+};
+
 struct PreloadedJobs {
     bool have_gemm;
     bool have_softmax;
     bool have_rmsnorm;
     bool have_allreduce;
+    bool have_mmvf;
     struct GemmJob gemm;
     struct SoftmaxJob softmax;
     struct RmsNormJob rmsnorm;
     struct AllReduceJob allreduce;
+    struct MmvfJob mmvf;
 };
 
 struct RuntimeJobTable {
@@ -214,10 +253,13 @@ struct RuntimeJobTable {
     uint32_t have_softmax;
     uint32_t have_rmsnorm;
     uint32_t have_allreduce;
+    uint32_t have_mmvf;
+    uint32_t reserved0;
     struct GemmJob gemm;
     struct SoftmaxJob softmax;
     struct RmsNormJob rmsnorm;
     struct AllReduceJob allreduce;
+    struct MmvfJob mmvf;
 };
 
 struct PaccJobDesc {
@@ -336,6 +378,7 @@ enum DispatchPollResult {
 static long g_page_size = 4096;
 static struct pacc_zluda_ddr_info g_ddr_info;
 static uint64_t g_pacc_id;
+static int g_mbox_fd = -1;
 static bool g_map_uses_shared_ddr_offsets;
 static uint64_t g_shared_ddr_mmap_user_off;
 static uint64_t g_shared_ddr_fd_user_off;
@@ -353,6 +396,7 @@ static uint32_t g_kernel_parse_error = 0;
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out);
 static void unmap_phys(struct Map *m);
+static void sleep_us(uint64_t usec);
 static uint64_t parse_env_u64_default(const char *name, uint64_t fallback);
 
 static bool env_flag_true(const char *value) {
@@ -415,6 +459,18 @@ static uint64_t jobd_full_ddr_map_bytes(void) {
 
 static bool jobd_force_pread_enabled(void) {
     return env_flag_true(getenv("HETGPU_PACC_JOBD_FORCE_PREAD"));
+}
+
+static bool jobd_status_pwrite_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_STATUS_PWRITE");
+    if (!value || !*value) {
+        return false;
+    }
+    return env_flag_true(value);
+}
+
+static uint64_t jobd_arg_wait_us(void) {
+    return parse_env_u64_default("HETGPU_PACC_JOBD_ARG_WAIT_US", 120000000ULL);
 }
 
 static bool jobd_force_devmem_enabled(void) {
@@ -629,6 +685,17 @@ static void sleep_when_idle(void) {
     }
     ts.tv_sec = usec / 1000000;
     ts.tv_nsec = (long)(usec % 1000000) * 1000L;
+    while (nanosleep(&ts, &ts) != 0) {
+        if (errno != EINTR) {
+            return;
+        }
+    }
+}
+
+static void sleep_us(uint64_t usec) {
+    struct timespec ts;
+    ts.tv_sec = (time_t)(usec / 1000000ULL);
+    ts.tv_nsec = (long)(usec % 1000000ULL) * 1000L;
     while (nanosleep(&ts, &ts) != 0) {
         if (errno != EINTR) {
             return;
@@ -949,6 +1016,8 @@ static const char *job_name(uint32_t job_id) {
         return "RMSNORM";
     case HETGPU_PACC_JOB_ALLREDUCE:
         return "ALLREDUCE";
+    case HETGPU_PACC_JOB_MMVF:
+        return "MMVF";
     default:
         return "UNKNOWN";
     }
@@ -1102,14 +1171,39 @@ static bool phys_to_fd_offset(uint64_t phys, size_t len, uint64_t *out) {
     return true;
 }
 
+static bool phys_is_shared_ddr(uint64_t phys, size_t len) {
+    if (!g_ddr_info.ddr_base || phys < g_ddr_info.ddr_base) {
+        return false;
+    }
+    uint64_t ddr_off = phys - g_ddr_info.ddr_base;
+    return (uint64_t)len <= g_ddr_info.ddr_size &&
+           ddr_off <= g_ddr_info.ddr_size - (uint64_t)len;
+}
+
+static int fd_for_shared_ddr_io(int fallback_fd, uint64_t phys, size_t len) {
+    if (phys_is_shared_ddr(phys, len) && g_mbox_fd >= 0) {
+        return g_mbox_fd;
+    }
+    return fallback_fd;
+}
+
 static int read_phys_copy_pread_only(int fd, uint64_t phys, size_t len, uint8_t **out) {
     uint64_t fd_off = 0;
+    uint64_t alt_fd_off = 0;
+    bool have_alt_fd_off = false;
+    bool tried_alt_fd_off = false;
+    int io_fd;
     uint8_t *buf;
     size_t done = 0;
     size_t chunk = jobd_helper_io_chunk_bytes();
 
     if (!out || len == 0 || !phys_to_fd_offset(phys, len, &fd_off)) {
         return -1;
+    }
+    io_fd = fd_for_shared_ddr_io(fd, phys, len);
+    if (phys_is_shared_ddr(phys, len)) {
+        alt_fd_off = phys - g_ddr_info.ddr_base;
+        have_alt_fd_off = alt_fd_off != fd_off;
     }
     buf = (uint8_t *)malloc(len);
     if (!buf) {
@@ -1118,8 +1212,15 @@ static int read_phys_copy_pread_only(int fd, uint64_t phys, size_t len, uint8_t 
     while (done < len) {
         size_t want = len - done;
         if (want > chunk) want = chunk;
-        ssize_t got = pread(fd, buf + done, want, (off_t)(fd_off + done));
+        ssize_t got = pread(io_fd, buf + done, want, (off_t)(fd_off + done));
         if (got <= 0) {
+            if (have_alt_fd_off && !tried_alt_fd_off) {
+                tried_alt_fd_off = true;
+                fd_off = alt_fd_off;
+                done = 0;
+                memset(buf, 0, len);
+                continue;
+            }
             free(buf);
             return -1;
         }
@@ -1132,6 +1233,10 @@ static int read_phys_copy_pread_only(int fd, uint64_t phys, size_t len, uint8_t 
 
 static int read_phys_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
     uint64_t fd_off = 0;
+    uint64_t alt_fd_off = 0;
+    bool have_alt_fd_off = false;
+    bool tried_alt_fd_off = false;
+    int io_fd;
     uint8_t *buf;
     size_t done = 0;
     size_t chunk = jobd_helper_io_chunk_bytes();
@@ -1143,6 +1248,9 @@ static int read_phys_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
     if (g_ddr_info.ddr_base && phys >= g_ddr_info.ddr_base &&
         (uint64_t)len <= g_ddr_info.ddr_size &&
         phys - g_ddr_info.ddr_base <= g_ddr_info.ddr_size - (uint64_t)len) {
+        if (jobd_force_pread_enabled()) {
+            goto pread_fallback;
+        }
         uint64_t ddr_off = phys - g_ddr_info.ddr_base;
         if (g_shared_ddr_full_map_valid &&
             ddr_off <= (uint64_t)g_shared_ddr_full_map.len &&
@@ -1180,6 +1288,11 @@ pread_fallback:
     if (!phys_to_fd_offset(phys, len, &fd_off)) {
         return -1;
     }
+    io_fd = fd_for_shared_ddr_io(fd, phys, len);
+    if (phys_is_shared_ddr(phys, len)) {
+        alt_fd_off = phys - g_ddr_info.ddr_base;
+        have_alt_fd_off = alt_fd_off != fd_off;
+    }
 
     buf = (uint8_t *)malloc(len);
     if (!buf) {
@@ -1188,8 +1301,15 @@ pread_fallback:
     while (done < len) {
         size_t want = len - done;
         if (want > chunk) want = chunk;
-        ssize_t got = pread(fd, buf + done, want, (off_t)(fd_off + done));
+        ssize_t got = pread(io_fd, buf + done, want, (off_t)(fd_off + done));
         if (got <= 0) {
+            if (have_alt_fd_off && !tried_alt_fd_off) {
+                tried_alt_fd_off = true;
+                fd_off = alt_fd_off;
+                done = 0;
+                memset(buf, 0, len);
+                continue;
+            }
             free(buf);
             return read_phys_mmap_copy(fd, phys, len, out);
         }
@@ -1200,8 +1320,35 @@ pread_fallback:
     return 0;
 }
 
+static int write_phys_copy_pwrite_only(int fd, uint64_t phys, const void *src, size_t len) {
+    uint64_t fd_off = 0;
+    int io_fd;
+    const uint8_t *buf = (const uint8_t *)src;
+    size_t done = 0;
+    size_t chunk = jobd_helper_io_chunk_bytes();
+
+    if (!src || len == 0 || !phys_to_fd_offset(phys, len, &fd_off)) {
+        return -1;
+    }
+    io_fd = fd_for_shared_ddr_io(fd, phys, len);
+
+    __sync_synchronize();
+    while (done < len) {
+        size_t want = len - done;
+        if (want > chunk) want = chunk;
+        ssize_t put = pwrite(io_fd, buf + done, want, (off_t)(fd_off + done));
+        if (put <= 0) {
+            return -1;
+        }
+        done += (size_t)put;
+    }
+    __sync_synchronize();
+    return 0;
+}
+
 static int write_phys_copy(int fd, uint64_t phys, const void *src, size_t len) {
     uint64_t fd_off = 0;
+    int io_fd;
     const uint8_t *buf = (const uint8_t *)src;
     size_t done = 0;
     size_t chunk = jobd_helper_io_chunk_bytes();
@@ -1231,12 +1378,13 @@ static int write_phys_copy(int fd, uint64_t phys, const void *src, size_t len) {
     if (!phys_to_fd_offset(phys, len, &fd_off)) {
         return -1;
     }
+    io_fd = fd_for_shared_ddr_io(fd, phys, len);
 
     __sync_synchronize();
     while (done < len) {
         size_t want = len - done;
         if (want > chunk) want = chunk;
-        ssize_t put = pwrite(fd, buf + done, want, (off_t)(fd_off + done));
+        ssize_t put = pwrite(io_fd, buf + done, want, (off_t)(fd_off + done));
         if (put <= 0) {
             return -1;
         }
@@ -1450,6 +1598,7 @@ static int arg_slot_for_job(uint32_t job_id) {
     case HETGPU_PACC_JOB_SOFTMAX: return 1;
     case HETGPU_PACC_JOB_RMSNORM: return 2;
     case HETGPU_PACC_JOB_ALLREDUCE: return 3;
+    case HETGPU_PACC_JOB_MMVF: return 4;
     default: return -1;
     }
 }
@@ -2932,12 +3081,6 @@ static int load_kernel_image(const uint8_t *elf, size_t elf_len,
     return 0;
 }
 
-struct PaccUint3 {
-    uint32_t x;
-    uint32_t y;
-    uint32_t z;
-};
-
 static struct PaccUint3 kernel_arg_uint3(const uint64_t *args,
                                          const struct PaccJobImage *job,
                                          size_t index) {
@@ -3752,6 +3895,157 @@ static int invoke_kernel_mmvf_native(const char *symbol,
               symbol, status, monotonic_us() - t0);
     free(local_x);
     free(local_y);
+    return status;
+}
+
+static int run_mmvf_ctx(struct MmvfNativeCtx *ctx,
+                        uint64_t x_bytes,
+                        uint64_t y_bytes,
+                        const char *label) {
+    uint64_t t0 = monotonic_us();
+    void *local_x = NULL;
+    float *local_y = NULL;
+
+    if (!ctx || !ctx->x || !ctx->y || !ctx->dst || ctx->ids) return 0xffff5001;
+    if (ctx->ncols2 <= 0) return 0;
+    if (ctx->ncols_dst == 0 || ctx->ncols_dst > 8) return 0xffff5002;
+    if (ctx->x_type == PACC_MMVF_F16) {
+        pacc_prepare_f16_table();
+    } else if (ctx->x_type != PACC_MMVF_F32) {
+        return 0xffff5003;
+    }
+
+    if (ctx->x_type == PACC_MMVF_F16 && ctx->ncols_dst == 1 && x_bytes > 0 && x_bytes <= (512ULL << 20)) {
+        local_x = malloc((size_t)x_bytes);
+        if (local_x) {
+            memcpy(local_x, ctx->x, (size_t)x_bytes);
+            ctx->x = local_x;
+        }
+    }
+    if (y_bytes > 0 && y_bytes <= (16ULL << 20)) {
+        local_y = (float *)malloc((size_t)y_bytes);
+        if (local_y) {
+            memcpy(local_y, ctx->y, (size_t)y_bytes);
+            ctx->y = local_y;
+        }
+    }
+
+    uint64_t work_items = (uint64_t)pacc_nonzero_dim(ctx->grid_x) *
+                          pacc_nonzero_dim(ctx->grid_y) *
+                          pacc_nonzero_dim(ctx->grid_z);
+    unsigned workers = kernel_worker_threads(work_items);
+    trace_msg("native mmvf direct %s work=%" PRIu64 " ncols2=%d ncols_dst=%u workers=%u",
+              label ? label : "MMVF", work_items, ctx->ncols2, ctx->ncols_dst, workers);
+
+    if (workers <= 1 || work_items <= 1) {
+        struct MmvfNativeWorker worker = {
+            .ctx = ctx,
+            .begin = 0,
+            .end = work_items,
+            .status = 0,
+        };
+        mmvf_native_worker_main(&worker);
+        int worker_status = worker.status;
+        trace_msg("native mmvf direct done %s status=%d elapsed_us=%" PRIu64,
+                  label ? label : "MMVF", worker_status, monotonic_us() - t0);
+        free(local_x);
+        free(local_y);
+        return worker_status;
+    }
+
+    pthread_t threads[PACC_KERNEL_MAX_THREADS];
+    struct MmvfNativeWorker worker[PACC_KERNEL_MAX_THREADS];
+    unsigned created = 0;
+    uint64_t chunk = (work_items + workers - 1u) / workers;
+    memset(worker, 0, sizeof(worker));
+    for (unsigned i = 0; i < workers; i++) {
+        uint64_t begin = (uint64_t)i * chunk;
+        uint64_t end = begin + chunk;
+        if (begin >= work_items) break;
+        if (end > work_items) end = work_items;
+        worker[i].ctx = ctx;
+        worker[i].begin = begin;
+        worker[i].end = end;
+        worker[i].status = -1;
+        if (pthread_create(&threads[i], NULL, mmvf_native_worker_main, &worker[i]) != 0) {
+            log_msg("native mmvf direct failed to create worker %u", i);
+            for (unsigned j = 0; j < created; j++) {
+                pthread_join(threads[j], NULL);
+            }
+            free(local_x);
+            free(local_y);
+            return -1;
+        }
+        created++;
+    }
+
+    int status = 0;
+    for (unsigned i = 0; i < created; i++) {
+        pthread_join(threads[i], NULL);
+        if (worker[i].status != 0 && status == 0) {
+            status = worker[i].status;
+        }
+    }
+    trace_msg("native mmvf direct done %s status=%d elapsed_us=%" PRIu64,
+              label ? label : "MMVF", status, monotonic_us() - t0);
+    free(local_x);
+    free(local_y);
+    return status;
+}
+
+static int run_mmvf(int fd, const struct MmvfJob *job) {
+    if (!job || !job->x_addr || !job->y_addr || !job->dst_addr ||
+        !job->grid_x || !job->grid_y || !job->grid_z ||
+        !job->x_bytes || !job->y_bytes || !job->dst_bytes) {
+        return 0xffff5001;
+    }
+    if (job->ids_addr) {
+        return 0xffff5004;
+    }
+
+    struct Map mx = {0}, my = {0}, md = {0};
+    if (map_phys(fd, job->x_addr, (size_t)job->x_bytes, &mx) ||
+        map_phys(fd, job->y_addr, (size_t)job->y_bytes, &my) ||
+        map_phys(fd, job->dst_addr, (size_t)job->dst_bytes, &md)) {
+        unmap_phys(&mx);
+        unmap_phys(&my);
+        unmap_phys(&md);
+        return 0xffff5005;
+    }
+
+    struct MmvfNativeCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.x = mx.ptr;
+    ctx.y = (const float *)my.ptr;
+    ctx.ids = NULL;
+    ctx.dst = (float *)md.ptr;
+    ctx.ncols2 = job->ncols2;
+    ctx.nchannels_y = job->nchannels_y;
+    ctx.stride_row = job->stride_row;
+    ctx.stride_col_y2 = job->stride_col_y2;
+    ctx.stride_col_dst = job->stride_col_dst;
+    ctx.channel_ratio = job->channel_ratio;
+    ctx.stride_channel_x = job->stride_channel_x;
+    ctx.stride_channel_y = job->stride_channel_y;
+    ctx.stride_channel_dst = job->stride_channel_dst;
+    ctx.sample_ratio = job->sample_ratio;
+    ctx.stride_sample_x = job->stride_sample_x;
+    ctx.stride_sample_y = job->stride_sample_y;
+    ctx.stride_sample_dst = job->stride_sample_dst;
+    ctx.ids_stride = job->ids_stride;
+    ctx.grid_x = job->grid_x;
+    ctx.grid_y = job->grid_y;
+    ctx.grid_z = job->grid_z;
+    ctx.ncols_dst = job->ncols_dst;
+    ctx.x_type = (enum PaccMmvfXType)job->x_type;
+
+    int status = run_mmvf_ctx(&ctx, job->x_bytes, job->y_bytes, "MMVF");
+    if (status == 0) {
+        msync(md.base, md.map_len, MS_SYNC);
+    }
+    unmap_phys(&mx);
+    unmap_phys(&my);
+    unmap_phys(&md);
     return status;
 }
 
@@ -5314,7 +5608,7 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
     return 0;
 }
 
-static void *arg_payload(volatile struct Doorbell *ctl, uint32_t job_id, uint64_t seq, size_t want) {
+static void *arg_payload_inner(volatile struct Doorbell *ctl, uint32_t job_id, uint64_t seq, size_t want, bool noisy) {
     int slot = arg_slot_for_job(job_id);
     if (slot < 0) return NULL;
     char *base = (char *)ctl;
@@ -5323,15 +5617,21 @@ static void *arg_payload(volatile struct Doorbell *ctl, uint32_t job_id, uint64_
                                           (size_t)slot * HETGPU_PACC_ARG_SLOT_BYTES);
     if (h->magic != HETGPU_PACC_JOB_MAGIC || h->version != HETGPU_PACC_JOB_VERSION ||
         h->job_id != job_id || h->seq != seq || h->arg_len < want) {
-        trace_msg("arg_payload mismatch: job_id=%u/%s seq=%" PRIu64 " slot=%d magic=0x%" PRIx64 " ver=%u hdr_job=%u hdr_seq=%" PRIu64 " arg_len=%" PRIu64 " want=%zu",
-                  job_id, job_name(job_id), seq, slot, h->magic, h->version,
-                  h->job_id, h->seq, h->arg_len, want);
+        if (noisy) {
+            trace_msg("arg_payload mismatch: job_id=%u/%s seq=%" PRIu64 " slot=%d magic=0x%" PRIx64 " ver=%u hdr_job=%u hdr_seq=%" PRIu64 " arg_len=%" PRIu64 " want=%zu",
+                      job_id, job_name(job_id), seq, slot, h->magic, h->version,
+                      h->job_id, h->seq, h->arg_len, want);
+        }
         return NULL;
     }
     return (void *)((char *)h + sizeof(*h));
 }
 
-static int arg_payload_copy(int fd, uint32_t job_id, uint64_t seq, size_t want, void *out) {
+static void *arg_payload(volatile struct Doorbell *ctl, uint32_t job_id, uint64_t seq, size_t want) {
+    return arg_payload_inner(ctl, job_id, seq, want, true);
+}
+
+static int arg_payload_copy_inner(int fd, uint32_t job_id, uint64_t seq, size_t want, void *out, bool noisy) {
     int slot = arg_slot_for_job(job_id);
     uint64_t slot_off;
     uint8_t *slot_bytes = NULL;
@@ -5346,9 +5646,11 @@ static int arg_payload_copy(int fd, uint32_t job_id, uint64_t seq, size_t want, 
                        shared_ddr_control_phys(slot_off, HETGPU_PACC_ARG_SLOT_BYTES),
                        HETGPU_PACC_ARG_SLOT_BYTES,
                        &slot_bytes) != 0) {
-        trace_msg("arg_payload_copy read failed: job_id=%u/%s seq=%" PRIu64
-                  " slot=%d off=0x%" PRIx64,
-                  job_id, job_name(job_id), seq, slot, slot_off);
+        if (noisy) {
+            trace_msg("arg_payload_copy read failed: job_id=%u/%s seq=%" PRIu64
+                      " slot=%d off=0x%" PRIx64,
+                      job_id, job_name(job_id), seq, slot, slot_off);
+        }
         return -1;
     }
 
@@ -5358,11 +5660,13 @@ static int arg_payload_copy(int fd, uint32_t job_id, uint64_t seq, size_t want, 
         header.job_id != job_id ||
         header.seq != seq ||
         header.arg_len < want) {
-        trace_msg("arg_payload_copy mismatch: job_id=%u/%s seq=%" PRIu64
-                  " slot=%d magic=0x%" PRIx64 " ver=%u hdr_job=%u"
-                  " hdr_seq=%" PRIu64 " arg_len=%" PRIu64 " want=%zu",
-                  job_id, job_name(job_id), seq, slot, header.magic,
-                  header.version, header.job_id, header.seq, header.arg_len, want);
+        if (noisy) {
+            trace_msg("arg_payload_copy mismatch: job_id=%u/%s seq=%" PRIu64
+                      " slot=%d magic=0x%" PRIx64 " ver=%u hdr_job=%u"
+                      " hdr_seq=%" PRIu64 " arg_len=%" PRIu64 " want=%zu",
+                      job_id, job_name(job_id), seq, slot, header.magic,
+                      header.version, header.job_id, header.seq, header.arg_len, want);
+        }
         free(slot_bytes);
         return -1;
     }
@@ -5372,19 +5676,68 @@ static int arg_payload_copy(int fd, uint32_t job_id, uint64_t seq, size_t want, 
     return 0;
 }
 
-static bool refresh_runtime_table(volatile struct Doorbell *ctl, struct PreloadedJobs *jobs, uint64_t *last_table_seq) {
-    volatile struct RuntimeJobTable *table =
-        (volatile struct RuntimeJobTable *)((volatile char *)ctl + HETGPU_PACC_RUNTIME_TABLE_OFF);
-    if (table->magic != HETGPU_PACC_RUNTIME_TABLE_MAGIC ||
-        table->version != HETGPU_PACC_RUNTIME_TABLE_VERSION ||
-        table->seq == 0 ||
-        table->seq == *last_table_seq) {
-        return false;
+static int arg_payload_copy(int fd, uint32_t job_id, uint64_t seq, size_t want, void *out) {
+    return arg_payload_copy_inner(fd, job_id, seq, want, out, true);
+}
+
+static int arg_payload_copy_wait(int fd, volatile struct Doorbell *ctl, uint32_t job_id, uint64_t seq, size_t want, void *out) {
+    uint64_t start = monotonic_us();
+    uint64_t timeout = jobd_arg_wait_us();
+    uint64_t attempts = 0;
+
+    while (timeout == 0 || monotonic_us() - start < timeout) {
+        if (arg_payload_copy_inner(fd, job_id, seq, want, out, false) == 0) {
+            if (attempts != 0) {
+                trace_msg("arg_payload_copy_wait matched: job_id=%u/%s seq=%" PRIu64
+                          " attempts=%" PRIu64 " elapsed_us=%" PRIu64,
+                          job_id, job_name(job_id), seq, attempts, monotonic_us() - start);
+            }
+            return 0;
+        }
+
+        if (ctl) {
+            const void *dyn = arg_payload_inner(ctl, job_id, seq, want, false);
+            if (dyn) {
+                memcpy(out, dyn, want);
+                if (attempts != 0) {
+                    trace_msg("arg_payload_copy_wait matched mapped control: job_id=%u/%s seq=%" PRIu64
+                              " attempts=%" PRIu64 " elapsed_us=%" PRIu64,
+                              job_id, job_name(job_id), seq, attempts, monotonic_us() - start);
+                }
+                return 0;
+            }
+        }
+
+        attempts++;
+        sleep_us(1000);
     }
 
+    trace_msg("arg_payload_copy_wait timed out: job_id=%u/%s seq=%" PRIu64
+              " attempts=%" PRIu64 " elapsed_us=%" PRIu64,
+              job_id, job_name(job_id), seq, attempts, monotonic_us() - start);
+    return arg_payload_copy(fd, job_id, seq, want, out);
+}
+
+static bool refresh_runtime_table(int fd, volatile struct Doorbell *ctl, struct PreloadedJobs *jobs, uint64_t *last_table_seq) {
     struct RuntimeJobTable local;
-    memcpy(&local, (const void *)table, sizeof(local));
-    __sync_synchronize();
+    uint8_t *table_bytes = NULL;
+    bool have_copy = false;
+
+    if (read_phys_copy(fd,
+                       shared_ddr_control_phys(HETGPU_PACC_RUNTIME_TABLE_OFF, sizeof(local)),
+                       sizeof(local),
+                       &table_bytes) == 0) {
+        memcpy(&local, table_bytes, sizeof(local));
+        free(table_bytes);
+        have_copy = true;
+    } else {
+        volatile struct RuntimeJobTable *table =
+            (volatile struct RuntimeJobTable *)((volatile char *)ctl + HETGPU_PACC_RUNTIME_TABLE_OFF);
+        memcpy(&local, (const void *)table, sizeof(local));
+        __sync_synchronize();
+        trace_msg("runtime table helper read failed; using mapped control window");
+    }
+
     if (local.magic != HETGPU_PACC_RUNTIME_TABLE_MAGIC ||
         local.version != HETGPU_PACC_RUNTIME_TABLE_VERSION ||
         local.seq == 0 ||
@@ -5392,30 +5745,41 @@ static bool refresh_runtime_table(volatile struct Doorbell *ctl, struct Preloade
         return false;
     }
 
+    jobs->have_gemm = local.have_gemm != 0;
+    jobs->have_softmax = local.have_softmax != 0;
+    jobs->have_rmsnorm = local.have_rmsnorm != 0;
+    jobs->have_allreduce = local.have_allreduce != 0;
+    jobs->have_mmvf = local.have_mmvf != 0;
     if (local.have_gemm) {
         jobs->gemm = local.gemm;
-        jobs->have_gemm = true;
     }
     if (local.have_softmax) {
         jobs->softmax = local.softmax;
-        jobs->have_softmax = true;
     }
     if (local.have_rmsnorm) {
         jobs->rmsnorm = local.rmsnorm;
-        jobs->have_rmsnorm = true;
     }
     if (local.have_allreduce) {
         jobs->allreduce = local.allreduce;
-        jobs->have_allreduce = true;
+    }
+    if (local.have_mmvf) {
+        jobs->mmvf = local.mmvf;
     }
     *last_table_seq = local.seq;
-    trace_msg("runtime table seq=%" PRIu64 " have_gemm=%u have_softmax=%u have_rmsnorm=%u have_allreduce=%u",
-              local.seq, local.have_gemm, local.have_softmax, local.have_rmsnorm, local.have_allreduce);
+    trace_msg("runtime table seq=%" PRIu64 " have_gemm=%u have_softmax=%u have_rmsnorm=%u have_allreduce=%u have_mmvf=%u source=%s",
+              local.seq, local.have_gemm, local.have_softmax, local.have_rmsnorm,
+              local.have_allreduce, local.have_mmvf, have_copy ? "helper" : "mapped");
     if (local.have_gemm) {
         trace_msg("runtime table GEMM: m=%" PRIu64 " n=%" PRIu64 " k=%" PRIu64 " atype=%u btype=%u ctype=%u a=0x%" PRIx64 " b=0x%" PRIx64 " c=0x%" PRIx64,
                   local.gemm.m, local.gemm.n, local.gemm.k,
                   local.gemm.atype, local.gemm.btype, local.gemm.ctype,
                   local.gemm.a_addr, local.gemm.b_addr, local.gemm.c_addr);
+    }
+    if (local.have_mmvf) {
+        trace_msg("runtime table MMVF: grid=%ux%ux%u ncols2=%d ncols_dst=%u x_type=%u x=0x%" PRIx64 " y=0x%" PRIx64 " dst=0x%" PRIx64,
+                  local.mmvf.grid_x, local.mmvf.grid_y, local.mmvf.grid_z,
+                  local.mmvf.ncols2, local.mmvf.ncols_dst, local.mmvf.x_type,
+                  local.mmvf.x_addr, local.mmvf.y_addr, local.mmvf.dst_addr);
     }
     return true;
 }
@@ -5427,7 +5791,7 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
     if (job_id == HETGPU_PACC_JOB_GEMM) {
         struct GemmJob copied;
         const struct GemmJob *job = jobs->have_gemm ? &jobs->gemm : NULL;
-        if (arg_payload_copy(fd, job_id, seq, sizeof(copied), &copied) == 0) {
+        if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
             job = &copied;
         } else {
             const struct GemmJob *dyn = arg_payload(ctl, job_id, seq, sizeof(struct GemmJob));
@@ -5442,7 +5806,7 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
     if (job_id == HETGPU_PACC_JOB_SOFTMAX) {
         struct SoftmaxJob copied;
         const struct SoftmaxJob *job = jobs->have_softmax ? &jobs->softmax : NULL;
-        if (arg_payload_copy(fd, job_id, seq, sizeof(copied), &copied) == 0) {
+        if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
             job = &copied;
         } else {
             const struct SoftmaxJob *dyn = arg_payload(ctl, job_id, seq, sizeof(struct SoftmaxJob));
@@ -5457,7 +5821,7 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
     if (job_id == HETGPU_PACC_JOB_RMSNORM) {
         struct RmsNormJob copied;
         const struct RmsNormJob *job = jobs->have_rmsnorm ? &jobs->rmsnorm : NULL;
-        if (arg_payload_copy(fd, job_id, seq, sizeof(copied), &copied) == 0) {
+        if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
             job = &copied;
         } else {
             const struct RmsNormJob *dyn = arg_payload(ctl, job_id, seq, sizeof(struct RmsNormJob));
@@ -5472,7 +5836,7 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
     if (job_id == HETGPU_PACC_JOB_ALLREDUCE) {
         struct AllReduceJob copied;
         const struct AllReduceJob *job = jobs->have_allreduce ? &jobs->allreduce : NULL;
-        if (arg_payload_copy(fd, job_id, seq, sizeof(copied), &copied) == 0) {
+        if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
             job = &copied;
         } else {
             const struct AllReduceJob *dyn = arg_payload(ctl, job_id, seq, sizeof(struct AllReduceJob));
@@ -5483,6 +5847,22 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
                       seq, job->count, job->nranks, job->dtype, job->reduce_op);
         }
         return job ? run_allreduce(fd, job) : (int)0xffff0401U;
+    }
+    if (job_id == HETGPU_PACC_JOB_MMVF) {
+        struct MmvfJob copied;
+        const struct MmvfJob *job = jobs->have_mmvf ? &jobs->mmvf : NULL;
+        if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
+            job = &copied;
+        } else {
+            const struct MmvfJob *dyn = arg_payload(ctl, job_id, seq, sizeof(struct MmvfJob));
+            if (dyn) job = dyn;
+        }
+        if (job) {
+            trace_msg("dispatch MMVF: seq=%" PRIu64 " grid=%ux%ux%u ncols2=%d ncols_dst=%u x_type=%u",
+                      seq, job->grid_x, job->grid_y, job->grid_z,
+                      job->ncols2, job->ncols_dst, job->x_type);
+        }
+        return job ? run_mmvf(fd, job) : (int)0xffff0501U;
     }
     return 0xffff00ff;
 }
@@ -5566,7 +5946,7 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
     trace_msg("new doorbell: job_id=%u/%s seq=%" PRIu64,
               job_id, job_name(job_id), *last_seq);
     mirror_host_status(fd, job_id, *last_seq, 0x5110);
-    refresh_runtime_table(ctl, jobs, last_table_seq);
+    refresh_runtime_table(fd, ctl, jobs, last_table_seq);
     mirror_host_status(fd, job_id, *last_seq, 0x5111);
     trace_msg("dispatch enter: job_id=%u/%s seq=%" PRIu64,
               job_id, job_name(job_id), *last_seq);
@@ -5700,6 +6080,24 @@ static void pid1_bootstrap_devices(void) {
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status) {
     struct Map map = {0};
     uint64_t phys = shared_ddr_control_phys(HETGPU_PACC_COMPLETION_OFF, sizeof(struct HostStatus));
+    struct HostStatus status_msg = {
+        .magic = HETGPU_PACC_JOB_MAGIC,
+        .version = HETGPU_PACC_JOB_VERSION,
+        .job_id = job_id,
+        .status = status,
+        .seq = seq,
+    };
+
+    if (jobd_status_pwrite_enabled()) {
+        if (write_phys_copy_pwrite_only(fd, phys, &status_msg, sizeof(status_msg)) == 0) {
+            trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+                      job_id, job_name(job_id), seq, status);
+            return;
+        }
+        trace_msg("mirror_host_status pwrite failed for phys=0x%" PRIx64 ": %s; falling back to mmap",
+                  phys, strerror(errno));
+    }
+
     if (g_control_window &&
         HETGPU_PACC_COMPLETION_OFF <= HETGPU_PACC_CONTROL_BYTES &&
         sizeof(struct HostStatus) <= HETGPU_PACC_CONTROL_BYTES - HETGPU_PACC_COMPLETION_OFF) {
@@ -5783,6 +6181,7 @@ int main(int argc, char **argv) {
         log_msg("open %s failed: %s", mbox_path, strerror(errno));
         return 1;
     }
+    g_mbox_fd = mbox_fd;
 
     log_msg("started strict=%d config=%s mbox=%s",
             strict ? 1 : 0, config, mbox_path);
