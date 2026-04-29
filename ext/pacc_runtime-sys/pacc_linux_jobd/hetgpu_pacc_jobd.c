@@ -34,6 +34,7 @@
 #endif
 
 #define HETGPU_PACC_JOB_MAGIC 0x4847505550414343ULL
+#define HETGPU_PACC_BEACON_MAGIC 0x4847505542434e31ULL
 #define HETGPU_PACC_JOB_VERSION 1U
 #define PACC_JOB_MAGIC 0x504143434a4f4231ULL
 #define PACC_JOB_VERSION 1U
@@ -67,9 +68,10 @@
 #define AP2PACC_MBOX_PHYS 0x20000000ULL
 #define PACC2AP_MBOX_PHYS 0x20002000ULL
 #define HETGPU_PACC_DEFAULT_SHARED_DDR_BYTES 0x01000000ULL
-#define HETGPU_PACC_SHARED_DDR_USER_OFF 0ULL
-#define HETGPU_PACC_SHARED_DDR_FD_USER_OFF 0ULL
+#define HETGPU_PACC_SHARED_DDR_USER_OFF 0x00100000ULL
+#define HETGPU_PACC_SHARED_DDR_FD_USER_OFF 0x0ULL
 #define HETGPU_PACC_COMPLETION_OFF 0x1f20ULL
+#define HETGPU_PACC_BEACON_OFF 0x1f40ULL
 #define PACC_DTYPE_INT8 0U
 #define PACC_DTYPE_UINT8 1U
 #define PACC_DTYPE_INT32 2U
@@ -125,6 +127,15 @@ struct HostStatus {
     uint32_t version;
     uint32_t job_id;
     uint32_t status;
+    uint64_t seq;
+};
+
+struct JobdBeacon {
+    uint64_t magic;
+    uint32_t version;
+    uint32_t job_id;
+    uint32_t phase;
+    uint32_t detail;
     uint64_t seq;
 };
 
@@ -384,6 +395,8 @@ static uint64_t g_shared_ddr_mmap_user_off;
 static uint64_t g_shared_ddr_fd_user_off;
 static struct Map g_shared_ddr_full_map;
 static bool g_shared_ddr_full_map_valid;
+static struct Map g_kernel_slot_map;
+static bool g_kernel_slot_map_valid;
 static volatile uint8_t *g_control_window;
 static void *g_control_map_base;
 static size_t g_control_map_len;
@@ -392,8 +405,14 @@ static uint64_t g_current_kernel_seq = 0;
 static uint32_t g_kernel_load_error = 0;
 static uint32_t g_kernel_arg_error = 0;
 static uint32_t g_kernel_parse_error = 0;
+static uint8_t g_control_snapshot[HETGPU_PACC_CONTROL_BYTES];
 
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
+static bool mirror_boot_marker_all_slots_mbox_mmap(int fd, uint32_t status);
+static bool mirror_host_status_mbox_mmap(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
+static void mirror_progress_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
+static void write_jobd_beacon(int fd, uint32_t job_id, uint64_t seq, uint32_t phase, uint32_t detail);
+static int write_phys_copy_pwrite_only(int fd, uint64_t phys, const void *src, size_t len);
 static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out);
 static void unmap_phys(struct Map *m);
 static void sleep_us(uint64_t usec);
@@ -424,7 +443,11 @@ static bool jobd_kmsg_enabled(void) {
 }
 
 static bool jobd_mbox_poll_enabled(void) {
-    return env_flag_true(getenv("HETGPU_PACC_JOBD_MBOX_POLL"));
+    const char *value = getenv("HETGPU_PACC_JOBD_MBOX_POLL");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return true;
 }
 
 static bool jobd_initial_mbox_poll_enabled(void) {
@@ -432,7 +455,7 @@ static bool jobd_initial_mbox_poll_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
-    return jobd_mbox_poll_enabled();
+    return true;
 }
 
 static bool jobd_force_elf_enabled(void) {
@@ -440,8 +463,20 @@ static bool jobd_force_elf_enabled(void) {
            env_flag_true(getenv("HETGPU_PACC_JOBD_DISABLE_NATIVE"));
 }
 
+static bool jobd_clear_stale_control_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_CLEAR_STALE_CONTROL");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return true;
+}
+
 static bool jobd_full_ddr_map_enabled(void) {
-    return env_flag_true(getenv("HETGPU_PACC_JOBD_FULL_DDR_MAP"));
+    const char *value = getenv("HETGPU_PACC_JOBD_FULL_DDR_MAP");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return false;
 }
 
 static uint64_t jobd_full_ddr_map_bytes(void) {
@@ -457,20 +492,85 @@ static uint64_t jobd_full_ddr_map_bytes(void) {
     return default_window;
 }
 
-static bool jobd_force_pread_enabled(void) {
-    return env_flag_true(getenv("HETGPU_PACC_JOBD_FORCE_PREAD"));
+static uint64_t jobd_kernel_slot_map_bytes(void) {
+    return parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP_BYTES",
+                                 0x04000000ULL);
 }
 
-static bool jobd_status_pwrite_enabled(void) {
-    const char *value = getenv("HETGPU_PACC_JOBD_STATUS_PWRITE");
+static uint64_t jobd_kernel_slot_map_off(uint64_t map_bytes) {
+    uint64_t requested = parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP_OFF",
+                                               UINT64_MAX);
+    if (requested != UINT64_MAX) {
+        return requested;
+    }
+    if (g_ddr_info.ddr_size > map_bytes) {
+        return g_ddr_info.ddr_size - map_bytes;
+    }
+    return 0;
+}
+
+static bool jobd_kernel_slot_map_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP");
     if (!value || !*value) {
-        return false;
+        return true;
     }
     return env_flag_true(value);
 }
 
+static bool jobd_force_pread_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_FORCE_PREAD");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return false;
+}
+
+static bool jobd_status_pwrite_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_STATUS_PWRITE");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    /*
+     * Current PACC-side /dev/mbox exposes poll/ioctl but not shared-DDR pwrite
+     * (EINVAL in practice).  The completion path is latency critical, so use
+     * the explicit shared-DDR mmap write by default and leave pwrite as an
+     * opt-in diagnostic path.
+     */
+    return false;
+}
+
+static bool jobd_status_control_window_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_STATUS_CONTROL_WINDOW");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    /*
+     * The control page is mapped for the long-running dispatcher.  Completion
+     * stores through that persistent mapping can remain invisible to the host
+     * without an explicit cache maintenance path, while short-lived mmap/pwrite
+     * writes are observed reliably.  Prefer the explicit write path by default.
+     */
+    return false;
+}
+
+static bool jobd_progress_status_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_PROGRESS_STATUS"));
+}
+
+static bool jobd_beacon_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_BEACON");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return false;
+}
+
+static bool jobd_static_config_fallback_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_STATIC_CONFIG_FALLBACK"));
+}
+
 static uint64_t jobd_arg_wait_us(void) {
-    return parse_env_u64_default("HETGPU_PACC_JOBD_ARG_WAIT_US", 120000000ULL);
+    return parse_env_u64_default("HETGPU_PACC_JOBD_ARG_WAIT_US", 1000000ULL);
 }
 
 static bool jobd_force_devmem_enabled(void) {
@@ -478,15 +578,51 @@ static bool jobd_force_devmem_enabled(void) {
 }
 
 static bool jobd_cbo_inval_enabled(void) {
-    return env_flag_true(getenv("HETGPU_PACC_JOBD_CBO_INVAL"));
+    const char *value = getenv("HETGPU_PACC_JOBD_CBO_INVAL");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return false;
 }
 
 static bool jobd_cbo_flush_enabled(void) {
-    return env_flag_true(getenv("HETGPU_PACC_JOBD_CBO_FLUSH"));
+    const char *value = getenv("HETGPU_PACC_JOBD_CBO_FLUSH");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return false;
+}
+
+static bool jobd_msync_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_MSYNC");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return true;
+}
+
+static bool jobd_rms_local_copy_enabled(void) {
+    const char *value = getenv("PACC_JOBD_RMS_LOCAL_COPY");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    value = getenv("HETGPU_PACC_JOBD_RMS_LOCAL_COPY");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return true;
 }
 
 static bool jobd_heartbeat_enabled(void) {
-    return env_flag_true(getenv("HETGPU_PACC_JOBD_HEARTBEAT"));
+    const char *value = getenv("HETGPU_PACC_JOBD_HEARTBEAT");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return false;
+}
+
+static bool jobd_boot_marker_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_BOOT_MARKER"));
 }
 
 static size_t jobd_helper_io_chunk_bytes(void) {
@@ -513,6 +649,14 @@ static void jobd_cbo_flush_line(const void *ptr) {
     __asm__ volatile(".insn i 15, 2, x0, %0, 2" :: "r"(ptr) : "memory");
 #else
     (void)ptr;
+#endif
+}
+
+static void jobd_io_fence(void) {
+#if defined(__riscv)
+    __asm__ volatile("fence iorw, iorw" ::: "memory");
+#else
+    __sync_synchronize();
 #endif
 }
 
@@ -563,7 +707,7 @@ static bool jobd_seed_current_jobs_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
-    return !jobd_initial_mbox_poll_enabled();
+    return false;
 }
 
 static bool jobd_claim_pacc_id_enabled(void) {
@@ -654,6 +798,14 @@ static int control_poll_timeout_ms(void) {
         return INT_MAX;
     }
     return (int)parsed;
+}
+
+static unsigned poll_irq_settle_us(void) {
+    uint64_t value = parse_env_u64_default("HETGPU_PACC_JOBD_POLL_IRQ_SETTLE_US", 1000);
+    if (value > UINT_MAX) {
+        return UINT_MAX;
+    }
+    return (unsigned)value;
 }
 
 static int idle_sleep_us(void) {
@@ -813,9 +965,11 @@ static bool read_shared_ddr_info_from_env_or_debugfs(struct pacc_zluda_ddr_info 
 static int notify_zluda_irq(int mbox_fd) {
     static bool warned_unsupported;
     struct pacc_zluda_ddr_info irq_info = g_ddr_info;
+    jobd_io_fence();
     int ret = ioctl(mbox_fd, PACC_IOC_ZLUDA_IRQ);
     int saved_errno;
     if (ret == 0) {
+        jobd_io_fence();
         return 0;
     }
 
@@ -823,6 +977,7 @@ static int notify_zluda_irq(int mbox_fd) {
     if (saved_errno == ENOTTY || saved_errno == EINVAL) {
         ret = ioctl(mbox_fd, PACC_IOC_ZLUDA_IRQ_WITH_DDR, &irq_info);
         if (ret == 0) {
+            jobd_io_fence();
             return 0;
         }
         saved_errno = errno;
@@ -840,9 +995,9 @@ static int notify_zluda_irq(int mbox_fd) {
     return -1;
 }
 
-static void wait_for_control_impl(int mbox_fd, bool required) {
+static bool wait_for_control_impl(int mbox_fd, bool required) {
     if (!required && !jobd_mbox_poll_enabled()) {
-        return;
+        return false;
     }
 
     for (;;) {
@@ -851,10 +1006,18 @@ static void wait_for_control_impl(int mbox_fd, bool required) {
         memset(&pfd, 0, sizeof(pfd));
         pfd.fd = mbox_fd;
         pfd.events = POLLIN;
+        jobd_io_fence();
         ret = poll(&pfd, 1, control_poll_timeout_ms());
+        jobd_io_fence();
         if (ret > 0) {
             if (pfd.revents & (POLLIN | POLLPRI)) {
-                return;
+                unsigned settle_us = poll_irq_settle_us();
+                jobd_io_fence();
+                if (settle_us != 0) {
+                    usleep(settle_us);
+                }
+                jobd_io_fence();
+                return true;
             }
             if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
                 log_msg("buggy: poll revents 0x%x", pfd.revents);
@@ -863,7 +1026,10 @@ static void wait_for_control_impl(int mbox_fd, bool required) {
             continue;
         }
         if (ret == 0) {
-            return;
+            if (required) {
+                continue;
+            }
+            return false;
         }
         if (errno == EINTR || errno == EAGAIN) {
             continue;
@@ -873,32 +1039,58 @@ static void wait_for_control_impl(int mbox_fd, bool required) {
     }
 }
 
-static void wait_for_control(int mbox_fd) {
-    wait_for_control_impl(mbox_fd, false);
+static bool wait_for_control(int mbox_fd) {
+    return wait_for_control_impl(mbox_fd, false);
 }
 
 static void wait_for_initial_control(int mbox_fd) {
     if (!jobd_initial_mbox_poll_enabled()) {
         return;
     }
-    wait_for_control_impl(mbox_fd, true);
+    (void)wait_for_control_impl(mbox_fd, true);
 }
 
 static void read_shared_ddr_info_from_mbox(int mbox_fd) {
     struct pacc_zluda_ddr_info info;
+    struct pacc_zluda_ddr_info fallback_info;
+    bool have_fallback;
     int ret;
     memset(&info, 0, sizeof(info));
-    if (read_shared_ddr_info_from_env_or_debugfs(&info)) {
+    memset(&fallback_info, 0, sizeof(fallback_info));
+    have_fallback = read_shared_ddr_info_from_env_or_debugfs(&fallback_info);
+
+    /*
+     * Always ask /dev/mbox first even when the firmware environment already
+     * carries the DDR base.  The PACC-side mailbox driver uses this ioctl to
+     * learn the shared-DDR window for its mmap path; skipping it leaves mmap
+     * returning ENXIO and pushes jobd onto stale /dev/mem mappings.
+     */
+    ret = ioctl(mbox_fd, PACC_IOC_ZLUDA_GET_DDR_BASE, &info);
+    if (ret == 0 && info.ddr_base &&
+        info.ddr_size >= HETGPU_PACC_CONTROL_BYTES) {
         g_ddr_info = info;
-        log_msg("shared ddr base 0x%" PRIx64 " size 0x%" PRIx64 " from env/debugfs",
+        log_msg("shared ddr base 0x%" PRIx64 " size 0x%" PRIx64 " from ioctl",
                 g_ddr_info.ddr_base, g_ddr_info.ddr_size);
+        if (have_fallback &&
+            (fallback_info.ddr_base != info.ddr_base ||
+             fallback_info.ddr_size != info.ddr_size)) {
+            log_msg("shared ddr env/debugfs mismatch base 0x%" PRIx64
+                    " size 0x%" PRIx64,
+                    fallback_info.ddr_base, fallback_info.ddr_size);
+        }
         return;
     }
-    ret = ioctl(mbox_fd, PACC_IOC_ZLUDA_GET_DDR_BASE, &info);
-    if (ret < 0) {
-        log_msg("failed to read shared ddr base/size: %d", errno);
-        exit(errno ? errno : EIO);
+
+    if (have_fallback) {
+        g_ddr_info = fallback_info;
+        log_msg("shared ddr base 0x%" PRIx64 " size 0x%" PRIx64
+                " from env/debugfs after ioctl failed/invalid: ret=%d errno=%d"
+                " ioctl_base=0x%" PRIx64 " ioctl_size=0x%" PRIx64,
+                g_ddr_info.ddr_base, g_ddr_info.ddr_size, ret, errno,
+                info.ddr_base, info.ddr_size);
+        return;
     }
+
     if (!info.ddr_base || info.ddr_size < HETGPU_PACC_CONTROL_BYTES) {
         log_msg("invalid shared ddr base 0x%" PRIx64 " size 0x%" PRIx64,
                 info.ddr_base, info.ddr_size);
@@ -950,7 +1142,9 @@ static bool claim_pacc_id_from_shared_ddr(int fd) {
         __sync_synchronize();
         if (__sync_bool_compare_and_swap(claim, 0ULL, claim_value)) {
             __sync_synchronize();
-            msync(map.base, map.map_len, MS_SYNC);
+            if (jobd_msync_enabled()) {
+                msync(map.base, map.map_len, MS_SYNC);
+            }
             unmap_phys(&map);
             g_pacc_id = slot;
             log_msg("pacc id %" PRIu64 " claimed from shared DDR slot %u",
@@ -1071,6 +1265,23 @@ static uint64_t hash_bytes_fnv64(const uint8_t *data, size_t len) {
 static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out) {
     uint64_t page = (uint64_t)g_page_size;
     uint64_t mmap_addr = phys;
+    if (g_kernel_slot_map_valid && g_kernel_slot_map.phys &&
+        phys >= g_kernel_slot_map.phys &&
+        (uint64_t)len <= (uint64_t)g_kernel_slot_map.len &&
+        phys - g_kernel_slot_map.phys <= (uint64_t)g_kernel_slot_map.len - (uint64_t)len) {
+        uintptr_t ptr = (uintptr_t)((char *)g_kernel_slot_map.ptr +
+                                    (phys - g_kernel_slot_map.phys));
+        uintptr_t sync_base = ptr & ~((uintptr_t)page - 1u);
+        size_t sync_off = (size_t)(ptr - sync_base);
+        out->base = (void *)sync_base;
+        out->map_len = ((sync_off + len + page - 1) / page) * page;
+        out->ptr = (void *)ptr;
+        out->borrowed = true;
+        out->fd = fd;
+        out->phys = phys;
+        out->len = len;
+        return 0;
+    }
     if (g_shared_ddr_full_map_valid && g_ddr_info.ddr_base &&
         phys >= g_ddr_info.ddr_base &&
         (uint64_t)len <= (uint64_t)g_shared_ddr_full_map.len &&
@@ -1143,12 +1354,14 @@ static int read_phys_mmap_copy(int fd, uint64_t phys, size_t len, uint8_t **out)
         return -1;
     }
     sync_map_for_cpu(&map);
+    jobd_io_fence();
     buf = (uint8_t *)malloc(len);
     if (!buf) {
         unmap_phys(&map);
         return -1;
     }
     memcpy(buf, map.ptr, len);
+    jobd_io_fence();
     unmap_phys(&map);
     *out = buf;
     return 0;
@@ -1178,6 +1391,48 @@ static bool phys_is_shared_ddr(uint64_t phys, size_t len) {
     uint64_t ddr_off = phys - g_ddr_info.ddr_base;
     return (uint64_t)len <= g_ddr_info.ddr_size &&
            ddr_off <= g_ddr_info.ddr_size - (uint64_t)len;
+}
+
+static bool phys_is_shared_ddr_control(uint64_t phys, size_t len) {
+    if (!phys_is_shared_ddr(phys, len)) {
+        return false;
+    }
+    uint64_t control_start = g_pacc_id * HETGPU_PACC_CONTROL_BYTES;
+    uint64_t ddr_off = phys - g_ddr_info.ddr_base;
+    return ddr_off >= control_start &&
+           ddr_off - control_start <= HETGPU_PACC_CONTROL_BYTES - (uint64_t)len;
+}
+
+static int read_control_window_copy(uint64_t phys, size_t len, uint8_t **out) {
+    uint64_t control_phys;
+    uint64_t off;
+    uint8_t *buf;
+
+    if (!out || !g_control_window || !phys_is_shared_ddr_control(phys, len)) {
+        return -1;
+    }
+    control_phys = g_ddr_info.ddr_base + g_pacc_id * HETGPU_PACC_CONTROL_BYTES;
+    off = phys - control_phys;
+    if (off > HETGPU_PACC_CONTROL_BYTES ||
+        (uint64_t)len > HETGPU_PACC_CONTROL_BYTES - off) {
+        return -1;
+    }
+    buf = (uint8_t *)malloc(len);
+    if (!buf) {
+        return -1;
+    }
+    jobd_io_fence();
+    if (jobd_msync_enabled() && g_control_map_base && g_control_map_len) {
+        (void)msync(g_control_map_base, g_control_map_len, MS_SYNC | MS_INVALIDATE);
+    }
+    jobd_invalidate_for_cpu((const void *)(g_control_window + off), len);
+    jobd_io_fence();
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = g_control_window[off + i];
+    }
+    jobd_io_fence();
+    *out = buf;
+    return 0;
 }
 
 static int fd_for_shared_ddr_io(int fallback_fd, uint64_t phys, size_t len) {
@@ -1245,6 +1500,10 @@ static int read_phys_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
         return -1;
     }
 
+    if (!jobd_force_pread_enabled() && read_control_window_copy(phys, len, out) == 0) {
+        return 0;
+    }
+
     if (g_ddr_info.ddr_base && phys >= g_ddr_info.ddr_base &&
         (uint64_t)len <= g_ddr_info.ddr_size &&
         phys - g_ddr_info.ddr_base <= g_ddr_info.ddr_size - (uint64_t)len) {
@@ -1255,9 +1514,10 @@ static int read_phys_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
         if (g_shared_ddr_full_map_valid &&
             ddr_off <= (uint64_t)g_shared_ddr_full_map.len &&
             (uint64_t)len <= (uint64_t)g_shared_ddr_full_map.len - ddr_off) {
+            jobd_io_fence();
             return read_phys_mmap_copy(fd, phys, len, out);
         }
-        if (g_map_uses_shared_ddr_offsets && !jobd_force_pread_enabled()) {
+        if (g_map_uses_shared_ddr_offsets) {
             uint64_t page = (uint64_t)g_page_size;
             uint64_t mmap_addr = g_shared_ddr_mmap_user_off + ddr_off;
             uint64_t base = mmap_addr & ~(page - 1);
@@ -1272,14 +1532,21 @@ static int read_phys_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
                 munmap(p, map_len);
                 return -1;
             }
-            if (msync(p, map_len, MS_SYNC | MS_INVALIDATE) != 0 && errno != EINVAL) {
+            if (jobd_msync_enabled() &&
+                msync(p, map_len, MS_SYNC | MS_INVALIDATE) != 0 && errno != EINVAL) {
                 trace_msg("shared DDR read invalidate failed: %s", strerror(errno));
             }
-            __sync_synchronize();
+            jobd_io_fence();
             jobd_invalidate_for_cpu((char *)p + off, len);
+            jobd_io_fence();
             memcpy(buf, (char *)p + off, len);
+            jobd_io_fence();
             munmap(p, map_len);
             *out = buf;
+            return 0;
+        }
+        if (read_phys_mmap_copy(fd, phys, len, out) == 0) {
+            jobd_io_fence();
             return 0;
         }
     }
@@ -1332,7 +1599,7 @@ static int write_phys_copy_pwrite_only(int fd, uint64_t phys, const void *src, s
     }
     io_fd = fd_for_shared_ddr_io(fd, phys, len);
 
-    __sync_synchronize();
+    jobd_io_fence();
     while (done < len) {
         size_t want = len - done;
         if (want > chunk) want = chunk;
@@ -1342,8 +1609,33 @@ static int write_phys_copy_pwrite_only(int fd, uint64_t phys, const void *src, s
         }
         done += (size_t)put;
     }
-    __sync_synchronize();
+    jobd_io_fence();
     return 0;
+}
+
+static void write_jobd_beacon(int fd, uint32_t job_id, uint64_t seq, uint32_t phase, uint32_t detail) {
+    struct JobdBeacon beacon = {
+        .magic = HETGPU_PACC_BEACON_MAGIC,
+        .version = HETGPU_PACC_JOB_VERSION,
+        .job_id = job_id,
+        .phase = phase,
+        .detail = detail,
+        .seq = seq,
+    };
+    uint64_t phys;
+
+    if (!jobd_beacon_enabled()) {
+        return;
+    }
+    phys = shared_ddr_control_phys(HETGPU_PACC_BEACON_OFF, sizeof(beacon));
+    jobd_io_fence();
+    if (write_phys_copy_pwrite_only(fd, phys, &beacon, sizeof(beacon)) != 0) {
+        trace_msg("write beacon failed: job_id=%u/%s seq=%" PRIu64
+                  " phase=0x%x detail=0x%x: %s",
+                  job_id, job_name(job_id), seq, phase, detail, strerror(errno));
+        return;
+    }
+    jobd_io_fence();
 }
 
 static int write_phys_copy(int fd, uint64_t phys, const void *src, size_t len) {
@@ -1361,11 +1653,15 @@ static int write_phys_copy(int fd, uint64_t phys, const void *src, size_t len) {
         (uint64_t)len <= g_ddr_info.ddr_size &&
         phys - g_ddr_info.ddr_base <= g_ddr_info.ddr_size - (uint64_t)len) {
         struct Map map = {0};
+        if (jobd_force_pread_enabled() && phys_is_shared_ddr_control(phys, len)) {
+            goto pwrite_fallback;
+        }
         if (map_phys(fd, phys, len, &map) == 0) {
             memcpy(map.ptr, src, len);
             __sync_synchronize();
             if (map.base && map.base != MAP_FAILED && map.map_len) {
-                if (msync(map.base, map.map_len, MS_SYNC) != 0 && errno != EINVAL) {
+                if (jobd_msync_enabled() &&
+                    msync(map.base, map.map_len, MS_SYNC) != 0 && errno != EINVAL) {
                     trace_msg("shared DDR msync write failed: %s", strerror(errno));
                 }
             }
@@ -1375,6 +1671,7 @@ static int write_phys_copy(int fd, uint64_t phys, const void *src, size_t len) {
         }
     }
 
+pwrite_fallback:
     if (!phys_to_fd_offset(phys, len, &fd_off)) {
         return -1;
     }
@@ -1421,12 +1718,72 @@ static int flush_map_to_phys(struct Map *m) {
     return write_phys_copy(m->fd, m->phys, m->ptr, m->len);
 }
 
+static void clear_stale_control_region(int fd, struct Map *control_map) {
+    uint8_t zeros[HETGPU_PACC_CONTROL_BYTES];
+    uint64_t phys;
+
+    if (!jobd_clear_stale_control_enabled() || !g_ddr_info.ddr_base) {
+        return;
+    }
+
+    memset(zeros, 0, sizeof(zeros));
+    phys = shared_ddr_control_phys(0, sizeof(zeros));
+    jobd_io_fence();
+    if (write_phys_copy_pwrite_only(fd, phys, zeros, sizeof(zeros)) != 0 &&
+        write_phys_copy(fd, phys, zeros, sizeof(zeros)) != 0) {
+        log_msg("clear stale control failed: phys=0x%" PRIx64 " len=0x%zx: %s",
+                phys, sizeof(zeros), strerror(errno));
+        return;
+    }
+    if (control_map && control_map->ptr && control_map->len >= sizeof(zeros)) {
+        memset(control_map->ptr, 0, sizeof(zeros));
+        if (control_map->base && control_map->base != MAP_FAILED && control_map->map_len) {
+            if (jobd_msync_enabled() &&
+                msync(control_map->base, control_map->map_len, MS_SYNC | MS_INVALIDATE) != 0 &&
+                errno != EINVAL) {
+                trace_msg("clear stale control msync failed: %s", strerror(errno));
+            }
+        }
+        jobd_flush_for_device(control_map->ptr, sizeof(zeros));
+    }
+    jobd_io_fence();
+    log_msg("cleared stale shared-DDR control slot: phys=0x%" PRIx64
+            " len=0x%zx", phys, sizeof(zeros));
+}
+
 static int read_control_snapshot(int fd, void *out, size_t len) {
     uint8_t *copy = NULL;
+    uint64_t phys;
     if (!out || len == 0 || len > HETGPU_PACC_CONTROL_BYTES) {
         return -1;
     }
-    if (read_phys_copy(fd, shared_ddr_control_phys(0, len), len, &copy) != 0) {
+    phys = shared_ddr_control_phys(0, len);
+    if (phys_is_shared_ddr_control(phys, len) && g_mbox_fd >= 0) {
+        if (read_phys_copy_pread_only(fd, phys, len, &copy) == 0) {
+            memcpy(out, copy, len);
+            free(copy);
+            return 0;
+        }
+    }
+    /*
+     * The doorbell is producer-owned by the host.  Avoid the persistent
+     * control mmap here: on current firmware it can keep seeing an old seq
+     * after an IRQ.  A fresh shared-DDR read is a little heavier, but it makes
+     * poll+IRQ semantics correct and prevents dispatching stale jobs.
+     *
+     * When FORCE_PREAD is requested, do not touch the mmap path first.  On the
+     * current PACC Linux image /dev/mem mappings can lag one IRQ behind, so a
+     * "fresh mmap" is still stale.  The /dev/mbox pread path is the only
+     * remaining way to ask the mailbox driver for the latest 32-byte chunks.
+     */
+    if (jobd_force_pread_enabled()) {
+        if (read_phys_copy_pread_only(fd, phys, len, &copy) != 0 &&
+            read_phys_mmap_copy(fd, phys, len, &copy) != 0 &&
+            read_phys_copy(fd, phys, len, &copy) != 0) {
+            return -1;
+        }
+    } else if (read_phys_mmap_copy(fd, phys, len, &copy) != 0 &&
+               read_phys_copy(fd, phys, len, &copy) != 0) {
         return -1;
     }
     memcpy(out, copy, len);
@@ -1455,16 +1812,26 @@ static bool probe_shared_ddr_mmap_at(int fd, uint64_t user_off) {
 }
 
 static bool probe_shared_ddr_mmap(int fd) {
-    uint64_t fallback_off = parse_env_u64_default("HETGPU_PACC_SHARED_DDR_MMAP_USER_OFF",
-                                                  HETGPU_PACC_SHARED_DDR_USER_OFF);
-    if (probe_shared_ddr_mmap_at(fd, fallback_off)) {
+    const char *configured = getenv("HETGPU_PACC_SHARED_DDR_MMAP_USER_OFF");
+    uint64_t configured_off = 0;
+
+    /*
+     * /dev/mbox read/write use SHARED_DDR_USER_OFF, but its mmap ABI maps
+     * shared DDR relative to vm_pgoff directly.  Try mmap offset 0 first
+     * unless the firmware image was explicitly configured otherwise.
+     */
+    if (configured && *configured &&
+        parse_u64_checked(configured, &configured_off) &&
+        probe_shared_ddr_mmap_at(fd, configured_off)) {
         return true;
     }
-    if (fallback_off != HETGPU_PACC_SHARED_DDR_USER_OFF &&
-        probe_shared_ddr_mmap_at(fd, HETGPU_PACC_SHARED_DDR_USER_OFF)) {
+    if ((!configured || !*configured) && probe_shared_ddr_mmap_at(fd, 0)) {
         return true;
     }
-    if (fallback_off != 0 && probe_shared_ddr_mmap_at(fd, 0)) {
+    if (configured_off != 0 && probe_shared_ddr_mmap_at(fd, 0)) {
+        return true;
+    }
+    if (probe_shared_ddr_mmap_at(fd, HETGPU_PACC_SHARED_DDR_USER_OFF)) {
         return true;
     }
     return false;
@@ -1490,7 +1857,8 @@ static void sync_map_for_cpu(struct Map *m) {
     if (!m || !m->base || m->base == MAP_FAILED || !m->map_len) {
         return;
     }
-    if (msync(m->base, m->map_len, MS_SYNC | MS_INVALIDATE) != 0 && errno != EINVAL) {
+    if (jobd_msync_enabled() &&
+        msync(m->base, m->map_len, MS_SYNC | MS_INVALIDATE) != 0 && errno != EINVAL) {
         trace_msg("shared DDR msync invalidate failed: %s", strerror(errno));
     }
     if (m->ptr && m->len) {
@@ -1834,7 +2202,7 @@ static int run_gemm_matrix_threads(const struct GemmJob *job, const void *a,
 }
 
 static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
-    mirror_host_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5120);
+    mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5120);
     if (!job->m || !job->n || !job->k || !job->a_addr || !job->b_addr || !job->c_addr) {
         return 0xffff1001;
     }
@@ -1866,7 +2234,7 @@ static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
     size_t b_elems = (size_t)(b_batch_stride * (batch_count - 1) + b_matrix_elems);
     size_t c_elems = (size_t)(c_batch_stride * (batch_count - 1) + c_matrix_elems);
     struct Map ma = {0}, mb = {0}, mc = {0}, malpha = {0}, mbeta = {0};
-    mirror_host_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5121);
+    mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5121);
     if (map_phys(fd, job->a_addr, a_elems * a_dtype_size, &ma) ||
         map_phys(fd, job->b_addr, b_elems * b_dtype_size, &mb) ||
         map_phys(fd, job->c_addr, c_elems * c_dtype_size, &mc)) {
@@ -1882,7 +2250,7 @@ static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
         beta = *(float *)mbeta.ptr;
     }
 
-    mirror_host_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5122);
+    mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5122);
     const char *a0 = (const char *)ma.ptr;
     const char *b0 = (const char *)mb.ptr;
     char *c0 = (char *)mc.ptr;
@@ -1890,14 +2258,17 @@ static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
         const void *a = a0 + a_batch_stride * batch * a_dtype_size;
         const void *b = b0 + b_batch_stride * batch * b_dtype_size;
         void *c = c0 + c_batch_stride * batch * c_dtype_size;
-        mirror_host_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5123);
+        mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5123);
         if (run_gemm_matrix_threads(job, a, b, c, alpha, beta) != 0) {
             unmap_phys(&malpha); unmap_phys(&mbeta); unmap_phys(&ma); unmap_phys(&mb); unmap_phys(&mc);
             return 0xffff1004;
         }
     }
-    mirror_host_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5124);
-    msync(mc.base, mc.map_len, MS_SYNC);
+    mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5124);
+    if (jobd_msync_enabled()) {
+        msync(mc.base, mc.map_len, MS_SYNC);
+    }
+    jobd_flush_for_device(mc.ptr, mc.len);
     unmap_phys(&malpha); unmap_phys(&mbeta); unmap_phys(&ma); unmap_phys(&mb); unmap_phys(&mc);
     return 0;
 }
@@ -1933,12 +2304,15 @@ static int run_softmax(int fd, const struct SoftmaxJob *job) {
             store_typed(dst, base + col, job->dtype, e * inv);
         }
     }
-    msync(md.base, md.map_len, MS_SYNC);
+    if (jobd_msync_enabled()) {
+        msync(md.base, md.map_len, MS_SYNC);
+    }
+    jobd_flush_for_device(md.ptr, md.len);
     unmap_phys(&ms); unmap_phys(&md);
     return 0;
 }
 
-static int run_rmsnorm(int fd, const struct RmsNormJob *job) {
+static int run_rmsnorm(int fd, const struct RmsNormJob *job, uint64_t seq) {
     uint64_t t0 = monotonic_us();
     if (!job->x_addr || !job->y_addr || !job->rows || !job->hidden) {
         log_msg("RMSNorm invalid job x=0x%" PRIx64 " w=0x%" PRIx64
@@ -1953,16 +2327,73 @@ static int run_rmsnorm(int fd, const struct RmsNormJob *job) {
     size_t elem_size = dtype_size(job->dtype);
     if (!elem_size) return 0xffff3002;
     size_t elems = (size_t)(job->rows * job->hidden);
+    size_t data_bytes = elems * elem_size;
+    size_t weight_bytes = (size_t)job->hidden * elem_size;
+    if (jobd_rms_local_copy_enabled()) {
+        uint8_t *x_local = NULL;
+        uint8_t *w_local = NULL;
+        uint8_t *y_local = NULL;
+        bool have_weight = false;
+        mirror_progress_status(fd, HETGPU_PACC_JOB_RMSNORM, seq, 0x5120);
+        if (read_phys_copy(fd, job->x_addr, data_bytes, &x_local) == 0) {
+            mirror_progress_status(fd, HETGPU_PACC_JOB_RMSNORM, seq, 0x5121);
+            if (job->weight_addr) {
+                if (read_phys_copy(fd, job->weight_addr, weight_bytes, &w_local) == 0) {
+                    have_weight = true;
+                    mirror_progress_status(fd, HETGPU_PACC_JOB_RMSNORM, seq, 0x5122);
+                } else {
+                    free(x_local);
+                    x_local = NULL;
+                }
+            } else {
+                mirror_progress_status(fd, HETGPU_PACC_JOB_RMSNORM, seq, 0x5122);
+            }
+        }
+        if (x_local) {
+            y_local = (uint8_t *)malloc(data_bytes);
+            if (!y_local) {
+                free(x_local);
+                free(w_local);
+                return 0xffff3006;
+            }
+            for (uint64_t row = 0; row < job->rows; row++) {
+                uint64_t base = row * job->hidden;
+                float sumsq = 0.0f;
+                for (uint64_t i = 0; i < job->hidden; i++) {
+                    float v = load_typed(x_local, base + i, job->dtype);
+                    sumsq += v * v;
+                }
+                float scale = rsqrtf_newton(sumsq / (float)job->hidden + job->eps);
+                for (uint64_t i = 0; i < job->hidden; i++) {
+                    float weight = have_weight ? load_typed(w_local, i, job->dtype) : 1.0f;
+                    store_typed(y_local, base + i, job->dtype,
+                                load_typed(x_local, base + i, job->dtype) * scale * weight);
+                }
+            }
+            mirror_progress_status(fd, HETGPU_PACC_JOB_RMSNORM, seq, 0x5123);
+            int write_status = write_phys_copy(fd, job->y_addr, y_local, data_bytes);
+            mirror_progress_status(fd, HETGPU_PACC_JOB_RMSNORM, seq, 0x5124);
+            free(x_local);
+            free(w_local);
+            free(y_local);
+            trace_msg("RMSNorm local-copy done: rows=%" PRIu64 " hidden=%" PRIu64
+                      " dtype=%u elapsed_us=%" PRIu64,
+                      job->rows, job->hidden, job->dtype, monotonic_us() - t0);
+            return write_status == 0 ? 0 : 0xffff3005;
+        }
+        free(w_local);
+    }
     struct Map mx = {0}, mw = {0}, my = {0};
-    if (map_phys(fd, job->x_addr, elems * elem_size, &mx) ||
-        map_phys(fd, job->y_addr, elems * elem_size, &my)) {
+    mirror_progress_status(fd, HETGPU_PACC_JOB_RMSNORM, seq, 0x5128);
+    if (map_phys(fd, job->x_addr, data_bytes, &mx) ||
+        map_phys(fd, job->y_addr, data_bytes, &my)) {
         unmap_phys(&mx); unmap_phys(&my);
         return 0xffff3003;
     }
     const void *x = mx.ptr;
     void *y = my.ptr;
     const void *w = NULL;
-    if (job->weight_addr && !map_phys(fd, job->weight_addr, job->hidden * elem_size, &mw)) {
+    if (job->weight_addr && !map_phys(fd, job->weight_addr, weight_bytes, &mw)) {
         w = mw.ptr;
     }
     for (uint64_t row = 0; row < job->rows; row++) {
@@ -1978,7 +2409,10 @@ static int run_rmsnorm(int fd, const struct RmsNormJob *job) {
             store_typed(y, base + i, job->dtype, load_typed(x, base + i, job->dtype) * scale * weight);
         }
     }
-    msync(my.base, my.map_len, MS_SYNC);
+    if (jobd_msync_enabled()) {
+        msync(my.base, my.map_len, MS_SYNC);
+    }
+    jobd_flush_for_device(my.ptr, my.len);
     unmap_phys(&mx); unmap_phys(&mw); unmap_phys(&my);
     trace_msg("RMSNorm done: rows=%" PRIu64 " hidden=%" PRIu64
               " dtype=%u elapsed_us=%" PRIu64,
@@ -2011,7 +2445,10 @@ static int run_allreduce(int fd, const struct AllReduceJob *job) {
         }
         dst[i] = acc;
     }
-    msync(md.base, md.map_len, MS_SYNC);
+    if (jobd_msync_enabled()) {
+        msync(md.base, md.map_len, MS_SYNC);
+    }
+    jobd_flush_for_device(md.ptr, md.len);
     unmap_phys(&ms); unmap_phys(&md);
     return 0;
 }
@@ -3357,6 +3794,81 @@ static float bin_bcast_apply(enum PaccBinBcastOp op, float a, float b) {
     }
 }
 
+#if defined(__riscv_vector)
+static inline vfloat32m4_t bin_bcast_apply_vec_vv(enum PaccBinBcastOp op,
+                                                  vfloat32m4_t a,
+                                                  vfloat32m4_t b,
+                                                  size_t vl) {
+    switch (op) {
+    case PACC_BIN_BCAST_REPEAT: return b;
+    case PACC_BIN_BCAST_ADD: return __riscv_vfadd_vv_f32m4(a, b, vl);
+    case PACC_BIN_BCAST_SUB: return __riscv_vfsub_vv_f32m4(a, b, vl);
+    case PACC_BIN_BCAST_MUL: return __riscv_vfmul_vv_f32m4(a, b, vl);
+    case PACC_BIN_BCAST_DIV: return __riscv_vfdiv_vv_f32m4(a, b, vl);
+    default: return a;
+    }
+}
+
+static inline vfloat32m4_t bin_bcast_apply_vec_vf(enum PaccBinBcastOp op,
+                                                  vfloat32m4_t a,
+                                                  float b,
+                                                  size_t vl) {
+    switch (op) {
+    case PACC_BIN_BCAST_REPEAT: return __riscv_vfmv_v_f_f32m4(b, vl);
+    case PACC_BIN_BCAST_ADD: return __riscv_vfadd_vf_f32m4(a, b, vl);
+    case PACC_BIN_BCAST_SUB: return __riscv_vfsub_vf_f32m4(a, b, vl);
+    case PACC_BIN_BCAST_MUL: return __riscv_vfmul_vf_f32m4(a, b, vl);
+    case PACC_BIN_BCAST_DIV: return __riscv_vfdiv_vf_f32m4(a, b, vl);
+    default: return a;
+    }
+}
+
+static bool bin_bcast_native_row_rvv(const struct BinBcastNativeCtx *ctx,
+                                     const float *src0_row,
+                                     int64_t i_src1,
+                                     float *dst_row) {
+    if (!ctx || !dst_row || ctx->ne0 <= 0 || ctx->s00 != 1) return false;
+    if (ctx->op == PACC_BIN_BCAST_UNSUPPORTED) return false;
+
+    const uint32_t ne10 = bin_bcast_fast_dim(ctx->ne10);
+    bool src1_scalar = ne10 == 1u;
+    bool src1_contiguous = ctx->s10 == 1 && ne10 >= (uint32_t)ctx->ne0;
+    if (!src1_scalar && !src1_contiguous) return false;
+    if (ctx->op != PACC_BIN_BCAST_REPEAT && !src0_row) return false;
+
+    for (int32_t i0 = 0; i0 < ctx->ne0;) {
+        size_t vl = __riscv_vsetvl_e32m4((size_t)(ctx->ne0 - i0));
+        vfloat32m4_t acc = src0_row
+            ? __riscv_vle32_v_f32m4(src0_row + i0, vl)
+            : __riscv_vfmv_v_f_f32m4(0.0f, vl);
+
+        if (ctx->src1s_count != 0) {
+            for (size_t j = 0; j < ctx->src1s_count; j++) {
+                const float *src = ctx->src1s[j];
+                if (src1_scalar) {
+                    acc = bin_bcast_apply_vec_vf(ctx->op, acc, src[i_src1], vl);
+                } else {
+                    vfloat32m4_t b = __riscv_vle32_v_f32m4(src + i_src1 + i0, vl);
+                    acc = bin_bcast_apply_vec_vv(ctx->op, acc, b, vl);
+                }
+            }
+        } else {
+            if (!ctx->src1) return false;
+            if (src1_scalar) {
+                acc = bin_bcast_apply_vec_vf(ctx->op, acc, ctx->src1[i_src1], vl);
+            } else {
+                vfloat32m4_t b = __riscv_vle32_v_f32m4(ctx->src1 + i_src1 + i0, vl);
+                acc = bin_bcast_apply_vec_vv(ctx->op, acc, b, vl);
+            }
+        }
+
+        __riscv_vse32_v_f32m4(dst_row + i0, acc, vl);
+        i0 += (int32_t)vl;
+    }
+    return true;
+}
+#endif
+
 static void *bin_bcast_native_worker_main(void *opaque) {
     struct BinBcastNativeWorker *worker = (struct BinBcastNativeWorker *)opaque;
     const struct BinBcastNativeCtx *ctx = worker->ctx;
@@ -3382,6 +3894,11 @@ static void *bin_bcast_native_worker_main(void *opaque) {
         const float *src0_row = ctx->src0 ? ctx->src0 + i_src0 : NULL;
         float *dst_row = ctx->dst + i_dst;
 
+#if defined(__riscv_vector)
+        if (bin_bcast_native_row_rvv(ctx, src0_row, i_src1, dst_row)) {
+            continue;
+        }
+#endif
         for (int32_t i0 = 0; i0 < ctx->ne0; i0++) {
             uint32_t i10 = (uint32_t)i0 % ne10;
             int64_t src1_off = i_src1 + (int64_t)i10 * ctx->s10;
@@ -3627,6 +4144,30 @@ static uint64_t kernel_binding_size_for_arg(const struct PaccJobImage *job, uint
     return 0;
 }
 
+static size_t kernel_binding_map_bytes(const struct PaccKernelBufferBinding *binding,
+                                       size_t default_bind_bytes) {
+    uint64_t want = binding && binding->size ? binding->size : (uint64_t)default_bind_bytes;
+    uint64_t min_bytes = parse_env_u64_default("PACC_JOBD_KERNEL_BINDING_MIN_BYTES",
+                                               64ULL * 1024ULL * 1024ULL);
+
+    if (min_bytes > want) {
+        want = min_bytes;
+    }
+    if (binding && g_ddr_info.ddr_base && binding->addr >= g_ddr_info.ddr_base) {
+        uint64_t ddr_off = binding->addr - g_ddr_info.ddr_base;
+        if (ddr_off < g_ddr_info.ddr_size) {
+            uint64_t remaining = g_ddr_info.ddr_size - ddr_off;
+            if (want > remaining) {
+                want = remaining;
+            }
+        }
+    }
+    if (want > (uint64_t)SIZE_MAX) {
+        want = (uint64_t)SIZE_MAX;
+    }
+    return (size_t)want;
+}
+
 static bool mmvf_parse_template(const char *symbol,
                                 uint32_t *ncols_dst_out,
                                 bool *has_fusion_out,
@@ -3660,30 +4201,54 @@ static float mmvf_load_x(const struct MmvfNativeCtx *ctx, const void *base, int6
 
 #if defined(__riscv_vector) && (defined(__riscv_zfh) || defined(__riscv_zfhmin))
 static float pacc_dot_f16_f32_rvv(const uint16_t *x, const float *y, int32_t n) {
-    float sum = 0.0f;
-    size_t off = 0;
-    while (off < (size_t)n) {
-        size_t avl = (size_t)n - off;
-        size_t vl;
-        float part;
-        asm volatile(
-            "vsetvli %[vl], %[avl], e16, m4, ta, ma\n\t"
-            "vle16.v v0, (%[xptr])\n\t"
-            "vfwcvt.f.f.v v8, v0\n\t"
-            "vsetvli zero, %[vl], e32, m8, ta, ma\n\t"
-            "vle32.v v16, (%[yptr])\n\t"
-            "vfmul.vv v8, v8, v16\n\t"
-            "fmv.w.x ft0, zero\n\t"
-            "vsetivli zero, 1, e32, m1, ta, ma\n\t"
-            "vfmv.s.f v24, ft0\n\t"
-            "vsetvli zero, %[vl], e32, m8, ta, ma\n\t"
-            "vfredusum.vs v8, v8, v24\n\t"
-            "vfmv.f.s %[part], v8\n\t"
-            : [vl] "=&r"(vl), [part] "=f"(part)
-            : [avl] "r"(avl), [xptr] "r"(x + off), [yptr] "r"(y + off)
-            : "ft0", "memory", "v0", "v8", "v16", "v24");
-        sum += part;
-        off += vl;
+    if (n <= 0) return 0.0f;
+
+    const uint16_t *xp = x;
+    const float *yp = y;
+    size_t remaining = (size_t)n;
+    size_t vl = 0;
+    float sum;
+
+    /*
+     * Keep a wide vector accumulator for the whole dot product and reduce once.
+     * The previous loop reduced every VL chunk, which dominated the 2048-wide
+     * MMVF inner product.
+     */
+    asm volatile(
+        "vsetvli %[vl], %[remaining], e16, m4, ta, ma\n\t"
+        "vsetvli zero, %[vl], e32, m8, ta, ma\n\t"
+        "fmv.w.x ft0, zero\n\t"
+        "vfmv.v.f v24, ft0\n\t"
+        "1:\n\t"
+        "bltu %[remaining], %[vl], 2f\n\t"
+        "vsetvli zero, %[vl], e16, m4, ta, ma\n\t"
+        "vle16.v v0, (%[xp])\n\t"
+        "vfwcvt.f.f.v v8, v0\n\t"
+        "slli t0, %[vl], 1\n\t"
+        "add %[xp], %[xp], t0\n\t"
+        "vsetvli zero, %[vl], e32, m8, ta, ma\n\t"
+        "vle32.v v16, (%[yp])\n\t"
+        "slli t0, %[vl], 2\n\t"
+        "add %[yp], %[yp], t0\n\t"
+        "vfmacc.vv v24, v8, v16\n\t"
+        "sub %[remaining], %[remaining], %[vl]\n\t"
+        "j 1b\n\t"
+        "2:\n\t"
+        "vsetivli zero, 1, e32, m1, ta, ma\n\t"
+        "vfmv.s.f v0, ft0\n\t"
+        "vsetvli zero, %[vl], e32, m8, ta, ma\n\t"
+        "vfredusum.vs v24, v24, v0\n\t"
+        "vfmv.f.s %[sum], v24\n\t"
+        : [xp] "+r"(xp),
+          [yp] "+r"(yp),
+          [remaining] "+r"(remaining),
+          [vl] "=&r"(vl),
+          [sum] "=f"(sum)
+        :
+        : "t0", "ft0", "memory", "v0", "v8", "v16", "v24");
+
+    for (size_t i = 0; i < remaining; i++) {
+        sum += pacc_f16_to_f32(xp[i]) * yp[i];
     }
     return sum;
 }
@@ -3999,7 +4564,8 @@ static int run_mmvf_ctx(struct MmvfNativeCtx *ctx,
     return status;
 }
 
-static int run_mmvf(int fd, const struct MmvfJob *job) {
+static int run_mmvf(int fd, const struct MmvfJob *job, uint64_t seq) {
+    mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5140);
     if (!job || !job->x_addr || !job->y_addr || !job->dst_addr ||
         !job->grid_x || !job->grid_y || !job->grid_z ||
         !job->x_bytes || !job->y_bytes || !job->dst_bytes) {
@@ -4010,6 +4576,7 @@ static int run_mmvf(int fd, const struct MmvfJob *job) {
     }
 
     struct Map mx = {0}, my = {0}, md = {0};
+    mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5141);
     if (map_phys(fd, job->x_addr, (size_t)job->x_bytes, &mx) ||
         map_phys(fd, job->y_addr, (size_t)job->y_bytes, &my) ||
         map_phys(fd, job->dst_addr, (size_t)job->dst_bytes, &md)) {
@@ -4045,9 +4612,15 @@ static int run_mmvf(int fd, const struct MmvfJob *job) {
     ctx.ncols_dst = job->ncols_dst;
     ctx.x_type = (enum PaccMmvfXType)job->x_type;
 
+    mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5142);
     int status = run_mmvf_ctx(&ctx, job->x_bytes, job->y_bytes, "MMVF");
+    mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, status == 0 ? 0x5143 : (uint32_t)status);
     if (status == 0) {
-        msync(md.base, md.map_len, MS_SYNC);
+        if (jobd_msync_enabled()) {
+            msync(md.base, md.map_len, MS_SYNC);
+        }
+        jobd_flush_for_device(md.ptr, md.len);
+        mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5144);
     }
     unmap_phys(&mx);
     unmap_phys(&my);
@@ -4465,6 +5038,7 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
                                           const uint64_t *argv,
                                           const struct PaccJobImage *job,
                                           size_t argc) {
+    uint64_t t0 = monotonic_us();
     if (!symbol || !strstr(symbol, "rope_norm")) return 1;
     if (!job || argc < 21) return -1;
 
@@ -4512,6 +5086,57 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
         return -1;
     }
 
+    void *local_x = NULL;
+    void *local_dst = NULL;
+    int32_t *local_pos = NULL;
+    float *local_freq = NULL;
+    int64_t *local_rows = NULL;
+    void *dst_writeback = ctx.dst;
+    uint64_t local_max = parse_env_u64_default("PACC_JOBD_ROPE_LOCAL_MAX_BYTES",
+                                               1u << 20);
+    if (local_max != 0) {
+        uint64_t x_bytes = kernel_binding_size_for_arg(job, 0);
+        uint64_t dst_bytes = kernel_binding_size_for_arg(job, 1);
+        uint64_t pos_bytes = kernel_binding_size_for_arg(job, 12);
+        uint64_t freq_bytes = kernel_binding_size_for_arg(job, 18);
+        uint64_t rows_bytes = kernel_binding_size_for_arg(job, 19);
+        if (x_bytes != 0 && x_bytes <= local_max) {
+            local_x = malloc((size_t)x_bytes);
+            if (local_x) {
+                memcpy(local_x, ctx.x, (size_t)x_bytes);
+                ctx.x = local_x;
+            }
+        }
+        if (dst_bytes != 0 && dst_bytes <= local_max) {
+            local_dst = malloc((size_t)dst_bytes);
+            if (local_dst) {
+                memcpy(local_dst, ctx.dst, (size_t)dst_bytes);
+                ctx.dst = local_dst;
+            }
+        }
+        if (ctx.pos && pos_bytes != 0 && pos_bytes <= local_max) {
+            local_pos = (int32_t *)malloc((size_t)pos_bytes);
+            if (local_pos) {
+                memcpy(local_pos, ctx.pos, (size_t)pos_bytes);
+                ctx.pos = local_pos;
+            }
+        }
+        if (ctx.freq_factors && freq_bytes != 0 && freq_bytes <= local_max) {
+            local_freq = (float *)malloc((size_t)freq_bytes);
+            if (local_freq) {
+                memcpy(local_freq, ctx.freq_factors, (size_t)freq_bytes);
+                ctx.freq_factors = local_freq;
+            }
+        }
+        if (ctx.row_indices && rows_bytes != 0 && rows_bytes <= local_max) {
+            local_rows = (int64_t *)malloc((size_t)rows_bytes);
+            if (local_rows) {
+                memcpy(local_rows, ctx.row_indices, (size_t)rows_bytes);
+                ctx.row_indices = local_rows;
+            }
+        }
+    }
+
     uint64_t work_items = (uint64_t)ctx.row_count * ctx.pair_count;
     unsigned workers = kernel_worker_threads(work_items);
     trace_msg("native rope_norm %s rows=%u pairs=%u work=%" PRIu64
@@ -4528,7 +5153,19 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
             .status = 0,
         };
         rope_norm_native_worker_main(&worker);
-        return worker.status;
+        int worker_status = worker.status;
+        if (worker_status == 0 && local_dst) {
+            uint64_t dst_bytes = kernel_binding_size_for_arg(job, 1);
+            memcpy(dst_writeback, local_dst, (size_t)dst_bytes);
+        }
+        trace_msg("native rope_norm done %s status=%d elapsed_us=%" PRIu64,
+                  symbol, worker_status, monotonic_us() - t0);
+        free(local_x);
+        free(local_dst);
+        free(local_pos);
+        free(local_freq);
+        free(local_rows);
+        return worker_status;
     }
 
     pthread_t threads[PACC_KERNEL_MAX_THREADS];
@@ -4550,6 +5187,11 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
             for (unsigned j = 0; j < created; j++) {
                 pthread_join(threads[j], NULL);
             }
+            free(local_x);
+            free(local_dst);
+            free(local_pos);
+            free(local_freq);
+            free(local_rows);
             return -1;
         }
         created++;
@@ -4562,6 +5204,17 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
             status = worker[i].status;
         }
     }
+    if (status == 0 && local_dst) {
+        uint64_t dst_bytes = kernel_binding_size_for_arg(job, 1);
+        memcpy(dst_writeback, local_dst, (size_t)dst_bytes);
+    }
+    trace_msg("native rope_norm done %s status=%d elapsed_us=%" PRIu64,
+              symbol, status, monotonic_us() - t0);
+    free(local_x);
+    free(local_dst);
+    free(local_pos);
+    free(local_freq);
+    free(local_rows);
     return status;
 }
 
@@ -5148,7 +5801,7 @@ static void release_kernel_binding_maps(struct KernelBindingMap *maps, size_t co
                         " len=%zu",
                         maps[i].arg_index, maps[i].map.phys, maps[i].map.len);
             }
-            if (maps[i].map.base) {
+            if (jobd_msync_enabled() && maps[i].map.base) {
                 msync(maps[i].map.base, maps[i].map.map_len, MS_SYNC);
             }
             jobd_flush_for_device(maps[i].map.ptr, maps[i].map.len);
@@ -5191,7 +5844,7 @@ static int build_kernel_launch_args(
 
     for (size_t i = 0; i < job->binding_count; i++) {
         const struct PaccKernelBufferBinding *binding = &job->bindings[i];
-        size_t bind_bytes = binding->size ? (size_t)binding->size : default_bind_bytes;
+        size_t bind_bytes = kernel_binding_map_bytes(binding, default_bind_bytes);
         if (map_count >= PACC_MAX_KERNEL_BINDINGS) {
             log_msg("kernel binding map limit reached: bindings=%zu map_count=%zu max=%u",
                     job->binding_count, map_count, PACC_MAX_KERNEL_BINDINGS);
@@ -5493,14 +6146,18 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
     }
     if (read_phys_copy(fd, desc->addr, (size_t)desc->len, &image_copy) == 0) {
         image = (const uint8_t *)image_copy;
+        jobd_io_fence();
     } else {
         if (map_phys(fd, desc->addr, (size_t)desc->len, &map) != 0) {
+            write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5002u, errno ? (uint32_t)errno : 0);
             return 0xffff5002;
         }
         sync_map_for_cpu(&map);
+        jobd_io_fence();
         image = (const uint8_t *)map.ptr;
     }
-    mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5102);
+    mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5102);
+    write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5102, image_copy ? 1U : 0U);
     {
         uint64_t q0 = 0, q1 = 0, q2 = 0, q3 = 0;
         if (desc->len >= 32) {
@@ -5517,11 +6174,13 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
     }
     if (parse_kernel_job_image(image, (size_t)desc->len, &job) != 0) {
         uint32_t detail = g_kernel_parse_error & 0x00ffu;
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5300u | (detail ? detail : 0xffu), detail);
         free(image_copy);
         unmap_phys(&map);
         return 0xffff5300u | (detail ? detail : 0xffu);
     }
-    mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5103);
+    mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5103);
+    write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5103, (uint32_t)job.arg_count);
 
     trace_msg("kernel job seq=%" PRIu64 " hash=0x%" PRIx64 " name=%.*s elf=%zu args=%zu bindings=%zu grid=%ux%ux%u block=%ux%ux%u",
               desc->seq, job.header.kernel_name_hash,
@@ -5542,11 +6201,13 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
         log_msg("kernel args build failed: seq=%" PRIu64 " symbol=%s detail=0x%x args=%zu bindings=%zu",
                 desc->seq, symbol[0] ? symbol : "<unnamed>", detail,
                 job.arg_count, job.binding_count);
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5200u | (detail ? detail : 0x05u), detail);
         free(image_copy);
         unmap_phys(&map);
         return 0xffff5200u | (detail ? detail : 0x05u);
     }
-    mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5104);
+    mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5104);
+    write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5104, (uint32_t)argc);
     trace_kernel_param_cells(symbol, &job, arg_storage, argv, argc);
 
     if (symbol[0]) {
@@ -5563,17 +6224,20 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
                           job.kernel_name, job.kernel_name_size,
                           symbol, sizeof(symbol), artifact, sizeof(artifact), &loaded) != 0) {
         uint32_t detail = g_kernel_load_error & 0x0fffu;
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5000u | (detail ? detail : 0x004u), detail);
         release_kernel_binding_maps(binding_maps, binding_map_count);
         free(image_copy);
         unmap_phys(&map);
         return 0xffff5000u | (detail ? detail : 0x004u);
     }
-    mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5105);
+    mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5105);
+    write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5105, (uint32_t)(job.elf_len & 0xffffffffu));
 
     fn = loaded.direct ? loaded.fn : dlsym(loaded.handle, symbol);
     if (!fn) {
         log_msg("dlsym(%s from %s) failed: %s", symbol, artifact,
                 loaded.direct ? "direct ELF symbol missing" : dlerror());
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5006u, 0);
         release_kernel_binding_maps(binding_maps, binding_map_count);
         unload_kernel_image(&loaded);
         free(image_copy);
@@ -5592,25 +6256,29 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
               pacc_nonzero_dim(job.header.block_x) *
               pacc_nonzero_dim(job.header.block_y) *
               pacc_nonzero_dim(job.header.block_z));
-    mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5106);
+    mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5106);
+    write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5106, (uint32_t)argc);
     g_current_kernel_seq = desc->seq;
     g_current_kernel_symbol = symbol;
     status = invoke_kernel_symbol_grid(symbol, fn, argv, &job, argc, set_launch);
-    mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5107);
+    mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5107);
+    write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5107, (uint32_t)status);
     trace_msg("kernel dispatch returned: seq=%" PRIu64 " symbol=%s status=%d",
               desc->seq, symbol, status);
     g_current_kernel_symbol = NULL;
     g_current_kernel_seq = 0;
 
-    mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5108);
+    mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5108);
     release_kernel_binding_maps(binding_maps, binding_map_count);
-    mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5109);
+    mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5109);
     unload_kernel_image(&loaded);
     free(image_copy);
     unmap_phys(&map);
     if (status != 0) {
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5007u, (uint32_t)status);
         return 0xffff5007;
     }
+    write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5109, 0);
     return 0;
 }
 
@@ -5621,6 +6289,7 @@ static void *arg_payload_inner(volatile struct Doorbell *ctl, uint32_t job_id, u
     volatile struct ArgSlotHeader *h =
         (volatile struct ArgSlotHeader *)(base + HETGPU_PACC_ARG_BASE_OFF +
                                           (size_t)slot * HETGPU_PACC_ARG_SLOT_BYTES);
+    __sync_synchronize();
     if (h->magic != HETGPU_PACC_JOB_MAGIC || h->version != HETGPU_PACC_JOB_VERSION ||
         h->job_id != job_id || h->seq != seq || h->arg_len < want) {
         if (noisy) {
@@ -5635,6 +6304,43 @@ static void *arg_payload_inner(volatile struct Doorbell *ctl, uint32_t job_id, u
 
 static void *arg_payload(volatile struct Doorbell *ctl, uint32_t job_id, uint64_t seq, size_t want) {
     return arg_payload_inner(ctl, job_id, seq, want, true);
+}
+
+static bool arg_payload_from_control(volatile struct Doorbell *ctl, uint32_t job_id, uint64_t seq, size_t want, void *out) {
+    const void *dyn;
+    if (!ctl || !out) {
+        return false;
+    }
+    dyn = arg_payload_inner(ctl, job_id, seq, want, false);
+    if (!dyn) {
+        return false;
+    }
+    __sync_synchronize();
+    memcpy(out, dyn, want);
+    __sync_synchronize();
+    return true;
+}
+
+static bool gemm_job_ready(const struct GemmJob *job) {
+    return job && job->a_addr && job->b_addr && job->c_addr && job->m && job->n && job->k;
+}
+
+static bool softmax_job_ready(const struct SoftmaxJob *job) {
+    return job && job->src_addr && job->dst_addr && job->rows && job->cols && job->stride;
+}
+
+static bool rmsnorm_job_ready(const struct RmsNormJob *job) {
+    return job && job->x_addr && job->y_addr && job->rows && job->hidden;
+}
+
+static bool allreduce_job_ready(const struct AllReduceJob *job) {
+    return job && job->src_addr && job->dst_addr && job->count && job->nranks;
+}
+
+static bool mmvf_job_ready(const struct MmvfJob *job) {
+    return job && job->x_addr && job->y_addr && job->dst_addr &&
+           job->x_bytes && job->y_bytes && job->dst_bytes &&
+           job->grid_x && job->grid_y && job->grid_z;
 }
 
 static int arg_payload_copy_inner(int fd, uint32_t job_id, uint64_t seq, size_t want, void *out, bool noisy) {
@@ -5692,19 +6398,12 @@ static int arg_payload_copy_wait(int fd, volatile struct Doorbell *ctl, uint32_t
     uint64_t attempts = 0;
 
     while (timeout == 0 || monotonic_us() - start < timeout) {
-        if (arg_payload_copy_inner(fd, job_id, seq, want, out, false) == 0) {
-            if (attempts != 0) {
-                trace_msg("arg_payload_copy_wait matched: job_id=%u/%s seq=%" PRIu64
-                          " attempts=%" PRIu64 " elapsed_us=%" PRIu64,
-                          job_id, job_name(job_id), seq, attempts, monotonic_us() - start);
-            }
-            return 0;
-        }
-
+        jobd_io_fence();
         if (ctl) {
             const void *dyn = arg_payload_inner(ctl, job_id, seq, want, false);
             if (dyn) {
                 memcpy(out, dyn, want);
+                jobd_io_fence();
                 if (attempts != 0) {
                     trace_msg("arg_payload_copy_wait matched mapped control: job_id=%u/%s seq=%" PRIu64
                               " attempts=%" PRIu64 " elapsed_us=%" PRIu64,
@@ -5714,7 +6413,23 @@ static int arg_payload_copy_wait(int fd, volatile struct Doorbell *ctl, uint32_t
             }
         }
 
+        /*
+         * The control window may be backed by shared DDR.  Still perform a
+         * fresh slot read here so the IRQ wake is paired with an explicit
+         * shared-DDR synchronization point before dispatch.
+         */
+        if (arg_payload_copy_inner(fd, job_id, seq, want, out, false) == 0) {
+            jobd_io_fence();
+            if (attempts != 0) {
+                trace_msg("arg_payload_copy_wait matched: job_id=%u/%s seq=%" PRIu64
+                          " attempts=%" PRIu64 " elapsed_us=%" PRIu64,
+                          job_id, job_name(job_id), seq, attempts, monotonic_us() - start);
+            }
+            return 0;
+        }
+
         attempts++;
+        jobd_io_fence();
         sleep_us(1000);
     }
 
@@ -5796,79 +6511,104 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
     uint64_t seq = ctl->seq;
     if (job_id == HETGPU_PACC_JOB_GEMM) {
         struct GemmJob copied;
-        const struct GemmJob *job = jobs->have_gemm ? &jobs->gemm : NULL;
-        if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
+        const struct GemmJob *job = NULL;
+        if (arg_payload_from_control(ctl, job_id, seq, sizeof(copied), &copied)) {
             job = &copied;
-        } else {
-            const struct GemmJob *dyn = arg_payload(ctl, job_id, seq, sizeof(struct GemmJob));
-            if (dyn) job = dyn;
+        } else if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
+            job = &copied;
+        }
+        if (!job && jobd_static_config_fallback_enabled() && jobs->have_gemm) {
+            job = &jobs->gemm;
+        }
+        if (!gemm_job_ready(job)) {
+            return -EAGAIN;
         }
         if (job) {
             trace_msg("dispatch GEMM: seq=%" PRIu64 " m=%" PRIu64 " n=%" PRIu64 " k=%" PRIu64 " atype=%u btype=%u ctype=%u",
                       seq, job->m, job->n, job->k, job->atype, job->btype, job->ctype);
         }
-        return job ? run_gemm(fd, job, seq) : (int)0xffff0101U;
+        return run_gemm(fd, job, seq);
     }
     if (job_id == HETGPU_PACC_JOB_SOFTMAX) {
         struct SoftmaxJob copied;
-        const struct SoftmaxJob *job = jobs->have_softmax ? &jobs->softmax : NULL;
-        if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
+        const struct SoftmaxJob *job = NULL;
+        if (arg_payload_from_control(ctl, job_id, seq, sizeof(copied), &copied)) {
             job = &copied;
-        } else {
-            const struct SoftmaxJob *dyn = arg_payload(ctl, job_id, seq, sizeof(struct SoftmaxJob));
-            if (dyn) job = dyn;
+        } else if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
+            job = &copied;
+        }
+        if (!job && jobd_static_config_fallback_enabled() && jobs->have_softmax) {
+            job = &jobs->softmax;
+        }
+        if (!softmax_job_ready(job)) {
+            return -EAGAIN;
         }
         if (job) {
             trace_msg("dispatch SOFTMAX: seq=%" PRIu64 " rows=%" PRIu64 " cols=%" PRIu64 " stride=%" PRIu64 " dtype=%u",
                       seq, job->rows, job->cols, job->stride, job->dtype);
         }
-        return job ? run_softmax(fd, job) : (int)0xffff0201U;
+        return run_softmax(fd, job);
     }
     if (job_id == HETGPU_PACC_JOB_RMSNORM) {
         struct RmsNormJob copied;
-        const struct RmsNormJob *job = jobs->have_rmsnorm ? &jobs->rmsnorm : NULL;
-        if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
+        const struct RmsNormJob *job = NULL;
+        if (arg_payload_from_control(ctl, job_id, seq, sizeof(copied), &copied)) {
             job = &copied;
-        } else {
-            const struct RmsNormJob *dyn = arg_payload(ctl, job_id, seq, sizeof(struct RmsNormJob));
-            if (dyn) job = dyn;
+        } else if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
+            job = &copied;
+        }
+        if (!job && jobd_static_config_fallback_enabled() && jobs->have_rmsnorm) {
+            job = &jobs->rmsnorm;
+        }
+        if (!rmsnorm_job_ready(job)) {
+            return -EAGAIN;
         }
         if (job) {
             trace_msg("dispatch RMSNORM: seq=%" PRIu64 " rows=%" PRIu64 " hidden=%" PRIu64 " dtype=%u eps=%g",
                       seq, job->rows, job->hidden, job->dtype, job->eps);
         }
-        return job ? run_rmsnorm(fd, job) : (int)0xffff0301U;
+        return run_rmsnorm(fd, job, seq);
     }
     if (job_id == HETGPU_PACC_JOB_ALLREDUCE) {
         struct AllReduceJob copied;
-        const struct AllReduceJob *job = jobs->have_allreduce ? &jobs->allreduce : NULL;
-        if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
+        const struct AllReduceJob *job = NULL;
+        if (arg_payload_from_control(ctl, job_id, seq, sizeof(copied), &copied)) {
             job = &copied;
-        } else {
-            const struct AllReduceJob *dyn = arg_payload(ctl, job_id, seq, sizeof(struct AllReduceJob));
-            if (dyn) job = dyn;
+        } else if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
+            job = &copied;
+        }
+        if (!job && jobd_static_config_fallback_enabled() && jobs->have_allreduce) {
+            job = &jobs->allreduce;
+        }
+        if (!allreduce_job_ready(job)) {
+            return -EAGAIN;
         }
         if (job) {
             trace_msg("dispatch ALLREDUCE: seq=%" PRIu64 " count=%" PRIu64 " nranks=%u dtype=%u op=%u",
                       seq, job->count, job->nranks, job->dtype, job->reduce_op);
         }
-        return job ? run_allreduce(fd, job) : (int)0xffff0401U;
+        return run_allreduce(fd, job);
     }
     if (job_id == HETGPU_PACC_JOB_MMVF) {
         struct MmvfJob copied;
-        const struct MmvfJob *job = jobs->have_mmvf ? &jobs->mmvf : NULL;
-        if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
+        const struct MmvfJob *job = NULL;
+        if (arg_payload_from_control(ctl, job_id, seq, sizeof(copied), &copied)) {
             job = &copied;
-        } else {
-            const struct MmvfJob *dyn = arg_payload(ctl, job_id, seq, sizeof(struct MmvfJob));
-            if (dyn) job = dyn;
+        } else if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
+            job = &copied;
+        }
+        if (!job && jobd_static_config_fallback_enabled() && jobs->have_mmvf) {
+            job = &jobs->mmvf;
+        }
+        if (!mmvf_job_ready(job)) {
+            return -EAGAIN;
         }
         if (job) {
             trace_msg("dispatch MMVF: seq=%" PRIu64 " grid=%ux%ux%u ncols2=%d ncols_dst=%u x_type=%u",
                       seq, job->grid_x, job->grid_y, job->grid_z,
                       job->ncols2, job->ncols_dst, job->x_type);
         }
-        return job ? run_mmvf(fd, job) : (int)0xffff0501U;
+        return run_mmvf(fd, job, seq);
     }
     return 0xffff00ff;
 }
@@ -5920,8 +6660,10 @@ static enum DispatchPollResult maybe_dispatch_kernel_job(
     *last_kernel_seq = desc.seq;
     trace_msg("new kernel doorbell: seq=%" PRIu64 " addr=0x%" PRIx64 " len=%" PRIu64,
               desc.seq, desc.addr, desc.len);
-    mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x5101);
+    mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x5101);
+    write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x5101, (uint32_t)(desc.len & 0xffffffffu));
     status = dispatch_kernel_job(fd, &desc);
+    write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc.seq, (uint32_t)status, 0);
     mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc.seq, (uint32_t)status);
     trace_msg("kernel dispatch done: seq=%" PRIu64 " status=0x%x",
               desc.seq, (uint32_t)status);
@@ -5945,24 +6687,36 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
         return DISPATCH_IDLE;
     }
 
-    *last_seq = ctl->seq;
+    uint64_t seq = ctl->seq;
     job_id = ctl->job_id;
     ctl->status = 1;
     __sync_synchronize();
+    log_msg("new doorbell: job_id=%u/%s seq=%" PRIu64,
+            job_id, job_name(job_id), seq);
     trace_msg("new doorbell: job_id=%u/%s seq=%" PRIu64,
-              job_id, job_name(job_id), *last_seq);
-    mirror_host_status(fd, job_id, *last_seq, 0x5110);
+              job_id, job_name(job_id), seq);
+    mirror_progress_status(fd, job_id, seq, 0x5110);
     refresh_runtime_table(fd, ctl, jobs, last_table_seq);
-    mirror_host_status(fd, job_id, *last_seq, 0x5111);
+    mirror_progress_status(fd, job_id, seq, 0x5111);
     trace_msg("dispatch enter: job_id=%u/%s seq=%" PRIu64,
-              job_id, job_name(job_id), *last_seq);
-    mirror_host_status(fd, job_id, *last_seq, 0x5112);
+              job_id, job_name(job_id), seq);
+    mirror_progress_status(fd, job_id, seq, 0x5112);
     status = dispatch_job(fd, ctl, jobs, strict);
+    if (status == -EAGAIN) {
+        log_msg("dispatch pending args: job_id=%u/%s seq=%" PRIu64,
+                job_id, job_name(job_id), seq);
+        trace_msg("dispatch pending args: job_id=%u/%s seq=%" PRIu64,
+                  job_id, job_name(job_id), seq);
+        return DISPATCH_IDLE;
+    }
+    *last_seq = seq;
     __sync_synchronize();
     ctl->status = (uint32_t)status;
-    mirror_host_status(fd, job_id, *last_seq, (uint32_t)status);
+    mirror_host_status(fd, job_id, seq, (uint32_t)status);
+    log_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+            job_id, job_name(job_id), seq, (uint32_t)status);
     trace_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
-              job_id, job_name(job_id), *last_seq, (uint32_t)status);
+              job_id, job_name(job_id), seq, (uint32_t)status);
     return DISPATCH_HANDLED;
 }
 
@@ -5999,7 +6753,7 @@ static void maybe_heartbeat_control(int fd,
     uint32_t job_id = 0;
     uint64_t seq = 0;
 
-    if (!jobd_heartbeat_enabled() || !snapshot || (tick % 1000) != 0) {
+    if (!jobd_heartbeat_enabled() || !snapshot || (tick % 16) != 0) {
         return;
     }
 
@@ -6023,7 +6777,138 @@ static void maybe_heartbeat_control(int fd,
         if (kernel_head->seq != 0) status |= 0x4;
         if (kernel_head->buf_info != 0) status |= 0x8;
     }
-    mirror_host_status(fd, job_id, seq, status);
+    mirror_progress_status(fd, job_id, seq, status);
+}
+
+static bool control_has_pending_job(int fd,
+                                    uint64_t last_seq,
+                                    uint64_t last_kernel_seq) {
+    uint8_t header[sizeof(struct PaccJobDesc)];
+    volatile struct Doorbell *head;
+    const struct PaccJobDesc *kernel_head;
+
+    memset(header, 0, sizeof(header));
+    jobd_io_fence();
+    if (read_control_snapshot(fd, header, sizeof(header)) != 0) {
+        return false;
+    }
+    jobd_io_fence();
+
+    head = (volatile struct Doorbell *)(void *)header;
+    kernel_head = (const struct PaccJobDesc *)(const void *)header;
+    if (head->magic == HETGPU_PACC_JOB_MAGIC &&
+        head->version == HETGPU_PACC_JOB_VERSION &&
+        head->seq != 0 &&
+        head->seq != last_seq) {
+        return true;
+    }
+    if (kernel_head->buf_info == PACC_JOB_MAGIC &&
+        kernel_head->seq != 0 &&
+        kernel_head->seq != last_kernel_seq) {
+        return true;
+    }
+    return false;
+}
+
+static uint32_t control_snapshot_detail(const uint8_t *snapshot,
+                                        uint64_t last_seq,
+                                        uint64_t last_kernel_seq,
+                                        uint64_t *seq_out) {
+    const volatile struct Doorbell *head;
+    const struct PaccJobDesc *kernel_head;
+    bool snapshot_preloaded;
+    bool snapshot_kernel;
+    uint32_t detail;
+
+    if (seq_out) {
+        *seq_out = 0;
+    }
+    if (!snapshot) {
+        return 0xffffu;
+    }
+
+    head = (const volatile struct Doorbell *)(const void *)snapshot;
+    kernel_head = (const struct PaccJobDesc *)(const void *)snapshot;
+    snapshot_preloaded =
+        head->magic == HETGPU_PACC_JOB_MAGIC &&
+        head->version == HETGPU_PACC_JOB_VERSION &&
+        head->seq != 0 &&
+        head->seq != last_seq;
+    snapshot_kernel =
+        kernel_head->buf_info == PACC_JOB_MAGIC &&
+        kernel_head->seq != 0 &&
+        kernel_head->seq != last_kernel_seq;
+    if (seq_out) {
+        *seq_out = kernel_head->seq ? kernel_head->seq : head->seq;
+    }
+
+    detail = (snapshot_preloaded ? 0x0001u : 0u) |
+             (snapshot_kernel ? 0x0002u : 0u) |
+             (head->magic == HETGPU_PACC_JOB_MAGIC ? 0x0004u : 0u) |
+             (head->version == HETGPU_PACC_JOB_VERSION ? 0x0008u : 0u) |
+             (head->seq != 0 ? 0x0010u : 0u) |
+             (kernel_head->seq != 0 ? 0x0020u : 0u) |
+             (kernel_head->buf_info == PACC_JOB_MAGIC ? 0x0040u : 0u) |
+             (kernel_head->addr != 0 ? 0x0080u : 0u) |
+             (kernel_head->len != 0 ? 0x0100u : 0u);
+    return detail;
+}
+
+static uint64_t post_irq_scan_us(void) {
+    return parse_env_u64_default("HETGPU_PACC_JOBD_POST_IRQ_SCAN_US", 2000000ULL);
+}
+
+static uint64_t post_irq_scan_sleep_us(void) {
+    return parse_env_u64_default("HETGPU_PACC_JOBD_POST_IRQ_SCAN_SLEEP_US", 1000ULL);
+}
+
+static uint32_t load_dispatch_snapshot(int fd,
+                                       struct Map *control_map,
+                                       uint8_t *snapshot,
+                                       uint64_t last_seq,
+                                       uint64_t last_kernel_seq,
+                                       volatile struct Doorbell **dispatch_ctl) {
+    uint32_t detail = 0xffffu;
+
+    if (dispatch_ctl) {
+        *dispatch_ctl = NULL;
+    }
+    if (!snapshot) {
+        return detail;
+    }
+
+    memset(snapshot, 0, HETGPU_PACC_CONTROL_BYTES);
+    sync_map_for_cpu(control_map);
+    if (read_control_snapshot(fd, snapshot, sizeof(struct PaccJobDesc)) != 0) {
+        sync_map_for_cpu(control_map);
+        if (dispatch_ctl && g_control_window) {
+            *dispatch_ctl = (volatile struct Doorbell *)g_control_window;
+        }
+        return detail;
+    }
+
+    detail = control_snapshot_detail(snapshot, last_seq, last_kernel_seq, NULL);
+    if ((detail & 0x3u) != 0) {
+        if (read_control_snapshot(fd, snapshot, HETGPU_PACC_CONTROL_BYTES) == 0) {
+            jobd_io_fence();
+            if (dispatch_ctl) {
+                *dispatch_ctl = (volatile struct Doorbell *)(void *)snapshot;
+            }
+        } else {
+            sync_map_for_cpu(control_map);
+            if (dispatch_ctl && g_control_window) {
+                *dispatch_ctl = (volatile struct Doorbell *)g_control_window;
+            }
+        }
+    } else if (dispatch_ctl) {
+        *dispatch_ctl = (volatile struct Doorbell *)(void *)snapshot;
+    }
+
+    return detail;
+}
+
+static uint64_t initial_scan_us(void) {
+    return parse_env_u64_default("HETGPU_PACC_JOBD_INITIAL_SCAN_US", 200000ULL);
 }
 
 static volatile struct Doorbell *scan_for_control(int fd, const struct pacc_zluda_ddr_info *ddr_info, struct Map *map) {
@@ -6094,6 +6979,33 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
         .seq = seq,
     };
 
+    if (mirror_host_status_mbox_mmap(fd, job_id, seq, status)) {
+        return;
+    }
+
+    if (jobd_status_control_window_enabled() &&
+        g_control_window &&
+        HETGPU_PACC_COMPLETION_OFF <= HETGPU_PACC_CONTROL_BYTES &&
+        sizeof(struct HostStatus) <= HETGPU_PACC_CONTROL_BYTES - HETGPU_PACC_COMPLETION_OFF) {
+        volatile struct HostStatus *host =
+            (volatile struct HostStatus *)(g_control_window + HETGPU_PACC_COMPLETION_OFF);
+        jobd_io_fence();
+        host->magic = HETGPU_PACC_JOB_MAGIC;
+        host->version = HETGPU_PACC_JOB_VERSION;
+        host->job_id = job_id;
+        host->status = status;
+        host->seq = seq;
+        jobd_io_fence();
+        jobd_flush_for_device((const void *)host, sizeof(*host));
+        if (jobd_msync_enabled() && g_control_map_base && g_control_map_len) {
+            (void)msync(g_control_map_base, g_control_map_len, MS_SYNC);
+        }
+        jobd_io_fence();
+        trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+                  job_id, job_name(job_id), seq, status);
+        return;
+    }
+
     if (jobd_status_pwrite_enabled()) {
         if (write_phys_copy_pwrite_only(fd, phys, &status_msg, sizeof(status_msg)) == 0) {
             trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
@@ -6103,42 +7015,114 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
         trace_msg("mirror_host_status pwrite failed for phys=0x%" PRIx64 ": %s; falling back to mmap",
                   phys, strerror(errno));
     }
-
-    if (g_control_window &&
-        HETGPU_PACC_COMPLETION_OFF <= HETGPU_PACC_CONTROL_BYTES &&
-        sizeof(struct HostStatus) <= HETGPU_PACC_CONTROL_BYTES - HETGPU_PACC_COMPLETION_OFF) {
-        volatile struct HostStatus *host =
-            (volatile struct HostStatus *)(g_control_window + HETGPU_PACC_COMPLETION_OFF);
-        host->magic = HETGPU_PACC_JOB_MAGIC;
-        host->version = HETGPU_PACC_JOB_VERSION;
-        host->job_id = job_id;
-        host->status = status;
-        host->seq = seq;
-        __sync_synchronize();
-        jobd_flush_for_device((const void *)host, sizeof(*host));
-        if (g_control_map_base && g_control_map_len) {
-            (void)msync(g_control_map_base, g_control_map_len, MS_SYNC);
-        }
-        trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
-                  job_id, job_name(job_id), seq, status);
-        return;
-    }
     if (map_phys(fd, phys, sizeof(struct HostStatus), &map)) {
         log_msg("map host status 0x%" PRIx64 " failed: %s", phys, strerror(errno));
         return;
     }
     volatile struct HostStatus *host = (volatile struct HostStatus *)map.ptr;
+    jobd_io_fence();
     host->magic = HETGPU_PACC_JOB_MAGIC;
     host->version = HETGPU_PACC_JOB_VERSION;
     host->job_id = job_id;
     host->status = status;
     host->seq = seq;
-    __sync_synchronize();
+    jobd_io_fence();
     jobd_flush_for_device((const void *)host, sizeof(*host));
-    msync(map.base, map.map_len, MS_SYNC);
+    if (jobd_msync_enabled()) {
+        (void)msync(map.base, map.map_len, MS_SYNC);
+    }
+    jobd_io_fence();
     trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
               job_id, job_name(job_id), seq, status);
     unmap_phys(&map);
+}
+
+static bool mirror_host_status_mbox_mmap(int fd, uint32_t job_id, uint64_t seq, uint32_t status) {
+    uint64_t control_off;
+    uint64_t end_off;
+    size_t map_len;
+    uint64_t page;
+    void *base;
+
+    if (fd < 0 || fd != g_mbox_fd ||
+        !g_ddr_info.ddr_base || !g_ddr_info.ddr_size ||
+        g_pacc_id >= HETGPU_PACC_COUNT) {
+        return false;
+    }
+    control_off = g_pacc_id * HETGPU_PACC_CONTROL_BYTES + HETGPU_PACC_COMPLETION_OFF;
+    end_off = control_off + sizeof(struct HostStatus);
+    if (end_off > g_ddr_info.ddr_size || end_off < control_off) {
+        return false;
+    }
+    page = (uint64_t)g_page_size;
+    if (page == 0) {
+        page = 4096;
+    }
+    map_len = (size_t)((end_off + page - 1) & ~(page - 1));
+    base = mmap(NULL, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (base == MAP_FAILED) {
+        trace_msg("mirror_host_status mbox mmap failed: %s", strerror(errno));
+        return false;
+    }
+
+    volatile struct HostStatus *host =
+        (volatile struct HostStatus *)((uint8_t *)base + control_off);
+    jobd_io_fence();
+    host->magic = HETGPU_PACC_JOB_MAGIC;
+    host->version = HETGPU_PACC_JOB_VERSION;
+    host->job_id = job_id;
+    host->status = status;
+    host->seq = seq;
+    jobd_io_fence();
+    jobd_flush_for_device((const void *)host, sizeof(*host));
+    if (jobd_msync_enabled()) {
+        (void)msync(base, map_len, MS_SYNC);
+    }
+    jobd_io_fence();
+    munmap(base, map_len);
+    trace_msg("mirror_host_status mmap: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+              job_id, job_name(job_id), seq, status);
+    return true;
+}
+
+static bool mirror_boot_marker_all_slots_mbox_mmap(int fd, uint32_t status) {
+    const size_t map_len = HETGPU_PACC_COUNT * HETGPU_PACC_CONTROL_BYTES;
+    void *base;
+
+    if (fd < 0) {
+        return false;
+    }
+    base = mmap(NULL, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (base == MAP_FAILED) {
+        trace_msg("boot marker all-slot mmap failed: %s", strerror(errno));
+        return false;
+    }
+    for (uint32_t slot = 0; slot < HETGPU_PACC_COUNT; slot++) {
+        volatile struct HostStatus *host =
+            (volatile struct HostStatus *)((uint8_t *)base +
+                                           (uint64_t)slot * HETGPU_PACC_CONTROL_BYTES +
+                                           HETGPU_PACC_COMPLETION_OFF);
+        host->magic = HETGPU_PACC_JOB_MAGIC;
+        host->version = HETGPU_PACC_JOB_VERSION;
+        host->job_id = PACC_KERNEL_JOB_ID;
+        host->status = status | slot;
+        host->seq = 0;
+    }
+    jobd_io_fence();
+    jobd_flush_for_device(base, map_len);
+    if (jobd_msync_enabled()) {
+        (void)msync(base, map_len, MS_SYNC);
+    }
+    jobd_io_fence();
+    munmap(base, map_len);
+    trace_msg("boot marker all-slot status=0x%x", status);
+    return true;
+}
+
+static void mirror_progress_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status) {
+    if (jobd_progress_status_enabled()) {
+        write_jobd_beacon(fd, job_id, seq, status, 0);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -6178,10 +7162,6 @@ int main(int argc, char **argv) {
     g_page_size = sysconf(_SC_PAGESIZE);
     if (g_page_size <= 0) g_page_size = 4096;
 
-    struct PreloadedJobs jobs;
-    memset(&jobs, 0, sizeof(jobs));
-    load_jobs_config(config, &jobs);
-
     int mbox_fd = open(mbox_path, O_RDWR | O_SYNC | O_CLOEXEC);
     if (mbox_fd < 0) {
         log_msg("open %s failed: %s", mbox_path, strerror(errno));
@@ -6191,13 +7171,29 @@ int main(int argc, char **argv) {
 
     log_msg("started strict=%d config=%s mbox=%s",
             strict ? 1 : 0, config, mbox_path);
+    struct PreloadedJobs jobs;
+    memset(&jobs, 0, sizeof(jobs));
+    load_jobs_config(config, &jobs);
+
     wait_for_initial_control(mbox_fd);
+
     read_shared_ddr_info_from_mbox(mbox_fd);
     read_pacc_id_from_mbox(mbox_fd);
     g_shared_ddr_fd_user_off =
         parse_env_u64_default("HETGPU_PACC_SHARED_DDR_FD_USER_OFF",
                               parse_env_u64_default("HETGPU_PACC_SHARED_DDR_USER_OFF",
                                                     HETGPU_PACC_SHARED_DDR_FD_USER_OFF));
+    if (jobd_boot_marker_enabled()) {
+        mirror_boot_marker_all_slots_mbox_mmap(mbox_fd, 0x6a010000u);
+        if (!mirror_host_status_mbox_mmap(mbox_fd, PACC_KERNEL_JOB_ID, 0, 0x6a10)) {
+            mirror_host_status(mbox_fd, PACC_KERNEL_JOB_ID, 0, 0x6a10);
+        }
+    }
+    if (jobd_boot_marker_enabled()) {
+        if (!mirror_host_status_mbox_mmap(mbox_fd, PACC_KERNEL_JOB_ID, 0, 0x6a11)) {
+            mirror_host_status(mbox_fd, PACC_KERNEL_JOB_ID, 0, 0x6a11);
+        }
+    }
     int map_fd = mbox_fd;
     bool close_map_fd = false;
     if (!jobd_force_devmem_enabled() && probe_shared_ddr_mmap(mbox_fd)) {
@@ -6239,14 +7235,32 @@ int main(int argc, char **argv) {
     } else {
         log_msg("full shared DDR mmap disabled; using per-access mmap");
     }
-    mirror_host_status(map_fd, 0, 0, 0x600d);
+    if (jobd_kernel_slot_map_enabled() && g_ddr_info.ddr_base && g_ddr_info.ddr_size) {
+        uint64_t slot_bytes = jobd_kernel_slot_map_bytes();
+        uint64_t slot_off = jobd_kernel_slot_map_off(slot_bytes);
+        if (slot_bytes > g_ddr_info.ddr_size) {
+            slot_bytes = g_ddr_info.ddr_size;
+            slot_off = 0;
+        }
+        if (slot_bytes != 0 &&
+            slot_off <= g_ddr_info.ddr_size - slot_bytes &&
+            map_phys(map_fd, g_ddr_info.ddr_base + slot_off, (size_t)slot_bytes,
+                     &g_kernel_slot_map) == 0) {
+            g_kernel_slot_map_valid = true;
+            log_msg("mapped kernel slot once: phys=0x%" PRIx64
+                    " off=0x%" PRIx64 " size=0x%" PRIx64 " ptr=%p",
+                    g_ddr_info.ddr_base + slot_off, slot_off, slot_bytes,
+                    g_kernel_slot_map.ptr);
+        } else {
+            log_msg("kernel slot mmap unavailable; using per-kernel mmap");
+        }
+    }
     struct Map control_map = {0};
     volatile struct Doorbell *ctl = NULL;
     uint64_t last_seq = 0;
     uint64_t last_table_seq = 0;
     uint64_t last_kernel_seq = 0;
     uint64_t heartbeat_tick = 0;
-    uint8_t control_snapshot[HETGPU_PACC_CONTROL_BYTES];
     ctl = scan_for_control(map_fd, &g_ddr_info, &control_map);
     if (!ctl) {
         if (close_map_fd) close(map_fd);
@@ -6256,32 +7270,121 @@ int main(int argc, char **argv) {
     g_control_window = (volatile uint8_t *)ctl;
     g_control_map_base = control_map.base;
     g_control_map_len = control_map.map_len;
-    mirror_host_status(map_fd, 0, 0, 0x6aa6);
-    seed_last_seen_sequences(ctl, &last_seq, &last_kernel_seq);
+    clear_stale_control_region(map_fd, &control_map);
+    if (jobd_seed_current_jobs_enabled()) {
+        seed_last_seen_sequences(ctl, &last_seq, &last_kernel_seq);
+    }
+    memset(g_control_snapshot, 0, sizeof(g_control_snapshot));
+    uint64_t initial_deadline = monotonic_us() + initial_scan_us();
+    uint32_t initial_detail = 0;
+    uint64_t initial_seq = 0;
+    bool initial_dispatched = false;
+    do {
+        memset(g_control_snapshot, 0, sizeof(g_control_snapshot));
+        sync_map_for_cpu(&control_map);
+        if (read_control_snapshot(map_fd, g_control_snapshot, sizeof(g_control_snapshot)) != 0) {
+            initial_detail = 0xffffu;
+            initial_seq = 0;
+            sleep_us(1000);
+            continue;
+        }
+        initial_detail = control_snapshot_detail(g_control_snapshot,
+                                                 last_seq,
+                                                 last_kernel_seq,
+                                                 &initial_seq);
+        enum DispatchPollResult first_result =
+            dispatch_any_job(map_fd,
+                             (volatile struct Doorbell *)(void *)g_control_snapshot,
+                             &jobs,
+                             strict,
+                             &last_seq,
+                             &last_table_seq,
+                             &last_kernel_seq);
+        if (first_result == DISPATCH_HANDLED) {
+            if (jobd_notify_irq_enabled()) {
+                int ret = notify_zluda_irq(mbox_fd);
+                if (ret < 0) {
+                    log_msg("failed to response initial job: %d", errno);
+                    return errno ? errno : EIO;
+                }
+            }
+            initial_dispatched = true;
+            break;
+        } else {
+            sleep_us(1000);
+        }
+    } while (initial_scan_us() != 0 && monotonic_us() < initial_deadline);
+    if (!initial_dispatched) {
+        uint32_t status = 0x6ac00000u | (initial_detail & 0xffffu);
+        mirror_host_status(map_fd, PACC_KERNEL_JOB_ID, initial_seq, status);
+        write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, initial_seq, 0x6ac0, initial_detail);
+    }
     for (;;) {
         enum DispatchPollResult poll_result;
         volatile struct Doorbell *dispatch_ctl = ctl;
-        memset(control_snapshot, 0, sizeof(control_snapshot));
-        if (read_control_snapshot(map_fd, control_snapshot, sizeof(struct PaccJobDesc)) == 0) {
-            volatile struct Doorbell *head = (volatile struct Doorbell *)(void *)control_snapshot;
-            const struct PaccJobDesc *kernel_head = (const struct PaccJobDesc *)(const void *)control_snapshot;
-            dispatch_ctl = head;
-            if (head->magic == HETGPU_PACC_JOB_MAGIC &&
-                head->version == HETGPU_PACC_JOB_VERSION &&
-                head->seq != 0 &&
-                head->seq != last_seq) {
-                if (read_control_snapshot(map_fd, control_snapshot, sizeof(control_snapshot)) != 0) {
-                    dispatch_ctl = ctl;
-                    sync_map_for_cpu(&control_map);
-                }
-            } else if (kernel_head->buf_info != PACC_JOB_MAGIC &&
-                       (head->seq == last_seq || kernel_head->seq == last_kernel_seq)) {
-                /* Fast idle path: the fresh header was enough. */
-            }
-        } else {
-            sync_map_for_cpu(&control_map);
+        bool pending_job = false;
+        bool woke_from_poll = false;
+        uint32_t snapshot_detail = 0;
+
+        mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7001);
+        write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7001, 0);
+        pending_job = control_has_pending_job(map_fd, last_seq, last_kernel_seq);
+        mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
+                               pending_job ? 0x7005 : 0x7002);
+        write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
+                          pending_job ? 0x7005 : 0x7002, 0);
+        if (jobd_mbox_poll_enabled() && !pending_job) {
+            woke_from_poll = wait_for_control(mbox_fd);
+            mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7003);
+            write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7003, 0);
         }
-        maybe_heartbeat_control(map_fd, control_snapshot, ++heartbeat_tick, last_kernel_seq);
+
+        snapshot_detail = load_dispatch_snapshot(map_fd,
+                                                 &control_map,
+                                                 g_control_snapshot,
+                                                 last_seq,
+                                                 last_kernel_seq,
+                                                 &dispatch_ctl);
+        if (snapshot_detail == 0xffffu) {
+            mirror_progress_status(map_fd, 0, heartbeat_tick, 0x6abe);
+        }
+        if (woke_from_poll && (snapshot_detail & 0x3u) == 0) {
+            uint64_t deadline = monotonic_us() + post_irq_scan_us();
+            uint64_t sleep_step = post_irq_scan_sleep_us();
+            uint64_t scans = 0;
+
+            while ((snapshot_detail & 0x3u) == 0 &&
+                   post_irq_scan_us() != 0 &&
+                   monotonic_us() < deadline) {
+                if (sleep_step != 0) {
+                    sleep_us(sleep_step);
+                }
+                snapshot_detail = load_dispatch_snapshot(map_fd,
+                                                         &control_map,
+                                                         g_control_snapshot,
+                                                         last_seq,
+                                                         last_kernel_seq,
+                                                         &dispatch_ctl);
+                scans++;
+            }
+            if ((snapshot_detail & 0x3u) == 0 && scans != 0) {
+                trace_msg("post-IRQ scan found no new job after %" PRIu64
+                          " scans detail=0x%x last_seq=%" PRIu64
+                          " last_kernel_seq=%" PRIu64,
+                          scans, snapshot_detail, last_seq, last_kernel_seq);
+            } else if (scans != 0) {
+                trace_msg("post-IRQ scan matched new job after %" PRIu64
+                          " scans detail=0x%x",
+                          scans, snapshot_detail);
+            }
+        }
+        if (!dispatch_ctl) {
+            dispatch_ctl = ctl;
+        }
+        mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
+                               0x70040000u | snapshot_detail);
+        write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7004, snapshot_detail);
+        maybe_heartbeat_control(map_fd, g_control_snapshot, ++heartbeat_tick, last_kernel_seq);
         poll_result = dispatch_any_job(
             map_fd,
             dispatch_ctl,
@@ -6290,6 +7393,8 @@ int main(int argc, char **argv) {
             &last_seq,
             &last_table_seq,
             &last_kernel_seq);
+        write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
+                          0x7007, (uint32_t)poll_result);
         if (poll_result == DISPATCH_HANDLED) {
             if (jobd_notify_irq_enabled()) {
                 int ret = notify_zluda_irq(mbox_fd);
@@ -6298,11 +7403,8 @@ int main(int argc, char **argv) {
                     return errno ? errno : EIO;
                 }
             }
-        } else {
+        } else if (!jobd_mbox_poll_enabled() || woke_from_poll) {
             sleep_when_idle();
-        }
-        if (jobd_mbox_poll_enabled()) {
-            wait_for_control(mbox_fd);
         }
     }
 }

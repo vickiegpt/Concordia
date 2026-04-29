@@ -61,9 +61,6 @@ typedef signed int s32;
 #define XM_INT8_TILE_M 4U
 #define XM_INT8_TILE_N 4U
 #define XM_INT8_TILE_K 8U
-#define XM_BF16_TILE_M 4U
-#define XM_BF16_TILE_N 4U
-#define XM_BF16_TILE_K 4U
 
 struct RuntimeConfig {
     u32 pacc_id;
@@ -184,7 +181,11 @@ struct PaccJobDesc {
 };
 
 static inline void fence_all(void) {
-    __asm__ volatile("fence rw, rw" ::: "memory");
+#if defined(__riscv)
+    __asm__ volatile("fence iorw, iorw" ::: "memory");
+#else
+    __sync_synchronize();
+#endif
 }
 
 static int parse_u64_arg(const char *s, u64 *out) {
@@ -291,10 +292,12 @@ static int wait_for_control_irq(void) {
     if (g_runtime.mbox_fd < 0) return -1;
 
     for (;;) {
+        fence_all();
         pfd.fd = g_runtime.mbox_fd;
         pfd.events = POLLIN;
         pfd.revents = 0;
         ret = poll(&pfd, 1, -1);
+        fence_all();
         if (ret > 0) return 0;
         if (ret == 0) continue;
         if (errno == EINTR || errno == EAGAIN) continue;
@@ -327,6 +330,7 @@ static int ioctl_get_pacc_id(u64 *pacc_id) {
 }
 
 static void signal_host_irq(void) {
+    fence_all();
     if (g_runtime.mbox_fd >= 0 && ioctl(g_runtime.mbox_fd, PACC_IOC_ZLUDA_IRQ) < 0) {
         fprintf(stderr, "hetgpu_pacc_runtime: ioctl ZLUDA_IRQ failed: %s\n", strerror(errno));
     }
@@ -692,39 +696,6 @@ static void xm_gemm_qoq_4x8x4_tile(const struct GemmJob *job,
     __riscv_vse32_v_i32m1((s32 *)acc, vacc, XM_INT8_TILE_M * XM_INT8_TILE_N);
 }
 
-static void xm_gemm_qqq_4x4x4_tile(const struct GemmJob *job,
-                                   const void *a,
-                                   const void *b,
-                                   u64 row0,
-                                   u64 col0,
-                                   u64 k0,
-                                   float *acc) {
-    u16 a_pack[XM_BF16_TILE_M * XM_BF16_TILE_K] = {0};
-    u16 b_pack[XM_BF16_TILE_K * XM_BF16_TILE_N] = {0};
-
-    for (u64 row = 0; row < XM_BF16_TILE_M; ++row) {
-        for (u64 kk = 0; kk < XM_BF16_TILE_K; ++kk) {
-            u64 a_idx = (row0 + row) * (u64)job->lda + (k0 + kk);
-            a_pack[row * XM_BF16_TILE_K + kk] = f32_to_bf16(load_typed(a, a_idx, job->atype));
-        }
-    }
-
-    for (u64 kk = 0; kk < XM_BF16_TILE_K; ++kk) {
-        for (u64 col = 0; col < XM_BF16_TILE_N; ++col) {
-            u64 b_idx = (k0 + kk) + (col0 + col) * (u64)job->ldb;
-            b_pack[kk * XM_BF16_TILE_N + col] = f32_to_bf16(load_typed(b, b_idx, job->btype));
-        }
-    }
-
-#if defined(__riscv_xsfvfwmaccqqq)
-    vfloat32m1_t vacc = __riscv_vle32_v_f32m1((const float *)acc, XM_BF16_TILE_M * XM_BF16_TILE_N);
-    vbfloat16m1_t va = __riscv_vle16_v_bf16m1((const __bf16 *)(const void *)a_pack, XM_BF16_TILE_M * XM_BF16_TILE_K);
-    vbfloat16mf2_t vb = __riscv_vle16_v_bf16mf2((const __bf16 *)(const void *)b_pack, XM_BF16_TILE_K * XM_BF16_TILE_N);
-    vacc = __riscv_sf_vfwmacc_4x4x4_f32m1(vacc, va, vb, XM_BF16_TILE_K * XM_BF16_TILE_N);
-    __riscv_vse32_v_f32m1((float *)acc, vacc, XM_BF16_TILE_M * XM_BF16_TILE_N);
-#endif
-}
-
 static int gemm_try_xm_native(const struct GemmJob *job,
                               const void *a,
                               const void *b,
@@ -759,40 +730,6 @@ static int gemm_try_xm_native(const struct GemmJob *job,
                 for (u64 row = row0; row < row1; ++row) {
                     for (u64 col = col0; col < col1; ++col) {
                         float value = (float)acc[(row - row0) * XM_INT8_TILE_N + (col - col0)];
-                        for (u64 kk = k_native; kk < job->k; ++kk) {
-                            u64 a_idx = row + kk * (u64)job->lda;
-                            u64 b_idx = kk + col * (u64)job->ldb;
-                            value += load_typed(a, a_idx, job->atype) * load_typed(b, b_idx, job->btype);
-                        }
-                        u64 c_idx = row + col * (u64)job->ldc;
-                        float old = beta != 0.0f ? load_typed(c, c_idx, job->ctype) : 0.0f;
-                        store_typed(c, c_idx, job->ctype, alpha * value + beta * old);
-                    }
-                }
-            }
-        }
-        return 1;
-    }
-
-    if (job->atype == PACC_DTYPE_BF16 && job->btype == PACC_DTYPE_BF16) {
-        for (u64 row0 = row_begin; row0 < row_end; row0 += XM_BF16_TILE_M) {
-            for (u64 col0 = 0; col0 < job->n; col0 += XM_BF16_TILE_N) {
-                u64 row1 = row0 + XM_BF16_TILE_M <= row_end ? row0 + XM_BF16_TILE_M : row_end;
-                u64 col1 = col0 + XM_BF16_TILE_N <= job->n ? col0 + XM_BF16_TILE_N : job->n;
-                if (row1 - row0 != XM_BF16_TILE_M || col1 - col0 != XM_BF16_TILE_N) {
-                    gemm_scalar_block(job, a, b, c, alpha, beta, row0, row1, col0, col1);
-                    continue;
-                }
-
-                float acc[XM_BF16_TILE_M * XM_BF16_TILE_N] = {0.0f};
-                u64 k_native = job->k - (job->k % XM_BF16_TILE_K);
-                for (u64 k0 = 0; k0 < k_native; k0 += XM_BF16_TILE_K) {
-                    xm_gemm_qqq_4x4x4_tile(job, a, b, row0, col0, k0, acc);
-                }
-
-                for (u64 row = row0; row < row1; ++row) {
-                    for (u64 col = col0; col < col1; ++col) {
-                        float value = acc[(row - row0) * XM_BF16_TILE_N + (col - col0)];
                         for (u64 kk = k_native; kk < job->k; ++kk) {
                             u64 a_idx = row + kk * (u64)job->lda;
                             u64 b_idx = kk + col * (u64)job->ldb;
@@ -1274,6 +1211,7 @@ static void hetgpu_pacc_runtime_loop(void) {
         if (!have_pending_irq && wait_for_control_irq() != 0) {
             return;
         }
+        fence_all();
         have_pending_irq = 0;
         if (refresh_shared_ddr_from_ioctl() != 0) {
             continue;
@@ -1310,6 +1248,7 @@ static void hetgpu_pacc_runtime_loop(void) {
             fence_all();
         }
         if (did_work) {
+            fence_all();
             signal_host_irq();
         }
     }

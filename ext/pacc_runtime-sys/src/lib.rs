@@ -218,6 +218,7 @@ pub const PACC_DMA_DDR_TO_DDR_CTL: u64 = 0x783c_0000_03600;
 
 const PACC_JOB_MAGIC: u64 = 0x5041_4343_4a4f_4231; // "PACCJOB1"
 const HETGPU_PACC_JOB_MAGIC: u64 = 0x4847_5055_5041_4343; // "HGPUPACC"
+const HETGPU_PACC_BEACON_MAGIC: u64 = 0x4847_5055_4243_4e31; // "HGPUBCN1"
 const HETGPU_PACC_JOB_VERSION: u32 = 1;
 const PACC_JOB_DESC_BYTES: usize = std::mem::size_of::<pacc_mbox_job_desc>();
 const PACC_JOB_HEADER_BYTES: usize = std::mem::size_of::<PaccJobImageHeader>();
@@ -230,6 +231,7 @@ pub const HETGPU_PACC_ARG_BASE: u64 = AP2PACC_MBOX_PHYS + 0x100;
 pub const HETGPU_PACC_DOORBELL_OFF: u64 = 0;
 pub const HETGPU_PACC_ARG_BASE_OFF: u64 = 0x100;
 pub const HETGPU_PACC_COMPLETION_OFF: u64 = 0x1f20;
+pub const HETGPU_PACC_BEACON_OFF: u64 = 0x1f40;
 pub const HETGPU_PACC_ARG_SLOT_BYTES: usize = 0x400;
 pub const HETGPU_PACC_RUNTIME_TABLE_OFF: u64 = 0x1400;
 const HETGPU_PACC_RUNTIME_TABLE_MAGIC: u64 = 0x4847_5055_5442_4c31;
@@ -899,6 +901,60 @@ pub struct PaccDevice {
     is_mbox_helper: bool,
 }
 
+fn poll_fd_response(fd: RawFd, label: &str, timeout_ms: u64) -> std::io::Result<()> {
+    let start = std::time::Instant::now();
+    loop {
+        let elapsed = start.elapsed();
+        let timeout = std::time::Duration::from_millis(timeout_ms);
+        if elapsed >= timeout {
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                format!("timed out polling {label} for response"),
+            ));
+        }
+        let remaining_ms = timeout
+            .saturating_sub(elapsed)
+            .as_millis()
+            .min(i32::MAX as u128) as i32;
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        std::sync::atomic::fence(Ordering::SeqCst);
+        let ret = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, remaining_ms) };
+        std::sync::atomic::fence(Ordering::SeqCst);
+        if ret > 0 {
+            let readable = pfd.revents & (libc::POLLIN | libc::POLLPRI) != 0;
+            let bad = pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0;
+            if readable {
+                return Ok(());
+            }
+            if bad {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!(
+                        "poll {label} returned unexpected revents=0x{:x}",
+                        pfd.revents
+                    ),
+                ));
+            }
+            continue;
+        }
+        if ret == 0 {
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                format!("timed out polling {label} for response"),
+            ));
+        }
+        let err = Error::last_os_error();
+        if matches!(err.raw_os_error(), Some(libc::EINTR | libc::EAGAIN)) {
+            continue;
+        }
+        return Err(err);
+    }
+}
+
 impl PaccDevice {
     pub fn open(id: usize) -> std::io::Result<Self> {
         let path = format!("/dev/pacc{}", id);
@@ -1007,151 +1063,92 @@ impl PaccDevice {
             }
             return Ok(());
         }
+        std::sync::atomic::fence(Ordering::SeqCst);
         let mut arg = shared_ddr;
-        let ret = unsafe { libc::ioctl(self.fd, IOC_ZLUDA_IRQ, 0usize) };
+        let fd = self.fd;
+        let mut irq_cmd = IOC_ZLUDA_IRQ;
+        let mut ret = unsafe { libc::ioctl(fd, IOC_ZLUDA_IRQ, 0usize) };
+        std::sync::atomic::fence(Ordering::SeqCst);
         if ret < 0 {
-            let primary_err = std::io::Error::last_os_error();
-            let legacy_ret =
-                unsafe { libc::ioctl(self.fd, IOC_ZLUDA_IRQ_LEGACY, &mut arg as *mut _) };
-            if legacy_ret == 0 {
-                if zluda_irq_trace_enabled() {
-                    eprintln!(
-                        "PACC ZLUDA IRQ: dev={} shared_ddr_base=0x{:x} shared_ddr_size=0x{:x} via legacy ioctl 0x{:x}",
-                        self.id, shared_ddr.ddr_base, shared_ddr.ddr_size, IOC_ZLUDA_IRQ_LEGACY
-                    );
-                }
-                return Ok(());
+            let irq_err = std::io::Error::last_os_error();
+            if matches!(
+                irq_err.raw_os_error(),
+                Some(libc::ENOTTY | libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)
+            ) {
+                std::sync::atomic::fence(Ordering::SeqCst);
+                ret = unsafe { libc::ioctl(fd, IOC_ZLUDA_IRQ_LEGACY, &mut arg as *mut _) };
+                std::sync::atomic::fence(Ordering::SeqCst);
+                irq_cmd = IOC_ZLUDA_IRQ_LEGACY;
             }
-            let legacy_err = std::io::Error::last_os_error();
-            if self.is_mbox_helper
-                && use_shared_ddr_control_window()
-                && matches!(
-                    primary_err.raw_os_error(),
-                    Some(libc::ENOTTY | libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP)
-                )
-            {
+        }
+        if ret < 0 && self.is_mbox_helper {
+            let helper_err = std::io::Error::last_os_error();
+            if matches!(
+                helper_err.raw_os_error(),
+                Some(libc::ENOTTY | libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)
+            ) {
                 let pacc_path = format!("/dev/pacc{}", self.id);
                 if let Ok(pacc_file) = OpenOptions::new().read(true).write(true).open(&pacc_path) {
                     let pacc_fd = pacc_file.as_raw_fd();
-                    let pacc_ret = unsafe { libc::ioctl(pacc_fd, IOC_ZLUDA_IRQ, 0usize) };
-                    if pacc_ret == 0 {
-                        if zluda_irq_trace_enabled() {
-                            eprintln!(
-                                "PACC ZLUDA IRQ: dev={} helper fd unsupported; woke PACC via {} ioctl 0x{:x}",
-                                self.id, pacc_path, IOC_ZLUDA_IRQ
-                            );
+                    irq_cmd = IOC_ZLUDA_IRQ;
+                    std::sync::atomic::fence(Ordering::SeqCst);
+                    ret = unsafe { libc::ioctl(pacc_fd, IOC_ZLUDA_IRQ, 0usize) };
+                    std::sync::atomic::fence(Ordering::SeqCst);
+                    if ret < 0 {
+                        let pacc_err = std::io::Error::last_os_error();
+                        if matches!(
+                            pacc_err.raw_os_error(),
+                            Some(libc::ENOTTY | libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)
+                        ) {
+                            irq_cmd = IOC_ZLUDA_IRQ_LEGACY;
+                            std::sync::atomic::fence(Ordering::SeqCst);
+                            ret = unsafe {
+                                libc::ioctl(pacc_fd, IOC_ZLUDA_IRQ_LEGACY, &mut arg as *mut _)
+                            };
+                            std::sync::atomic::fence(Ordering::SeqCst);
                         }
-                        return Ok(());
-                    }
-                    let pacc_primary_err = std::io::Error::last_os_error();
-                    let mut pacc_arg = shared_ddr;
-                    let pacc_legacy_ret = unsafe {
-                        libc::ioctl(pacc_fd, IOC_ZLUDA_IRQ_LEGACY, &mut pacc_arg as *mut _)
-                    };
-                    if pacc_legacy_ret == 0 {
-                        if zluda_irq_trace_enabled() {
-                            eprintln!(
-                                "PACC ZLUDA IRQ: dev={} helper fd unsupported; woke PACC via {} legacy ioctl 0x{:x}",
-                                self.id, pacc_path, IOC_ZLUDA_IRQ_LEGACY
-                            );
-                        }
-                        return Ok(());
-                    }
-                    if zluda_irq_trace_enabled() {
-                        eprintln!(
-                            "PACC ZLUDA IRQ: helper fd unsupported; {} primary ioctl 0x{:x} failed: {}; legacy ioctl 0x{:x} failed: {}",
-                            pacc_path,
-                            IOC_ZLUDA_IRQ,
-                            pacc_primary_err,
-                            IOC_ZLUDA_IRQ_LEGACY,
-                            std::io::Error::last_os_error()
-                        );
                     }
                 }
-                if zluda_irq_trace_enabled() {
-                    eprintln!(
-                        "PACC ZLUDA IRQ: fd for dev={} does not implement ioctl 0x{:x}; relying on shared-DDR polling",
-                        self.id, IOC_ZLUDA_IRQ
-                    );
-                }
-                return Ok(());
             }
+        }
+        if ret < 0 {
+            let with_ddr_err = std::io::Error::last_os_error();
             if zluda_irq_mock_enabled() {
                 if zluda_irq_trace_enabled() {
                     eprintln!(
-                        "PACC ZLUDA IRQ mock: ioctl 0x{:x} on /dev/pacc{} failed: {}; legacy 0x{:x} failed: {}; using CPU-side firmware mock",
-                        IOC_ZLUDA_IRQ, self.id, primary_err, IOC_ZLUDA_IRQ_LEGACY, legacy_err
+                        "PACC ZLUDA IRQ mock: shared-DDR ioctl 0x{:x} on /dev/pacc{} failed: {}; using CPU-side firmware mock",
+                        irq_cmd, self.id, with_ddr_err
                     );
                 }
                 return Ok(());
             }
             return Err(Error::new(
-                primary_err.kind(),
+                with_ddr_err.kind(),
                 format!(
-                    "PACC ZLUDA IRQ ioctl 0x{:x} failed on dev{}: {}; legacy ioctl 0x{:x} also failed: {}",
-                    IOC_ZLUDA_IRQ, self.id, primary_err, IOC_ZLUDA_IRQ_LEGACY, legacy_err
+                    "PACC ZLUDA IRQ shared-DDR ioctl 0x{:x} failed on /dev/pacc{}: {}",
+                    irq_cmd, self.id, with_ddr_err
                 ),
             ));
         }
         if zluda_irq_trace_enabled() {
             eprintln!(
-                "PACC ZLUDA IRQ: dev={} shared_ddr_base=0x{:x} shared_ddr_size=0x{:x}",
-                self.id, shared_ddr.ddr_base, shared_ddr.ddr_size
+                "PACC ZLUDA IRQ: dev={} shared_ddr_base=0x{:x} shared_ddr_size=0x{:x} via ioctl 0x{:x}",
+                self.id, shared_ddr.ddr_base, shared_ddr.ddr_size, irq_cmd
             );
         }
         Ok(())
     }
 
     pub fn poll_response(&self, timeout_ms: u64) -> std::io::Result<()> {
-        let start = std::time::Instant::now();
-        loop {
-            let elapsed = start.elapsed();
-            let timeout = std::time::Duration::from_millis(timeout_ms);
-            if elapsed >= timeout {
-                return Err(Error::new(
-                    ErrorKind::TimedOut,
-                    format!("timed out polling /dev/pacc{} for response", self.id),
-                ));
-            }
-            let remaining_ms = timeout
-                .saturating_sub(elapsed)
-                .as_millis()
-                .min(i32::MAX as u128) as i32;
-            let mut pfd = libc::pollfd {
-                fd: self.fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let ret = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, remaining_ms) };
-            if ret > 0 {
-                let readable = pfd.revents & (libc::POLLIN | libc::POLLPRI) != 0;
-                let bad = pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0;
-                if readable {
-                    return Ok(());
-                }
-                if bad {
-                    return Err(Error::new(
-                        ErrorKind::Other,
-                        format!(
-                            "poll /dev/pacc{} returned unexpected revents=0x{:x}",
-                            self.id, pfd.revents
-                        ),
-                    ));
-                }
-                continue;
-            }
-            if ret == 0 {
-                return Err(Error::new(
-                    ErrorKind::TimedOut,
-                    format!("timed out polling /dev/pacc{} for response", self.id),
-                ));
-            }
-            let err = Error::last_os_error();
-            if matches!(err.raw_os_error(), Some(libc::EINTR | libc::EAGAIN)) {
-                continue;
-            }
-            return Err(err);
-        }
+        poll_fd_response(self.fd, &format!("/dev/pacc{}", self.id), timeout_ms)
+    }
+
+    pub fn poll_helper_response(&self, helper_file: &File, timeout_ms: u64) -> std::io::Result<()> {
+        poll_fd_response(
+            helper_file.as_raw_fd(),
+            &helper_path_for_pacc(self.id),
+            timeout_ms,
+        )
     }
 
     pub fn bo_alloc_map(&self, len: usize) -> std::io::Result<PaccBoMap> {
@@ -1286,6 +1283,13 @@ impl PaccDevice {
         self.submit_preloaded_job_bytes(job_id, arg_bytes)
     }
 
+    pub fn submit_runtime_job_async<T: Copy>(&self, job_id: u32, args: &T) -> std::io::Result<u64> {
+        let arg_bytes = unsafe {
+            std::slice::from_raw_parts((args as *const T).cast::<u8>(), std::mem::size_of::<T>())
+        };
+        self.submit_preloaded_job_bytes_async(job_id, arg_bytes)
+    }
+
     pub fn submit_preloaded_job_bytes(&self, job_id: u32, arg_bytes: &[u8]) -> std::io::Result<()> {
         if std::env::var("HETGPU_PACC_ENFORCE_RUNTIME_READY")
             .ok()
@@ -1295,6 +1299,7 @@ impl PaccDevice {
             require_runtime_ready()?;
         }
         let _control_guard = lock_pacc_control(self.id as usize, "PACC runtime job")?;
+        ensure_pacc_jobd_bootstrapped(self)?;
 
         let seq = next_runtime_job_seq();
 
@@ -1328,6 +1333,79 @@ impl PaccDevice {
         };
         buf[..HETGPU_PACC_DOORBELL_BYTES].copy_from_slice(doorbell_bytes);
         self.job_submit_user_buffer_with_len(&buf, submit_len)
+    }
+
+    pub fn submit_preloaded_job_bytes_async(
+        &self,
+        job_id: u32,
+        arg_bytes: &[u8],
+    ) -> std::io::Result<u64> {
+        if std::env::var("HETGPU_PACC_ENFORCE_RUNTIME_READY")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            require_runtime_ready()?;
+        }
+        let _control_guard = lock_pacc_control(self.id as usize, "PACC runtime job")?;
+        ensure_pacc_jobd_bootstrapped(self)?;
+
+        let seq = next_runtime_job_seq();
+        let doorbell = HetgpuPaccDoorbell {
+            magic: HETGPU_PACC_JOB_MAGIC,
+            version: HETGPU_PACC_JOB_VERSION,
+            job_id,
+            flags: 0,
+            status: 0,
+            seq,
+        };
+
+        if std::env::var("HETGPU_PACC_USE_DRIVER_JOB_IOCTL")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            self.stage_preloaded_job_args(job_id, seq, arg_bytes)?;
+            self.stage_preloaded_doorbell(&doorbell)?;
+            let submit_len = align_up(HETGPU_PACC_DOORBELL_BYTES, 64);
+            let mut buf = vec![0u8; submit_len];
+            let doorbell_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    (&doorbell as *const HetgpuPaccDoorbell).cast::<u8>(),
+                    HETGPU_PACC_DOORBELL_BYTES,
+                )
+            };
+            buf[..HETGPU_PACC_DOORBELL_BYTES].copy_from_slice(doorbell_bytes);
+            self.job_submit_user_buffer_with_len(&buf, submit_len)?;
+            return Ok(seq);
+        }
+
+        if zluda_irq_mock_enabled() {
+            nvtop_record_submit(self.id as usize, job_id, seq, None, 0);
+            let result = mock_runtime_job(job_id, arg_bytes);
+            nvtop_record_complete(self.id as usize, job_id, seq, &result);
+            result?;
+            return Ok(seq);
+        }
+
+        self.stage_preloaded_job_args(job_id, seq, arg_bytes)?;
+        if env_flag_enabled("HETGPU_PACC_PRE_DOORBELL_IRQ") {
+            self.zluda_irq(shared_ddr_info())?;
+            let sleep_us = parse_env_usize("HETGPU_PACC_PRE_DOORBELL_IRQ_SLEEP_US", 1000);
+            if sleep_us != 0 {
+                std::thread::sleep(std::time::Duration::from_micros(sleep_us as u64));
+            }
+            self.stage_preloaded_job_args(job_id, seq, arg_bytes)?;
+        }
+        self.stage_preloaded_doorbell(&doorbell)?;
+        std::sync::atomic::fence(Ordering::SeqCst);
+        let sleep_us = runtime_post_doorbell_irq_sleep_us();
+        if sleep_us != 0 {
+            std::thread::sleep(std::time::Duration::from_micros(sleep_us));
+        }
+        self.zluda_irq(shared_ddr_info())?;
+        nvtop_record_submit(self.id as usize, job_id, seq, None, 0);
+        Ok(seq)
     }
 
     fn submit_preloaded_job_mailbox(
@@ -1365,6 +1443,11 @@ impl PaccDevice {
                 e
             }
         })?;
+        std::sync::atomic::fence(Ordering::SeqCst);
+        let sleep_us = runtime_post_doorbell_irq_sleep_us();
+        if sleep_us != 0 {
+            std::thread::sleep(std::time::Duration::from_micros(sleep_us));
+        }
         self.zluda_irq(shared_ddr_info())?;
         nvtop_record_submit(self.id as usize, job_id, seq, None, 0);
         let result = self.wait_preloaded_job_status(job_id, seq);
@@ -1479,7 +1562,17 @@ impl PaccDevice {
             .copy_from_slice(arg_bytes);
         let slot_off = HETGPU_PACC_ARG_BASE_OFF + (slot * HETGPU_PACC_ARG_SLOT_BYTES) as u64;
         if use_shared_ddr_control_window() {
-            return write_shared_ddr_control_window(self.id, slot_off, &helper_payload);
+            if helper_payload.len() > HETGPU_PACC_ARG_HEADER_BYTES {
+                write_shared_ddr_control_window(
+                    self.id,
+                    slot_off + HETGPU_PACC_ARG_HEADER_BYTES as u64,
+                    &helper_payload[HETGPU_PACC_ARG_HEADER_BYTES..],
+                )?;
+            }
+            std::sync::atomic::fence(Ordering::SeqCst);
+            write_shared_ddr_control_window(self.id, slot_off, header_bytes)?;
+            std::sync::atomic::fence(Ordering::SeqCst);
+            return Ok(());
         }
         Err(Error::new(
             ErrorKind::Unsupported,
@@ -1594,7 +1687,22 @@ impl PaccDevice {
             )
         };
         if use_shared_ddr_control_window() {
-            return write_shared_ddr_control_window(self.id, HETGPU_PACC_RUNTIME_TABLE_OFF, bytes);
+            let commit_bytes = helper_io_chunk_bytes().min(bytes.len()).max(1);
+            if bytes.len() > commit_bytes {
+                write_shared_ddr_control_window(
+                    self.id,
+                    HETGPU_PACC_RUNTIME_TABLE_OFF + commit_bytes as u64,
+                    &bytes[commit_bytes..],
+                )?;
+            }
+            std::sync::atomic::fence(Ordering::SeqCst);
+            write_shared_ddr_control_window(
+                self.id,
+                HETGPU_PACC_RUNTIME_TABLE_OFF,
+                &bytes[..commit_bytes],
+            )?;
+            std::sync::atomic::fence(Ordering::SeqCst);
+            return Ok(());
         }
         Err(Error::new(
             ErrorKind::Unsupported,
@@ -2075,6 +2183,127 @@ fn runtime_boot_state() -> &'static Mutex<[bool; 4]> {
     RUNTIME_BOOTED.get_or_init(|| Mutex::new([false; 4]))
 }
 
+fn pacc_jobd_bootstrap_enabled() -> bool {
+    !matches!(
+        std::env::var("HETGPU_PACC_JOBD_BOOTSTRAP")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase()),
+        Some(v) if v == "0" || v == "false" || v == "no" || v == "off"
+    )
+}
+
+fn pacc_jobd_bootstrap_timeout_ms() -> u64 {
+    parse_env_usize("HETGPU_PACC_JOBD_BOOTSTRAP_TIMEOUT_MS", 5_000) as u64
+}
+
+fn pacc_jobd_bootstrap_settle_ms() -> u64 {
+    parse_env_usize("HETGPU_PACC_JOBD_BOOTSTRAP_SETTLE_MS", 50) as u64
+}
+
+fn ensure_pacc_jobd_bootstrapped(dev: &PaccDevice) -> std::io::Result<()> {
+    if !pacc_jobd_bootstrap_enabled()
+        || zluda_irq_mock_enabled()
+        || !use_shared_ddr_control_window()
+    {
+        return Ok(());
+    }
+
+    let mut booted = runtime_boot_state()
+        .lock()
+        .map_err(|_| Error::new(ErrorKind::Other, "PACC jobd bootstrap lock poisoned"))?;
+    let Some(booted_slot) = booted.get_mut(dev.id) else {
+        return Ok(());
+    };
+    if *booted_slot {
+        return Ok(());
+    }
+
+    let mut shared_file = open_shared_ddr_window_file(dev.id);
+    let empty_doorbell = [0u8; HETGPU_PACC_DOORBELL_BYTES];
+    let empty_completion = [0u8; 32];
+    write_shared_ddr_control_window_cached(
+        &mut shared_file,
+        dev.id,
+        HETGPU_PACC_DOORBELL_OFF,
+        &empty_doorbell,
+    )?;
+    write_shared_ddr_control_window_cached(
+        &mut shared_file,
+        dev.id,
+        HETGPU_PACC_COMPLETION_OFF,
+        &empty_completion,
+    )?;
+    std::sync::atomic::fence(Ordering::SeqCst);
+    dev.zluda_irq(shared_ddr_info())?;
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_millis(pacc_jobd_bootstrap_timeout_ms());
+    let settle = std::time::Duration::from_millis(pacc_jobd_bootstrap_settle_ms());
+    let mut status_buf = [0u8; 32];
+    let mut last_status: Option<(u64, u32, u32, u64)> = None;
+    loop {
+        read_shared_ddr_control_window_cached(
+            &mut shared_file,
+            dev.id,
+            HETGPU_PACC_COMPLETION_OFF,
+            &mut status_buf,
+        )?;
+        let magic = u64::from_le_bytes(status_buf[0..8].try_into().unwrap());
+        let version = u32::from_le_bytes(status_buf[8..12].try_into().unwrap());
+        let job_id = u32::from_le_bytes(status_buf[12..16].try_into().unwrap());
+        let status = u32::from_le_bytes(status_buf[16..20].try_into().unwrap());
+        let seq = u64::from_le_bytes(status_buf[24..32].try_into().unwrap());
+        let current = (magic, job_id, status, seq);
+        if zluda_irq_trace_enabled() && last_status != Some(current) {
+            eprintln!(
+                "PACC jobd bootstrap: pacc{} magic=0x{:x} version={} job_id={} status=0x{:x} seq={} elapsed_us={}",
+                dev.id,
+                magic,
+                version,
+                job_id,
+                status,
+                seq,
+                start.elapsed().as_micros()
+            );
+        }
+        last_status = Some(current);
+        if magic == HETGPU_PACC_JOB_MAGIC
+            && version == HETGPU_PACC_JOB_VERSION
+            && job_id == hetgpu_pacc_job_id::KERNEL
+            && (status == 0x6ab7 || (status & 0xffff) == 0x7001 || (status & 0xffff) == 0x7002)
+        {
+            *booted_slot = true;
+            return Ok(());
+        }
+        if start.elapsed() >= settle
+            && magic == 0
+            && version == 0
+            && job_id == 0
+            && status == 0
+            && seq == 0
+        {
+            if zluda_irq_trace_enabled() {
+                eprintln!(
+                    "PACC jobd bootstrap: pacc{} init IRQ settled without status update; continuing",
+                    dev.id
+                );
+            }
+            *booted_slot = true;
+            return Ok(());
+        }
+        if start.elapsed() >= timeout {
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                format!(
+                    "timed out bootstrapping PACC jobd on pacc{}; completion raw={:02x?}",
+                    dev.id, status_buf
+                ),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 fn preloaded_arg_slot(job_id: u32) -> Option<usize> {
     match job_id {
         hetgpu_pacc_job_id::GEMM => Some(0),
@@ -2230,21 +2459,131 @@ fn wait_shared_ddr_job_status(
     let reirq_interval = std::time::Duration::from_millis(reirq_ms);
     let mut last_reirq = start;
     let status_trace = env_flag_enabled("HETGPU_PACC_STATUS_TRACE")
+        || env_flag_enabled("HETGPU_PACC_BEACON_TRACE")
         || env_flag_enabled("HETGPU_PACC_KERNEL_TIMING")
         || env_flag_enabled("HETGPU_PACC_TIMING");
     let mut last_status: Option<(u64, u32, u32, u64)> = None;
+    let mut beacon_buf = [0u8; 32];
+    let mut last_beacon: Option<(u64, u32, u32, u32, u64)> = None;
+    let mut last_matching_beacon: Option<(u32, u32, u64)> = None;
+    let poll_wait_enabled = !use_process_mock_shared_ddr_window()
+        && !use_pacc_bo_shared_ddr()
+        && response_poll_enabled();
+    let mut poll_wait_consumed = false;
     loop {
-        read_shared_ddr_control_window_cached(
+        if poll_wait_enabled && !poll_wait_consumed {
+            let elapsed = start.elapsed();
+            let timeout = std::time::Duration::from_millis(timeout_ms);
+            if elapsed >= timeout {
+                break;
+            }
+            let remaining_ms = timeout.saturating_sub(elapsed).as_millis().max(1) as u64;
+            if zluda_irq_trace_enabled() {
+                eprintln!(
+                    "PACC ZLUDA IRQ: dev={} poll-wait job_id={} seq={} poll_ms={}",
+                    dev.id, expected_job_id, seq, remaining_ms
+                );
+            }
+            std::sync::atomic::fence(Ordering::SeqCst);
+            let poll_result = dev.poll_response(remaining_ms);
+            poll_wait_consumed = true;
+            match poll_result {
+                Ok(()) => {}
+	                Err(err) if err.kind() == ErrorKind::TimedOut => {
+	                    std::sync::atomic::fence(Ordering::SeqCst);
+	                    let _ = read_shared_ddr_status_window_cached(
+	                        shared_file,
+	                        dev.id,
+                        HETGPU_PACC_COMPLETION_OFF,
+	                        &mut buf,
+	                    );
+	                    std::sync::atomic::fence(Ordering::SeqCst);
+	                    if let Some(result) = decode_pacc_host_status(&buf, expected_job_id, seq) {
+	                        if zluda_irq_trace_enabled() {
+	                            eprintln!(
+	                                "PACC ZLUDA IRQ: dev={} poll timed out but completion is ready job_id={} seq={}",
+	                                dev.id, expected_job_id, seq
+	                            );
+	                        }
+	                        return result;
+	                    }
+	                    let mut beacon_text = String::new();
+	                    if read_shared_ddr_status_window_cached(
+	                        shared_file,
+	                        dev.id,
+                        HETGPU_PACC_BEACON_OFF,
+                        &mut beacon_buf,
+                    )
+                    .is_ok()
+                    {
+                        let beacon_magic = u64::from_le_bytes(beacon_buf[0..8].try_into().unwrap());
+                        let beacon_job_id =
+                            u32::from_le_bytes(beacon_buf[12..16].try_into().unwrap());
+                        let beacon_phase =
+                            u32::from_le_bytes(beacon_buf[16..20].try_into().unwrap());
+                        let beacon_detail =
+                            u32::from_le_bytes(beacon_buf[20..24].try_into().unwrap());
+                        let beacon_seq = u64::from_le_bytes(beacon_buf[24..32].try_into().unwrap());
+                        if beacon_magic == HETGPU_PACC_BEACON_MAGIC
+                            && beacon_job_id == expected_job_id
+                            && beacon_seq == seq
+                        {
+                            beacon_text = format!(
+                                "; last beacon phase=0x{:x} detail=0x{:x} seq={}",
+                                beacon_phase, beacon_detail, beacon_seq
+                            );
+                        }
+                    }
+                    let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+                    let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
+                    let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+                    let status = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+                    let status_seq = u64::from_le_bytes(buf[24..32].try_into().unwrap());
+                    return Err(Error::new(
+                        ErrorKind::TimedOut,
+                        format!(
+                            "timed out polling PACC job_id {} seq {} after IRQ; peer did not signal poll; completion slot magic=0x{:x} version={} job_id={} status=0x{:x} seq={} raw={:02x?}{}",
+                            expected_job_id,
+                            seq,
+                            magic,
+                            version,
+                            status_job_id,
+                            status,
+                            status_seq,
+                            buf,
+                            beacon_text
+                        ),
+                    ));
+                }
+                Err(err) => return Err(err),
+            }
+        } else if !poll_wait_enabled && reirq_ms != 0 && last_reirq.elapsed() >= reirq_interval {
+            if zluda_irq_trace_enabled() {
+                eprintln!(
+                    "PACC ZLUDA IRQ: dev={} re-kick job_id={} seq={} after {} ms without completion",
+                    dev.id,
+                    expected_job_id,
+                    seq,
+                    last_reirq.elapsed().as_millis()
+                );
+            }
+            dev.zluda_irq(shared_ddr_info())?;
+            last_reirq = std::time::Instant::now();
+        }
+
+        std::sync::atomic::fence(Ordering::SeqCst);
+        read_shared_ddr_status_window_cached(
             shared_file,
             dev.id,
             HETGPU_PACC_COMPLETION_OFF,
             &mut buf,
         )?;
+        std::sync::atomic::fence(Ordering::SeqCst);
+        let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+        let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+        let status = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+        let status_seq = u64::from_le_bytes(buf[24..32].try_into().unwrap());
         if status_trace {
-            let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
-            let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
-            let status = u32::from_le_bytes(buf[16..20].try_into().unwrap());
-            let status_seq = u64::from_le_bytes(buf[24..32].try_into().unwrap());
             let current = (magic, status_job_id, status, status_seq);
             if last_status != Some(current)
                 && magic == HETGPU_PACC_JOB_MAGIC
@@ -2261,66 +2600,117 @@ fn wait_shared_ddr_job_status(
                 );
             }
             last_status = Some(current);
+            read_shared_ddr_status_window_cached(
+                shared_file,
+                dev.id,
+                HETGPU_PACC_BEACON_OFF,
+                &mut beacon_buf,
+            )?;
+            let beacon_magic = u64::from_le_bytes(beacon_buf[0..8].try_into().unwrap());
+            let beacon_job_id = u32::from_le_bytes(beacon_buf[12..16].try_into().unwrap());
+            let beacon_phase = u32::from_le_bytes(beacon_buf[16..20].try_into().unwrap());
+            let beacon_detail = u32::from_le_bytes(beacon_buf[20..24].try_into().unwrap());
+            let beacon_seq = u64::from_le_bytes(beacon_buf[24..32].try_into().unwrap());
+            let beacon_current = (
+                beacon_magic,
+                beacon_job_id,
+                beacon_phase,
+                beacon_detail,
+                beacon_seq,
+            );
+            if beacon_magic == HETGPU_PACC_BEACON_MAGIC
+                && beacon_job_id == expected_job_id
+                && beacon_seq == seq
+            {
+                last_matching_beacon = Some((beacon_phase, beacon_detail, beacon_seq));
+                if last_beacon != Some(beacon_current) {
+                    eprintln!(
+                        "PACC beacon: pacc{} job_id={} seq={} phase=0x{:x} detail=0x{:x} elapsed_us={}",
+                        dev.id,
+                        expected_job_id,
+                        seq,
+                        beacon_phase,
+                        beacon_detail,
+                        start.elapsed().as_micros()
+                    );
+                }
+            }
+            last_beacon = Some(beacon_current);
         }
         if let Some(result) = decode_pacc_host_status(&buf, expected_job_id, seq) {
             return result;
         }
 
-        if reirq_ms != 0 && last_reirq.elapsed() >= reirq_interval {
+        if poll_wait_enabled
+            && poll_wait_consumed
+            && magic == HETGPU_PACC_JOB_MAGIC
+            && status_job_id == expected_job_id
+            && status_seq != 0
+            && status_seq != seq
+        {
             if zluda_irq_trace_enabled() {
                 eprintln!(
-                    "PACC ZLUDA IRQ: dev={} re-kick job_id={} seq={} after {} ms without completion",
-                    dev.id,
-                    expected_job_id,
-                    seq,
-                    last_reirq.elapsed().as_millis()
+                    "PACC ZLUDA IRQ: dev={} stale completion job_id={} got_seq={} want_seq={}, re-irq current doorbell",
+                    dev.id, expected_job_id, status_seq, seq
                 );
             }
+            std::sync::atomic::fence(Ordering::SeqCst);
             dev.zluda_irq(shared_ddr_info())?;
+            std::sync::atomic::fence(Ordering::SeqCst);
             last_reirq = std::time::Instant::now();
-        }
-
-        if !use_process_mock_shared_ddr_window()
-            && !use_pacc_bo_shared_ddr()
-            && !dev.is_mbox_helper
-            && response_poll_enabled()
-        {
-            let elapsed = start.elapsed();
-            let timeout = std::time::Duration::from_millis(timeout_ms);
-            if elapsed >= timeout {
-                return Err(Error::new(
-                    ErrorKind::TimedOut,
-                    format!(
-                        "timed out waiting for PACC job_id {} seq {} completion",
-                        expected_job_id, seq
-                    ),
-                ));
-            }
-            let remaining_ms = timeout.saturating_sub(elapsed).as_millis().max(1) as u64;
-            let poll_ms = response_poll_slice_ms().min(remaining_ms);
-            match dev.poll_response(poll_ms) {
-                Ok(()) => {}
-                Err(err) if err.kind() == ErrorKind::TimedOut => {}
-                Err(err) => return Err(err),
-            }
+            poll_wait_consumed = false;
+            continue;
         }
 
         if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
-            let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
             let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
-            let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
-            let status = u32::from_le_bytes(buf[16..20].try_into().unwrap());
-            let status_seq = u64::from_le_bytes(buf[24..32].try_into().unwrap());
+            let beacon_text = last_matching_beacon
+                .map(|(phase, detail, beacon_seq)| {
+                    format!(
+                        "; last beacon phase=0x{:x} detail=0x{:x} seq={}",
+                        phase, detail, beacon_seq
+                    )
+                })
+                .unwrap_or_default();
             return Err(Error::new(
                 ErrorKind::TimedOut,
                 format!(
-                    "timed out waiting for PACC job_id {} seq {} completion; completion slot magic=0x{:x} version={} job_id={} status=0x{:x} seq={} raw={:02x?}",
-                    expected_job_id, seq, magic, version, status_job_id, status, status_seq, buf
+                    "timed out waiting for PACC job_id {} seq {} completion; completion slot magic=0x{:x} version={} job_id={} status=0x{:x} seq={} raw={:02x?}{}",
+                    expected_job_id, seq, magic, version, status_job_id, status, status_seq, buf, beacon_text
                 ),
             ));
         }
-        std::thread::sleep(std::time::Duration::from_micros(50));
+        if !poll_wait_enabled || poll_wait_consumed {
+            std::thread::sleep(std::time::Duration::from_micros(50));
+        }
     }
+
+    read_shared_ddr_status_window_cached(
+        shared_file,
+        dev.id,
+        HETGPU_PACC_COMPLETION_OFF,
+        &mut buf,
+    )?;
+    let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+    let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
+    let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+    let status = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+    let status_seq = u64::from_le_bytes(buf[24..32].try_into().unwrap());
+    let beacon_text = last_matching_beacon
+        .map(|(phase, detail, beacon_seq)| {
+            format!(
+                "; last beacon phase=0x{:x} detail=0x{:x} seq={}",
+                phase, detail, beacon_seq
+            )
+        })
+        .unwrap_or_default();
+    Err(Error::new(
+        ErrorKind::TimedOut,
+        format!(
+            "timed out waiting for PACC job_id {} seq {} completion; completion slot magic=0x{:x} version={} job_id={} status=0x{:x} seq={} raw={:02x?}{}",
+            expected_job_id, seq, magic, version, status_job_id, status, status_seq, buf, beacon_text
+        ),
+    ))
 }
 
 fn response_poll_slice_ms() -> u64 {
@@ -2338,7 +2728,7 @@ fn response_poll_enabled() -> bool {
 }
 
 fn zluda_reirq_interval_ms() -> u64 {
-    parse_env_usize("HETGPU_PACC_REIRQ_MS", 100) as u64
+    parse_env_usize("HETGPU_PACC_REIRQ_MS", 0) as u64
 }
 
 fn env_flag_enabled(name: &str) -> bool {
@@ -3153,8 +3543,7 @@ fn shared_ddr_phys_addr(offset: u64, len: usize) -> std::io::Result<u64> {
 fn helper_write_all(file: &mut File, base_offset: u64, bytes: &[u8]) -> std::io::Result<()> {
     let chunk = helper_io_chunk_bytes();
     for (i, part) in bytes.chunks(chunk).enumerate() {
-        file.seek(SeekFrom::Start(base_offset + (i * chunk) as u64))?;
-        file.write_all(part)?;
+        file.write_all_at(part, base_offset + (i * chunk) as u64)?;
     }
     file.flush()
 }
@@ -3162,8 +3551,7 @@ fn helper_write_all(file: &mut File, base_offset: u64, bytes: &[u8]) -> std::io:
 fn helper_read_exact(file: &mut File, base_offset: u64, bytes: &mut [u8]) -> std::io::Result<()> {
     let chunk = helper_io_chunk_bytes();
     for (i, part) in bytes.chunks_mut(chunk).enumerate() {
-        file.seek(SeekFrom::Start(base_offset + (i * chunk) as u64))?;
-        file.read_exact(part)?;
+        file.read_exact_at(part, base_offset + (i * chunk) as u64)?;
     }
     Ok(())
 }
@@ -3463,6 +3851,96 @@ fn read_shared_ddr_control_window_cached(
     read_shared_ddr_window_cached(file, offset, bytes)
 }
 
+fn shared_ddr_status_helper_pread_enabled() -> bool {
+    false
+}
+
+fn read_shared_ddr_status_window_mmap_cached(
+    file: &mut Option<File>,
+    pacc_id: usize,
+    offset: u64,
+    bytes: &mut [u8],
+) -> std::io::Result<()> {
+    let control_offset = shared_ddr_control_offset(pacc_id, offset, bytes.len())?;
+    if use_process_mock_shared_ddr_window()
+        || use_pacc_bo_shared_ddr()
+        || prefer_physmap_shared_ddr()
+    {
+        return read_shared_ddr_window_cached(file, control_offset, bytes);
+    }
+
+    let mut owned;
+    let file_ref = if let Some(file) = file.as_ref() {
+        file
+    } else {
+        let dev = helper_path_for_pacc(pacc_id);
+        owned = OpenOptions::new().read(true).write(true).open(&dev)?;
+        &owned
+    };
+    let dev_label = helper_path_for_pacc(pacc_id);
+    match SharedDdrMmap::map_file(file_ref, control_offset, bytes.len()) {
+        Ok(mut map) => {
+            map.sync_for_cpu()?;
+            bytes.copy_from_slice(map.as_mut_slice());
+            Ok(())
+        }
+        Err(err) => Err(shared_ddr_helper_failed(
+            "status mmap read",
+            &dev_label,
+            err,
+        )),
+    }
+}
+
+fn read_shared_ddr_status_window_cached(
+    file: &mut Option<File>,
+    pacc_id: usize,
+    offset: u64,
+    bytes: &mut [u8],
+) -> std::io::Result<()> {
+    let control_offset = shared_ddr_control_offset(pacc_id, offset, bytes.len())?;
+    if shared_ddr_status_helper_pread_enabled()
+        && !prefer_physmap_shared_ddr()
+        && !use_process_mock_shared_ddr_window()
+        && !use_pacc_bo_shared_ddr()
+    {
+        let dev = helper_path_for_pacc(pacc_id);
+        if std::path::Path::new(&dev).exists() {
+            let mut file = OpenOptions::new().read(true).write(true).open(&dev)?;
+            helper_read_exact(
+                &mut file,
+                HETGPU_PACC_SHARED_DDR_HELPER_OFF + control_offset,
+                bytes,
+            )?;
+            if env_flag_enabled("HETGPU_PACC_STATUS_READ_TRACE") {
+                eprintln!(
+                    "PACC status read: dev={} off=0x{:x} raw={:02x?}",
+                    dev,
+                    HETGPU_PACC_SHARED_DDR_HELPER_OFF + control_offset,
+                    bytes
+                );
+            }
+            return Ok(());
+        }
+        if let Some(file) = file.as_mut() {
+            helper_read_exact(
+                file,
+                HETGPU_PACC_SHARED_DDR_HELPER_OFF + control_offset,
+                bytes,
+            )?;
+            if env_flag_enabled("HETGPU_PACC_STATUS_READ_TRACE") {
+                eprintln!(
+                    "PACC status read: cached off=0x{:x} raw={:02x?}",
+                    HETGPU_PACC_SHARED_DDR_HELPER_OFF + control_offset,
+                    bytes
+                );
+            }
+            return Ok(());
+        }
+    }
+    read_shared_ddr_status_window_mmap_cached(file, pacc_id, offset, bytes)
+}
+
 fn pacc_gemm_trace_enabled() -> bool {
     std::env::var("HETGPU_PACC_GEMM_TRACE").ok().as_deref() == Some("1")
 }
@@ -3641,6 +4119,7 @@ fn submit_gemm_runtime_job_cached(
     {
         require_runtime_ready()?;
     }
+    ensure_pacc_jobd_bootstrapped(dev)?;
     let seq = next_runtime_job_seq();
     let table = HetgpuPaccRuntimeJobTable {
         magic: HETGPU_PACC_RUNTIME_TABLE_MAGIC,
@@ -3688,6 +4167,11 @@ fn submit_gemm_runtime_job_cached(
         doorbell_bytes,
     )?;
     if use_shared_ddr_control_window() {
+        std::sync::atomic::fence(Ordering::SeqCst);
+        let sleep_us = runtime_post_doorbell_irq_sleep_us();
+        if sleep_us != 0 {
+            std::thread::sleep(std::time::Duration::from_micros(sleep_us));
+        }
         dev.zluda_irq(shared_ddr_info())?;
     }
     nvtop_record_submit(
@@ -6580,6 +7064,61 @@ fn rmsnorm_trace_enabled() -> bool {
     std::env::var("HETGPU_PACC_RMSNORM_TRACE").ok().as_deref() == Some("1")
 }
 
+fn rmsnorm_wait_output_enabled() -> bool {
+    matches!(
+        std::env::var("HETGPU_PACC_RMSNORM_WAIT_OUTPUT")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase()),
+        Some(v) if v == "1" || v == "true" || v == "yes" || v == "on"
+    )
+}
+
+fn output_wait_enabled(name: &str) -> bool {
+    !matches!(
+        std::env::var(name)
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase()),
+        Some(v) if v == "0" || v == "false" || v == "no" || v == "off"
+    )
+}
+
+fn wait_shared_ddr_output_change(
+    shared_file: &mut Option<File>,
+    offset: u64,
+    bytes: &mut [u8],
+    sentinel: u8,
+    label: &str,
+    dev_id: usize,
+    row0: usize,
+) -> std::io::Result<()> {
+    let timeout_ms = parse_env_usize(
+        "HETGPU_PACC_RMSNORM_OUTPUT_TIMEOUT_MS",
+        parse_env_usize("HETGPU_PACC_JOB_TIMEOUT_MS", 30_000),
+    ) as u64;
+    let start = std::time::Instant::now();
+    loop {
+        read_shared_ddr_window_cached(shared_file, offset, bytes)?;
+        if bytes.iter().any(|&b| b != sentinel) {
+            return Ok(());
+        }
+        if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                format!(
+                    "{}: timed out waiting for RMSNorm output dev={} row0={} off=0x{:x} bytes={} first={:02x?}",
+                    label,
+                    dev_id,
+                    row0,
+                    offset,
+                    bytes.len(),
+                    &bytes[..bytes.len().min(16)]
+                ),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_micros(50));
+    }
+}
+
 unsafe fn submit_rmsnorm_staged_shared_ddr(
     dev_id: usize,
     x: *const std::ffi::c_void,
@@ -6677,6 +7216,8 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
         .ok()
         .as_deref()
         == Some("1");
+    let wait_output = rmsnorm_wait_output_enabled();
+    let output_sentinel = parse_env_usize("HETGPU_PACC_RMSNORM_OUTPUT_SENTINEL", 0xa5) as u8;
     if trace {
         eprintln!(
             "{}: staged shared-DDR dev={} slot={} rows={} hidden={} dtype={} row_bytes={} slot_bytes={}",
@@ -6771,8 +7312,8 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
                     ),
                 )
             })?;
-        if zero_output {
-            y_stage[..chunk_bytes].fill(0);
+        if wait_output || zero_output {
+            y_stage[..chunk_bytes].fill(if wait_output { output_sentinel } else { 0 });
             write_shared_ddr_window_cached(
                 &mut shared_file,
                 slot_off + y_off as u64,
@@ -6782,7 +7323,7 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
                 Error::new(
                     e.kind(),
                     format!(
-                        "{}: failed to prezero RMSNorm y dev={} row0={} off=0x{:x} bytes={}: {}",
+                        "{}: failed to prepare RMSNorm y dev={} row0={} off=0x{:x} bytes={}: {}",
                         label,
                         dev_id,
                         row0,
@@ -6820,37 +7361,60 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
                 total_bytes
             );
         }
-        pacc_dev
-            .submit_runtime_job(hetgpu_pacc_job_id::RMSNORM, &job)
+        if wait_output {
+            pacc_dev
+                .submit_runtime_job_async(hetgpu_pacc_job_id::RMSNORM, &job)
+                .map_err(|e| {
+                    Error::new(
+                        e.kind(),
+                        format!(
+                            "{}: submit RMSNorm runtime job failed dev={} row0={} rows={} hidden={}: {}",
+                            label, dev_id, row0, chunk_rows, hidden, e
+                        ),
+                    )
+                })?;
+            wait_shared_ddr_output_change(
+                &mut shared_file,
+                slot_off + y_off as u64,
+                &mut y_stage[..chunk_bytes],
+                output_sentinel,
+                label,
+                dev_id,
+                row0,
+            )?;
+        } else {
+            pacc_dev
+                .submit_runtime_job(hetgpu_pacc_job_id::RMSNORM, &job)
+                .map_err(|e| {
+                    Error::new(
+                        e.kind(),
+                        format!(
+                            "{}: submit RMSNorm runtime job failed dev={} row0={} rows={} hidden={}: {}",
+                            label, dev_id, row0, chunk_rows, hidden, e
+                        ),
+                    )
+                })?;
+
+            read_shared_ddr_window_cached(
+                &mut shared_file,
+                slot_off + y_off as u64,
+                &mut y_stage[..chunk_bytes],
+            )
             .map_err(|e| {
                 Error::new(
                     e.kind(),
                     format!(
-                        "{}: submit RMSNorm runtime job failed dev={} row0={} rows={} hidden={}: {}",
-                        label, dev_id, row0, chunk_rows, hidden, e
+                        "{}: failed to read RMSNorm y dev={} row0={} off=0x{:x} bytes={}: {}",
+                        label,
+                        dev_id,
+                        row0,
+                        slot_off + y_off as u64,
+                        chunk_bytes,
+                        e
                     ),
                 )
             })?;
-
-        read_shared_ddr_window_cached(
-            &mut shared_file,
-            slot_off + y_off as u64,
-            &mut y_stage[..chunk_bytes],
-        )
-        .map_err(|e| {
-            Error::new(
-                e.kind(),
-                format!(
-                    "{}: failed to read RMSNorm y dev={} row0={} off=0x{:x} bytes={}: {}",
-                    label,
-                    dev_id,
-                    row0,
-                    slot_off + y_off as u64,
-                    chunk_bytes,
-                    e
-                ),
-            )
-        })?;
+        }
         std::ptr::copy_nonoverlapping(y_stage.as_ptr(), y.cast::<u8>().add(host_off), chunk_bytes);
         row0 += chunk_rows;
     }
@@ -6949,9 +7513,32 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_mmvf_on(
         return -1;
     }
     let job = *job;
-    match PaccDevice::open(dev_id as usize)
-        .and_then(|dev| dev.submit_runtime_job(hetgpu_pacc_job_id::MMVF, &job))
-    {
+    let result = (|| -> std::io::Result<()> {
+        let dev_id = normalize_pacc_device_id(dev_id);
+        let dev = PaccDevice::open(dev_id)?;
+        if output_wait_enabled("HETGPU_PACC_MMVF_WAIT_OUTPUT") && job.dst_bytes != 0 {
+            let dst_off = shared_ddr_offset_from_phys(job.dst_addr, job.dst_bytes as usize)?;
+            let dst_len = usize::try_from(job.dst_bytes)
+                .map_err(|_| Error::new(ErrorKind::InvalidInput, "MMVF dst bytes overflow"))?;
+            let sentinel = parse_env_usize("HETGPU_PACC_MMVF_OUTPUT_SENTINEL", 0xa5) as u8;
+            let mut shared_file = open_shared_ddr_window_file(dev_id);
+            let mut dst_stage = vec![sentinel; dst_len];
+            write_shared_ddr_window_cached(&mut shared_file, dst_off, &dst_stage)?;
+            dev.submit_runtime_job_async(hetgpu_pacc_job_id::MMVF, &job)?;
+            wait_shared_ddr_output_change(
+                &mut shared_file,
+                dst_off,
+                &mut dst_stage,
+                sentinel,
+                "hetgpu_pacc_submit_mmvf_on",
+                dev_id,
+                0,
+            )?;
+            return Ok(());
+        }
+        dev.submit_runtime_job(hetgpu_pacc_job_id::MMVF, &job)
+    })();
+    match result {
         Ok(()) => 0,
         Err(e) => {
             eprintln!(
@@ -8200,6 +8787,24 @@ fn kernel_launch_wait_enabled() -> bool {
     }
 }
 
+fn kernel_post_doorbell_irq_sleep_us() -> u64 {
+    parse_env_usize("HETGPU_PACC_KERNEL_POST_DOORBELL_IRQ_SLEEP_US", 1000) as u64
+}
+
+fn runtime_post_doorbell_irq_sleep_us() -> u64 {
+    parse_optional_env_usize("HETGPU_PACC_POST_DOORBELL_IRQ_SLEEP_US")
+        .or_else(|| parse_optional_env_usize("HETGPU_PACC_KERNEL_POST_DOORBELL_IRQ_SLEEP_US"))
+        .unwrap_or(1000) as u64
+}
+
+fn kernel_helper_full_write_max_bytes() -> usize {
+    parse_optional_env_usize("HETGPU_PACC_KERNEL_HELPER_FULL_WRITE_MAX_BYTES").unwrap_or(1 << 20)
+}
+
+fn kernel_helper_readback_bytes() -> usize {
+    parse_optional_env_usize("HETGPU_PACC_KERNEL_HELPER_READBACK_BYTES").unwrap_or(0)
+}
+
 fn parse_optional_env_usize(name: &str) -> Option<usize> {
     std::env::var(name).ok().and_then(|v| {
         let value = v.trim();
@@ -8341,6 +8946,25 @@ struct PaccKernelStagedBuffer {
 struct PaccKernelSharedDdrStaging {
     launch_state: PaccKernelLaunchState,
     staged: Vec<PaccKernelStagedBuffer>,
+}
+
+#[derive(Debug)]
+struct PaccKernelOutputWait {
+    stage_off: u64,
+    baseline: Vec<u8>,
+    original_addr: u64,
+    flags: u32,
+}
+
+fn kernel_output_wait_enabled() -> bool {
+    output_wait_enabled("HETGPU_PACC_KERNEL_WAIT_OUTPUT")
+}
+
+fn kernel_output_wait_timeout_ms() -> u64 {
+    parse_env_usize(
+        "HETGPU_PACC_KERNEL_OUTPUT_TIMEOUT_MS",
+        parse_env_usize("HETGPU_PACC_JOB_TIMEOUT_MS", 30_000),
+    ) as u64
 }
 
 fn pacc_kernel_binding_needs_stage(
@@ -8520,6 +9144,138 @@ unsafe fn complete_pacc_kernel_shared_ddr_staging(
     Ok(())
 }
 
+fn prepare_pacc_kernel_output_wait(
+    staging: &PaccKernelSharedDdrStaging,
+    shared_file: &mut Option<File>,
+) -> std::io::Result<Option<PaccKernelOutputWait>> {
+    if !kernel_output_wait_enabled() {
+        return Ok(None);
+    }
+
+    let selected = staging
+        .staged
+        .iter()
+        .filter(|staged| {
+            staged.flags & PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT != 0
+                && staged.original_addr != 0
+                && staged.size != 0
+        })
+        .min_by_key(|staged| {
+            if staged.flags & PACC_KERNEL_ARG_FLAG_BUFFER_INPUT == 0 {
+                0usize
+            } else {
+                1usize
+            }
+        });
+
+    let Some(staged) = selected else {
+        return Ok(None);
+    };
+
+    let sentinel = parse_env_usize("HETGPU_PACC_KERNEL_OUTPUT_SENTINEL", 0xa5) as u8;
+    let mut baseline = vec![sentinel; staged.size];
+    if staged.flags & PACC_KERNEL_ARG_FLAG_BUFFER_INPUT == 0 {
+        write_shared_ddr_window_cached(shared_file, staged.stage_off, &baseline)?;
+    } else {
+        read_shared_ddr_window_cached(shared_file, staged.stage_off, &mut baseline)?;
+    }
+
+    Ok(Some(PaccKernelOutputWait {
+        stage_off: staged.stage_off,
+        baseline,
+        original_addr: staged.original_addr,
+        flags: staged.flags,
+    }))
+}
+
+fn prepare_pacc_kernel_direct_output_wait(
+    launch_state: &PaccKernelLaunchState,
+    shared_file: &mut Option<File>,
+) -> std::io::Result<Option<PaccKernelOutputWait>> {
+    if !kernel_output_wait_enabled() {
+        return Ok(None);
+    }
+
+    let selected = launch_state
+        .bindings
+        .iter()
+        .filter(|binding| {
+            binding.flags & PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT != 0
+                && binding.flags & PACC_KERNEL_ARG_FLAG_DEVICE_PHYS != 0
+                && binding.addr != 0
+                && binding.size != 0
+        })
+        .min_by_key(|binding| {
+            if binding.flags & PACC_KERNEL_ARG_FLAG_BUFFER_INPUT == 0 {
+                0usize
+            } else {
+                1usize
+            }
+        });
+
+    let Some(binding) = selected else {
+        return Ok(None);
+    };
+
+    let size = usize::try_from(binding.size).map_err(|_| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            "PACC direct kernel output binding size does not fit usize",
+        )
+    })?;
+    let stage_off = shared_ddr_offset_from_phys(binding.addr, size)?;
+    let sentinel = parse_env_usize("HETGPU_PACC_KERNEL_OUTPUT_SENTINEL", 0xa5) as u8;
+    let mut baseline = vec![sentinel; size];
+    if binding.flags & PACC_KERNEL_ARG_FLAG_BUFFER_INPUT == 0 {
+        write_shared_ddr_window_cached(shared_file, stage_off, &baseline)?;
+    } else {
+        read_shared_ddr_window_cached(shared_file, stage_off, &mut baseline)?;
+    }
+
+    Ok(Some(PaccKernelOutputWait {
+        stage_off,
+        baseline,
+        original_addr: binding.addr,
+        flags: binding.flags,
+    }))
+}
+
+fn wait_pacc_kernel_output_change(
+    wait: &mut PaccKernelOutputWait,
+    shared_file: &mut Option<File>,
+    kernel_name: &str,
+    dev_id: usize,
+    seq: u64,
+) -> std::io::Result<()> {
+    let timeout_ms = kernel_output_wait_timeout_ms();
+    let start = std::time::Instant::now();
+    let mut current = vec![0u8; wait.baseline.len()];
+
+    loop {
+        read_shared_ddr_window_cached(shared_file, wait.stage_off, &mut current)?;
+        if current != wait.baseline {
+            return Ok(());
+        }
+        if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                format!(
+                    "PACC kernel '{}' pacc{} seq={} timed out waiting for output change off=0x{:x} bytes={} original=0x{:x} flags=0x{:x} first={:02x?}",
+                    kernel_name,
+                    dev_id,
+                    seq,
+                    wait.stage_off,
+                    wait.baseline.len(),
+                    wait.original_addr,
+                    wait.flags,
+                    &current[..current.len().min(16)]
+                ),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_micros(50));
+    }
+}
+
 fn submit_pacc_kernel_image_via_helper(
     dev: &PaccDevice,
     kernel_name: &str,
@@ -8561,6 +9317,7 @@ fn submit_pacc_kernel_image_via_helper(
         .lock()
         .map_err(|_| Error::new(ErrorKind::Other, "PACC kernel helper slot mutex poisoned"))?;
     let _control_guard = lock_pacc_control(dev.id, "PACC kernel job")?;
+    ensure_pacc_jobd_bootstrapped(dev)?;
     if submit_len > slot_bytes {
         return Err(Error::new(
             ErrorKind::OutOfMemory,
@@ -8610,6 +9367,11 @@ fn submit_pacc_kernel_image_via_helper(
             "PACC shared-DDR staged kernel launch requires HETGPU_PACC_WAIT_KERNEL_LAUNCH=1",
         ));
     }
+    let mut output_wait = prepare_pacc_kernel_output_wait(&staging, &mut shared_file)?;
+    if output_wait.is_none() {
+        output_wait =
+            prepare_pacc_kernel_direct_output_wait(&staging.launch_state, &mut shared_file)?;
+    }
     let (buf, rebuilt_submit_len) = build_pacc_kernel_submit_buffer(
         kernel_name,
         elf_bytes,
@@ -8637,12 +9399,18 @@ fn submit_pacc_kernel_image_via_helper(
             compute_pacc_kernel_image_layout(kernel_name, elf_bytes, &staging.launch_state)
                 .map(|layout| layout.elf_offset.min(submit_len))
                 .unwrap_or_else(|_| submit_len.min(4096));
-        if metadata_prefix > 0 {
+        let helper_full_max = kernel_helper_full_write_max_bytes();
+        let helper_refresh_bytes = if helper_full_max != 0 && submit_len <= helper_full_max {
+            submit_len
+        } else {
+            metadata_prefix
+        };
+        if helper_refresh_bytes > 0 {
             if let Some(file) = shared_file.as_mut() {
                 helper_write_all(
                     file,
                     HETGPU_PACC_SHARED_DDR_HELPER_OFF + slot_off,
-                    &buf[..metadata_prefix],
+                    &buf[..helper_refresh_bytes],
                 )?;
                 if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
                     .ok()
@@ -8650,9 +9418,27 @@ fn submit_pacc_kernel_image_via_helper(
                     == Some("1")
                 {
                     eprintln!(
-                        "pacc_LaunchKernel: helper-refreshed metadata kernel='{}' bytes={} slot_off=0x{:x}",
-                        kernel_name, metadata_prefix, slot_off
+                        "pacc_LaunchKernel: helper-refreshed image kernel='{}' bytes={} slot_off=0x{:x}",
+                        kernel_name, helper_refresh_bytes, slot_off
                     );
+                }
+                let readback_bytes = kernel_helper_readback_bytes().min(helper_refresh_bytes);
+                if readback_bytes != 0 {
+                    let mut readback = vec![0u8; readback_bytes];
+                    helper_read_exact(
+                        file,
+                        HETGPU_PACC_SHARED_DDR_HELPER_OFF + slot_off,
+                        &mut readback,
+                    )?;
+                    if readback != buf[..readback_bytes] {
+                        return Err(Error::new(
+                            ErrorKind::Other,
+                            format!(
+                                "PACC kernel helper write readback mismatch for '{}' bytes={}",
+                                kernel_name, readback_bytes
+                            ),
+                        ));
+                    }
                 }
             }
         }
@@ -8666,18 +9452,47 @@ fn submit_pacc_kernel_image_via_helper(
         desc_bytes,
     )?;
     if use_shared_ddr_control_window() {
+        let sleep_us = kernel_post_doorbell_irq_sleep_us();
+        if sleep_us != 0 {
+            std::thread::sleep(std::time::Duration::from_micros(sleep_us));
+        }
         dev.zluda_irq(shared_ddr_info())?;
     }
 
     if kernel_launch_wait_enabled() {
         let wait_start = std::time::Instant::now();
-        let wait_result = wait_mailbox_job_status_cached(
-            dev,
-            hetgpu_pacc_job_id::KERNEL,
-            seq,
-            &mut shared_file,
-            &mut mailbox_file,
-        );
+        let mut wait_result = if env_flag_enabled("HETGPU_PACC_KERNEL_WAIT_OUTPUT_ONLY") {
+            if let Some(wait) = output_wait.as_mut() {
+                wait_pacc_kernel_output_change(wait, &mut shared_file, kernel_name, dev.id, seq)
+            } else {
+                wait_mailbox_job_status_cached(
+                    dev,
+                    hetgpu_pacc_job_id::KERNEL,
+                    seq,
+                    &mut shared_file,
+                    &mut mailbox_file,
+                )
+            }
+        } else {
+            wait_mailbox_job_status_cached(
+                dev,
+                hetgpu_pacc_job_id::KERNEL,
+                seq,
+                &mut shared_file,
+                &mut mailbox_file,
+            )
+        };
+        if wait_result.is_err() && env_flag_enabled("HETGPU_PACC_KERNEL_WAIT_OUTPUT_FALLBACK") {
+            if let Some(wait) = output_wait.as_mut() {
+                wait_result = wait_pacc_kernel_output_change(
+                    wait,
+                    &mut shared_file,
+                    kernel_name,
+                    dev.id,
+                    seq,
+                );
+            }
+        }
         if env_flag_enabled("HETGPU_PACC_KERNEL_TIMING") || env_flag_enabled("HETGPU_PACC_TIMING") {
             eprintln!(
                 "PACC timing: kernel='{}' pacc{} seq={} status={} wait_us={} submit={} staging={} grid=({}, {}, {}) block=({}, {}, {}) slot={}",

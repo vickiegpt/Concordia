@@ -28,7 +28,6 @@ use std::ptr;
     not(feature = "tenstorrent")
 ))]
 use std::sync::atomic::{AtomicBool, Ordering};
-
 #[cfg(all(
     feature = "pacc",
     not(feature = "amd"),
@@ -763,7 +762,7 @@ pub(crate) unsafe fn launch_kernel(
                 let value = *value_ptr;
 
                 if key_value == 1 { // CU_LAUNCH_PARAM_BUFFER_SHARED_MEMORY
-                     // shared memory is already set via the shared_mem_bytes parameter
+                    // shared memory is already set via the shared_mem_bytes parameter
                 }
 
                 i += 2;
@@ -3337,21 +3336,34 @@ unsafe fn configure_pacc_launch_abi(
                 ))
             })
             .unwrap_or((0, 0));
-            let (addr, flags) = if let Some(phys) = super::memory::pacc_driver_physical_addr(value)
-            {
-                (
-                    phys,
-                    flags | pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_DEVICE_PHYS,
-                )
-            } else {
-                (value, flags)
-            };
+            let (addr, flags) =
+                if let Some(phys) = super::memory::pacc_shared_ddr_physical_addr(value) {
+                    (
+                        phys,
+                        flags | pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_DEVICE_PHYS,
+                    )
+                } else {
+                    (value, flags)
+                };
             let binding = pacc_runtime_sys::PaccKernelBufferBinding {
                 arg_index: i as u32,
                 flags,
                 addr,
                 size,
             };
+            if log_arg_records {
+                eprintln!(
+                    "[PACC Backend] launch binding kernel='{}' bind={} arg={} host=0x{:x} addr=0x{:x} size={} flags=0x{:x} direct_shared_ddr={}",
+                    kernel_name,
+                    pointer_like,
+                    i,
+                    value,
+                    binding.addr,
+                    binding.size,
+                    binding.flags,
+                    (binding.flags & pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_DEVICE_PHYS) != 0,
+                );
+            }
             let rc = pacc_runtime_sys::pacc_KernelAddBufferBinding(kernel_ptr, &binding);
             if rc != pacc_runtime_sys::pacc_Result_Success {
                 return rc;
@@ -4032,11 +4044,19 @@ unsafe fn pacc_binding_bytes_for_host_ptr(
     bytes: u64,
 ) -> Option<u64> {
     let ptr = read_param_u64(kernel_params, index)?;
-    let remaining = super::memory::pacc_allocation_remaining_addr(ptr)? as u64;
-    if remaining == 0 {
-        None
+    if let Some(remaining) = super::memory::pacc_allocation_remaining_addr(ptr) {
+        let remaining = remaining as u64;
+        if remaining == 0 {
+            None
+        } else {
+            Some(bytes.min(remaining))
+        }
+    } else if bytes <= usize::MAX as u64
+        && pacc_host_range_has_perms(ptr as usize, bytes as usize, false)
+    {
+        Some(bytes)
     } else {
-        Some(bytes.min(remaining))
+        None
     }
 }
 
@@ -4047,7 +4067,16 @@ unsafe fn pacc_binding_bytes_for_host_ptr(
     not(feature = "tenstorrent")
 ))]
 unsafe fn pacc_max_nonnegative_i32_from_host_ptr(ptr: u64, elem_count: u64) -> Option<u64> {
-    let remaining = super::memory::pacc_allocation_remaining_addr(ptr)? as u64;
+    let remaining = super::memory::pacc_allocation_remaining_addr(ptr)
+        .map(|remaining| remaining as u64)
+        .or_else(|| {
+            elem_count
+                .checked_mul(std::mem::size_of::<i32>() as u64)
+                .filter(|&bytes| {
+                    bytes <= usize::MAX as u64
+                        && pacc_host_range_has_perms(ptr as usize, bytes as usize, false)
+                })
+        })?;
     let count = elem_count
         .min(remaining / std::mem::size_of::<i32>() as u64)
         .min(usize::MAX as u64) as usize;
@@ -4380,6 +4409,310 @@ fn pacc_rope_element_sizes(kernel_name: &str) -> (u64, u64) {
 fn pacc_rope_element_size(kernel_name: &str) -> u64 {
     let (src_elem_size, dst_elem_size) = pacc_rope_element_sizes(kernel_name);
     src_elem_size.max(dst_elem_size)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_rope_is_forward(kernel_name: &str) -> bool {
+    !kernel_name.contains("rope_normILb0") && !kernel_name.contains("rope_neoxILb0")
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_rope_has_freq_factors(kernel_name: &str, freq_factors: u64) -> bool {
+    freq_factors != 0
+        || kernel_name.contains("rope_normILb1ELb1")
+        || kernel_name.contains("rope_neoxILb1ELb1")
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_f32_to_f16(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xff) as i32;
+    let frac = bits & 0x7f_ffff;
+    if exp == 0xff {
+        return sign | if frac == 0 { 0x7c00 } else { 0x7e00 };
+    }
+    let half_exp = exp - 127 + 15;
+    if half_exp >= 0x1f {
+        sign | 0x7c00
+    } else if half_exp <= 0 {
+        if half_exp < -10 {
+            sign
+        } else {
+            let mant = frac | 0x80_0000;
+            let shift = (14 - half_exp) as u32;
+            sign | ((mant >> shift) as u16)
+        }
+    } else {
+        sign | ((half_exp as u16) << 10) | ((frac >> 13) as u16)
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn pacc_read_elem_as_f32(base: *const u8, elem_index: i64, elem_size: u64) -> f32 {
+    if elem_size == 2 {
+        let ptr = base.offset((elem_index * 2) as isize) as *const u16;
+        pacc_f16_to_f32(ptr.read_unaligned())
+    } else {
+        let ptr = base.offset((elem_index * 4) as isize) as *const f32;
+        ptr.read_unaligned()
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn pacc_write_elem_from_f32(base: *mut u8, elem_index: i64, elem_size: u64, value: f32) {
+    if elem_size == 2 {
+        let ptr = base.offset((elem_index * 2) as isize) as *mut u16;
+        ptr.write_unaligned(pacc_f32_to_f16(value));
+    } else {
+        let ptr = base.offset((elem_index * 4) as isize) as *mut f32;
+        ptr.write_unaligned(value);
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_f32_to_bf16(value: f32) -> u16 {
+    let bits = value.to_bits();
+    ((bits.wrapping_add(0x7fff).wrapping_add((bits >> 16) & 1)) >> 16) as u16
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn pacc_write_elem_from_f32_typed(
+    base: *mut u8,
+    elem_index: i64,
+    elem_size: u64,
+    value: f32,
+    is_bf16: bool,
+) {
+    if elem_size == 2 && is_bf16 {
+        let ptr = base.offset((elem_index * 2) as isize) as *mut u16;
+        ptr.write_unaligned(pacc_f32_to_bf16(value));
+    } else {
+        pacc_write_elem_from_f32(base, elem_index, elem_size, value);
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_set_rows_host_fallback(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    use cuda_types::cuda::*;
+
+    if !kernel_name.contains("k_set_rows") || kernel_name.contains("k_set_rows_quant") {
+        return None;
+    }
+    if std::env::var("HETGPU_PACC_SET_ROWS_HOST_FALLBACK")
+        .ok()
+        .as_deref()
+        == Some("0")
+    {
+        return Some(Err(CUerror::UNKNOWN));
+    }
+
+    let (src_elem, idx_elem, dst_elem) = pacc_set_rows_element_sizes(kernel_name)?;
+    if !matches!(src_elem, 2 | 4) || !matches!(idx_elem, 4 | 8) || !matches!(dst_elem, 2 | 4) {
+        return None;
+    }
+
+    let src0 = read_param_u64(kernel_params, 0)?;
+    let src1 = read_param_u64(kernel_params, 1)?;
+    let dst = read_param_u64(kernel_params, 2)?;
+    let ne_total_i = read_param_i64(kernel_params, 3)?;
+    if ne_total_i <= 0 {
+        return Some(Ok(()));
+    }
+    let ne_total = ne_total_i as u64;
+    let ne10 = read_param_i64(kernel_params, 4)?.max(0) as u64;
+    let _ne11 = read_param_i64(kernel_params, 5)?.max(0) as u64;
+    let _ne12 = read_param_i64(kernel_params, 6)?.max(0) as u64;
+    let s01 = read_param_i64(kernel_params, 8)?;
+    let s02 = read_param_i64(kernel_params, 9)?;
+    let s03 = read_param_i64(kernel_params, 10)?;
+    let s10 = read_param_i64(kernel_params, 11)?;
+    let s11 = read_param_i64(kernel_params, 12)?;
+    let s12 = read_param_i64(kernel_params, 13)?;
+    let s1 = read_param_i64(kernel_params, 14)?;
+    let s2 = read_param_i64(kernel_params, 15)?;
+    let s3 = read_param_i64(kernel_params, 16)?;
+    let ne00 = read_param_uint3_z(kernel_params, 17)?.max(1) as u64;
+    let ne01 = read_param_uint3_z(kernel_params, 18)?.max(1) as u64;
+    let ne02 = read_param_uint3_z(kernel_params, 19)?.max(1) as u64;
+    let ne11_fd = read_param_uint3_z(kernel_params, 20)?.max(1) as u64;
+    let ne12_fd = read_param_uint3_z(kernel_params, 21)?.max(1) as u64;
+
+    if [s01, s02, s03, s10, s11, s12, s1, s2, s3]
+        .iter()
+        .any(|&stride| stride < 0)
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback k_set_rows '{}' rejected invalid shape/stride",
+            kernel_name
+        );
+        return Some(Err(CUerror::UNKNOWN));
+    }
+
+    let ne012 = ne00.saturating_mul(ne01).saturating_mul(ne02).max(1);
+    let ne03 = pacc_div_ceil_u64(ne_total, ne012);
+    let src0_bytes = pacc_strided_extent_bytes(
+        [ne00, ne01, ne02, ne03],
+        [1, s01 as u64, s02 as u64, s03 as u64],
+        src_elem,
+    );
+    let src1_bytes = pacc_strided_extent_bytes(
+        [ne01, ne11_fd, ne12_fd, 1],
+        [s10 as u64, s11 as u64, s12 as u64, 0],
+        idx_elem,
+    );
+    let Some(src0_len) = usize::try_from(src0_bytes).ok() else {
+        return Some(Err(CUerror::UNKNOWN));
+    };
+    let Some(src1_len) = usize::try_from(src1_bytes).ok() else {
+        return Some(Err(CUerror::UNKNOWN));
+    };
+    if !pacc_host_or_cuda_alloc_has_bytes(src0, src0_len, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(src1, src1_len, false)
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback k_set_rows '{}' rejected input ranges src0=0x{:x}/{} src1=0x{:x}/{}",
+            kernel_name, src0, src0_bytes, src1, src1_bytes
+        );
+        return Some(Err(CUerror::UNKNOWN));
+    }
+
+    let src0_base = src0 as *const u8;
+    let src1_base = src1 as *const u8;
+    let dst_base = dst as *mut u8;
+    let dst_is_bf16 = kernel_name.contains("13__nv_bfloat16");
+    let mut max_dst_index = 0u64;
+
+    for linear in 0..ne_total {
+        let mut tmp = (linear as u32) as u64;
+        let i00 = tmp % ne00;
+        tmp /= ne00;
+        let i01 = tmp % ne01;
+        tmp /= ne01;
+        let i02 = tmp % ne02;
+        let i03 = tmp / ne02;
+        let i12 = i03 % ne12_fd;
+        let i11 = i02 % ne11_fd;
+        let i10 = i01;
+
+        let idx_index = i10
+            .saturating_mul(s10 as u64)
+            .saturating_add(i11.saturating_mul(s11 as u64))
+            .saturating_add(i12.saturating_mul(s12 as u64));
+        let dst_row = if idx_elem == 8 {
+            (src1_base.add((idx_index * 8) as usize) as *const i64).read_unaligned()
+        } else {
+            (src1_base.add((idx_index * 4) as usize) as *const i32).read_unaligned() as i64
+        };
+        if dst_row < 0 {
+            eprintln!(
+                "[PACC Backend] host-fallback k_set_rows '{}' rejected dst_row={}",
+                kernel_name, dst_row
+            );
+            return Some(Err(CUerror::UNKNOWN));
+        }
+        let dst_index = i00 as i64 + dst_row * s1 + i02 as i64 * s2 + i03 as i64 * s3;
+        if dst_index < 0 {
+            return Some(Err(CUerror::UNKNOWN));
+        }
+        max_dst_index = max_dst_index.max(dst_index as u64);
+    }
+
+    let dst_bytes = max_dst_index.saturating_add(1).saturating_mul(dst_elem);
+    let Some(dst_len) = usize::try_from(dst_bytes).ok() else {
+        return Some(Err(CUerror::UNKNOWN));
+    };
+    if !pacc_host_or_cuda_alloc_has_bytes(dst, dst_len, true) {
+        eprintln!(
+            "[PACC Backend] host-fallback k_set_rows '{}' rejected dst range dst=0x{:x}/{} max_dst_index={} src1_ne10={}",
+            kernel_name, dst, dst_bytes, max_dst_index, ne10
+        );
+        return Some(Err(CUerror::UNKNOWN));
+    }
+
+    for linear in 0..ne_total {
+        let mut tmp = (linear as u32) as u64;
+        let i00 = tmp % ne00;
+        tmp /= ne00;
+        let i01 = tmp % ne01;
+        tmp /= ne01;
+        let i02 = tmp % ne02;
+        let i03 = tmp / ne02;
+        let i12 = i03 % ne12_fd;
+        let i11 = i02 % ne11_fd;
+        let i10 = i01;
+
+        let idx_index = i10
+            .saturating_mul(s10 as u64)
+            .saturating_add(i11.saturating_mul(s11 as u64))
+            .saturating_add(i12.saturating_mul(s12 as u64));
+        let dst_row = if idx_elem == 8 {
+            (src1_base.add((idx_index * 8) as usize) as *const i64).read_unaligned()
+        } else {
+            (src1_base.add((idx_index * 4) as usize) as *const i32).read_unaligned() as i64
+        };
+        if dst_row < 0 {
+            eprintln!(
+                "[PACC Backend] host-fallback k_set_rows '{}' rejected dst_row={}",
+                kernel_name, dst_row
+            );
+            return Some(Err(CUerror::UNKNOWN));
+        }
+
+        let src_index = i00 as i64 + i01 as i64 * s01 + i02 as i64 * s02 + i03 as i64 * s03;
+        let dst_index = i00 as i64 + dst_row * s1 + i02 as i64 * s2 + i03 as i64 * s3;
+        let value = pacc_read_elem_as_f32(src0_base, src_index, src_elem);
+        pacc_write_elem_from_f32_typed(dst_base, dst_index, dst_elem, value, dst_is_bf16);
+    }
+
+    eprintln!(
+        "[PACC Backend] host-fallback k_set_rows '{}' ne_total={} ne00={} ne01={} ne02={} ne03={} idx_elem={} dst_elem={}",
+        kernel_name, ne_total, ne00, ne01, ne02, ne03, idx_elem, dst_elem
+    );
+    Some(Ok(()))
 }
 
 #[cfg(all(
@@ -4893,6 +5226,83 @@ fn pacc_mmvf_x_type(kernel_name: &str) -> Option<u32> {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+struct PaccMmvFusionArgs {
+    x_bias: u64,
+    gate: u64,
+    gate_bias: u64,
+    glu_op: i32,
+    _pad: u32,
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn read_mmvf_fusion_args(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+) -> Option<PaccMmvFusionArgs> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    let param = *kernel_params.add(index);
+    if param.is_null()
+        || (param as usize) < 0x1_0000
+        || !pacc_host_range_has_perms(
+            param as usize,
+            std::mem::size_of::<PaccMmvFusionArgs>(),
+            false,
+        )
+    {
+        return None;
+    }
+    Some((param as *const PaccMmvFusionArgs).read_unaligned())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_silu(value: f32) -> f32 {
+    value / (1.0 + (-value).exp())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_gelu(value: f32) -> f32 {
+    const GELU_COEF_A: f32 = 0.044715;
+    const SQRT_2_OVER_PI: f32 = 0.7978845608028654;
+    0.5 * value * (1.0 + (SQRT_2_OVER_PI * value * (1.0 + GELU_COEF_A * value * value)).tanh())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_swiglu_oai(x: f32, gate: f32) -> f32 {
+    let x = x.min(7.0);
+    let gate = gate.clamp(-7.0, 7.0);
+    x * gate / (1.0 + (-1.702 * gate).exp())
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn read_param_uint3_value(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
@@ -4947,7 +5357,7 @@ unsafe fn pacc_mul_mat_vec_f_binding_metadata(
     let grid_y = grid_dim_y.max(1) as u64;
     let grid_z = grid_dim_z.max(1) as u64;
     let ids_ptr = read_param_u64(kernel_params, 2).unwrap_or(0);
-    let has_ids = ids_ptr != 0 && super::memory::pacc_allocation_remaining_addr(ids_ptr).is_some();
+    let has_ids = ids_ptr != 0 && pacc_host_or_cuda_alloc_has_bytes(ids_ptr, 4, false);
     let col_elems = ncols2.saturating_mul(2);
 
     let (bytes, flags) = match index {
@@ -5045,6 +5455,354 @@ unsafe fn pacc_mul_mat_vec_f_binding_metadata(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn execute_mmvf_host_fallback(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    grid_dim_y: ::core::ffi::c_uint,
+    grid_dim_z: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let (ncols_dst, has_fusion, is_multi_token_id) = pacc_parse_mmvf_template(kernel_name)?;
+    if ncols_dst == 0 || ncols_dst > 8 || (has_fusion && ncols_dst != 1) {
+        return None;
+    }
+    let x_type = pacc_mmvf_x_type(kernel_name)?;
+    let x_host = read_param_u64(kernel_params, 0)?;
+    let y_host = read_param_u64(kernel_params, 1)?;
+    let ids_host = read_param_u64(kernel_params, 2).unwrap_or(0);
+    let fusion = if has_fusion {
+        read_mmvf_fusion_args(kernel_params, 3)?
+    } else {
+        PaccMmvFusionArgs::default()
+    };
+    let dst_host = read_param_u64(kernel_params, 4)?;
+    let x_bytes = pacc_mul_mat_vec_f_binding_metadata(
+        kernel_name,
+        kernel_params,
+        grid_dim_x,
+        grid_dim_y,
+        grid_dim_z,
+        0,
+    )?
+    .0 as usize;
+    let y_bytes = pacc_mul_mat_vec_f_binding_metadata(
+        kernel_name,
+        kernel_params,
+        grid_dim_x,
+        grid_dim_y,
+        grid_dim_z,
+        1,
+    )?
+    .0 as usize;
+    let ids_bytes = if ids_host != 0 {
+        pacc_mul_mat_vec_f_binding_metadata(
+            kernel_name,
+            kernel_params,
+            grid_dim_x,
+            grid_dim_y,
+            grid_dim_z,
+            2,
+        )?
+        .0 as usize
+    } else {
+        0
+    };
+    let dst_bytes = pacc_mul_mat_vec_f_binding_metadata(
+        kernel_name,
+        kernel_params,
+        grid_dim_x,
+        grid_dim_y,
+        grid_dim_z,
+        4,
+    )?
+    .0 as usize;
+    if x_bytes == 0
+        || y_bytes == 0
+        || dst_bytes == 0
+        || !pacc_host_or_cuda_alloc_has_bytes(x_host, x_bytes, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(y_host, y_bytes, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(dst_host, dst_bytes, true)
+        || (fusion.gate != 0 && !pacc_host_or_cuda_alloc_has_bytes(fusion.gate, x_bytes, false))
+        || (fusion.x_bias != 0
+            && !pacc_host_or_cuda_alloc_has_bytes(fusion.x_bias, dst_bytes, false))
+        || (fusion.gate_bias != 0
+            && !pacc_host_or_cuda_alloc_has_bytes(fusion.gate_bias, dst_bytes, false))
+        || (ids_host != 0 && !pacc_host_or_cuda_alloc_has_bytes(ids_host, ids_bytes, false))
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback MMVF '{}' rejected ranges x=0x{:x}/{} y=0x{:x}/{} ids=0x{:x}/{} dst=0x{:x}/{} gate=0x{:x} x_bias=0x{:x} gate_bias=0x{:x}",
+            kernel_name,
+            x_host,
+            x_bytes,
+            y_host,
+            y_bytes,
+            ids_host,
+            ids_bytes,
+            dst_host,
+            dst_bytes,
+            fusion.gate,
+            fusion.x_bias,
+            fusion.gate_bias
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let ncols2 = read_param_u32(kernel_params, 5).unwrap_or(0) as i32;
+    if ncols2 <= 0 {
+        return Some(Ok(()));
+    }
+    let nchannels_y = read_param_uint3_value(kernel_params, 6)?;
+    let stride_row = read_param_u32(kernel_params, 7).unwrap_or(0) as i64;
+    let stride_col_y2 = read_param_u32(kernel_params, 8).unwrap_or(0) as i64;
+    let stride_col_dst = read_param_u32(kernel_params, 9).unwrap_or(0) as i64;
+    let channel_ratio = read_param_uint3_value(kernel_params, 10)?;
+    let stride_channel_x = read_param_u32(kernel_params, 11).unwrap_or(0) as i64;
+    let stride_channel_y = read_param_u32(kernel_params, 12).unwrap_or(0) as i64;
+    let stride_channel_dst = read_param_u32(kernel_params, 13).unwrap_or(0) as i64;
+    let sample_ratio = read_param_uint3_value(kernel_params, 14)?;
+    let stride_sample_x = read_param_u32(kernel_params, 15).unwrap_or(0) as i64;
+    let stride_sample_y = read_param_u32(kernel_params, 16).unwrap_or(0) as i64;
+    let stride_sample_dst = read_param_u32(kernel_params, 17).unwrap_or(0) as i64;
+    let ids_stride = read_param_u32(kernel_params, 18).unwrap_or(0) as i64;
+    let grid_x = grid_dim_x.max(1) as u64;
+    let grid_y = grid_dim_y.max(1) as u64;
+    let grid_z = grid_dim_z.max(1) as u64;
+    let work_items = grid_x.checked_mul(grid_y)?.checked_mul(grid_z)?;
+    let x_elem_size = if x_type == 2 { 2usize } else { 4usize };
+    let channel_ratio_z = channel_ratio.z.max(1) as u64;
+    let sample_ratio_z = sample_ratio.z.max(1) as u64;
+    let _ = nchannels_y;
+
+    let workers = std::env::var("HETGPU_PACC_MMVF_HOST_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(4)
+        .max(1)
+        .min(work_items.max(1) as usize);
+    let x_addr = x_host as usize;
+    let y_addr = y_host as usize;
+    let ids_addr = ids_host as usize;
+    let dst_addr = dst_host as usize;
+    let gate_addr = fusion.gate as usize;
+    let x_bias_addr = fusion.x_bias as usize;
+    let gate_bias_addr = fusion.gate_bias as usize;
+    let glu_op = fusion.glu_op;
+    let has_ids = ids_host != 0;
+    let use_gate = has_fusion && fusion.gate != 0;
+    let use_bias = has_fusion && fusion.x_bias != 0;
+    let use_gate_bias = use_gate && fusion.gate_bias != 0;
+    let ncols_dst_u = ncols_dst as u64;
+    let ncols2_i = ncols2 as i64;
+
+    std::thread::scope(|scope| {
+        for worker in 0..workers {
+            let begin = work_items * worker as u64 / workers as u64;
+            let end = work_items * (worker as u64 + 1) / workers as u64;
+            scope.spawn(move || {
+                let x_base_ptr = x_addr as *const u8;
+                let y_base_ptr = y_addr as *const f32;
+                let ids_base_ptr = ids_addr as *const i32;
+                let dst_base_ptr = dst_addr as *mut f32;
+                let gate_base_ptr = gate_addr as *const u8;
+                let x_bias_base_ptr = x_bias_addr as *const f32;
+                let gate_bias_base_ptr = gate_bias_addr as *const f32;
+                for idx in begin..end {
+                    let row = idx % grid_x;
+                    let t = idx / grid_x;
+                    let channel_dst = t % grid_y;
+                    let token_or_sample = t / grid_y;
+
+                    let (token_idx, channel_x, channel_y, sample_dst) = if has_ids {
+                        let token_idx = token_or_sample;
+                        let ids_off =
+                            channel_dst.saturating_add(token_idx.saturating_mul(ids_stride as u64));
+                        let channel_x = ids_base_ptr
+                            .offset(ids_off as isize)
+                            .read_unaligned()
+                            .max(0) as u64;
+                        let channel_y = channel_dst % (nchannels_y.z.max(1) as u64);
+                        (token_idx, channel_x, channel_y, 0)
+                    } else {
+                        let sample_dst = token_or_sample;
+                        (0, channel_dst / channel_ratio_z, channel_dst, sample_dst)
+                    };
+
+                    let sample_x = sample_dst / sample_ratio_z;
+                    let sample_y = sample_dst;
+
+                    let x_base_elem = sample_x as i64 * stride_sample_x
+                        + channel_x as i64 * stride_channel_x
+                        + row as i64 * stride_row;
+                    let y_base_elem = sample_y as i64 * stride_sample_y
+                        + channel_y as i64 * stride_channel_y
+                        + if has_ids && is_multi_token_id {
+                            token_idx as i64 * stride_col_y2 * 2
+                        } else {
+                            0
+                        };
+                    let dst_base_elem = sample_dst as i64 * stride_sample_dst
+                        + channel_dst as i64 * stride_channel_dst
+                        + if has_ids && is_multi_token_id {
+                            token_idx as i64 * stride_col_dst
+                        } else {
+                            0
+                        };
+                    let channel_bias = if has_ids { channel_x } else { channel_dst };
+                    let bias_base_elem = sample_dst as i64 * stride_sample_dst
+                        + channel_bias as i64 * stride_channel_dst;
+
+                    if x_type == 2 && ncols_dst_u == 1 {
+                        let xh = x_base_ptr.offset((x_base_elem * x_elem_size as i64) as isize)
+                            as *const u16;
+                        let yf = y_base_ptr.offset(y_base_elem as isize);
+                        let mut sum = 0.0f32;
+                        let mut gate_sum = 0.0f32;
+                        let total = ncols2_i * 2;
+                        let gate_h = if use_gate {
+                            gate_base_ptr.offset((x_base_elem * x_elem_size as i64) as isize)
+                                as *const u16
+                        } else {
+                            std::ptr::null()
+                        };
+                        for i in 0..total {
+                            let yv = yf.offset(i as isize).read_unaligned();
+                            sum += pacc_f16_to_f32(xh.offset(i as isize).read_unaligned()) * yv;
+                            if use_gate {
+                                gate_sum +=
+                                    pacc_f16_to_f32(gate_h.offset(i as isize).read_unaligned())
+                                        * yv;
+                            }
+                        }
+                        if use_bias {
+                            sum += x_bias_base_ptr
+                                .offset((bias_base_elem + row as i64) as isize)
+                                .read_unaligned();
+                        }
+                        if use_gate {
+                            if use_gate_bias {
+                                gate_sum += gate_bias_base_ptr
+                                    .offset((bias_base_elem + row as i64) as isize)
+                                    .read_unaligned();
+                            }
+                            sum = match glu_op {
+                                1 => sum * pacc_gelu(gate_sum),
+                                3 => pacc_swiglu_oai(gate_sum, sum),
+                                _ => sum * pacc_silu(gate_sum),
+                            };
+                        }
+                        dst_base_ptr
+                            .offset((dst_base_elem + row as i64) as isize)
+                            .write_unaligned(sum);
+                        continue;
+                    }
+
+                    for j in 0..ncols_dst_u {
+                        let mut sum = 0.0f32;
+                        let mut gate_sum = 0.0f32;
+                        for col2 in 0..ncols2_i {
+                            let x0 = if x_type == 2 {
+                                let xh = x_base_ptr.offset(
+                                    ((x_base_elem + col2 * 2) * x_elem_size as i64) as isize,
+                                ) as *const u16;
+                                pacc_f16_to_f32(xh.read_unaligned())
+                            } else {
+                                (x_base_ptr as *const f32)
+                                    .offset((x_base_elem + col2 * 2) as isize)
+                                    .read_unaligned()
+                            };
+                            let x1 = if x_type == 2 {
+                                let xh = x_base_ptr.offset(
+                                    ((x_base_elem + col2 * 2 + 1) * x_elem_size as i64) as isize,
+                                ) as *const u16;
+                                pacc_f16_to_f32(xh.read_unaligned())
+                            } else {
+                                (x_base_ptr as *const f32)
+                                    .offset((x_base_elem + col2 * 2 + 1) as isize)
+                                    .read_unaligned()
+                            };
+                            let y2 = y_base_ptr.offset(
+                                (y_base_elem + ((j as i64) * stride_col_y2 + col2) * 2) as isize,
+                            );
+                            sum += x0 * y2.read_unaligned() + x1 * y2.add(1).read_unaligned();
+                            if use_gate {
+                                let gx0 = if x_type == 2 {
+                                    let xh = gate_base_ptr.offset(
+                                        ((x_base_elem + col2 * 2) * x_elem_size as i64) as isize,
+                                    ) as *const u16;
+                                    pacc_f16_to_f32(xh.read_unaligned())
+                                } else {
+                                    (gate_base_ptr as *const f32)
+                                        .offset((x_base_elem + col2 * 2) as isize)
+                                        .read_unaligned()
+                                };
+                                let gx1 = if x_type == 2 {
+                                    let xh = gate_base_ptr.offset(
+                                        ((x_base_elem + col2 * 2 + 1) * x_elem_size as i64)
+                                            as isize,
+                                    ) as *const u16;
+                                    pacc_f16_to_f32(xh.read_unaligned())
+                                } else {
+                                    (gate_base_ptr as *const f32)
+                                        .offset((x_base_elem + col2 * 2 + 1) as isize)
+                                        .read_unaligned()
+                                };
+                                gate_sum +=
+                                    gx0 * y2.read_unaligned() + gx1 * y2.add(1).read_unaligned();
+                            }
+                        }
+                        if use_bias {
+                            sum += x_bias_base_ptr
+                                .offset(
+                                    (bias_base_elem + j as i64 * stride_col_dst + row as i64)
+                                        as isize,
+                                )
+                                .read_unaligned();
+                        }
+                        if use_gate {
+                            if use_gate_bias {
+                                gate_sum += gate_bias_base_ptr
+                                    .offset(
+                                        (bias_base_elem + j as i64 * stride_col_dst + row as i64)
+                                            as isize,
+                                    )
+                                    .read_unaligned();
+                            }
+                            sum = match glu_op {
+                                1 => sum * pacc_gelu(gate_sum),
+                                3 => pacc_swiglu_oai(gate_sum, sum),
+                                _ => sum * pacc_silu(gate_sum),
+                            };
+                        }
+                        dst_base_ptr
+                            .offset(
+                                (dst_base_elem + j as i64 * stride_col_dst + row as i64) as isize,
+                            )
+                            .write_unaligned(sum);
+                    }
+                }
+            });
+        }
+    });
+
+    if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback MMVF '{}' work={} ncols2={} ncols_dst={} x_type={} fusion={} workers={}",
+            kernel_name, work_items, ncols2, ncols_dst, x_type, has_fusion, workers
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn try_offload_mmvf_named_pacc_kernel(
     kernel_name: &str,
     grid_dim_x: ::core::ffi::c_uint,
@@ -5063,10 +5821,23 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     }
 
     let (ncols_dst, has_fusion, is_multi_token_id) = pacc_parse_mmvf_template(kernel_name)?;
-    if has_fusion || is_multi_token_id || ncols_dst == 0 || ncols_dst > 8 {
+    if is_multi_token_id || ncols_dst == 0 || ncols_dst > 8 || (has_fusion && ncols_dst != 1) {
         return None;
     }
     let x_type = pacc_mmvf_x_type(kernel_name)?;
+    let mmvf_host_fallback = std::env::var("HETGPU_PACC_MMVF_HOST_FALLBACK")
+        .ok()
+        .map(|v| v != "0")
+        .unwrap_or(false);
+    if mmvf_host_fallback {
+        return execute_mmvf_host_fallback(
+            kernel_name,
+            grid_dim_x,
+            grid_dim_y,
+            grid_dim_z,
+            kernel_params,
+        );
+    }
 
     let x_host = read_param_u64(kernel_params, 0)?;
     let y_host = read_param_u64(kernel_params, 1)?;
@@ -5178,6 +5949,21 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         "[PACC Backend] MMVF '{}' offload failed with rc={}; refusing normal launch",
         kernel_name, rc
     );
+    if std::env::var("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        if let Some(result) = execute_mmvf_host_fallback(
+            kernel_name,
+            grid_dim_x,
+            grid_dim_y,
+            grid_dim_z,
+            kernel_params,
+        ) {
+            return Some(result);
+        }
+    }
     Some(Err(CUerror::UNKNOWN))
 }
 
@@ -5241,6 +6027,220 @@ unsafe fn pacc_rope_multi_binding_metadata(
     };
     let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_rope_host_fallback(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    grid_dim_x: ::core::ffi::c_uint,
+) -> Option<cuda_types::cuda::CUresult> {
+    use cuda_types::cuda::*;
+
+    if !(kernel_name.contains("rope_norm") || kernel_name.contains("rope_neox")) {
+        return None;
+    }
+    if std::env::var("HETGPU_PACC_ROPE_HOST_FALLBACK")
+        .ok()
+        .as_deref()
+        == Some("0")
+    {
+        return Some(Err(CUerror::UNKNOWN));
+    }
+
+    let src = read_param_u64(kernel_params, 0)?;
+    let dst = read_param_u64(kernel_params, 1)?;
+    let ne00 = read_param_i32(kernel_params, 2)?.max(0) as u64;
+    let ne01 = read_param_i32(kernel_params, 3)?.max(0) as u64;
+    let ne02 = read_param_i32(kernel_params, 4)?.max(0) as u64;
+    let s01 = read_param_i32(kernel_params, 5)? as i64;
+    let s02 = read_param_i32(kernel_params, 6)? as i64;
+    let s03 = read_param_i32(kernel_params, 7)? as i64;
+    let s1 = read_param_i32(kernel_params, 8)? as i64;
+    let s2 = read_param_i32(kernel_params, 9)? as i64;
+    let s3 = read_param_i32(kernel_params, 10)? as i64;
+    let n_dims = read_param_i32(kernel_params, 11)?.max(0) as u64;
+    let pos = read_param_u64(kernel_params, 12)?;
+    let freq_scale = read_param_f32(kernel_params, 13)?;
+    let ext_factor = read_param_f32(kernel_params, 14)?;
+    let attn_factor = read_param_f32(kernel_params, 15)?;
+    let corr_param = *kernel_params.add(16);
+    if corr_param.is_null() || (corr_param as usize) < 0x1_0000 {
+        return None;
+    }
+    let corr0 = (corr_param as *const f32).read_unaligned();
+    let corr1 = (corr_param as *const f32).add(1).read_unaligned();
+    let theta_scale = read_param_f32(kernel_params, 17)?;
+    let freq_factors = read_param_u64(kernel_params, 18).unwrap_or(0);
+    let row_indices = read_param_u64(kernel_params, 19).unwrap_or(0);
+    let set_rows_stride = read_param_i32(kernel_params, 20).unwrap_or(0) as i64;
+    if ne00 == 0 || ne01 == 0 || ne02 == 0 || n_dims == 0 || n_dims > ne00 {
+        return Some(Err(CUerror::UNKNOWN));
+    }
+
+    let rows = grid_dim_x.max(1) as u64;
+    let plane = ne01.saturating_mul(ne02).max(1);
+    let ne03 = rows.saturating_add(plane - 1) / plane;
+    let (src_elem_size, dst_elem_size) = pacc_rope_element_sizes(kernel_name);
+    let src_bytes = pacc_strided_extent_bytes(
+        [ne00, ne01, ne02, ne03],
+        [1, s01 as u64, s02 as u64, s03 as u64],
+        src_elem_size,
+    );
+    let dst_bytes = pacc_strided_extent_bytes(
+        [ne00, ne01, ne02, ne03],
+        [1, s1 as u64, s2 as u64, s3 as u64],
+        dst_elem_size,
+    );
+    let pos_bytes = ne02
+        .max(1)
+        .saturating_mul(std::mem::size_of::<i32>() as u64);
+    let freq_bytes = n_dims
+        .saturating_add(1)
+        .saturating_div(2)
+        .saturating_mul(std::mem::size_of::<f32>() as u64);
+    let row_indices_bytes = ne02
+        .max(1)
+        .saturating_mul(std::mem::size_of::<i64>() as u64);
+    if !pacc_host_or_cuda_alloc_has_bytes(src, src_bytes as usize, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(dst, dst_bytes as usize, true)
+        || !pacc_host_or_cuda_alloc_has_bytes(pos, pos_bytes as usize, false)
+        || (freq_factors != 0
+            && !pacc_host_or_cuda_alloc_has_bytes(freq_factors, freq_bytes as usize, false))
+        || (set_rows_stride != 0
+            && !pacc_host_or_cuda_alloc_has_bytes(row_indices, row_indices_bytes as usize, false))
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback ROPE '{}' rejected ranges src=0x{:x}/{} dst=0x{:x}/{} pos=0x{:x}/{}",
+            kernel_name, src, src_bytes, dst, dst_bytes, pos, pos_bytes
+        );
+        return Some(Err(CUerror::UNKNOWN));
+    }
+
+    let forward = pacc_rope_is_forward(kernel_name);
+    let is_neox = kernel_name.contains("rope_neox");
+    let has_ff = pacc_rope_has_freq_factors(kernel_name, freq_factors);
+    let src_base = src as *const u8;
+    let dst_base = dst as *mut u8;
+    let pos_base = pos as *const i32;
+    let freq_base = freq_factors as *const f32;
+    let rows_base = row_indices as *const i64;
+
+    for row_dst in 0..rows {
+        let i3 = row_dst / plane;
+        let rem = row_dst - i3 * plane;
+        let i2 = rem / ne01;
+        let i1 = rem - i2 * ne01;
+        let pos_val = pos_base.add(i2 as usize).read_unaligned() as f32;
+        for i0 in (0..ne00).step_by(2) {
+            let ix = if is_neox {
+                (i0 / 2) as i64 + i1 as i64 * s01 + i2 as i64 * s02 + i3 as i64 * s03
+            } else {
+                i0 as i64 + i1 as i64 * s01 + i2 as i64 * s02 + i3 as i64 * s03
+            };
+            let mut idst = if is_neox {
+                (i0 / 2) as i64 + i1 as i64 * s1 + i2 as i64 * s2 + i3 as i64 * s3
+            } else {
+                i0 as i64 + i1 as i64 * s1 + i2 as i64 * s2 + i3 as i64 * s3
+            };
+            if set_rows_stride != 0 {
+                idst = i1 as i64 * s1 + if is_neox { (i0 / 2) as i64 } else { i0 as i64 };
+                idst += rows_base.add(i2 as usize).read_unaligned() * set_rows_stride;
+            }
+
+            if i0 >= n_dims {
+                if is_neox {
+                    let x0 = pacc_read_elem_as_f32(src_base, ix + (i0 / 2) as i64, src_elem_size);
+                    let x1 =
+                        pacc_read_elem_as_f32(src_base, ix + (i0 / 2 + 1) as i64, src_elem_size);
+                    pacc_write_elem_from_f32(dst_base, idst + (i0 / 2) as i64, dst_elem_size, x0);
+                    pacc_write_elem_from_f32(
+                        dst_base,
+                        idst + (i0 / 2 + 1) as i64,
+                        dst_elem_size,
+                        x1,
+                    );
+                } else {
+                    let x0 = pacc_read_elem_as_f32(src_base, ix, src_elem_size);
+                    let x1 = pacc_read_elem_as_f32(src_base, ix + 1, src_elem_size);
+                    pacc_write_elem_from_f32(dst_base, idst, dst_elem_size, x0);
+                    pacc_write_elem_from_f32(dst_base, idst + 1, dst_elem_size, x1);
+                }
+                continue;
+            }
+
+            let freq_factor = if has_ff && freq_factors != 0 {
+                freq_base.add((i0 / 2) as usize).read_unaligned()
+            } else {
+                1.0
+            };
+            let theta_extrap = pos_val * theta_scale.powf(i0 as f32 / 2.0) / freq_factor;
+            let theta_interp = freq_scale * theta_extrap;
+            let mut theta = theta_interp;
+            let mut mscale = attn_factor;
+            if ext_factor != 0.0 {
+                let y = (i0 as f32 / 2.0 - corr0) / 0.001f32.max(corr1 - corr0);
+                let ramp = 1.0 - y.clamp(0.0, 1.0);
+                let ramp_mix = ramp * ext_factor;
+                theta = theta_interp * (1.0 - ramp_mix) + theta_extrap * ramp_mix;
+                mscale *= 1.0 + 0.1 * (1.0 / freq_scale).ln();
+            }
+            let cos_theta = theta.cos() * mscale;
+            let mut sin_theta = theta.sin() * mscale;
+            if !forward {
+                sin_theta = -sin_theta;
+            }
+
+            if is_neox {
+                let x0 = pacc_read_elem_as_f32(src_base, ix, src_elem_size);
+                let x1 = pacc_read_elem_as_f32(src_base, ix + (n_dims / 2) as i64, src_elem_size);
+                pacc_write_elem_from_f32(
+                    dst_base,
+                    idst,
+                    dst_elem_size,
+                    x0 * cos_theta - x1 * sin_theta,
+                );
+                pacc_write_elem_from_f32(
+                    dst_base,
+                    idst + (n_dims / 2) as i64,
+                    dst_elem_size,
+                    x0 * sin_theta + x1 * cos_theta,
+                );
+            } else {
+                let x0 = pacc_read_elem_as_f32(src_base, ix, src_elem_size);
+                let x1 = pacc_read_elem_as_f32(src_base, ix + 1, src_elem_size);
+                pacc_write_elem_from_f32(
+                    dst_base,
+                    idst,
+                    dst_elem_size,
+                    x0 * cos_theta - x1 * sin_theta,
+                );
+                pacc_write_elem_from_f32(
+                    dst_base,
+                    idst + 1,
+                    dst_elem_size,
+                    x0 * sin_theta + x1 * cos_theta,
+                );
+            }
+        }
+    }
+
+    if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback ROPE '{}' rows={} ne00={} n_dims={} neox={} src_elem={} dst_elem={}",
+            kernel_name, rows, ne00, n_dims, is_neox, src_elem_size, dst_elem_size
+        );
+    }
+    Some(Ok(()))
 }
 
 #[cfg(all(
@@ -6161,12 +7161,10 @@ unsafe fn execute_rmsnorm_f32_host_fallback(
     let x_addr = x as usize;
     let y_addr = y as usize;
     let weight_addr = weight as usize;
-    if !pacc_host_range_has_perms(x_addr, bytes, false)
-        || !pacc_host_range_has_perms(y_addr, bytes, true)
-        || (!weight.is_null() && !pacc_host_range_has_perms(weight_addr, weight_bytes, false))
-        || !pacc_cuda_alloc_has_bytes(x_addr as u64, bytes)
-        || !pacc_cuda_alloc_has_bytes(y_addr as u64, bytes)
-        || (!weight.is_null() && !pacc_cuda_alloc_has_bytes(weight_addr as u64, weight_bytes))
+    if !pacc_host_or_cuda_alloc_has_bytes(x_addr as u64, bytes, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(y_addr as u64, bytes, true)
+        || (!weight.is_null()
+            && !pacc_host_or_cuda_alloc_has_bytes(weight_addr as u64, weight_bytes, false))
     {
         eprintln!(
             "[PACC Backend] host-fallback RMSNorm '{}' rejected inaccessible host range x=0x{:x} w=0x{:x} y=0x{:x} rows={} hidden={}",
@@ -6413,10 +7411,10 @@ unsafe fn execute_softmax_f32_host_fallback(
     let bytes = rows
         .checked_mul(ncols)?
         .checked_mul(std::mem::size_of::<f32>())?;
-    let x_addr = x as usize;
-    let dst_addr = dst as usize;
-    if !pacc_host_range_has_perms(x_addr, bytes, false)
-        || !pacc_host_range_has_perms(dst_addr, bytes, true)
+    let x_addr = x as u64;
+    let dst_addr = dst as u64;
+    if !pacc_host_or_cuda_alloc_has_bytes(x_addr, bytes, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(dst_addr, bytes, true)
     {
         eprintln!(
             "[PACC Backend] host-fallback softmax '{}' rejected inaccessible x/dst range x=0x{:x} dst=0x{:x} rows={} cols={}",
@@ -6426,7 +7424,7 @@ unsafe fn execute_softmax_f32_host_fallback(
     }
     if !sinks.is_null() {
         let sinks_bytes = ne02.checked_mul(std::mem::size_of::<f32>())?;
-        if !pacc_host_range_has_perms(sinks as usize, sinks_bytes, false) {
+        if !pacc_host_or_cuda_alloc_has_bytes(sinks as u64, sinks_bytes, false) {
             return Some(Err(CUerror::UNKNOWN));
         }
     }
@@ -6448,7 +7446,7 @@ unsafe fn execute_softmax_f32_host_fallback(
         let mask_bytes = usize::try_from(max_mask_off)
             .ok()?
             .checked_add(ncols.checked_mul(mask_elem_size)?)?;
-        if !pacc_host_range_has_perms(mask as usize, mask_bytes, false) {
+        if !pacc_host_or_cuda_alloc_has_bytes(mask as u64, mask_bytes, false) {
             return Some(Err(CUerror::UNKNOWN));
         }
     }
@@ -6521,6 +7519,193 @@ unsafe fn execute_softmax_f32_host_fallback(
         !mask.is_null(),
         !sinks.is_null()
     );
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_bin_bcast_f32_fallback(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    #[derive(Copy, Clone)]
+    enum Op {
+        Repeat,
+        Add,
+        Sub,
+        Mul,
+        Div,
+    }
+
+    let op = if kernel_name.contains("op_repeatff") {
+        Op::Repeat
+    } else if kernel_name.contains("op_addff") {
+        Op::Add
+    } else if kernel_name.contains("op_subff") {
+        Op::Sub
+    } else if kernel_name.contains("op_mulff") {
+        Op::Mul
+    } else if kernel_name.contains("op_divff") {
+        Op::Div
+    } else {
+        return None;
+    };
+
+    if kernel_name.contains("k_bin_bcast_unravel") || !kernel_name.contains("EEfffJ") {
+        return None;
+    }
+    let (src0_elem, src1_elem, dst_elem) = pacc_bin_bcast_element_sizes(kernel_name);
+    if src0_elem != 4 || src1_elem != 4 || dst_elem != 4 {
+        return None;
+    }
+
+    let src0_addr = read_param_u64(kernel_params, 0).unwrap_or(0);
+    let src1_addr = read_param_u64(kernel_params, 1).unwrap_or(0);
+    let dst_addr = read_param_u64(kernel_params, 2)?;
+    let src0 = if src0_addr == 0 {
+        std::ptr::null()
+    } else {
+        pacc_host_ptr::<f32>(src0_addr)? as *const f32
+    };
+    let src1 = if src1_addr == 0 {
+        std::ptr::null()
+    } else {
+        pacc_host_ptr::<f32>(src1_addr)? as *const f32
+    };
+    let dst = pacc_host_ptr::<f32>(dst_addr)?;
+
+    let ne0 = read_param_i32(kernel_params, 3)?.max(0) as usize;
+    let ne1 = read_param_i32(kernel_params, 4)?.max(0) as usize;
+    let ne2 = read_param_i32(kernel_params, 5)?.max(0) as usize;
+    let ne3 = read_param_uint3_value(kernel_params, 6)?;
+    let ne10 = read_param_uint3_value(kernel_params, 7)?;
+    let ne11 = read_param_uint3_value(kernel_params, 8)?;
+    let ne12 = read_param_uint3_value(kernel_params, 9)?;
+    let ne13 = read_param_uint3_value(kernel_params, 10)?;
+    let s1 = read_param_i32(kernel_params, 11)?.max(0) as usize;
+    let s2 = read_param_i32(kernel_params, 12)?.max(0) as usize;
+    let s3 = read_param_i32(kernel_params, 13)?.max(0) as usize;
+    let s00 = read_param_i32(kernel_params, 14)?.max(0) as usize;
+    let s01 = read_param_i32(kernel_params, 15)?.max(0) as usize;
+    let s02 = read_param_i32(kernel_params, 16)?.max(0) as usize;
+    let s03 = read_param_i32(kernel_params, 17)?.max(0) as usize;
+    let s10 = read_param_i32(kernel_params, 18)?.max(0) as usize;
+    let s11 = read_param_i32(kernel_params, 19)?.max(0) as usize;
+    let s12 = read_param_i32(kernel_params, 20)?.max(0) as usize;
+    let s13 = read_param_i32(kernel_params, 21)?.max(0) as usize;
+
+    let dim = |v: pacc_runtime_sys::HetgpuPaccUint3| -> usize { v.z.max(1) as usize };
+    let ne3z = dim(ne3);
+    let ne10z = dim(ne10);
+    let ne11z = dim(ne11);
+    let ne12z = dim(ne12);
+    let ne13z = dim(ne13);
+    if ne0 == 0 || ne1 == 0 || ne2 == 0 || ne3z == 0 {
+        return Some(Ok(()));
+    }
+
+    let fused = pacc_bin_bcast_fuse_count(kernel_name);
+    let mut src1s = Vec::with_capacity(fused.max(1));
+    if fused != 0 {
+        for i in 0..fused {
+            let ptr = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 22 + i)?)? as *const f32;
+            src1s.push(ptr);
+        }
+    } else if !src1.is_null() {
+        src1s.push(src1);
+    } else {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let checked_extent =
+        |a: usize, sa: usize, b: usize, sb: usize, c: usize, sc: usize, d: usize, sd: usize| {
+            a.checked_sub(1)
+                .and_then(|v| v.checked_mul(sa))
+                .and_then(|v| {
+                    b.checked_sub(1)
+                        .and_then(|w| w.checked_mul(sb))
+                        .and_then(|w| v.checked_add(w))
+                })
+                .and_then(|v| {
+                    c.checked_sub(1)
+                        .and_then(|w| w.checked_mul(sc))
+                        .and_then(|w| v.checked_add(w))
+                })
+                .and_then(|v| {
+                    d.checked_sub(1)
+                        .and_then(|w| w.checked_mul(sd))
+                        .and_then(|w| v.checked_add(w))
+                })
+                .and_then(|v| v.checked_add(1))
+        };
+    let dst_elems = checked_extent(ne3z, s3, ne2, s2, ne1, s1, ne0, 1)?;
+    let src0_elems = checked_extent(ne3z, s03, ne2, s02, ne1, s01, ne0, s00)?;
+    let src1_i0 = ne0.min(ne10z).max(1);
+    let src1_elems = checked_extent(ne13z, s13, ne12z, s12, ne11z, s11, src1_i0, s10)?;
+    if !pacc_cuda_alloc_has_elems(dst as *const f32, dst_elems)
+        || (!src0.is_null() && !pacc_cuda_alloc_has_elems(src0, src0_elems))
+        || src1s
+            .iter()
+            .any(|&ptr| !pacc_cuda_alloc_has_elems(ptr, src1_elems))
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback bin_bcast '{}' rejected range dst={:p} src0={:p} dst_elems={} src0_elems={} src1_elems={}",
+            kernel_name, dst, src0, dst_elems, src0_elems, src1_elems
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let apply = |op: Op, a: f32, b: f32| -> f32 {
+        match op {
+            Op::Repeat => b,
+            Op::Add => a + b,
+            Op::Sub => a - b,
+            Op::Mul => a * b,
+            Op::Div => a / b,
+        }
+    };
+    for row in 0..(ne1 * ne2 * ne3z) {
+        let i1 = row % ne1;
+        let t = row / ne1;
+        let i2 = t % ne2;
+        let i3 = t / ne2;
+        let i11 = i1 % ne11z;
+        let i12 = i2 % ne12z;
+        let i13 = i3 % ne13z;
+        let src0_base = i3 * s03 + i2 * s02 + i1 * s01;
+        let src1_base = i13 * s13 + i12 * s12 + i11 * s11;
+        let dst_base = i3 * s3 + i2 * s2 + i1 * s1;
+        for i0 in 0..ne0 {
+            let i10 = i0 % ne10z;
+            let src1_off = src1_base + i10 * s10;
+            let mut value = if src0.is_null() {
+                0.0
+            } else {
+                src0.add(src0_base + i0 * s00).read_unaligned()
+            };
+            for &rhs in &src1s {
+                value = apply(op, value, rhs.add(src1_off).read_unaligned());
+            }
+            dst.add(dst_base + i0).write_unaligned(value);
+        }
+    }
+
+    if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback bin_bcast '{}' elems={} fused={}",
+            kernel_name,
+            ne0 * ne1 * ne2 * ne3z,
+            src1s.len()
+        );
+    }
     Some(Ok(()))
 }
 
@@ -6649,6 +7834,22 @@ fn pacc_cuda_alloc_has_bytes(addr: u64, bytes: usize) -> bool {
     super::memory::pacc_allocation_remaining_addr(addr)
         .map(|remaining| remaining >= bytes)
         .unwrap_or(false)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_host_or_cuda_alloc_has_bytes(addr: u64, bytes: usize, need_write: bool) -> bool {
+    if pacc_cuda_alloc_has_bytes(addr, bytes) {
+        return true;
+    }
+    let Ok(host_addr) = usize::try_from(addr) else {
+        return false;
+    };
+    pacc_host_range_has_perms(host_addr, bytes, need_write)
 }
 
 #[cfg(all(
@@ -6925,6 +8126,10 @@ unsafe fn try_offload_named_pacc_kernel(
     if !named_pacc_enabled {
         return None;
     }
+    let allow_named_host_fallback = std::env::var("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
+        .ok()
+        .as_deref()
+        == Some("1");
     if name_lower.contains("mul_mat_vec_f") {
         if let Some(result) = try_offload_mmvf_named_pacc_kernel(
             kernel_name,
@@ -6945,10 +8150,11 @@ unsafe fn try_offload_named_pacc_kernel(
             .ok()
             .as_deref()
             == Some("1");
-        let allow_host_fallback = std::env::var("HETGPU_PACC_SOFTMAX_HOST_FALLBACK")
-            .ok()
-            .as_deref()
-            == Some("1");
+        let allow_host_fallback = allow_named_host_fallback
+            || std::env::var("HETGPU_PACC_SOFTMAX_HOST_FALLBACK")
+                .ok()
+                .as_deref()
+                == Some("1");
         let rows = (params.ne01.max(1) as u64)
             .saturating_mul(params.ne02.max(1) as u64)
             .saturating_mul(params.ne03.max(1) as u64);
@@ -7054,6 +8260,13 @@ unsafe fn try_offload_named_pacc_kernel(
                 Some(Err(CUerror::UNKNOWN))
             };
         }
+        if std::env::var("HETGPU_PACC_RMSNORM_HOST_FALLBACK")
+            .ok()
+            .map(|v| v != "0")
+            .unwrap_or(false)
+        {
+            return execute_rmsnorm_f32_host_fallback(kernel_name, x, weight, y, rows, hidden, eps);
+        }
         let dtype = if name_lower.contains("bf16") || name_lower.contains("bfloat16") {
             pacc_runtime_sys::PaccDataType::Bfloat16 as i32
         } else {
@@ -7123,13 +8336,30 @@ unsafe fn try_offload_named_pacc_kernel(
         };
     }
 
-    let allow_named_host_fallback = std::env::var("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
-        .ok()
-        .as_deref()
-        == Some("1");
+    if (name_lower.contains("rope_norm") || name_lower.contains("rope_neox"))
+        && (allow_named_host_fallback
+            || std::env::var("HETGPU_PACC_ROPE_HOST_FALLBACK")
+                .ok()
+                .map(|v| v != "0")
+                .unwrap_or(false))
+    {
+        return execute_rope_host_fallback(kernel_name, kernel_params, grid_dim_x);
+    }
 
     if name_lower.contains("compute_batched_ptrs") {
         return execute_compute_batched_ptrs_fallback(kernel_name, kernel_params);
+    }
+
+    if name_lower.contains("k_bin_bcast")
+        && (allow_named_host_fallback
+            || std::env::var("HETGPU_PACC_BIN_BCAST_HOST_FALLBACK")
+                .ok()
+                .as_deref()
+                == Some("1"))
+    {
+        if let Some(result) = execute_bin_bcast_f32_fallback(kernel_name, kernel_params) {
+            return Some(result);
+        }
     }
 
     if name_lower.contains("scale_f32") && allow_named_host_fallback {
@@ -7138,6 +8368,13 @@ unsafe fn try_offload_named_pacc_kernel(
 
     if name_lower.contains("k_get_rows_float") && allow_named_host_fallback {
         return execute_get_rows_float_fallback(kernel_name, kernel_params, grid_dim_x);
+    }
+
+    if name_lower.contains("k_set_rows")
+        && !name_lower.contains("k_set_rows_quant")
+        && allow_named_host_fallback
+    {
+        return execute_set_rows_host_fallback(kernel_name, kernel_params);
     }
 
     if name_lower.contains("l2_norm_f32") && allow_named_host_fallback {

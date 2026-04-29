@@ -443,7 +443,8 @@ fn link_bc_to_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
 
     let output_file = ctx.temp_dir.join("linked.bc");
 
-    let mut cmd = Command::new(llvm_link_tool());
+    let llvm_link = llvm_link_tool();
+    let mut cmd = Command::new(&llvm_link);
     for bc_file in &bc_files {
         cmd.arg(bc_file);
     }
@@ -455,15 +456,27 @@ fn link_bc_to_bc(ctx: &ActionContext) -> pacc_comgr_status_t {
             Ok(())
         }
         Ok(output) => {
+            let inputs = bc_files
+                .iter()
+                .map(|path| {
+                    let len = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                    format!("{}({} bytes)", path.display(), len)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
             eprintln!(
-                "PACC: llvm-link failed\nstdout:\n{}\nstderr:\n{}",
+                "PACC: llvm-link failed\ntool: {}\nstatus: {}\ninputs: [{}]\noutput: {}\nstdout:\n{}\nstderr:\n{}",
+                llvm_link,
+                output.status,
+                inputs,
+                output_file.display(),
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
             Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)
         }
         Err(err) => {
-            eprintln!("PACC: failed to execute llvm-link: {err}");
+            eprintln!("PACC: failed to execute llvm-link {}: {err}", llvm_link);
             Err(pacc_comgr_status_s::PACC_COMGR_STATUS_ERROR)
         }
     }
@@ -1525,9 +1538,9 @@ mod tests {
     fn riscv_march_adds_zbb_for_backend_orc_b_selection() {
         assert_eq!(
             riscv_march_with_required_extensions(
-                "rv64gcv_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvfwmaccqqq_xsfvqmaccqoq"
+                "rv64gcv_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq"
             ),
-            "rv64gcv_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvfwmaccqqq_xsfvqmaccqoq_zbb"
+            "rv64gcv_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq_zbb"
         );
         assert_eq!(
             riscv_march_with_required_extensions("rv64gcv_zbb_zvfbfmin"),
@@ -1673,6 +1686,74 @@ fn llvm_tool_from_target_dir(target_dir: &Path, tool_name: &str) -> Option<Strin
     None
 }
 
+fn llvm_tool_from_prebuilt_dir(prebuilt_dir: &Path, tool_name: &str) -> Option<String> {
+    for candidate in [
+        prebuilt_dir.join("bin").join(tool_name),
+        prebuilt_dir.join("tools").join(tool_name),
+        prebuilt_dir.join("build").join("bin").join(tool_name),
+        prebuilt_dir.join("build").join("tools").join(tool_name),
+        prebuilt_dir
+            .join("build")
+            .join("Release")
+            .join("bin")
+            .join(tool_name),
+        prebuilt_dir
+            .join("build")
+            .join("Release")
+            .join("tools")
+            .join(tool_name),
+        prebuilt_dir
+            .join("build")
+            .join("Debug")
+            .join("bin")
+            .join(tool_name),
+        prebuilt_dir
+            .join("build")
+            .join("Debug")
+            .join("tools")
+            .join(tool_name),
+        prebuilt_dir
+            .join("out")
+            .join("build")
+            .join("bin")
+            .join(tool_name),
+        prebuilt_dir
+            .join("out")
+            .join("build")
+            .join("tools")
+            .join(tool_name),
+        prebuilt_dir
+            .join("out")
+            .join("build")
+            .join("Release")
+            .join("bin")
+            .join(tool_name),
+        prebuilt_dir
+            .join("out")
+            .join("build")
+            .join("Release")
+            .join("tools")
+            .join(tool_name),
+        prebuilt_dir
+            .join("out")
+            .join("build")
+            .join("Debug")
+            .join("bin")
+            .join(tool_name),
+        prebuilt_dir
+            .join("out")
+            .join("build")
+            .join("Debug")
+            .join("tools")
+            .join(tool_name),
+    ] {
+        if let Some(tool) = existing_tool(candidate) {
+            return Some(tool);
+        }
+    }
+    None
+}
+
 fn bundled_llvm_tool(env_var: &str, tool_name: &str, fallbacks: &[&str]) -> String {
     if let Ok(value) = std::env::var(env_var) {
         if !value.trim().is_empty() {
@@ -1683,6 +1764,20 @@ fn bundled_llvm_tool(env_var: &str, tool_name: &str, fallbacks: &[&str]) -> Stri
     if let Ok(dir) = std::env::var("HETGPU_PACC_LLVM_TOOLS_DIR") {
         if let Some(tool) = existing_tool(PathBuf::from(dir).join(tool_name)) {
             return tool;
+        }
+    }
+
+    for dir in [
+        std::env::var("LLVM_ZLUDA_PREBUILT").ok(),
+        option_env!("LLVM_ZLUDA_PREBUILT").map(|s| s.to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !dir.trim().is_empty() {
+            if let Some(tool) = llvm_tool_from_prebuilt_dir(Path::new(&dir), tool_name) {
+                return tool;
+            }
         }
     }
 

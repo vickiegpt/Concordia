@@ -1039,9 +1039,7 @@ fn pacc_align_up(value: usize, align: usize) -> Option<usize> {
     if align == 0 {
         return Some(value);
     }
-    value
-        .checked_add(align - 1)
-        .map(|v| v - (v % align))
+    value.checked_add(align - 1).map(|v| v - (v % align))
 }
 
 #[cfg(all(
@@ -1551,6 +1549,29 @@ pub(crate) fn pacc_driver_physical_addr(addr: u64) -> Option<u64> {
                 PaccAllocKind::Driver { .. } => Some(alloc.phys.saturating_add(offset)),
                 PaccAllocKind::SharedDdr => Some(alloc.phys.saturating_add(offset)),
                 PaccAllocKind::Host { .. } => None,
+            }
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn pacc_shared_ddr_physical_addr(addr: u64) -> Option<u64> {
+    let map = PACC_ALLOC_MAP.lock().unwrap();
+    map.iter().find_map(|(base, alloc)| {
+        let start = *base;
+        let end = start.saturating_add(alloc.size as u64);
+        if addr >= start && addr < end {
+            let offset = addr.saturating_sub(start);
+            match &alloc.kind {
+                PaccAllocKind::SharedDdr => Some(alloc.phys.saturating_add(offset)),
+                PaccAllocKind::Driver { .. } | PaccAllocKind::Host { .. } => None,
             }
         } else {
             None

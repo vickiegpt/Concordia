@@ -2,7 +2,13 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cc="${PACC_LINUX_CC:-gcc}"
+if [[ -n "${PACC_LINUX_CC:-}" ]]; then
+  cc="${PACC_LINUX_CC}"
+elif command -v clang-20 >/dev/null 2>&1; then
+  cc="clang-20"
+else
+  cc="gcc"
+fi
 src="${PACC_LINUX_JOBD_SRC:-${repo_root}/pacc_linux_jobd/hetgpu_pacc_jobd.c}"
 out="${1:-${repo_root}/target/hetgpu_pacc_jobd}"
 extra_cflags=()
@@ -16,7 +22,16 @@ if [[ -n "${PACC_LINUX_LDFLAGS_EXTRA:-}" ]]; then
 fi
 
 mkdir -p "$(dirname "${out}")"
-common_flags=(-O2 -Wall -Wextra -fno-tree-vectorize -march=rv64gcv -mabi=lp64d -pthread)
+cc_base="$(basename "${cc}")"
+if [[ "${cc_base}" == clang* ]]; then
+  common_flags=(-O3 -Wall -Wextra -funroll-loops -menable-experimental-extensions
+    -march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b
+    -mabi=lp64d -pthread)
+else
+  common_flags=(-O2 -Wall -Wextra -fno-tree-vectorize
+    -march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b
+    -mabi=lp64d -pthread)
+fi
 common_flags+=("${extra_cflags[@]}")
 link_flags=(-fuse-ld=bfd -lm -ldl -rdynamic)
 link_flags+=("${extra_ldflags[@]}")

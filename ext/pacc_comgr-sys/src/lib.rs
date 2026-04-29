@@ -214,25 +214,26 @@ impl PaccConfig {
     /// SiFive X390 configuration for spike simulation (Zvbdot path)
     pub fn x390_sim() -> Self {
         Self {
-            vlen: 512,
+            vlen: 1024,
             default_sew: 8,
             target_triple: "riscv64-unknown-elf".to_string(),
-            march: "rv64gcv_zvl512b_zbb".to_string(),
-            mattr: "+v,+d,+f,+zbb,+zfbfmin,+zvfbfmin,+zvfbfwma,+zvl512b".to_string(),
+            march: "rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b".to_string(),
+            mattr: "+v,+d,+f,+zbb,+zfh,+zvfh,+zfbfmin,+zvfbfmin,+zvfbfwma,+zvl1024b"
+                .to_string(),
             codegen_mode: PaccCodegenMode::Zvbdot,
-            spike_isa: "rv64gcv_zbb_zfbfmin_zvfbfmin_zvfbfwma_zvfbfa_zvqbdot8i_zvqbdot16i_zvfqbdot8f_zvfwbdot16bf_zvfbdot32f_zvl512b".to_string(),
+            spike_isa: "rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvfbfa_zvqbdot8i_zvqbdot16i_zvfqbdot8f_zvfwbdot16bf_zvfbdot32f_zvl1024b".to_string(),
         }
     }
 
     /// SiFive XM hardware configuration (VCIX path)
     pub fn xm_hardware() -> Self {
         Self {
-            vlen: 512,
+            vlen: 1024,
             default_sew: 8,
             target_triple: "riscv64-unknown-elf".to_string(),
-            march: "rv64gcv_zbb_zvfbfmin_xsfvcp_xsfvfnrclipxfqf_xsfvfwmaccqqq_xsfvqmaccqoq"
+            march: "rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq"
                 .to_string(),
-            mattr: "+v,+d,+f,+zbb,+zvfbfmin,+xsfvcp,+xsfvfnrclipxfqf,+xsfvfwmaccqqq,+xsfvqmaccqoq"
+            mattr: "+v,+d,+f,+zbb,+zfh,+zvfh,+zfbfmin,+zvfbfmin,+zvfbfwma,+zvl1024b,+xsfvcp,+xsfvfnrclipxfqf,+xsfvqmaccqoq"
                 .to_string(),
             codegen_mode: PaccCodegenMode::Vcix,
             spike_isa: String::new(),
@@ -243,11 +244,12 @@ impl PaccConfig {
     /// compatibility with llama.cpp CPU kernels such as ggml-cpu/vec.cpp.
     pub fn rvv_linux_bf16() -> Self {
         Self {
-            vlen: 512,
+            vlen: 1024,
             default_sew: 8,
             target_triple: "riscv64-linux-gnu".to_string(),
-            march: "rv64gcv_zbb_zfh_zvfbfmin_zvfbfwma".to_string(),
-            mattr: "+v,+d,+f,+zbb,+zfh,+zvfbfmin,+zvfbfwma".to_string(),
+            march: "rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b".to_string(),
+            mattr: "+v,+d,+f,+zbb,+zfh,+zvfh,+zfbfmin,+zvfbfmin,+zvfbfwma,+zvl1024b"
+                .to_string(),
             codegen_mode: PaccCodegenMode::Zvbdot,
             spike_isa: String::new(),
         }

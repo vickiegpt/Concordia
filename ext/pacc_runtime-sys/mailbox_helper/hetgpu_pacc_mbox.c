@@ -326,8 +326,9 @@ static int mbox_mmap(struct file *file, struct vm_area_struct *vma)
 		return -ENXIO;
 
 	phys = (phys_addr_t)g_shared_ddr_dma + map_off;
-	return remap_pfn_range(vma, vma->vm_start, phys >> PAGE_SHIFT,
-			       map_size, vma->vm_page_prot);
+	(void)phys;
+	return dma_mmap_coherent(&g_pdev->dev, vma, g_shared_ddr_mem,
+				 g_shared_ddr_dma, shared_ddr_size);
 }
 
 static const struct file_operations mbox_fops = {
