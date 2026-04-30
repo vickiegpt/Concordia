@@ -39,16 +39,21 @@ fn main() -> Result<(), VarError> {
                 println!("cargo:rustc-link-search=native={}", d);
             }
         } else {
-            // Emit a weak undefined symbol reference so the cdylib links but
-            // will fail at runtime if ze functions are actually called on a
-            // system without the loader.  Consumers that don't use the intel
-            // feature will never call into this code.
+            cc::Build::new()
+                .file(src_dir.join("runner/ze_stub.c"))
+                .include(src_dir.clone())
+                .compile("ze_loader_stub");
+
+            // Provide local failing stubs so cdylibs can be loaded on systems
+            // without Level Zero. Consumers that use another backend should
+            // not be blocked by unresolved ze_* symbols.
             println!("cargo:warning=ze_loader not found — Intel Level Zero runtime disabled");
         }
     }
 
     println!("cargo:rerun-if-changed=src/runner/ze_runner.c");
     println!("cargo:rerun-if-changed=src/runner/ze_runner.h");
+    println!("cargo:rerun-if-changed=src/runner/ze_stub.c");
     println!("cargo:rerun-if-changed=src/level-zero/ze_api.h");
 
     Ok(())

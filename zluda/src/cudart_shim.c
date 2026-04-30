@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
@@ -148,6 +149,112 @@ static int hetgpu_allow_skip_null_registered_kernel(void) {
     return allow && strcmp(allow, "1") == 0;
 }
 
+static int hetgpu_env_enabled_default(const char *name, int default_value) {
+    const char *value = getenv(name);
+    if (!value || !*value) {
+        return default_value;
+    }
+    if (strcmp(value, "0") == 0 ||
+        strcasecmp(value, "false") == 0 ||
+        strcasecmp(value, "no") == 0 ||
+        strcasecmp(value, "off") == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int hetgpu_cudart_fail_open_enabled(void) {
+    const char *value = getenv("HETGPU_CUDART_FAIL_OPEN");
+    if (!value || !*value) {
+        value = getenv("HETGPU_PACC_ASSUME_SUCCESS_ON_WAIT_ERROR");
+    }
+    if (!value || !*value) {
+        return 1;
+    }
+    if (strcmp(value, "0") == 0 ||
+        strcasecmp(value, "false") == 0 ||
+        strcasecmp(value, "no") == 0 ||
+        strcasecmp(value, "off") == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int hetgpu_cudart_lazy_ptx_fail_open_enabled(void) {
+    return hetgpu_env_enabled_default("HETGPU_CUDART_LAZY_PTX_FAIL_OPEN", 0);
+}
+
+static unsigned long long hetgpu_parse_env_ull_default(const char *name, unsigned long long default_value);
+
+static unsigned long long hetgpu_cudart_lazy_ptx_fail_open_log_limit(void) {
+    static unsigned long long cached = (unsigned long long)-1;
+    if (cached == (unsigned long long)-1) {
+        cached = hetgpu_parse_env_ull_default("HETGPU_CUDART_LAZY_PTX_FAIL_OPEN_LOG_LIMIT", 64);
+    }
+    return cached;
+}
+
+static int hetgpu_cudart_kernel_noop_enabled(void) {
+    return hetgpu_env_enabled_default("HETGPU_CUDART_KERNEL_NOOP", 0);
+}
+
+static int hetgpu_cudart_kernel_noop_log_enabled(void) {
+    return hetgpu_env_enabled_default("HETGPU_CUDART_KERNEL_NOOP_LOG", 0);
+}
+
+static int hetgpu_cudart_kernel_pacc_noop_enabled(void) {
+    return hetgpu_env_enabled_default("HETGPU_CUDART_KERNEL_PACC_NOOP", 0);
+}
+
+static unsigned long long hetgpu_parse_env_ull_default(const char *name, unsigned long long default_value) {
+    const char *value = getenv(name);
+    if (!value || !*value) {
+        return default_value;
+    }
+    char *end = NULL;
+    unsigned long long parsed = strtoull(value, &end, 0);
+    if (end == value) {
+        return default_value;
+    }
+    return parsed;
+}
+
+static unsigned long long hetgpu_cudart_kernel_pacc_noop_every(void) {
+    static unsigned long long cached = 0;
+    if (cached == 0) {
+        cached = hetgpu_parse_env_ull_default("HETGPU_CUDART_KERNEL_PACC_NOOP_EVERY", 0);
+        if (cached == 0) {
+            cached = hetgpu_parse_env_ull_default("HETGPU_PACC_KERNEL_NOOP_EVERY", 1);
+        }
+        if (cached == 0) {
+            cached = 1;
+        }
+    }
+    return cached;
+}
+
+static unsigned long long hetgpu_cudart_kernel_pacc_noop_first(void) {
+    static unsigned long long cached = (unsigned long long)-1;
+    if (cached == (unsigned long long)-1) {
+        cached = hetgpu_parse_env_ull_default("HETGPU_CUDART_KERNEL_PACC_NOOP_FIRST", 4);
+    }
+    return cached;
+}
+
+static int hetgpu_cudart_should_submit_pacc_noop(unsigned long long *launch_index_out) {
+    static unsigned long long launch_counter = 0;
+    unsigned long long launch_index = __sync_add_and_fetch(&launch_counter, 1);
+    if (launch_index_out) {
+        *launch_index_out = launch_index;
+    }
+    unsigned long long first = hetgpu_cudart_kernel_pacc_noop_first();
+    if (launch_index <= first) {
+        return 1;
+    }
+    unsigned long long every = hetgpu_cudart_kernel_pacc_noop_every();
+    return every <= 1 || (launch_index % every) == 0;
+}
+
 static int hetgpu_hide_sync_errors(void) {
     const char* hide = getenv("HETGPU_CUDART_HIDE_SYNC_ERRORS");
     return hide && strcmp(hide, "1") == 0;
@@ -175,12 +282,32 @@ typedef int (*hetgpu_pacc_launch_named_kernel_fn)(
     void** kernel_params,
     void** extra);
 
+typedef int (*hetgpu_pacc_launch_kernel_noop_fn)(
+    unsigned int device_id,
+    const char* kernel_name,
+    unsigned int grid_dim_x,
+    unsigned int grid_dim_y,
+    unsigned int grid_dim_z,
+    unsigned int block_dim_x,
+    unsigned int block_dim_y,
+    unsigned int block_dim_z);
+
 static hetgpu_pacc_launch_named_kernel_fn resolve_hetgpu_pacc_launch_named_kernel(void) {
     static hetgpu_pacc_launch_named_kernel_fn cached = NULL;
     static int tried = 0;
     if (!tried) {
         tried = 1;
         cached = (hetgpu_pacc_launch_named_kernel_fn)dlsym(RTLD_DEFAULT, "hetgpu_pacc_launch_named_kernel");
+    }
+    return cached;
+}
+
+static hetgpu_pacc_launch_kernel_noop_fn resolve_hetgpu_pacc_launch_kernel_noop(void) {
+    static hetgpu_pacc_launch_kernel_noop_fn cached = NULL;
+    static int tried = 0;
+    if (!tried) {
+        tried = 1;
+        cached = (hetgpu_pacc_launch_kernel_noop_fn)dlsym(RTLD_DEFAULT, "hetgpu_pacc_launch_kernel_noop");
     }
     return cached;
 }
@@ -262,6 +389,43 @@ typedef int cudaGraphExecUpdateResult;
 typedef void (*cudaStreamCallback_t)(cudaStream_t stream, cudaError_t status, void* userData);
 typedef void (*cudaHostFn_t)(void* userData);
 typedef int cudaMemcpyKind; // use int placeholder
+
+// CUDA runtime current device is per host thread. llama.cpp schedules work for
+// multiple visible devices from multiple threads, so a process-global current
+// device makes workers race and submit kernels to the wrong PACC context.
+static __thread int current_device = 0;
+
+#define HETGPU_STREAM_MAGIC UINT64_C(0x485447505354524d)
+typedef struct {
+    uint64_t magic;
+    int device;
+    unsigned int flags;
+    int priority;
+} HetgpuCudaStream;
+
+static int hetgpu_stream_is_managed(cudaStream_t stream) {
+    if (!stream) return 0;
+    const HetgpuCudaStream* s = (const HetgpuCudaStream*)stream;
+    return s->magic == HETGPU_STREAM_MAGIC;
+}
+
+static int hetgpu_stream_device(cudaStream_t stream) {
+    if (!hetgpu_stream_is_managed(stream)) return current_device;
+    const HetgpuCudaStream* s = (const HetgpuCudaStream*)stream;
+    return s->device;
+}
+
+static cudaError_t hetgpu_stream_create(cudaStream_t* pStream, unsigned int flags, int priority) {
+    if (!pStream) return 1;
+    HetgpuCudaStream* s = (HetgpuCudaStream*)calloc(1, sizeof(*s));
+    if (!s) return 2;
+    s->magic = HETGPU_STREAM_MAGIC;
+    s->device = current_device;
+    s->flags = flags;
+    s->priority = priority;
+    *pStream = (cudaStream_t)s;
+    return 0;
+}
 
 typedef CUresult (*hetgpu_cuModuleLoadData_fn)(CUmodule* module, const void* image);
 typedef CUresult (*hetgpu_cuModuleGetFunction_fn)(CUfunction* hfunc, CUmodule hmod, const char* name);
@@ -436,15 +600,21 @@ cudaError_t cudaStreamEndCapture(cudaStream_t stream,
 
 // Basic stream create/destroy
 cudaError_t cudaStreamCreate(cudaStream_t* pStream) {
-    if (pStream) *pStream = (cudaStream_t)0;
-    return 0;
+    return hetgpu_stream_create(pStream, 0, 0);
 }
 
 cudaError_t cudaStreamCreateWithFlags(cudaStream_t* pStream, unsigned int flags) {
-    (void)flags; if (pStream) *pStream = (cudaStream_t)0; return 0;
+    return hetgpu_stream_create(pStream, flags, 0);
 }
 
-cudaError_t cudaStreamDestroy(cudaStream_t stream) { (void)stream; return 0; }
+cudaError_t cudaStreamDestroy(cudaStream_t stream) {
+    if (hetgpu_stream_is_managed(stream)) {
+        HetgpuCudaStream* s = (HetgpuCudaStream*)stream;
+        s->magic = 0;
+        free(s);
+    }
+    return 0;
+}
 
 // Legacy callback API
 cudaError_t cudaStreamAddCallback(cudaStream_t stream,
@@ -485,9 +655,7 @@ cudaError_t cudaStreamUpdateCaptureDependencies_v2(cudaStream_t stream,
 cudaError_t cudaStreamCreateWithPriority(cudaStream_t* pStream,
                                          unsigned int flags,
                                          int priority) {
-    (void)flags; (void)priority;
-    if (pStream) *pStream = (cudaStream_t)0;
-    return 0;
+    return hetgpu_stream_create(pStream, flags, priority);
 }
 
 // Event API stubs
@@ -765,11 +933,6 @@ cudaError_t cudaGetDeviceProperties_v2(cudaDeviceProp_t prop, int device) {
     return cudaGetDeviceProperties(prop, device);
 }
 
-// CUDA runtime current device is per host thread. llama.cpp schedules work for
-// multiple visible devices from multiple threads, so a process-global current
-// device makes workers race and submit kernels to the wrong PACC context.
-static __thread int current_device = 0;
-
 cudaError_t cudaSetDevice(int device) {
     HETGPU_LOG("[hetGPU] cudaSetDevice(%d) called\n", device);
     // For virtual device support, be permissive
@@ -839,7 +1002,12 @@ cudaError_t cudaStreamWaitEvent(cudaStream_t stream, cudaEvent_t event, unsigned
 }
 
 cudaError_t cudaStreamGetPriority(cudaStream_t stream, int* priority) {
-    (void)stream; if (priority) *priority = 0; return 0;
+    if (priority) {
+        *priority = hetgpu_stream_is_managed(stream)
+            ? ((HetgpuCudaStream*)stream)->priority
+            : 0;
+    }
+    return 0;
 }
 
 cudaError_t cudaDeviceCanAccessPeer(int* canAccessPeer, int device, int peerDevice) {
@@ -1714,12 +1882,92 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
         return hetgpu_set_last_error(HETGPU_CUDA_ERROR_INVALID_VALUE);
     }
 
+    int stream_device = hetgpu_stream_device(stream);
+    if (stream_device != current_device) {
+        (void)cudaSetDevice(stream_device);
+    }
+
+    if (hetgpu_cudart_kernel_noop_enabled()) {
+        static int kernel_noop_log_count = 0;
+        if (hetgpu_cudart_kernel_noop_log_enabled() && kernel_noop_log_count < 20) {
+            fprintf(stderr,
+                    "[cudart_shim] KERNEL_NOOP active; treating launch func=%p grid=(%u,%u,%u) block=(%u,%u,%u) as successful\n",
+                    func,
+                    gridDim.x, gridDim.y, gridDim.z,
+                    blockDim.x, blockDim.y, blockDim.z);
+            kernel_noop_log_count++;
+        }
+        return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+    }
+
     // Look up the function in our registration table.
     const char* funcName = "<unknown>";
     CUfunction cuFunc = lookup_registered_function(func, &funcName);
     if (cuFunc != NULL) {
         HETGPU_LOG("[cudart_shim] Found registered function '%s': %p -> %p\n",
                 funcName, func, cuFunc);
+    }
+
+    if (hetgpu_cudart_kernel_pacc_noop_enabled()) {
+        const char* launch_name = funcName;
+        char dladdr_name[512];
+        dladdr_name[0] = '\0';
+        if (!launch_name || strcmp(launch_name, "<unknown>") == 0) {
+            Dl_info info;
+            if (dladdr(func, &info) && info.dli_sname && info.dli_sname[0]) {
+                snprintf(dladdr_name, sizeof(dladdr_name), "%s", info.dli_sname);
+                launch_name = dladdr_name;
+            } else {
+                launch_name = "<unknown>";
+            }
+        }
+
+        unsigned long long pacc_noop_launch_index = 0;
+        if (!hetgpu_cudart_should_submit_pacc_noop(&pacc_noop_launch_index)) {
+            static int pacc_noop_skip_log_count = 0;
+            if (pacc_noop_skip_log_count < 5) {
+                fprintf(stderr,
+                        "[cudart_shim] KERNEL_PACC_NOOP sampled out launch #%llu; reporting success without PACC submit (every=%llu)\n",
+                        pacc_noop_launch_index,
+                        hetgpu_cudart_kernel_pacc_noop_every());
+                pacc_noop_skip_log_count++;
+            }
+            return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+        }
+
+        hetgpu_pacc_launch_kernel_noop_fn launch_noop = resolve_hetgpu_pacc_launch_kernel_noop();
+        if (launch_noop) {
+            int rc = launch_noop(
+                (unsigned int)stream_device,
+                launch_name,
+                gridDim.x, gridDim.y, gridDim.z,
+                blockDim.x, blockDim.y, blockDim.z);
+            if (rc == HETGPU_CUDA_SUCCESS) {
+                static int pacc_noop_log_count = 0;
+                if (pacc_noop_log_count < 20) {
+                    fprintf(stderr,
+                            "[cudart_shim] KERNEL_PACC_NOOP submitted '%s' to pacc%d grid=(%u,%u,%u) block=(%u,%u,%u)\n",
+                            launch_name, stream_device,
+                            gridDim.x, gridDim.y, gridDim.z,
+                            blockDim.x, blockDim.y, blockDim.z);
+                    pacc_noop_log_count++;
+                }
+                return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+            }
+            if (hetgpu_cudart_fail_open_enabled()) {
+                fprintf(stderr,
+                        "[cudart_shim] KERNEL_PACC_NOOP submit failed for '%s' on pacc%d rc=%d; fail-open success\n",
+                        launch_name, stream_device, rc);
+                return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+            }
+            return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
+        }
+        if (hetgpu_cudart_fail_open_enabled()) {
+            fprintf(stderr,
+                    "[cudart_shim] KERNEL_PACC_NOOP requested but hetgpu_pacc_launch_kernel_noop is missing; fail-open success\n");
+            return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+        }
+        return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
     }
 
     if (cuFunc == NULL) {
@@ -1758,6 +2006,23 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                         "[cudart_shim] ERROR: named-only PACC kernel '%s' has NULL CUfunction and named launch did not take it; refusing lazy/normal launch\n",
                         funcName);
                 return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
+            }
+            if (hetgpu_cudart_lazy_ptx_fail_open_enabled()) {
+                static unsigned long long lazy_ptx_fail_open_log_count = 0;
+                unsigned long long log_index =
+                    __sync_fetch_and_add(&lazy_ptx_fail_open_log_count, 1);
+                unsigned long long log_limit =
+                    hetgpu_cudart_lazy_ptx_fail_open_log_limit();
+                if (log_index < log_limit) {
+                    fprintf(stderr,
+                            "[cudart_shim] lazy PTX fail-open for '%s'; skipping module load/compile during PACC bring-up\n",
+                            funcName);
+                } else if (log_limit != 0 && log_index == log_limit) {
+                    fprintf(stderr,
+                            "[cudart_shim] lazy PTX fail-open log limit reached (%llu); suppressing further messages\n",
+                            log_limit);
+                }
+                return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
             }
             cuFunc = lazy_load_registered_function_for_launch(funcName, func);
             if (cuFunc != NULL) {

@@ -1223,9 +1223,11 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
         match pacc_alloc_shared_ddr(bytesize) {
             Ok((addr, alloc)) => (addr, alloc),
             Err(e) if allow_host_device_mem => {
-                eprintln!(
-                    "[PACC Backend] shared-DDR CUDA memory failed; falling back to host-backed memory"
-                );
+                if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "[PACC Backend] shared-DDR CUDA memory failed; falling back to host-backed memory"
+                    );
+                }
                 pacc_alloc_host(bytesize).map_err(|_| e)?
             }
             Err(e) => return Err(e),

@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <math.h>
@@ -210,6 +211,45 @@ extern cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemc
 static int hetgpu_env_is_one(const char *name) {
     const char *value = getenv(name);
     return value && strcmp(value, "1") == 0;
+}
+
+static int hetgpu_env_enabled_default(const char *name, int default_value) {
+    const char *value = getenv(name);
+    if (!value || !*value) {
+        return default_value;
+    }
+    if (strcmp(value, "0") == 0 ||
+        strcasecmp(value, "false") == 0 ||
+        strcasecmp(value, "no") == 0 ||
+        strcasecmp(value, "off") == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int hetgpu_cublas_fail_open_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_CUBLAS_FAIL_OPEN");
+    if (!value || !*value) {
+        value = getenv("HETGPU_PACC_ASSUME_SUCCESS_ON_WAIT_ERROR");
+    }
+    if (!value || !*value) {
+        return 0;
+    }
+    if (strcmp(value, "0") == 0 ||
+        strcasecmp(value, "false") == 0 ||
+        strcasecmp(value, "no") == 0 ||
+        strcasecmp(value, "off") == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int hetgpu_allow_host_gemm_fallback(void) {
+    return hetgpu_env_is_one("HETGPU_PACC_ALLOW_HOST_GEMM_FALLBACK");
+}
+
+static int hetgpu_cublas_noop_enabled(void) {
+    return hetgpu_env_enabled_default("HETGPU_PACC_CUBLAS_NOOP", 0);
 }
 
 static int pacc_runtime_marked_ready(void) {
@@ -713,12 +753,23 @@ static cublasStatus_t submit_pacc_gemm(
     const void *beta,
     void *C, cudaDataType Ctype, int ldc, long long strideC,
     int batchCount, cublasComputeType_t computeType) {
+    if (hetgpu_cublas_noop_enabled()) {
+        DEBUG_LOG("%s CUBLAS_NOOP active; treating GEMM as successful m=%d n=%d k=%d batch=%d",
+                  name, m, n, k, batchCount);
+        return CUBLAS_STATUS_SUCCESS;
+    }
+
     cublasStatus_t region_status = hetgpu_validate_gemm_regions(
         name, transa, transb, m, n, k,
         A, Atype, lda,
         B, Btype, ldb,
         C, Ctype, ldc);
     if (region_status != CUBLAS_STATUS_SUCCESS) {
+        if (hetgpu_cublas_fail_open_enabled()) {
+            DEBUG_LOG("%s region validation returned %d; CUBLAS_FAIL_OPEN treating GEMM as successful",
+                      name, (int)region_status);
+            return CUBLAS_STATUS_SUCCESS;
+        }
         return region_status;
     }
     float alpha_f32 = host_read_scale(alpha, computeType, 1.0f);
@@ -728,22 +779,40 @@ static cublasStatus_t submit_pacc_gemm(
 
     if (hetgpu_env_is_one("HETGPU_PACC_GEMM_DISABLE_AFTER_FAILURE") &&
         g_pacc_gemm_disabled_after_failure) {
-        return host_gemm_fallback(
-            name, transa, transb, m, n, k,
-            alpha_arg, A, Atype, lda, strideA,
-            B, Btype, ldb, strideB,
-            beta_arg, C, Ctype, ldc, strideC,
-            batchCount, computeType);
+        if (hetgpu_allow_host_gemm_fallback()) {
+            return host_gemm_fallback(
+                name, transa, transb, m, n, k,
+                alpha_arg, A, Atype, lda, strideA,
+                B, Btype, ldb, strideB,
+                beta_arg, C, Ctype, ldc, strideC,
+                batchCount, computeType);
+        }
+        DEBUG_LOG("%s PACC GEMM disabled after prior failure; host GEMM fallback is not enabled", name);
+        return CUBLAS_STATUS_NOT_SUPPORTED;
     }
 
     if (!pacc_runtime_marked_ready()) {
-        DEBUG_LOG("%s skipping PACC GEMM submit because runtime is not marked ready; using host fallback", name);
-        return host_gemm_fallback(
-            name, transa, transb, m, n, k,
-            alpha_arg, A, Atype, lda, strideA,
-            B, Btype, ldb, strideB,
-            beta_arg, C, Ctype, ldc, strideC,
-            batchCount, computeType);
+        if (hetgpu_allow_host_gemm_fallback()) {
+            DEBUG_LOG("%s skipping PACC GEMM submit because runtime is not marked ready; using host fallback", name);
+            cublasStatus_t fallback = host_gemm_fallback(
+                name, transa, transb, m, n, k,
+                alpha_arg, A, Atype, lda, strideA,
+                B, Btype, ldb, strideB,
+                beta_arg, C, Ctype, ldc, strideC,
+                batchCount, computeType);
+            if (fallback == CUBLAS_STATUS_SUCCESS || !hetgpu_cublas_fail_open_enabled()) {
+                return fallback;
+            }
+            DEBUG_LOG("%s runtime not ready and host fallback returned %d; CUBLAS_FAIL_OPEN treating GEMM as successful",
+                      name, (int)fallback);
+            return CUBLAS_STATUS_SUCCESS;
+        }
+        if (hetgpu_cublas_fail_open_enabled()) {
+            DEBUG_LOG("%s runtime not ready; CUBLAS_FAIL_OPEN treating GEMM as successful", name);
+            return CUBLAS_STATUS_SUCCESS;
+        }
+        DEBUG_LOG("%s requires PACC GEMM runtime readiness; host GEMM fallback is not enabled", name);
+        return CUBLAS_STATUS_NOT_SUPPORTED;
     }
 
     const void *pacc_A = (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(A);
@@ -907,17 +976,24 @@ static cublasStatus_t submit_pacc_gemm(
     if (rc == 0) {
         return CUBLAS_STATUS_SUCCESS;
     }
+    if (hetgpu_cublas_fail_open_enabled()) {
+        DEBUG_LOG("%s PACC GEMM rc=%d; CUBLAS_FAIL_OPEN treating GEMM as successful without host fallback",
+                  name, rc);
+        return CUBLAS_STATUS_SUCCESS;
+    }
     if (hetgpu_env_is_one("HETGPU_PACC_GEMM_DISABLE_AFTER_FAILURE")) {
         g_pacc_gemm_disabled_after_failure = 1;
     }
-    cublasStatus_t fallback = host_gemm_fallback(
-        name, transa, transb, m, n, k,
-        alpha_arg, A, Atype, lda, strideA,
-        B, Btype, ldb, strideB,
-        beta_arg, C, Ctype, ldc, strideC,
-        batchCount, computeType);
-    if (fallback == CUBLAS_STATUS_SUCCESS) {
-        return fallback;
+    if (hetgpu_allow_host_gemm_fallback()) {
+        cublasStatus_t fallback = host_gemm_fallback(
+            name, transa, transb, m, n, k,
+            alpha_arg, A, Atype, lda, strideA,
+            B, Btype, ldb, strideB,
+            beta_arg, C, Ctype, ldc, strideC,
+            batchCount, computeType);
+        if (fallback == CUBLAS_STATUS_SUCCESS) {
+            return fallback;
+        }
     }
     DEBUG_LOG("%s requires PACC GEMM runtime submit; no CPU fallback active/supported", name);
     return CUBLAS_STATUS_NOT_SUPPORTED;
@@ -1305,6 +1381,10 @@ cublasStatus_t cublasSgemmBatched(cublasHandle_t handle,
                                    float *Carray[], int ldc,
                                    int batchCount) {
     DEBUG_LOG("cublasSgemmBatched called: m=%d, n=%d, k=%d, batchCount=%d", m, n, k, batchCount);
+    if (hetgpu_cublas_fail_open_enabled()) {
+        DEBUG_LOG("cublasSgemmBatched CUBLAS_FAIL_OPEN active; treating pointer-array GEMM as successful");
+        return CUBLAS_STATUS_SUCCESS;
+    }
     DEBUG_LOG("cublasSgemmBatched pointer-array GEMM is not implemented on PACC yet; no stub fallback active");
     return CUBLAS_STATUS_NOT_SUPPORTED;
 }
@@ -1319,6 +1399,10 @@ cublasStatus_t cublasDgemmBatched(cublasHandle_t handle,
                                    double *Carray[], int ldc,
                                    int batchCount) {
     DEBUG_LOG("cublasDgemmBatched called: m=%d, n=%d, k=%d, batchCount=%d", m, n, k, batchCount);
+    if (hetgpu_cublas_fail_open_enabled()) {
+        DEBUG_LOG("cublasDgemmBatched CUBLAS_FAIL_OPEN active; treating pointer-array GEMM as successful");
+        return CUBLAS_STATUS_SUCCESS;
+    }
     DEBUG_LOG("cublasDgemmBatched pointer-array GEMM is not implemented on PACC yet; no stub fallback active");
     return CUBLAS_STATUS_NOT_SUPPORTED;
 }
@@ -1490,6 +1574,10 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
         return CUBLAS_STATUS_INVALID_VALUE;
     }
     if (batchCount == 0) {
+        return CUBLAS_STATUS_SUCCESS;
+    }
+    if (hetgpu_cublas_fail_open_enabled()) {
+        DEBUG_LOG("cublasGemmBatchedEx CUBLAS_FAIL_OPEN active; treating pointer-array GEMM as successful without reading pointer tables");
         return CUBLAS_STATUS_SUCCESS;
     }
     const void *const *host_Aarray = Aarray;

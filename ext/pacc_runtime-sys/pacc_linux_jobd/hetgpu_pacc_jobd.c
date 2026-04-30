@@ -55,6 +55,7 @@
 #define HETGPU_PACC_JOB_RMSNORM 3U
 #define HETGPU_PACC_JOB_ALLREDUCE 4U
 #define HETGPU_PACC_JOB_MMVF 5U
+#define HETGPU_PACC_MAX_JOB_ID 16U
 
 #define HETGPU_PACC_ARG_SLOT_BYTES 0x400UL
 #define HETGPU_PACC_CONTROL_BYTES 0x2000UL
@@ -69,15 +70,24 @@
 #define PACC2AP_MBOX_PHYS 0x20002000ULL
 #define HETGPU_PACC_DEFAULT_SHARED_DDR_BYTES 0x01000000ULL
 #define HETGPU_PACC_SHARED_DDR_USER_OFF 0x00100000ULL
-#define HETGPU_PACC_SHARED_DDR_FD_USER_OFF 0x0ULL
+#define HETGPU_PACC_SHARED_DDR_FD_USER_OFF HETGPU_PACC_SHARED_DDR_USER_OFF
 #define HETGPU_PACC_COMPLETION_OFF 0x1f20ULL
 #define HETGPU_PACC_BEACON_OFF 0x1f40ULL
 #define PACC_DTYPE_INT8 0U
 #define PACC_DTYPE_UINT8 1U
 #define PACC_DTYPE_INT32 2U
+#define PACC_DTYPE_F16 3U
 #define PACC_DTYPE_F32 4U
 #define PACC_DTYPE_BF16 5U
 #define PACC_GEMM_THREADS 4U
+#define PACC_XSFMM16_TILE_M 32U
+#define PACC_XSFMM16_TILE_N 32U
+#define PACC_XSFMM16_TILE_K 2U
+#define PACC_RVV_F32_TILE_M 32U
+#define PACC_RVV_F32_TILE_N 32U
+#define PACC_RVV_F32_TILE_K 32U
+#define PACC_GEMM_TILE_M_MAX PACC_XSFMM16_TILE_M
+#define PACC_GEMM_TILE_N_MAX PACC_XSFMM16_TILE_N
 #define PACC_KERNEL_DEFAULT_THREADS 4U
 #define PACC_KERNEL_MAX_THREADS 64U
 #define PACC_MAX_KERNEL_ARGS 64U
@@ -111,6 +121,11 @@
 #define PACC_RVV_UNUSED __attribute__((unused))
 #else
 #define PACC_RVV_UNUSED
+#endif
+#if defined(__GNUC__) || defined(__clang__)
+#define PACC_UNUSED __attribute__((unused))
+#else
+#define PACC_UNUSED
 #endif
 
 struct Doorbell {
@@ -243,6 +258,7 @@ struct MmvfJob {
 };
 
 struct PreloadedJobs {
+    uint64_t runtime_seq;
     bool have_gemm;
     bool have_softmax;
     bool have_rmsnorm;
@@ -406,6 +422,9 @@ static uint32_t g_kernel_load_error = 0;
 static uint32_t g_kernel_arg_error = 0;
 static uint32_t g_kernel_parse_error = 0;
 static uint8_t g_control_snapshot[HETGPU_PACC_CONTROL_BYTES];
+static uint8_t g_arg_slot_synthetic_control[HETGPU_PACC_CONTROL_BYTES];
+static uint64_t g_last_preloaded_seq_by_job[HETGPU_PACC_MAX_JOB_ID];
+static bool g_response_irq_pending;
 
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static bool mirror_boot_marker_all_slots_mbox_mmap(int fd, uint32_t status);
@@ -455,12 +474,44 @@ static bool jobd_initial_mbox_poll_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
-    return true;
+    /*
+     * Do not consume the first ZLUDA IRQ as a bootstrap-only signal.  The AP
+     * can legitimately submit the first runtime/kernel job before jobd has
+     * finished its userspace setup; blocking here wakes on that job and then
+     * the later stale-control clear erases its doorbell.
+     */
+    return false;
 }
 
 static bool jobd_force_elf_enabled(void) {
     return env_flag_true(getenv("HETGPU_PACC_JOBD_FORCE_ELF")) ||
            env_flag_true(getenv("HETGPU_PACC_JOBD_DISABLE_NATIVE"));
+}
+
+static bool jobd_generic_noop_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_GENERIC_NOOP");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return true;
+}
+
+static bool jobd_preloaded_noop_enabled(uint32_t job_id) {
+    const char *all = getenv("HETGPU_PACC_JOBD_PRELOADED_NOOP");
+    const char *gemm = getenv("HETGPU_PACC_JOBD_GEMM_NOOP");
+
+    if (all && *all && env_flag_true(all)) {
+        return true;
+    }
+    return job_id == HETGPU_PACC_JOB_GEMM && gemm && *gemm && env_flag_true(gemm);
+}
+
+static bool jobd_gemm_tiled_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_GEMM_TILED");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return true;
 }
 
 static bool jobd_clear_stale_control_enabled(void) {
@@ -512,7 +563,7 @@ static uint64_t jobd_kernel_slot_map_off(uint64_t map_bytes) {
 static bool jobd_kernel_slot_map_enabled(void) {
     const char *value = getenv("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP");
     if (!value || !*value) {
-        return true;
+        return false;
     }
     return env_flag_true(value);
 }
@@ -551,6 +602,52 @@ static bool jobd_status_control_window_enabled(void) {
      * writes are observed reliably.  Prefer the explicit write path by default.
      */
     return false;
+}
+
+static bool jobd_status_mmap_fallback_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_STATUS_MMAP_FALLBACK");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return false;
+}
+
+static bool jobd_control_window_read_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_CONTROL_WINDOW_READ");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    /*
+     * The host owns the shared-DDR control page updates.  Reusing the
+     * long-lived PACC-side mapping can lag behind the IRQ that announced the
+     * update, which leaves runtime-table and arg-slot reads spinning on stale
+     * bytes.  Prefer a fresh synchronized read unless explicitly requested.
+     */
+    return false;
+}
+
+static bool jobd_control_pread_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_CONTROL_PREAD");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    /*
+     * Doorbells, arg slots, and the runtime table are producer-owned by the
+     * host.  On current PACC Linux images, PACC-side /dev/mem mappings can lag
+     * behind IRQ delivery, so the dispatcher may miss short-lived MMVF
+     * doorbells and spin on stale arg slots.  Prefer the mailbox driver's
+     * explicit shared-DDR pread path for control data; callers still fall back
+     * to mmap if the helper does not support it.
+     */
+    return true;
+}
+
+static bool jobd_arg_slot_scan_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_ARG_SLOT_SCAN");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return true;
 }
 
 static bool jobd_progress_status_enabled(void) {
@@ -610,7 +707,48 @@ static bool jobd_rms_local_copy_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
+    return false;
+}
+
+static bool jobd_mmvf_copy_io_enabled(void) {
+    const char *value = getenv("PACC_JOBD_MMVF_COPY_IO");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    value = getenv("HETGPU_PACC_JOBD_MMVF_COPY_IO");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
     return true;
+}
+
+static bool jobd_mmvf_compute_enabled(void) {
+    const char *value = getenv("PACC_JOBD_MMVF_COMPUTE");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    value = getenv("HETGPU_PACC_JOBD_MMVF_COMPUTE");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return false;
+}
+
+static unsigned jobd_mmvf_worker_threads(uint64_t work_items) {
+    uint64_t requested = parse_env_u64_default("PACC_JOBD_MMVF_THREADS", 0);
+    if (requested == 0) {
+        requested = parse_env_u64_default("HETGPU_PACC_JOBD_MMVF_THREADS", 0);
+    }
+    if (requested == 0) {
+        return 1;
+    }
+    if (requested > PACC_KERNEL_MAX_THREADS) {
+        requested = PACC_KERNEL_MAX_THREADS;
+    }
+    if (requested > work_items && work_items != 0) {
+        requested = work_items;
+    }
+    return requested == 0 ? 1 : (unsigned)requested;
 }
 
 static bool jobd_heartbeat_enabled(void) {
@@ -1500,8 +1638,16 @@ static int read_phys_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
         return -1;
     }
 
-    if (!jobd_force_pread_enabled() && read_control_window_copy(phys, len, out) == 0) {
-        return 0;
+    if (!jobd_force_pread_enabled()) {
+        if (phys_is_shared_ddr_control(phys, len) &&
+            jobd_control_pread_enabled() &&
+            read_phys_copy_pread_only(fd, phys, len, out) == 0) {
+            return 0;
+        }
+        if ((!phys_is_shared_ddr_control(phys, len) || jobd_control_window_read_enabled()) &&
+            read_control_window_copy(phys, len, out) == 0) {
+            return 0;
+        }
     }
 
     if (g_ddr_info.ddr_base && phys >= g_ddr_info.ddr_base &&
@@ -1715,7 +1861,21 @@ static int flush_map_to_phys(struct Map *m) {
     if (!m || !m->copied) {
         return 0;
     }
-    return write_phys_copy(m->fd, m->phys, m->ptr, m->len);
+    if (write_phys_copy(m->fd, m->phys, m->ptr, m->len) == 0) {
+        return 0;
+    }
+    return write_phys_copy_pwrite_only(m->fd, m->phys, m->ptr, m->len);
+}
+
+static int map_phys_for_mmvf(int fd, uint64_t phys, size_t len, struct Map *out, bool prefer_copy) {
+    if (prefer_copy && map_phys_copy_fallback(fd, phys, len, out) == 0) {
+        return 0;
+    }
+    if (map_phys(fd, phys, len, out) != 0) {
+        return -1;
+    }
+    sync_map_for_cpu(out);
+    return 0;
 }
 
 static void clear_stale_control_region(int fd, struct Map *control_map) {
@@ -1758,7 +1918,8 @@ static int read_control_snapshot(int fd, void *out, size_t len) {
         return -1;
     }
     phys = shared_ddr_control_phys(0, len);
-    if (phys_is_shared_ddr_control(phys, len) && g_mbox_fd >= 0) {
+    if (jobd_control_pread_enabled() &&
+        phys_is_shared_ddr_control(phys, len) && g_mbox_fd >= 0) {
         if (read_phys_copy_pread_only(fd, phys, len, &copy) == 0) {
             memcpy(out, copy, len);
             free(copy);
@@ -1971,6 +2132,88 @@ static int arg_slot_for_job(uint32_t job_id) {
     }
 }
 
+static bool preloaded_job_seen(uint32_t job_id, uint64_t seq) {
+    return job_id < HETGPU_PACC_MAX_JOB_ID &&
+           seq != 0 &&
+           seq <= g_last_preloaded_seq_by_job[job_id];
+}
+
+static void mark_preloaded_job_seen(uint32_t job_id, uint64_t seq) {
+    if (job_id < HETGPU_PACC_MAX_JOB_ID &&
+        seq > g_last_preloaded_seq_by_job[job_id]) {
+        g_last_preloaded_seq_by_job[job_id] = seq;
+    }
+}
+
+static bool arg_slot_header_valid(uint32_t job_id, const struct ArgSlotHeader *header) {
+    return header &&
+           header->magic == HETGPU_PACC_JOB_MAGIC &&
+           header->version == HETGPU_PACC_JOB_VERSION &&
+           header->job_id == job_id &&
+           header->seq != 0 &&
+           header->arg_len <= HETGPU_PACC_ARG_SLOT_BYTES - sizeof(*header);
+}
+
+static bool arg_slot_header_copy(int fd, uint32_t job_id, struct ArgSlotHeader *out) {
+    int slot = arg_slot_for_job(job_id);
+    uint64_t slot_off;
+    uint8_t *slot_bytes = NULL;
+
+    if (slot < 0 || !out) {
+        return false;
+    }
+    slot_off = HETGPU_PACC_ARG_BASE_OFF + (uint64_t)slot * HETGPU_PACC_ARG_SLOT_BYTES;
+    if (read_phys_copy(fd,
+                       shared_ddr_control_phys(slot_off, sizeof(*out)),
+                       sizeof(*out),
+                       &slot_bytes) != 0) {
+        return false;
+    }
+    memcpy(out, slot_bytes, sizeof(*out));
+    free(slot_bytes);
+    return true;
+}
+
+static bool find_pending_arg_slot_job(int fd, struct ArgSlotHeader *best_out) {
+    static const uint32_t job_ids[] = {
+        HETGPU_PACC_JOB_GEMM,
+        HETGPU_PACC_JOB_SOFTMAX,
+        HETGPU_PACC_JOB_RMSNORM,
+        HETGPU_PACC_JOB_ALLREDUCE,
+        HETGPU_PACC_JOB_MMVF,
+    };
+    struct ArgSlotHeader best;
+    bool have_best = false;
+
+    if (!jobd_arg_slot_scan_enabled()) {
+        return false;
+    }
+
+    memset(&best, 0, sizeof(best));
+    for (size_t i = 0; i < sizeof(job_ids) / sizeof(job_ids[0]); i++) {
+        struct ArgSlotHeader header;
+        uint32_t job_id = job_ids[i];
+        memset(&header, 0, sizeof(header));
+        if (!arg_slot_header_copy(fd, job_id, &header) ||
+            !arg_slot_header_valid(job_id, &header) ||
+            preloaded_job_seen(job_id, header.seq)) {
+            continue;
+        }
+        if (!have_best || header.seq < best.seq) {
+            best = header;
+            have_best = true;
+        }
+    }
+
+    if (!have_best) {
+        return false;
+    }
+    if (best_out) {
+        *best_out = best;
+    }
+    return true;
+}
+
 static float expf_fast(float x) {
     if (x < -20.0f) return 0.0f;
     if (x > 20.0f) x = 20.0f;
@@ -2005,6 +2248,13 @@ struct GemmWorker {
     float beta;
 };
 
+struct GemmTileConfig {
+    uint32_t tile_m;
+    uint32_t tile_n;
+    uint32_t tile_k;
+    const char *name;
+};
+
 static size_t gemm_span(uint64_t rows, uint64_t cols, int64_t ld) {
     if (!rows || !cols) return 0;
     uint64_t lead = ld > 0 ? (uint64_t)ld : cols;
@@ -2019,6 +2269,8 @@ static size_t dtype_size(uint32_t dtype) {
         return sizeof(uint8_t);
     case PACC_DTYPE_INT32:
         return sizeof(int32_t);
+    case PACC_DTYPE_F16:
+        return sizeof(uint16_t);
     case PACC_DTYPE_F32:
         return sizeof(float);
     case PACC_DTYPE_BF16:
@@ -2037,6 +2289,38 @@ static float bf16_to_f32(uint16_t x) {
     return v.f;
 }
 
+static float f16_to_f32(uint16_t x) {
+    uint32_t sign = ((uint32_t)x & 0x8000U) << 16;
+    uint32_t exp = ((uint32_t)x >> 10) & 0x1fU;
+    uint32_t frac = (uint32_t)x & 0x03ffU;
+    uint32_t bits;
+    union {
+        uint32_t u;
+        float f;
+    } v;
+
+    if (exp == 0) {
+        if (frac == 0) {
+            bits = sign;
+        } else {
+            exp = 127U - 15U + 1U;
+            while ((frac & 0x0400U) == 0) {
+                frac <<= 1;
+                exp--;
+            }
+            frac &= 0x03ffU;
+            bits = sign | (exp << 23) | (frac << 13);
+        }
+    } else if (exp == 0x1fU) {
+        bits = sign | 0x7f800000U | (frac << 13);
+    } else {
+        bits = sign | ((exp + (127U - 15U)) << 23) | (frac << 13);
+    }
+
+    v.u = bits;
+    return v.f;
+}
+
 static uint16_t f32_to_bf16(float x) {
     union {
         float f;
@@ -2046,6 +2330,30 @@ static uint16_t f32_to_bf16(float x) {
     uint32_t lsb = (v.u >> 16) & 1U;
     uint32_t rounding_bias = 0x7fffU + lsb;
     return (uint16_t)((v.u + rounding_bias) >> 16);
+}
+
+static uint16_t f32_to_f16(float x) {
+    union {
+        float f;
+        uint32_t u;
+    } v;
+    uint32_t sign;
+    uint32_t mant;
+    int exp;
+
+    v.f = x;
+    sign = (v.u >> 16) & 0x8000U;
+    mant = v.u & 0x007fffffU;
+    exp = (int)((v.u >> 23) & 0xffU) - 127 + 15;
+    if (exp <= 0) {
+        if (exp < -10) return (uint16_t)sign;
+        mant |= 0x00800000U;
+        return (uint16_t)(sign | (((mant >> (1 - exp)) + 0x1000U) >> 13));
+    }
+    if (exp >= 0x1f) {
+        return (uint16_t)(sign | 0x7c00U);
+    }
+    return (uint16_t)(sign | ((uint32_t)exp << 10) | ((mant + 0x1000U) >> 13));
 }
 
 static int32_t round_to_i32(float x) {
@@ -2078,6 +2386,9 @@ static float load_typed(const void *base, size_t idx, uint32_t dtype) {
     if (dtype == PACC_DTYPE_INT32) {
         return (float)((const int32_t *)base)[idx];
     }
+    if (dtype == PACC_DTYPE_F16) {
+        return f16_to_f32(((const uint16_t *)base)[idx]);
+    }
     if (dtype == PACC_DTYPE_F32) {
         return ((const float *)base)[idx];
     }
@@ -2094,6 +2405,8 @@ static void store_typed(void *base, size_t idx, uint32_t dtype, float value) {
         ((uint8_t *)base)[idx] = round_to_u8(value);
     } else if (dtype == PACC_DTYPE_INT32) {
         ((int32_t *)base)[idx] = round_to_i32(value);
+    } else if (dtype == PACC_DTYPE_F16) {
+        ((uint16_t *)base)[idx] = f32_to_f16(value);
     } else if (dtype == PACC_DTYPE_F32) {
         ((float *)base)[idx] = value;
     } else if (dtype == PACC_DTYPE_BF16) {
@@ -2151,9 +2464,167 @@ static float gemm_dot_typed(const void *a, uint32_t atype, ptrdiff_t a_stride,
     return acc;
 }
 
+static uint64_t min_u64(uint64_t a, uint64_t b) {
+    return a < b ? a : b;
+}
+
+static bool gemm_dtype_uses_xsfmm32a16f(uint32_t dtype) {
+    return dtype == PACC_DTYPE_BF16 || dtype == PACC_DTYPE_F16;
+}
+
+static int gemm_select_notrans_tile_config(const struct GemmJob *job,
+                                           struct GemmTileConfig *cfg) {
+    if (!jobd_gemm_tiled_enabled() || job->transa || job->transb || !cfg) {
+        return 0;
+    }
+
+    if (gemm_dtype_uses_xsfmm32a16f(job->atype) &&
+        job->atype == job->btype &&
+        (job->ctype == PACC_DTYPE_F32 ||
+         job->ctype == PACC_DTYPE_F16 ||
+         job->ctype == PACC_DTYPE_BF16)) {
+        *cfg = (struct GemmTileConfig){
+            .tile_m = PACC_XSFMM16_TILE_M,
+            .tile_n = PACC_XSFMM16_TILE_N,
+            .tile_k = PACC_XSFMM16_TILE_K,
+            .name = job->atype == PACC_DTYPE_BF16
+                ? "xsfmm32a16f-bf16-soft"
+                : "xsfmm32a16f-f16-soft",
+        };
+        return 1;
+    }
+
+    if (job->atype == PACC_DTYPE_F32 &&
+        job->btype == PACC_DTYPE_F32 &&
+        job->ctype == PACC_DTYPE_F32) {
+        *cfg = (struct GemmTileConfig){
+            .tile_m = PACC_RVV_F32_TILE_M,
+            .tile_n = PACC_RVV_F32_TILE_N,
+            .tile_k = PACC_RVV_F32_TILE_K,
+            .name = "rvv-f32-soft",
+        };
+        return 1;
+    }
+
+    return 0;
+}
+
+static void gemm_accumulate_rowmajor_outer_tile(const struct GemmJob *job,
+                                                const void *a,
+                                                const void *b,
+                                                uint64_t row0,
+                                                uint64_t row1,
+                                                uint64_t col0,
+                                                uint64_t col1,
+                                                uint64_t k0,
+                                                uint64_t k1,
+                                                float *acc,
+                                                uint64_t acc_stride) {
+    float bvals[PACC_GEMM_TILE_N_MAX];
+    uint64_t cols = col1 - col0;
+
+    if (cols > PACC_GEMM_TILE_N_MAX) {
+        return;
+    }
+
+    /*
+     * Software form of Xsfmm32a16f:
+     *   C[tm,tn] += A[tk,tm]^T * B[tk,tn]
+     * BF16/F16 callers set tk<=2.  Keeping this as an outer-product tile gives
+     * us a known-good path now and a single body to replace with sf.mm.f.f later.
+     */
+    for (uint64_t kk = k0; kk < k1; kk++) {
+        for (uint64_t col = col0; col < col1; col++) {
+            bvals[col - col0] =
+                load_typed(b, (size_t)(kk * (uint64_t)job->ldb + col), job->btype);
+        }
+        for (uint64_t row = row0; row < row1; row++) {
+            float av = load_typed(a, (size_t)(row * (uint64_t)job->lda + kk), job->atype);
+            float *acc_row = acc + (row - row0) * acc_stride;
+#if defined(__riscv_vector)
+            uint64_t off = 0;
+            while (off < cols) {
+                size_t vl = __riscv_vsetvl_e32m4(cols - off);
+                vfloat32m4_t vacc = __riscv_vle32_v_f32m4(acc_row + off, vl);
+                vfloat32m4_t vb = __riscv_vle32_v_f32m4(bvals + off, vl);
+                vacc = __riscv_vfmacc_vf_f32m4(vacc, av, vb, vl);
+                __riscv_vse32_v_f32m4(acc_row + off, vacc, vl);
+                off += vl;
+            }
+#else
+            for (uint64_t col = col0; col < col1; col++) {
+                acc_row[col - col0] += av * bvals[col - col0];
+            }
+#endif
+        }
+    }
+}
+
+static void gemm_store_rowmajor_tile(const struct GemmJob *job,
+                                     void *c,
+                                     float alpha,
+                                     float beta,
+                                     uint64_t row0,
+                                     uint64_t row1,
+                                     uint64_t col0,
+                                     uint64_t col1,
+                                     const float *acc,
+                                     uint64_t acc_stride) {
+    for (uint64_t row = row0; row < row1; row++) {
+        for (uint64_t col = col0; col < col1; col++) {
+            size_t c_idx = (size_t)(row * (uint64_t)job->ldc + col);
+            float old = beta != 0.0f ? load_typed(c, c_idx, job->ctype) : 0.0f;
+            float value = acc[(row - row0) * acc_stride + (col - col0)];
+            store_typed(c, c_idx, job->ctype, alpha * value + beta * old);
+        }
+    }
+}
+
+static int gemm_try_notrans_tiled_worker(const struct GemmWorker *w) {
+    const struct GemmJob *job = w->job;
+    struct GemmTileConfig cfg;
+    uint64_t row_end;
+
+    if (!gemm_select_notrans_tile_config(job, &cfg)) {
+        return 0;
+    }
+    if (cfg.tile_m > PACC_GEMM_TILE_M_MAX || cfg.tile_n > PACC_GEMM_TILE_N_MAX ||
+        cfg.tile_m == 0 || cfg.tile_n == 0 || cfg.tile_k == 0) {
+        return 0;
+    }
+
+    row_end = min_u64(w->row_end, job->m);
+    trace_msg("GEMM tiled %s m=%" PRIu64 " n=%" PRIu64 " k=%" PRIu64
+              " rows=%" PRIu64 "..%" PRIu64 " tile=%ux%ux%u",
+              cfg.name,
+              job->m, job->n, job->k,
+              w->row_begin, row_end,
+              cfg.tile_m, cfg.tile_n, cfg.tile_k);
+    for (uint64_t row0 = w->row_begin; row0 < row_end; row0 += cfg.tile_m) {
+        uint64_t row1 = min_u64(row0 + cfg.tile_m, row_end);
+        for (uint64_t col0 = 0; col0 < job->n; col0 += cfg.tile_n) {
+            uint64_t col1 = min_u64(col0 + cfg.tile_n, job->n);
+            float acc[PACC_GEMM_TILE_M_MAX * PACC_GEMM_TILE_N_MAX];
+            memset(acc, 0, sizeof(acc));
+            for (uint64_t k0 = 0; k0 < job->k; k0 += cfg.tile_k) {
+                uint64_t k1 = min_u64(k0 + cfg.tile_k, job->k);
+                gemm_accumulate_rowmajor_outer_tile(job, w->a, w->b, row0, row1,
+                                                    col0, col1, k0, k1,
+                                                    acc, cfg.tile_n);
+            }
+            gemm_store_rowmajor_tile(job, w->c, w->alpha, w->beta, row0, row1,
+                                     col0, col1, acc, cfg.tile_n);
+        }
+    }
+    return 1;
+}
+
 static void *gemm_worker_main(void *arg) {
     struct GemmWorker *w = (struct GemmWorker *)arg;
     const struct GemmJob *job = w->job;
+    if (gemm_try_notrans_tiled_worker(w)) {
+        return NULL;
+    }
     for (uint64_t row = w->row_begin; row < w->row_end; row++) {
         for (uint64_t col = 0; col < job->n; col++) {
             size_t a_base = job->transa ? (size_t)row : (size_t)(row * job->lda);
@@ -2312,6 +2783,13 @@ static int run_softmax(int fd, const struct SoftmaxJob *job) {
     return 0;
 }
 
+static bool rmsnorm_f32_rvv(const float *x,
+                            const float *weight,
+                            float *y,
+                            uint64_t rows,
+                            uint64_t hidden,
+                            float eps);
+
 static int run_rmsnorm(int fd, const struct RmsNormJob *job, uint64_t seq) {
     uint64_t t0 = monotonic_us();
     if (!job->x_addr || !job->y_addr || !job->rows || !job->hidden) {
@@ -2356,18 +2834,26 @@ static int run_rmsnorm(int fd, const struct RmsNormJob *job, uint64_t seq) {
                 free(w_local);
                 return 0xffff3006;
             }
-            for (uint64_t row = 0; row < job->rows; row++) {
-                uint64_t base = row * job->hidden;
-                float sumsq = 0.0f;
-                for (uint64_t i = 0; i < job->hidden; i++) {
-                    float v = load_typed(x_local, base + i, job->dtype);
-                    sumsq += v * v;
-                }
-                float scale = rsqrtf_newton(sumsq / (float)job->hidden + job->eps);
-                for (uint64_t i = 0; i < job->hidden; i++) {
-                    float weight = have_weight ? load_typed(w_local, i, job->dtype) : 1.0f;
-                    store_typed(y_local, base + i, job->dtype,
-                                load_typed(x_local, base + i, job->dtype) * scale * weight);
+            if (job->dtype != PACC_DTYPE_F32 ||
+                !rmsnorm_f32_rvv((const float *)x_local,
+                                 have_weight ? (const float *)w_local : NULL,
+                                 (float *)y_local,
+                                 job->rows,
+                                 job->hidden,
+                                 job->eps)) {
+                for (uint64_t row = 0; row < job->rows; row++) {
+                    uint64_t base = row * job->hidden;
+                    float sumsq = 0.0f;
+                    for (uint64_t i = 0; i < job->hidden; i++) {
+                        float v = load_typed(x_local, base + i, job->dtype);
+                        sumsq += v * v;
+                    }
+                    float scale = rsqrtf_newton(sumsq / (float)job->hidden + job->eps);
+                    for (uint64_t i = 0; i < job->hidden; i++) {
+                        float weight = have_weight ? load_typed(w_local, i, job->dtype) : 1.0f;
+                        store_typed(y_local, base + i, job->dtype,
+                                    load_typed(x_local, base + i, job->dtype) * scale * weight);
+                    }
                 }
             }
             mirror_progress_status(fd, HETGPU_PACC_JOB_RMSNORM, seq, 0x5123);
@@ -2396,17 +2882,29 @@ static int run_rmsnorm(int fd, const struct RmsNormJob *job, uint64_t seq) {
     if (job->weight_addr && !map_phys(fd, job->weight_addr, weight_bytes, &mw)) {
         w = mw.ptr;
     }
-    for (uint64_t row = 0; row < job->rows; row++) {
-        uint64_t base = row * job->hidden;
-        float sumsq = 0.0f;
-        for (uint64_t i = 0; i < job->hidden; i++) {
-            float v = load_typed(x, base + i, job->dtype);
-            sumsq += v * v;
-        }
-        float scale = rsqrtf_newton(sumsq / (float)job->hidden + job->eps);
-        for (uint64_t i = 0; i < job->hidden; i++) {
-            float weight = w ? load_typed(w, i, job->dtype) : 1.0f;
-            store_typed(y, base + i, job->dtype, load_typed(x, base + i, job->dtype) * scale * weight);
+    sync_map_for_cpu(&mx);
+    if (w) {
+        sync_map_for_cpu(&mw);
+    }
+    if (job->dtype != PACC_DTYPE_F32 ||
+        !rmsnorm_f32_rvv((const float *)x,
+                         (const float *)w,
+                         (float *)y,
+                         job->rows,
+                         job->hidden,
+                         job->eps)) {
+        for (uint64_t row = 0; row < job->rows; row++) {
+            uint64_t base = row * job->hidden;
+            float sumsq = 0.0f;
+            for (uint64_t i = 0; i < job->hidden; i++) {
+                float v = load_typed(x, base + i, job->dtype);
+                sumsq += v * v;
+            }
+            float scale = rsqrtf_newton(sumsq / (float)job->hidden + job->eps);
+            for (uint64_t i = 0; i < job->hidden; i++) {
+                float weight = w ? load_typed(w, i, job->dtype) : 1.0f;
+                store_typed(y, base + i, job->dtype, load_typed(x, base + i, job->dtype) * scale * weight);
+            }
         }
     }
     if (jobd_msync_enabled()) {
@@ -2418,6 +2916,61 @@ static int run_rmsnorm(int fd, const struct RmsNormJob *job, uint64_t seq) {
               " dtype=%u elapsed_us=%" PRIu64,
               job->rows, job->hidden, job->dtype, monotonic_us() - t0);
     return 0;
+}
+
+static bool rmsnorm_f32_rvv(const float *x,
+                            const float *weight,
+                            float *y,
+                            uint64_t rows,
+                            uint64_t hidden,
+                            float eps) {
+#if defined(__riscv_vector)
+    if (!x || !y || rows == 0 || hidden == 0) {
+        return false;
+    }
+    if (hidden > (uint64_t)SIZE_MAX) {
+        return false;
+    }
+
+    size_t cols = (size_t)hidden;
+    for (uint64_t row = 0; row < rows; row++) {
+        const float *xr = x + (size_t)row * cols;
+        float *yr = y + (size_t)row * cols;
+        float sumsq = 0.0f;
+
+        for (size_t i = 0; i < cols;) {
+            size_t vl = __riscv_vsetvl_e32m4(cols - i);
+            vfloat32m4_t vx = __riscv_vle32_v_f32m4(xr + i, vl);
+            vfloat32m4_t vsq = __riscv_vfmul_vv_f32m4(vx, vx, vl);
+            vfloat32m1_t zero = __riscv_vfmv_v_f_f32m1(0.0f, 1);
+            vfloat32m1_t reduced = __riscv_vfredusum_vs_f32m4_f32m1(vsq, zero, vl);
+            sumsq += __riscv_vfmv_f_s_f32m1_f32(reduced);
+            i += vl;
+        }
+
+        float scale = rsqrtf_newton(sumsq / (float)cols + eps);
+        for (size_t i = 0; i < cols;) {
+            size_t vl = __riscv_vsetvl_e32m4(cols - i);
+            vfloat32m4_t vy = __riscv_vle32_v_f32m4(xr + i, vl);
+            vy = __riscv_vfmul_vf_f32m4(vy, scale, vl);
+            if (weight) {
+                vfloat32m4_t vw = __riscv_vle32_v_f32m4(weight + i, vl);
+                vy = __riscv_vfmul_vv_f32m4(vy, vw, vl);
+            }
+            __riscv_vse32_v_f32m4(yr + i, vy, vl);
+            i += vl;
+        }
+    }
+    return true;
+#else
+    (void)x;
+    (void)weight;
+    (void)y;
+    (void)rows;
+    (void)hidden;
+    (void)eps;
+    return false;
+#endif
 }
 
 static int run_allreduce(int fd, const struct AllReduceJob *job) {
@@ -3528,9 +4081,9 @@ static struct PaccUint3 kernel_arg_uint3(const uint64_t *args,
     return v;
 }
 
-static int invoke_kernel_bin_bcast23(void *fn,
-                                     const uint64_t *args,
-                                     const struct PaccJobImage *job) {
+static int PACC_UNUSED invoke_kernel_bin_bcast23(void *fn,
+                                                 const uint64_t *args,
+                                                 const struct PaccJobImage *job) {
     struct PaccUint3 u3_6 = kernel_arg_uint3(args, job, 6);
     struct PaccUint3 u3_7 = kernel_arg_uint3(args, job, 7);
     struct PaccUint3 u3_8 = kernel_arg_uint3(args, job, 8);
@@ -4063,7 +4616,7 @@ struct MmvfNativeWorker {
     int status;
 };
 
-static pthread_once_t g_f16_table_once = PTHREAD_ONCE_INIT;
+static pthread_once_t PACC_UNUSED g_f16_table_once = PTHREAD_ONCE_INIT;
 static float g_f16_to_f32[65536];
 static volatile int g_f16_table_ready;
 
@@ -4100,7 +4653,7 @@ static float pacc_f16_bits_to_f32(uint16_t h) {
 #endif
 }
 
-static void pacc_f16_table_init_once(void) {
+static void PACC_UNUSED pacc_f16_table_init_once(void) {
     for (uint32_t i = 0; i <= UINT16_MAX; i++) {
         g_f16_to_f32[i] = pacc_f16_bits_to_f32((uint16_t)i);
     }
@@ -4148,7 +4701,7 @@ static size_t kernel_binding_map_bytes(const struct PaccKernelBufferBinding *bin
                                        size_t default_bind_bytes) {
     uint64_t want = binding && binding->size ? binding->size : (uint64_t)default_bind_bytes;
     uint64_t min_bytes = parse_env_u64_default("PACC_JOBD_KERNEL_BINDING_MIN_BYTES",
-                                               64ULL * 1024ULL * 1024ULL);
+                                               parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_BINDING_MIN_BYTES", 0));
 
     if (min_bytes > want) {
         want = min_bytes;
@@ -4405,7 +4958,7 @@ static int invoke_kernel_mmvf_native(const char *symbol,
     }
 
     uint64_t work_items = (uint64_t)ctx.grid_x * ctx.grid_y * ctx.grid_z;
-    unsigned workers = kernel_worker_threads(work_items);
+    unsigned workers = jobd_mmvf_worker_threads(work_items);
     trace_msg("native mmvf %s work=%" PRIu64 " ncols2=%d ncols_dst=%u workers=%u",
               symbol, work_items, ctx.ncols2, ctx.ncols_dst, workers);
 
@@ -4504,7 +5057,7 @@ static int run_mmvf_ctx(struct MmvfNativeCtx *ctx,
     uint64_t work_items = (uint64_t)pacc_nonzero_dim(ctx->grid_x) *
                           pacc_nonzero_dim(ctx->grid_y) *
                           pacc_nonzero_dim(ctx->grid_z);
-    unsigned workers = kernel_worker_threads(work_items);
+    unsigned workers = jobd_mmvf_worker_threads(work_items);
     trace_msg("native mmvf direct %s work=%" PRIu64 " ncols2=%d ncols_dst=%u workers=%u",
               label ? label : "MMVF", work_items, ctx->ncols2, ctx->ncols_dst, workers);
 
@@ -4576,10 +5129,35 @@ static int run_mmvf(int fd, const struct MmvfJob *job, uint64_t seq) {
     }
 
     struct Map mx = {0}, my = {0}, md = {0};
+    bool copy_io = jobd_mmvf_copy_io_enabled();
+    bool compute = jobd_mmvf_compute_enabled();
     mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5141);
-    if (map_phys(fd, job->x_addr, (size_t)job->x_bytes, &mx) ||
-        map_phys(fd, job->y_addr, (size_t)job->y_bytes, &my) ||
-        map_phys(fd, job->dst_addr, (size_t)job->dst_bytes, &md)) {
+    if (map_phys_for_mmvf(fd, job->dst_addr, (size_t)job->dst_bytes, &md, copy_io)) {
+        unmap_phys(&mx);
+        unmap_phys(&my);
+        unmap_phys(&md);
+        return 0xffff5005;
+    }
+
+    memset(md.ptr, 0, (size_t)job->dst_bytes);
+    if (flush_map_to_phys(&md) != 0) {
+        unmap_phys(&md);
+        return 0xffff5006;
+    }
+    if (!md.copied) {
+        if (jobd_msync_enabled()) {
+            msync(md.base, md.map_len, MS_SYNC);
+        }
+        jobd_flush_for_device(md.ptr, md.len);
+    }
+    if (!compute) {
+        mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5144);
+        unmap_phys(&md);
+        return 0;
+    }
+
+    if (map_phys_for_mmvf(fd, job->x_addr, (size_t)job->x_bytes, &mx, copy_io) ||
+        map_phys_for_mmvf(fd, job->y_addr, (size_t)job->y_bytes, &my, copy_io)) {
         unmap_phys(&mx);
         unmap_phys(&my);
         unmap_phys(&md);
@@ -4616,10 +5194,18 @@ static int run_mmvf(int fd, const struct MmvfJob *job, uint64_t seq) {
     int status = run_mmvf_ctx(&ctx, job->x_bytes, job->y_bytes, "MMVF");
     mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, status == 0 ? 0x5143 : (uint32_t)status);
     if (status == 0) {
+        if (flush_map_to_phys(&md) != 0) {
+            status = 0xffff5006;
+            mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, (uint32_t)status);
+        }
+    }
+    if (status == 0 && !md.copied) {
         if (jobd_msync_enabled()) {
             msync(md.base, md.map_len, MS_SYNC);
         }
         jobd_flush_for_device(md.ptr, md.len);
+    }
+    if (status == 0) {
         mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5144);
     }
     unmap_phys(&mx);
@@ -4637,6 +5223,8 @@ enum PaccRopeScalarType {
 struct RopeNormNativeCtx {
     const void *x;
     void *dst;
+    uint64_t x_elems;
+    uint64_t dst_elems;
     int32_t ne00;
     int32_t ne01;
     int32_t ne02;
@@ -4656,6 +5244,9 @@ struct RopeNormNativeCtx {
     float theta_scale;
     const float *freq_factors;
     const int64_t *row_indices;
+    uint64_t pos_elems;
+    uint64_t freq_elems;
+    uint64_t row_indices_elems;
     int32_t set_rows_stride;
     uint32_t row_count;
     uint32_t pair_count;
@@ -4725,6 +5316,410 @@ struct ConvertUnaryNativeWorker {
     uint64_t end;
     int status;
 };
+
+struct ScaleF32NativeCtx {
+    const float *src;
+    float *dst;
+    float scale;
+    float bias;
+    uint64_t nelements;
+};
+
+struct ScaleF32NativeWorker {
+    const struct ScaleF32NativeCtx *ctx;
+    uint64_t begin;
+    uint64_t end;
+    int status;
+};
+
+enum PaccGetRowsScalarType {
+    PACC_GET_ROWS_SCALAR_UNSUPPORTED = 0,
+    PACC_GET_ROWS_SCALAR_F16,
+    PACC_GET_ROWS_SCALAR_F32,
+    PACC_GET_ROWS_SCALAR_I32,
+    PACC_GET_ROWS_SCALAR_BF16,
+};
+
+struct GetRowsFloatNativeCtx {
+    const void *src0;
+    const int32_t *src1;
+    void *dst;
+    int64_t ne00;
+    int64_t ne10;
+    int64_t ne11;
+    int64_t ne12;
+    int64_t s1;
+    int64_t s2;
+    int64_t s3;
+    size_t nb01;
+    size_t nb02;
+    size_t nb03;
+    int64_t s10;
+    int64_t s11;
+    int64_t s12;
+    enum PaccGetRowsScalarType src_type;
+    enum PaccGetRowsScalarType dst_type;
+};
+
+struct GetRowsFloatNativeWorker {
+    const struct GetRowsFloatNativeCtx *ctx;
+    uint64_t begin_row;
+    uint64_t end_row;
+    int status;
+};
+
+static size_t get_rows_scalar_size(enum PaccGetRowsScalarType ty) {
+    switch (ty) {
+    case PACC_GET_ROWS_SCALAR_F16:
+    case PACC_GET_ROWS_SCALAR_BF16:
+        return sizeof(uint16_t);
+    case PACC_GET_ROWS_SCALAR_F32:
+        return sizeof(float);
+    case PACC_GET_ROWS_SCALAR_I32:
+        return sizeof(int32_t);
+    default:
+        return 0;
+    }
+}
+
+static bool get_rows_parse_scalar(const char **p,
+                                  enum PaccGetRowsScalarType *out) {
+    if (!p || !*p || !out) return false;
+    if (strncmp(*p, "6__half", 7) == 0) {
+        *out = PACC_GET_ROWS_SCALAR_F16;
+        *p += 7;
+        return true;
+    }
+    if (strncmp(*p, "13__nv_bfloat16", 15) == 0) {
+        *out = PACC_GET_ROWS_SCALAR_BF16;
+        *p += 15;
+        return true;
+    }
+    if (**p == 'f') {
+        *out = PACC_GET_ROWS_SCALAR_F32;
+        *p += 1;
+        return true;
+    }
+    if (**p == 'i') {
+        *out = PACC_GET_ROWS_SCALAR_I32;
+        *p += 1;
+        return true;
+    }
+    return false;
+}
+
+static bool get_rows_float_parse_template(const char *symbol,
+                                          enum PaccGetRowsScalarType *src_type,
+                                          enum PaccGetRowsScalarType *dst_type) {
+    const char *p = symbol ? strstr(symbol, "k_get_rows_floatI") : NULL;
+    if (!p) return false;
+    p += strlen("k_get_rows_floatI");
+    if (!get_rows_parse_scalar(&p, src_type)) return false;
+    if (strncmp(p, "S0_", 3) == 0) {
+        *dst_type = *src_type;
+        return true;
+    }
+    return get_rows_parse_scalar(&p, dst_type);
+}
+
+static float get_rows_load_scalar(const void *base,
+                                  uint64_t index,
+                                  enum PaccGetRowsScalarType ty) {
+    switch (ty) {
+    case PACC_GET_ROWS_SCALAR_F16:
+        return pacc_f16_to_f32(((const uint16_t *)base)[index]);
+    case PACC_GET_ROWS_SCALAR_F32:
+        return ((const float *)base)[index];
+    case PACC_GET_ROWS_SCALAR_I32:
+        return (float)((const int32_t *)base)[index];
+    case PACC_GET_ROWS_SCALAR_BF16:
+        return bf16_to_f32(((const uint16_t *)base)[index]);
+    default:
+        return 0.0f;
+    }
+}
+
+static void get_rows_store_scalar(void *base,
+                                  uint64_t index,
+                                  enum PaccGetRowsScalarType ty,
+                                  float value) {
+    switch (ty) {
+    case PACC_GET_ROWS_SCALAR_F16:
+        ((uint16_t *)base)[index] = pacc_f32_to_f16(value);
+        break;
+    case PACC_GET_ROWS_SCALAR_F32:
+        ((float *)base)[index] = value;
+        break;
+    case PACC_GET_ROWS_SCALAR_I32:
+        ((int32_t *)base)[index] = round_to_i32(value);
+        break;
+    case PACC_GET_ROWS_SCALAR_BF16:
+        ((uint16_t *)base)[index] = f32_to_bf16(value);
+        break;
+    default:
+        break;
+    }
+}
+
+static void get_rows_copy_row(const struct GetRowsFloatNativeCtx *ctx,
+                              const void *src_row,
+                              void *dst_row) {
+    if (ctx->src_type == PACC_GET_ROWS_SCALAR_F32 &&
+        ctx->dst_type == PACC_GET_ROWS_SCALAR_F32) {
+#if defined(__riscv_vector)
+        uint64_t i = 0;
+        while (i < (uint64_t)ctx->ne00) {
+            size_t remaining = (size_t)((uint64_t)ctx->ne00 - i);
+            size_t vl = __riscv_vsetvl_e32m4(remaining);
+            vfloat32m4_t v = __riscv_vle32_v_f32m4((const float *)src_row + i, vl);
+            __riscv_vse32_v_f32m4((float *)dst_row + i, v, vl);
+            i += vl;
+        }
+#else
+        memcpy(dst_row, src_row, (size_t)ctx->ne00 * sizeof(float));
+#endif
+        return;
+    }
+
+    for (uint64_t i = 0; i < (uint64_t)ctx->ne00; i++) {
+        float value = get_rows_load_scalar(src_row, i, ctx->src_type);
+        get_rows_store_scalar(dst_row, i, ctx->dst_type, value);
+    }
+}
+
+static void *get_rows_float_native_worker_main(void *opaque) {
+    struct GetRowsFloatNativeWorker *worker =
+        (struct GetRowsFloatNativeWorker *)opaque;
+    const struct GetRowsFloatNativeCtx *ctx = worker->ctx;
+    size_t dst_elem = get_rows_scalar_size(ctx->dst_type);
+
+    for (uint64_t row = worker->begin_row; row < worker->end_row; row++) {
+        int64_t i10 = (int64_t)(row % (uint64_t)ctx->ne10);
+        uint64_t z = row / (uint64_t)ctx->ne10;
+        int64_t i11 = (int64_t)(z / (uint64_t)ctx->ne12);
+        int64_t i12 = (int64_t)(z % (uint64_t)ctx->ne12);
+        int64_t src1_off = i10 * ctx->s10 + i11 * ctx->s11 + i12 * ctx->s12;
+        int32_t i01 = ctx->src1[src1_off];
+        if (i01 < 0) {
+            worker->status = -1;
+            return NULL;
+        }
+
+        const void *src_row = (const char *)ctx->src0 +
+            (size_t)i01 * ctx->nb01 +
+            (size_t)i11 * ctx->nb02 +
+            (size_t)i12 * ctx->nb03;
+        int64_t dst_off = i10 * ctx->s1 + i11 * ctx->s2 + i12 * ctx->s3;
+        void *dst_row = (char *)ctx->dst + (uint64_t)dst_off * dst_elem;
+        get_rows_copy_row(ctx, src_row, dst_row);
+    }
+
+    worker->status = 0;
+    return NULL;
+}
+
+static int invoke_kernel_get_rows_float_native(const char *symbol,
+                                               const uint64_t *args,
+                                               const struct PaccJobImage *job,
+                                               size_t argc) {
+    uint64_t t0 = monotonic_us();
+    if (!symbol || !strstr(symbol, "k_get_rows_float")) return 1;
+    if (!env_flag_default_true("HETGPU_PACC_ENABLE_NATIVE_GET_ROWS_FLOAT")) return 1;
+    if (!job || argc < 15) return -1;
+
+    struct GetRowsFloatNativeCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    if (!get_rows_float_parse_template(symbol, &ctx.src_type, &ctx.dst_type) ||
+        ctx.src_type == PACC_GET_ROWS_SCALAR_UNSUPPORTED ||
+        ctx.dst_type == PACC_GET_ROWS_SCALAR_UNSUPPORTED) {
+        return 1;
+    }
+
+    ctx.src0 = (const void *)(uintptr_t)kernel_cell_u64(args, argc, 0);
+    ctx.src1 = (const int32_t *)(uintptr_t)kernel_cell_u64(args, argc, 1);
+    ctx.dst = (void *)(uintptr_t)kernel_cell_u64(args, argc, 2);
+    ctx.ne00 = kernel_cell_i64(args, argc, 3);
+    ctx.ne11 = kernel_cell_i64(args, argc, 4);
+    ctx.ne12 = kernel_cell_i64(args, argc, 5);
+    ctx.s1 = kernel_cell_i64(args, argc, 6);
+    ctx.s2 = kernel_cell_i64(args, argc, 7);
+    ctx.s3 = kernel_cell_i64(args, argc, 8);
+    ctx.nb01 = (size_t)kernel_cell_u64(args, argc, 9);
+    ctx.nb02 = (size_t)kernel_cell_u64(args, argc, 10);
+    ctx.nb03 = (size_t)kernel_cell_u64(args, argc, 11);
+    ctx.s10 = kernel_cell_i64(args, argc, 12);
+    ctx.s11 = kernel_cell_i64(args, argc, 13);
+    ctx.s12 = kernel_cell_i64(args, argc, 14);
+    ctx.ne10 = (int64_t)pacc_nonzero_dim(job->header.grid_x);
+
+    if (!ctx.src0 || !ctx.src1 || !ctx.dst || ctx.ne00 <= 0 ||
+        ctx.ne10 <= 0 || ctx.ne11 <= 0 || ctx.ne12 <= 0 ||
+        ctx.s1 < 0 || ctx.s2 < 0 || ctx.s3 < 0 ||
+        ctx.s10 < 0 || ctx.s11 < 0 || ctx.s12 < 0 ||
+        get_rows_scalar_size(ctx.src_type) == 0 ||
+        get_rows_scalar_size(ctx.dst_type) == 0) {
+        log_msg("native get_rows_float invalid: symbol=%s src0=%p src1=%p dst=%p "
+                "ne=(%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ")",
+                symbol, ctx.src0, (const void *)ctx.src1, ctx.dst,
+                ctx.ne00, ctx.ne10, ctx.ne11, ctx.ne12);
+        return -1;
+    }
+
+    uint64_t rows = (uint64_t)ctx.ne10 * (uint64_t)ctx.ne11 * (uint64_t)ctx.ne12;
+    unsigned workers = kernel_worker_threads(rows);
+    trace_msg("native get_rows_float %s rows=%" PRIu64 " ne00=%" PRId64
+              " ne10=%" PRId64 " ne11=%" PRId64 " ne12=%" PRId64
+              " src_type=%d dst_type=%d workers=%u",
+              symbol, rows, ctx.ne00, ctx.ne10, ctx.ne11, ctx.ne12,
+              ctx.src_type, ctx.dst_type, workers);
+
+    if (workers <= 1 || rows <= 1) {
+        struct GetRowsFloatNativeWorker worker = {
+            .ctx = &ctx,
+            .begin_row = 0,
+            .end_row = rows,
+            .status = 0,
+        };
+        get_rows_float_native_worker_main(&worker);
+        trace_msg("native get_rows_float done %s status=%d elapsed_us=%" PRIu64,
+                  symbol, worker.status, monotonic_us() - t0);
+        return worker.status;
+    }
+
+    pthread_t threads[PACC_KERNEL_MAX_THREADS];
+    struct GetRowsFloatNativeWorker worker[PACC_KERNEL_MAX_THREADS];
+    unsigned created = 0;
+    uint64_t chunk = (rows + workers - 1u) / workers;
+    memset(worker, 0, sizeof(worker));
+    for (unsigned i = 0; i < workers; i++) {
+        uint64_t begin = (uint64_t)i * chunk;
+        uint64_t end = begin + chunk;
+        if (begin >= rows) break;
+        if (end > rows) end = rows;
+        worker[i].ctx = &ctx;
+        worker[i].begin_row = begin;
+        worker[i].end_row = end;
+        worker[i].status = -1;
+        if (pthread_create(&threads[i], NULL, get_rows_float_native_worker_main, &worker[i]) != 0) {
+            log_msg("native get_rows_float failed to create worker %u", i);
+            for (unsigned j = 0; j < created; j++) {
+                pthread_join(threads[j], NULL);
+            }
+            return -1;
+        }
+        created++;
+    }
+
+    int status = 0;
+    for (unsigned i = 0; i < created; i++) {
+        pthread_join(threads[i], NULL);
+        if (worker[i].status != 0 && status == 0) {
+            status = worker[i].status;
+        }
+    }
+    trace_msg("native get_rows_float done %s status=%d elapsed_us=%" PRIu64,
+              symbol, status, monotonic_us() - t0);
+    return status;
+}
+
+static void *scale_f32_native_worker_main(void *opaque) {
+    struct ScaleF32NativeWorker *worker = (struct ScaleF32NativeWorker *)opaque;
+    const struct ScaleF32NativeCtx *ctx = worker->ctx;
+
+#if defined(__riscv_vector)
+    uint64_t i = worker->begin;
+    while (i < worker->end) {
+        size_t remaining = (size_t)(worker->end - i);
+        size_t vl = __riscv_vsetvl_e32m4(remaining);
+        vfloat32m4_t x = __riscv_vle32_v_f32m4(ctx->src + i, vl);
+        vfloat32m4_t y = __riscv_vfmv_v_f_f32m4(ctx->bias, vl);
+        y = __riscv_vfmacc_vf_f32m4(y, ctx->scale, x, vl);
+        __riscv_vse32_v_f32m4(ctx->dst + i, y, vl);
+        i += vl;
+    }
+#else
+    for (uint64_t i = worker->begin; i < worker->end; i++) {
+        ctx->dst[i] = ctx->src[i] * ctx->scale + ctx->bias;
+    }
+#endif
+    worker->status = 0;
+    return NULL;
+}
+
+static int invoke_kernel_scale_f32_native(const char *symbol,
+                                          const uint64_t *args,
+                                          const struct PaccJobImage *job,
+                                          size_t argc) {
+    uint64_t t0 = monotonic_us();
+    (void)job;
+    if (!symbol || !strstr(symbol, "scale_f32")) return 1;
+    if (!env_flag_default_true("HETGPU_PACC_ENABLE_NATIVE_SCALE_F32")) return 1;
+    if (argc < 5) return -1;
+
+    struct ScaleF32NativeCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.src = (const float *)(uintptr_t)kernel_cell_u64(args, argc, 0);
+    ctx.dst = (float *)(uintptr_t)kernel_cell_u64(args, argc, 1);
+    ctx.scale = kernel_cell_f32(args, argc, 2);
+    ctx.bias = kernel_cell_f32(args, argc, 3);
+    int64_t nelements = kernel_cell_i64(args, argc, 4);
+    if (nelements <= 0) return 0;
+    ctx.nelements = (uint64_t)nelements;
+    if (!ctx.src || !ctx.dst) return -1;
+
+    unsigned workers = kernel_worker_threads(ctx.nelements);
+    trace_msg("native scale_f32 %s elems=%" PRIu64
+              " scale=%g bias=%g workers=%u",
+              symbol, ctx.nelements, ctx.scale, ctx.bias, workers);
+
+    if (workers <= 1 || ctx.nelements <= 1) {
+        struct ScaleF32NativeWorker worker = {
+            .ctx = &ctx,
+            .begin = 0,
+            .end = ctx.nelements,
+            .status = 0,
+        };
+        scale_f32_native_worker_main(&worker);
+        trace_msg("native scale_f32 done %s status=%d elapsed_us=%" PRIu64,
+                  symbol, worker.status, monotonic_us() - t0);
+        return worker.status;
+    }
+
+    pthread_t threads[PACC_KERNEL_MAX_THREADS];
+    struct ScaleF32NativeWorker worker[PACC_KERNEL_MAX_THREADS];
+    unsigned created = 0;
+    uint64_t chunk = (ctx.nelements + workers - 1u) / workers;
+    memset(worker, 0, sizeof(worker));
+    for (unsigned i = 0; i < workers; i++) {
+        uint64_t begin = (uint64_t)i * chunk;
+        uint64_t end = begin + chunk;
+        if (begin >= ctx.nelements) break;
+        if (end > ctx.nelements) end = ctx.nelements;
+        worker[i].ctx = &ctx;
+        worker[i].begin = begin;
+        worker[i].end = end;
+        worker[i].status = -1;
+        if (pthread_create(&threads[i], NULL, scale_f32_native_worker_main, &worker[i]) != 0) {
+            log_msg("native scale_f32 failed to create worker %u", i);
+            for (unsigned j = 0; j < created; j++) {
+                pthread_join(threads[j], NULL);
+            }
+            return -1;
+        }
+        created++;
+    }
+
+    int status = 0;
+    for (unsigned i = 0; i < created; i++) {
+        pthread_join(threads[i], NULL);
+        if (worker[i].status != 0 && status == 0) {
+            status = worker[i].status;
+        }
+    }
+    trace_msg("native scale_f32 done %s status=%d elapsed_us=%" PRIu64,
+              symbol, status, monotonic_us() - t0);
+    return status;
+}
 
 static bool convert_unary_parse_scalar(const char **p,
                                        enum PaccConvertScalarType *out) {
@@ -4816,6 +5811,7 @@ static int invoke_kernel_convert_unary_native(const char *symbol,
                                               const uint64_t *args,
                                               const struct PaccJobImage *job,
                                               size_t argc) {
+    (void)job;
     if (!symbol || !strstr(symbol, "convert_unary")) return 1;
     if (!env_flag_default_true("HETGPU_PACC_ENABLE_NATIVE_CONVERT_UNARY")) return 1;
     if (argc < 9) return -1;
@@ -5005,8 +6001,19 @@ static void *rope_norm_native_worker_main(void *opaque) {
                 worker->status = -1;
                 return NULL;
             }
+            if (ctx->row_indices_elems != 0 && (uint64_t)i2 >= ctx->row_indices_elems) {
+                worker->status = -1;
+                return NULL;
+            }
             idst = (int64_t)i1 * ctx->s1 + i0;
             idst += ctx->row_indices[i2] * (int64_t)ctx->set_rows_stride;
+        }
+
+        if (ix < 0 || idst < 0 ||
+            (ctx->x_elems != 0 && (uint64_t)(ix + 1) >= ctx->x_elems) ||
+            (ctx->dst_elems != 0 && (uint64_t)(idst + 1) >= ctx->dst_elems)) {
+            worker->status = -1;
+            return NULL;
         }
 
         float x0 = rope_native_load(ctx, ctx->x, ix + 0);
@@ -5020,7 +6027,15 @@ static void *rope_norm_native_worker_main(void *opaque) {
             worker->status = -1;
             return NULL;
         }
+        if (ctx->pos_elems != 0 && (uint64_t)i2 >= ctx->pos_elems) {
+            worker->status = -1;
+            return NULL;
+        }
         float theta_base = (float)ctx->pos[i2] * powf(ctx->theta_scale, (float)i0 * 0.5f);
+        if (ctx->has_ff && ctx->freq_elems != 0 && (uint64_t)(i0 / 2) >= ctx->freq_elems) {
+            worker->status = -1;
+            return NULL;
+        }
         float freq_factor = ctx->has_ff ? ctx->freq_factors[i0 / 2] : 1.0f;
         float cos_theta = 1.0f;
         float sin_theta = 0.0f;
@@ -5081,8 +6096,26 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
     ctx.pair_count = pacc_nonzero_dim(job->header.grid_y) *
                      pacc_nonzero_dim(job->header.block_y);
 
+    uint64_t x_bytes = kernel_binding_size_for_arg(job, 0);
+    uint64_t dst_bytes = kernel_binding_size_for_arg(job, 1);
+    uint64_t pos_bytes = kernel_binding_size_for_arg(job, 12);
+    uint64_t freq_bytes = kernel_binding_size_for_arg(job, 18);
+    uint64_t rows_bytes = kernel_binding_size_for_arg(job, 19);
+    uint64_t x_elem_bytes = ctx.x_type == PACC_ROPE_SCALAR_F16 ? 2u : 4u;
+    uint64_t dst_elem_bytes = ctx.dst_type == PACC_ROPE_SCALAR_F16 ? 2u : 4u;
+    if (x_bytes != 0) ctx.x_elems = x_bytes / x_elem_bytes;
+    if (dst_bytes != 0) ctx.dst_elems = dst_bytes / dst_elem_bytes;
+    if (pos_bytes != 0) ctx.pos_elems = pos_bytes / sizeof(int32_t);
+    if (freq_bytes != 0) ctx.freq_elems = freq_bytes / sizeof(float);
+    if (rows_bytes != 0) ctx.row_indices_elems = rows_bytes / sizeof(int64_t);
+
     if (!ctx.x || !ctx.dst || ctx.ne00 <= 0 || ctx.ne01 <= 0 ||
-        ctx.ne02 <= 0 || ctx.pair_count == 0 || ctx.row_count == 0) {
+        ctx.ne02 <= 0 || ctx.pair_count == 0 || ctx.row_count == 0 ||
+        ctx.x_elems == 0 || ctx.dst_elems == 0) {
+        log_msg("native rope_norm invalid args: x=%p/%" PRIu64 "B dst=%p/%" PRIu64
+                "B ne=(%d,%d,%d) rows=%u pairs=%u",
+                ctx.x, x_bytes, ctx.dst, dst_bytes,
+                ctx.ne00, ctx.ne01, ctx.ne02, ctx.row_count, ctx.pair_count);
         return -1;
     }
 
@@ -5095,11 +6128,6 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
     uint64_t local_max = parse_env_u64_default("PACC_JOBD_ROPE_LOCAL_MAX_BYTES",
                                                1u << 20);
     if (local_max != 0) {
-        uint64_t x_bytes = kernel_binding_size_for_arg(job, 0);
-        uint64_t dst_bytes = kernel_binding_size_for_arg(job, 1);
-        uint64_t pos_bytes = kernel_binding_size_for_arg(job, 12);
-        uint64_t freq_bytes = kernel_binding_size_for_arg(job, 18);
-        uint64_t rows_bytes = kernel_binding_size_for_arg(job, 19);
         if (x_bytes != 0 && x_bytes <= local_max) {
             local_x = malloc((size_t)x_bytes);
             if (local_x) {
@@ -5140,10 +6168,11 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
     uint64_t work_items = (uint64_t)ctx.row_count * ctx.pair_count;
     unsigned workers = kernel_worker_threads(work_items);
     trace_msg("native rope_norm %s rows=%u pairs=%u work=%" PRIu64
-              " workers=%u fwd=%u ff=%u xtype=%d dtype=%d",
+              " workers=%u fwd=%u ff=%u xtype=%d dtype=%d x_elems=%" PRIu64
+              " dst_elems=%" PRIu64,
               symbol, ctx.row_count, ctx.pair_count, work_items, workers,
               ctx.forward ? 1U : 0U, ctx.has_ff ? 1U : 0U,
-              ctx.x_type, ctx.dst_type);
+              ctx.x_type, ctx.dst_type, ctx.x_elems, ctx.dst_elems);
 
     if (workers <= 1 || work_items <= 1) {
         struct RopeNormNativeWorker worker = {
@@ -5452,12 +6481,6 @@ static int invoke_kernel_native(const char *symbol,
                                 const uint64_t *args,
                                 const struct PaccJobImage *job,
                                 size_t argc) {
-    if (jobd_force_elf_enabled()) {
-        trace_msg("native kernel shortcut disabled, forcing direct ELF for %s",
-                  symbol ? symbol : "<unknown>");
-        return 1;
-    }
-
     int native_status = invoke_kernel_bin_bcast_native(symbol, args, job, argc);
     if (native_status <= 0) {
         return native_status;
@@ -5466,7 +6489,15 @@ static int invoke_kernel_native(const char *symbol,
     if (native_status <= 0) {
         return native_status;
     }
+    native_status = invoke_kernel_get_rows_float_native(symbol, args, job, argc);
+    if (native_status <= 0) {
+        return native_status;
+    }
     native_status = invoke_kernel_set_rows_native(symbol, args, job, argc);
+    if (native_status <= 0) {
+        return native_status;
+    }
+    native_status = invoke_kernel_scale_f32_native(symbol, args, job, argc);
     if (native_status <= 0) {
         return native_status;
     }
@@ -5477,6 +6508,10 @@ static int invoke_kernel_native(const char *symbol,
     native_status = invoke_kernel_rope_norm_native(symbol, args, job, argc);
     if (native_status <= 0) {
         return native_status;
+    }
+    if (jobd_force_elf_enabled()) {
+        trace_msg("no native shortcut for %s, forcing direct ELF",
+                  symbol ? symbol : "<unknown>");
     }
     return 1;
 }
@@ -6122,6 +7157,55 @@ static int parse_kernel_job_image(const uint8_t *image, size_t image_len, struct
     return 0;
 }
 
+static void reset_kernel_job_image_view(struct Map *map, uint8_t **image_copy) {
+    if (image_copy && *image_copy) {
+        free(*image_copy);
+        *image_copy = NULL;
+    }
+    if (map) {
+        unmap_phys(map);
+    }
+}
+
+static int load_kernel_job_image_view(int fd,
+                                      const struct PaccJobDesc *desc,
+                                      struct Map *map,
+                                      uint8_t **image_copy,
+                                      const uint8_t **image) {
+    if (!desc || !map || !image_copy || !image) {
+        return -1;
+    }
+
+    memset(map, 0, sizeof(*map));
+    *image_copy = NULL;
+    *image = NULL;
+
+    if (read_phys_copy(fd, desc->addr, (size_t)desc->len, image_copy) == 0) {
+        jobd_io_fence();
+        *image = (const uint8_t *)*image_copy;
+        return 0;
+    }
+
+    if (map_phys(fd, desc->addr, (size_t)desc->len, map) != 0) {
+        return -1;
+    }
+    sync_map_for_cpu(map);
+    jobd_io_fence();
+    *image = (const uint8_t *)map->ptr;
+    return 0;
+}
+
+static bool kernel_job_parse_retryable(uint32_t detail) {
+    switch (detail) {
+    case 0x02: /* header magic/version not visible yet */
+    case 0x03: /* ELF bounds/header fields not visible yet */
+    case 0x05: /* launch ABI header not visible yet */
+        return true;
+    default:
+        return false;
+    }
+}
+
 static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
     struct Map map = {0};
     struct PaccJobImage job;
@@ -6138,27 +7222,21 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
     void *fn = NULL;
     PaccSetLaunchFn set_launch = NULL;
     int status = 0;
+    uint64_t parse_retries = parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_PARSE_RETRIES", 64);
+    uint64_t parse_retry_us = parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_PARSE_RETRY_US", 2000);
 
     memset(binding_maps, 0, sizeof(binding_maps));
     memset(&loaded, 0, sizeof(loaded));
     if (!desc || desc->buf_info != PACC_JOB_MAGIC || desc->len < sizeof(struct PaccJobImageHeader)) {
         return 0xffff5001;
     }
-    if (read_phys_copy(fd, desc->addr, (size_t)desc->len, &image_copy) == 0) {
-        image = (const uint8_t *)image_copy;
-        jobd_io_fence();
-    } else {
-        if (map_phys(fd, desc->addr, (size_t)desc->len, &map) != 0) {
-            write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5002u, errno ? (uint32_t)errno : 0);
-            return 0xffff5002;
-        }
-        sync_map_for_cpu(&map);
-        jobd_io_fence();
-        image = (const uint8_t *)map.ptr;
+    if (load_kernel_job_image_view(fd, desc, &map, &image_copy, &image) != 0) {
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5002u, errno ? (uint32_t)errno : 0);
+        return 0xffff5002;
     }
     mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5102);
     write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5102, image_copy ? 1U : 0U);
-    {
+    for (uint64_t parse_attempt = 0;; parse_attempt++) {
         uint64_t q0 = 0, q1 = 0, q2 = 0, q3 = 0;
         if (desc->len >= 32) {
             q0 = read_u64_le(image + 0);
@@ -6171,13 +7249,27 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
                   " q2=0x%" PRIx64 " q3=0x%" PRIx64,
                   desc->addr, desc->len, (const void *)image,
                   image_copy ? 1U : 0U, q0, q1, q2, q3);
-    }
-    if (parse_kernel_job_image(image, (size_t)desc->len, &job) != 0) {
+        if (parse_kernel_job_image(image, (size_t)desc->len, &job) == 0) {
+            break;
+        }
         uint32_t detail = g_kernel_parse_error & 0x00ffu;
-        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5300u | (detail ? detail : 0xffu), detail);
-        free(image_copy);
-        unmap_phys(&map);
-        return 0xffff5300u | (detail ? detail : 0xffu);
+        if (!kernel_job_parse_retryable(detail) || parse_attempt >= parse_retries) {
+            write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5300u | (detail ? detail : 0xffu), detail);
+            reset_kernel_job_image_view(&map, &image_copy);
+            return 0xffff5300u | (detail ? detail : 0xffu);
+        }
+        trace_msg("kernel image parse retry: seq=%" PRIu64 " detail=0x%x attempt=%" PRIu64 "/%" PRIu64
+                  " retry_us=%" PRIu64,
+                  desc->seq, detail, parse_attempt + 1, parse_retries, parse_retry_us);
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x510a, detail);
+        reset_kernel_job_image_view(&map, &image_copy);
+        if (parse_retry_us) {
+            sleep_us(parse_retry_us);
+        }
+        if (load_kernel_job_image_view(fd, desc, &map, &image_copy, &image) != 0) {
+            write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5002u, errno ? (uint32_t)errno : 0);
+            return 0xffff5002;
+        }
     }
     mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5103);
     write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x5103, (uint32_t)job.arg_count);
@@ -6194,6 +7286,14 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
         if (copy_len >= sizeof(symbol)) copy_len = sizeof(symbol) - 1u;
         memcpy(symbol, job.kernel_name, copy_len);
         symbol[copy_len] = '\0';
+    }
+
+    if (symbol[0] && jobd_generic_noop_enabled()) {
+        trace_msg("generic kernel noop: seq=%" PRIu64 " symbol=%s",
+                  desc->seq, symbol);
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x510f, 0);
+        reset_kernel_job_image_view(&map, &image_copy);
+        return 0;
     }
 
     if (build_kernel_launch_args(fd, &job, argv, &argc, arg_storage, binding_maps, &binding_map_count) != 0) {
@@ -6302,7 +7402,7 @@ static void *arg_payload_inner(volatile struct Doorbell *ctl, uint32_t job_id, u
     return (void *)((char *)h + sizeof(*h));
 }
 
-static void *arg_payload(volatile struct Doorbell *ctl, uint32_t job_id, uint64_t seq, size_t want) {
+static PACC_UNUSED void *arg_payload(volatile struct Doorbell *ctl, uint32_t job_id, uint64_t seq, size_t want) {
     return arg_payload_inner(ctl, job_id, seq, want, true);
 }
 
@@ -6471,6 +7571,7 @@ static bool refresh_runtime_table(int fd, volatile struct Doorbell *ctl, struct 
     jobs->have_rmsnorm = local.have_rmsnorm != 0;
     jobs->have_allreduce = local.have_allreduce != 0;
     jobs->have_mmvf = local.have_mmvf != 0;
+    jobs->runtime_seq = local.seq;
     if (local.have_gemm) {
         jobs->gemm = local.gemm;
     }
@@ -6517,7 +7618,8 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
         } else if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
             job = &copied;
         }
-        if (!job && jobd_static_config_fallback_enabled() && jobs->have_gemm) {
+        if (!job && jobs->have_gemm &&
+            (jobs->runtime_seq == seq || jobd_static_config_fallback_enabled())) {
             job = &jobs->gemm;
         }
         if (!gemm_job_ready(job)) {
@@ -6537,7 +7639,8 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
         } else if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
             job = &copied;
         }
-        if (!job && jobd_static_config_fallback_enabled() && jobs->have_softmax) {
+        if (!job && jobs->have_softmax &&
+            (jobs->runtime_seq == seq || jobd_static_config_fallback_enabled())) {
             job = &jobs->softmax;
         }
         if (!softmax_job_ready(job)) {
@@ -6557,7 +7660,8 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
         } else if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
             job = &copied;
         }
-        if (!job && jobd_static_config_fallback_enabled() && jobs->have_rmsnorm) {
+        if (!job && jobs->have_rmsnorm &&
+            (jobs->runtime_seq == seq || jobd_static_config_fallback_enabled())) {
             job = &jobs->rmsnorm;
         }
         if (!rmsnorm_job_ready(job)) {
@@ -6577,7 +7681,8 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
         } else if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
             job = &copied;
         }
-        if (!job && jobd_static_config_fallback_enabled() && jobs->have_allreduce) {
+        if (!job && jobs->have_allreduce &&
+            (jobs->runtime_seq == seq || jobd_static_config_fallback_enabled())) {
             job = &jobs->allreduce;
         }
         if (!allreduce_job_ready(job)) {
@@ -6597,7 +7702,8 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
         } else if (arg_payload_copy_wait(fd, ctl, job_id, seq, sizeof(copied), &copied) == 0) {
             job = &copied;
         }
-        if (!job && jobd_static_config_fallback_enabled() && jobs->have_mmvf) {
+        if (!job && jobs->have_mmvf &&
+            (jobs->runtime_seq == seq || jobd_static_config_fallback_enabled())) {
             job = &jobs->mmvf;
         }
         if (!mmvf_job_ready(job)) {
@@ -6665,6 +7771,7 @@ static enum DispatchPollResult maybe_dispatch_kernel_job(
     status = dispatch_kernel_job(fd, &desc);
     write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc.seq, (uint32_t)status, 0);
     mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc.seq, (uint32_t)status);
+    g_response_irq_pending = true;
     trace_msg("kernel dispatch done: seq=%" PRIu64 " status=0x%x",
               desc.seq, (uint32_t)status);
     return DISPATCH_HANDLED;
@@ -6683,7 +7790,7 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
     if (ctl->magic != HETGPU_PACC_JOB_MAGIC || ctl->version != HETGPU_PACC_JOB_VERSION) {
         return DISPATCH_INVALID;
     }
-    if (ctl->seq == *last_seq) {
+    if (ctl->seq == *last_seq || preloaded_job_seen(ctl->job_id, ctl->seq)) {
         return DISPATCH_IDLE;
     }
 
@@ -6698,6 +7805,20 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
     mirror_progress_status(fd, job_id, seq, 0x5110);
     refresh_runtime_table(fd, ctl, jobs, last_table_seq);
     mirror_progress_status(fd, job_id, seq, 0x5111);
+    if (jobd_preloaded_noop_enabled(job_id)) {
+        *last_seq = seq;
+        mark_preloaded_job_seen(job_id, seq);
+        ctl->status = 0;
+        __sync_synchronize();
+        mirror_host_status(fd, job_id, seq, 0);
+        write_jobd_beacon(fd, job_id, seq, 0x511f, 0);
+        g_response_irq_pending = true;
+        log_msg("preloaded noop complete: job_id=%u/%s seq=%" PRIu64,
+                job_id, job_name(job_id), seq);
+        trace_msg("preloaded noop complete: job_id=%u/%s seq=%" PRIu64,
+                  job_id, job_name(job_id), seq);
+        return DISPATCH_HANDLED;
+    }
     trace_msg("dispatch enter: job_id=%u/%s seq=%" PRIu64,
               job_id, job_name(job_id), seq);
     mirror_progress_status(fd, job_id, seq, 0x5112);
@@ -6710,13 +7831,72 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
         return DISPATCH_IDLE;
     }
     *last_seq = seq;
+    mark_preloaded_job_seen(job_id, seq);
     __sync_synchronize();
     ctl->status = (uint32_t)status;
     mirror_host_status(fd, job_id, seq, (uint32_t)status);
+    g_response_irq_pending = true;
     log_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
             job_id, job_name(job_id), seq, (uint32_t)status);
     trace_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
               job_id, job_name(job_id), seq, (uint32_t)status);
+    return DISPATCH_HANDLED;
+}
+
+static enum DispatchPollResult maybe_dispatch_arg_slot_job(
+    int fd,
+    struct PreloadedJobs *jobs,
+    bool strict,
+    uint64_t *last_seq,
+    uint64_t *last_table_seq) {
+    struct ArgSlotHeader header;
+    volatile struct Doorbell *ctl;
+    int status;
+
+    memset(&header, 0, sizeof(header));
+    if (!find_pending_arg_slot_job(fd, &header)) {
+        return DISPATCH_IDLE;
+    }
+
+    memset(g_arg_slot_synthetic_control, 0, sizeof(g_arg_slot_synthetic_control));
+    ctl = (volatile struct Doorbell *)(void *)g_arg_slot_synthetic_control;
+    ctl->magic = HETGPU_PACC_JOB_MAGIC;
+    ctl->version = HETGPU_PACC_JOB_VERSION;
+    ctl->job_id = header.job_id;
+    ctl->flags = 0;
+    ctl->status = 0;
+    ctl->seq = header.seq;
+    jobd_io_fence();
+
+    log_msg("arg-slot dispatch recovery: job_id=%u/%s seq=%" PRIu64
+            " arg_len=%" PRIu64,
+            header.job_id, job_name(header.job_id), header.seq, header.arg_len);
+    trace_msg("arg-slot dispatch recovery: job_id=%u/%s seq=%" PRIu64
+              " arg_len=%" PRIu64,
+              header.job_id, job_name(header.job_id), header.seq, header.arg_len);
+    mirror_progress_status(fd, header.job_id, header.seq, 0x5113);
+    refresh_runtime_table(fd, ctl, jobs, last_table_seq);
+
+    status = dispatch_job(fd, ctl, jobs, strict);
+    if (status == -EAGAIN) {
+        log_msg("arg-slot dispatch pending args: job_id=%u/%s seq=%" PRIu64,
+                header.job_id, job_name(header.job_id), header.seq);
+        trace_msg("arg-slot dispatch pending args: job_id=%u/%s seq=%" PRIu64,
+                  header.job_id, job_name(header.job_id), header.seq);
+        return DISPATCH_IDLE;
+    }
+
+    if (last_seq) {
+        *last_seq = header.seq;
+    }
+    mark_preloaded_job_seen(header.job_id, header.seq);
+    ctl->status = (uint32_t)status;
+    mirror_host_status(fd, header.job_id, header.seq, (uint32_t)status);
+    g_response_irq_pending = true;
+    log_msg("arg-slot dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+            header.job_id, job_name(header.job_id), header.seq, (uint32_t)status);
+    trace_msg("arg-slot dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+              header.job_id, job_name(header.job_id), header.seq, (uint32_t)status);
     return DISPATCH_HANDLED;
 }
 
@@ -6731,7 +7911,16 @@ static enum DispatchPollResult dispatch_any_job(
     enum DispatchPollResult result;
 
     result = maybe_dispatch_preloaded_job(fd, ctl, jobs, strict, last_seq, last_table_seq);
-    if (result != DISPATCH_INVALID) {
+    if (result == DISPATCH_HANDLED) {
+        return result;
+    }
+    if (result == DISPATCH_IDLE) {
+        result = maybe_dispatch_arg_slot_job(fd, jobs, strict, last_seq, last_table_seq);
+        return result == DISPATCH_HANDLED ? result : DISPATCH_IDLE;
+    }
+
+    result = maybe_dispatch_arg_slot_job(fd, jobs, strict, last_seq, last_table_seq);
+    if (result == DISPATCH_HANDLED) {
         return result;
     }
 
@@ -6799,12 +7988,16 @@ static bool control_has_pending_job(int fd,
     if (head->magic == HETGPU_PACC_JOB_MAGIC &&
         head->version == HETGPU_PACC_JOB_VERSION &&
         head->seq != 0 &&
-        head->seq != last_seq) {
+        head->seq != last_seq &&
+        !preloaded_job_seen(head->job_id, head->seq)) {
         return true;
     }
     if (kernel_head->buf_info == PACC_JOB_MAGIC &&
         kernel_head->seq != 0 &&
         kernel_head->seq != last_kernel_seq) {
+        return true;
+    }
+    if (find_pending_arg_slot_job(fd, NULL)) {
         return true;
     }
     return false;
@@ -6860,6 +8053,14 @@ static uint64_t post_irq_scan_us(void) {
 
 static uint64_t post_irq_scan_sleep_us(void) {
     return parse_env_u64_default("HETGPU_PACC_JOBD_POST_IRQ_SCAN_SLEEP_US", 1000ULL);
+}
+
+static uint64_t pre_poll_scan_us(void) {
+    return parse_env_u64_default("HETGPU_PACC_JOBD_PRE_POLL_SCAN_US", 5000ULL);
+}
+
+static uint64_t pre_poll_scan_sleep_us(void) {
+    return parse_env_u64_default("HETGPU_PACC_JOBD_PRE_POLL_SCAN_SLEEP_US", 250ULL);
 }
 
 static uint32_t load_dispatch_snapshot(int fd,
@@ -6971,6 +8172,7 @@ static void pid1_bootstrap_devices(void) {
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status) {
     struct Map map = {0};
     uint64_t phys = shared_ddr_control_phys(HETGPU_PACC_COMPLETION_OFF, sizeof(struct HostStatus));
+    bool fd_is_mbox = fd >= 0 && fd == g_mbox_fd;
     struct HostStatus status_msg = {
         .magic = HETGPU_PACC_JOB_MAGIC,
         .version = HETGPU_PACC_JOB_VERSION,
@@ -6978,9 +8180,19 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
         .status = status,
         .seq = seq,
     };
+    bool wrote = false;
 
-    if (mirror_host_status_mbox_mmap(fd, job_id, seq, status)) {
-        return;
+    if (mirror_host_status_mbox_mmap(g_mbox_fd, job_id, seq, status)) {
+        wrote = true;
+    }
+
+    if (jobd_status_pwrite_enabled()) {
+        if (write_phys_copy_pwrite_only(fd, phys, &status_msg, sizeof(status_msg)) == 0) {
+            wrote = true;
+        } else {
+            trace_msg("mirror_host_status pwrite failed for phys=0x%" PRIx64 ": %s; falling back to mmap",
+                      phys, strerror(errno));
+        }
     }
 
     if (jobd_status_control_window_enabled() &&
@@ -7003,38 +8215,42 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
         jobd_io_fence();
         trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
                   job_id, job_name(job_id), seq, status);
-        return;
+        wrote = true;
     }
 
-    if (jobd_status_pwrite_enabled()) {
-        if (write_phys_copy_pwrite_only(fd, phys, &status_msg, sizeof(status_msg)) == 0) {
-            trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
-                      job_id, job_name(job_id), seq, status);
-            return;
+    /*
+     * If dispatch is using /dev/mem as its data path, the completion store must
+     * follow that path too.  A successful /dev/mbox mmap probe is not enough to
+     * prove host visibility on all firmware builds.
+     */
+    if ((!fd_is_mbox || jobd_status_mmap_fallback_enabled()) &&
+        (!wrote || !fd_is_mbox)) {
+        if (map_phys(fd, phys, sizeof(struct HostStatus), &map) == 0) {
+            volatile struct HostStatus *host = (volatile struct HostStatus *)map.ptr;
+            jobd_io_fence();
+            host->magic = HETGPU_PACC_JOB_MAGIC;
+            host->version = HETGPU_PACC_JOB_VERSION;
+            host->job_id = job_id;
+            host->status = status;
+            host->seq = seq;
+            jobd_io_fence();
+            jobd_flush_for_device((const void *)host, sizeof(*host));
+            if (jobd_msync_enabled()) {
+                (void)msync(map.base, map.map_len, MS_SYNC);
+            }
+            jobd_io_fence();
+            unmap_phys(&map);
+            wrote = true;
+        } else {
+            log_msg("map host status 0x%" PRIx64 " failed: %s", phys, strerror(errno));
         }
-        trace_msg("mirror_host_status pwrite failed for phys=0x%" PRIx64 ": %s; falling back to mmap",
-                  phys, strerror(errno));
     }
-    if (map_phys(fd, phys, sizeof(struct HostStatus), &map)) {
-        log_msg("map host status 0x%" PRIx64 " failed: %s", phys, strerror(errno));
-        return;
+
+    jobd_io_fence();
+    if (wrote) {
+        trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+                  job_id, job_name(job_id), seq, status);
     }
-    volatile struct HostStatus *host = (volatile struct HostStatus *)map.ptr;
-    jobd_io_fence();
-    host->magic = HETGPU_PACC_JOB_MAGIC;
-    host->version = HETGPU_PACC_JOB_VERSION;
-    host->job_id = job_id;
-    host->status = status;
-    host->seq = seq;
-    jobd_io_fence();
-    jobd_flush_for_device((const void *)host, sizeof(*host));
-    if (jobd_msync_enabled()) {
-        (void)msync(map.base, map.map_len, MS_SYNC);
-    }
-    jobd_io_fence();
-    trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
-              job_id, job_name(job_id), seq, status);
-    unmap_phys(&map);
 }
 
 static bool mirror_host_status_mbox_mmap(int fd, uint32_t job_id, uint64_t seq, uint32_t status) {
@@ -7271,6 +8487,12 @@ int main(int argc, char **argv) {
     g_control_map_base = control_map.base;
     g_control_map_len = control_map.map_len;
     clear_stale_control_region(map_fd, &control_map);
+    if (jobd_boot_marker_enabled()) {
+        mirror_boot_marker_all_slots_mbox_mmap(mbox_fd, 0x6a020000u);
+        if (!mirror_host_status_mbox_mmap(mbox_fd, PACC_KERNEL_JOB_ID, 0, 0x6a21)) {
+            mirror_host_status(mbox_fd, PACC_KERNEL_JOB_ID, 0, 0x6a21);
+        }
+    }
     if (jobd_seed_current_jobs_enabled()) {
         seed_last_seen_sequences(ctl, &last_seq, &last_kernel_seq);
     }
@@ -7301,13 +8523,6 @@ int main(int argc, char **argv) {
                              &last_table_seq,
                              &last_kernel_seq);
         if (first_result == DISPATCH_HANDLED) {
-            if (jobd_notify_irq_enabled()) {
-                int ret = notify_zluda_irq(mbox_fd);
-                if (ret < 0) {
-                    log_msg("failed to response initial job: %d", errno);
-                    return errno ? errno : EIO;
-                }
-            }
             initial_dispatched = true;
             break;
         } else {
@@ -7326,6 +8541,12 @@ int main(int argc, char **argv) {
         bool woke_from_poll = false;
         uint32_t snapshot_detail = 0;
 
+        if (jobd_boot_marker_enabled()) {
+            (void)mirror_host_status_mbox_mmap(mbox_fd,
+                                               PACC_KERNEL_JOB_ID,
+                                               heartbeat_tick + 1,
+                                               0x7a100000u);
+        }
         mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7001);
         write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7001, 0);
         pending_job = control_has_pending_job(map_fd, last_seq, last_kernel_seq);
@@ -7333,6 +8554,54 @@ int main(int argc, char **argv) {
                                pending_job ? 0x7005 : 0x7002);
         write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
                           pending_job ? 0x7005 : 0x7002, 0);
+        if (!pending_job && jobd_notify_irq_enabled() && g_response_irq_pending) {
+            int ret;
+            jobd_io_fence();
+            ret = notify_zluda_irq(mbox_fd);
+            jobd_io_fence();
+            if (ret < 0) {
+                log_msg("failed to response before poll: %d", errno);
+                g_response_irq_pending = false;
+                pending_job = control_has_pending_job(map_fd, last_seq, last_kernel_seq);
+                if (pending_job) {
+                    mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7006);
+                    write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7006, 0);
+                }
+                goto after_response_irq;
+            }
+            g_response_irq_pending = false;
+            /*
+             * The host may publish the next shared-DDR doorbell while jobd is
+             * raising the previous completion IRQ.  If we enter poll without
+             * a fresh scan, that IRQ can be consumed by the host as a stale
+             * response and the PACC-side poll can sleep past the new job.
+             */
+            pending_job = control_has_pending_job(map_fd, last_seq, last_kernel_seq);
+            if (pending_job) {
+                mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7006);
+                write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7006, 0);
+            }
+        }
+after_response_irq:
+        if (!pending_job && jobd_mbox_poll_enabled() && pre_poll_scan_us() != 0) {
+            uint64_t deadline = monotonic_us() + pre_poll_scan_us();
+            uint64_t sleep_step = pre_poll_scan_sleep_us();
+            uint64_t scans = 0;
+
+            while (!pending_job && monotonic_us() < deadline) {
+                jobd_io_fence();
+                if (sleep_step != 0) {
+                    sleep_us(sleep_step);
+                }
+                pending_job = control_has_pending_job(map_fd, last_seq, last_kernel_seq);
+                scans++;
+            }
+            if (pending_job) {
+                mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7008);
+                write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7008,
+                                  (uint32_t)(scans & 0xffffffffu));
+            }
+        }
         if (jobd_mbox_poll_enabled() && !pending_job) {
             woke_from_poll = wait_for_control(mbox_fd);
             mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7003);
@@ -7384,6 +8653,13 @@ int main(int argc, char **argv) {
         mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
                                0x70040000u | snapshot_detail);
         write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7004, snapshot_detail);
+        if (jobd_boot_marker_enabled() && (snapshot_detail & 0x3u) == 0) {
+            uint32_t loop_status = 0x7a000000u | (snapshot_detail & 0xffffu);
+            (void)mirror_host_status_mbox_mmap(mbox_fd,
+                                               PACC_KERNEL_JOB_ID,
+                                               heartbeat_tick + 1,
+                                               loop_status);
+        }
         maybe_heartbeat_control(map_fd, g_control_snapshot, ++heartbeat_tick, last_kernel_seq);
         poll_result = dispatch_any_job(
             map_fd,
@@ -7396,13 +8672,6 @@ int main(int argc, char **argv) {
         write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
                           0x7007, (uint32_t)poll_result);
         if (poll_result == DISPATCH_HANDLED) {
-            if (jobd_notify_irq_enabled()) {
-                int ret = notify_zluda_irq(mbox_fd);
-                if (ret < 0) {
-                    log_msg("failed to response: %d", errno);
-                    return errno ? errno : EIO;
-                }
-            }
         } else if (!jobd_mbox_poll_enabled() || woke_from_poll) {
             sleep_when_idle();
         }

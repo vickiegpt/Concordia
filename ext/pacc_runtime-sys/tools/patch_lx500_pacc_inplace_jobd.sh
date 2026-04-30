@@ -80,15 +80,20 @@ def patch_payload(entries, label: str, name: str, payload: bytes, pad: int = 0, 
 
 jobd_threads = os.environ.get("PACC_JOBD_KERNEL_THREADS", "4").strip() or "4"
 jobd_trace = os.environ.get("PACC_JOBD_TRACE", "0").strip() or "0"
+jobd_kmsg_present = "PACC_JOBD_KMSG" in os.environ
 jobd_kmsg = os.environ.get("PACC_JOBD_KMSG", "0").strip() or "0"
 jobd_progress_status = os.environ.get("PACC_JOBD_PROGRESS_STATUS", "0").strip() or "0"
 jobd_beacon = os.environ.get("PACC_JOBD_BEACON", "0").strip() or "0"
 jobd_mbox_poll_present = "PACC_JOBD_MBOX_POLL" in os.environ
 jobd_mbox_poll = os.environ.get("PACC_JOBD_MBOX_POLL", "0").strip() or "0"
 jobd_poll_timeout_ms = os.environ.get("PACC_JOBD_POLL_TIMEOUT_MS", "").strip()
+jobd_initial_scan_us = os.environ.get("PACC_JOBD_INITIAL_SCAN_US", "").strip()
 jobd_idle_sleep_us = os.environ.get("PACC_JOBD_IDLE_SLEEP_US", "").strip()
 jobd_arg_wait_us = os.environ.get("PACC_JOBD_ARG_WAIT_US", "").strip()
 jobd_force_elf = os.environ.get("PACC_JOBD_FORCE_ELF", "0").strip() or "0"
+jobd_preloaded_noop = os.environ.get("PACC_JOBD_PRELOADED_NOOP", "0").strip() or "0"
+jobd_gemm_noop = os.environ.get("PACC_JOBD_GEMM_NOOP", "0").strip() or "0"
+jobd_gemm_tiled = os.environ.get("PACC_JOBD_GEMM_TILED", "").strip()
 jobd_full_ddr_map_present = "PACC_JOBD_FULL_DDR_MAP" in os.environ
 jobd_full_ddr_map = os.environ.get("PACC_JOBD_FULL_DDR_MAP", "0").strip() or "0"
 jobd_full_ddr_map_bytes = os.environ.get("PACC_JOBD_FULL_DDR_MAP_BYTES", "").strip()
@@ -96,7 +101,10 @@ jobd_claim_id = os.environ.get("PACC_JOBD_CLAIM_ID", "0").strip() or "0"
 jobd_force_pread = os.environ.get("PACC_JOBD_FORCE_PREAD", "0").strip() or "0"
 jobd_force_devmem = os.environ.get("PACC_JOBD_FORCE_DEVMEM", "0").strip() or "0"
 jobd_status_control_window = os.environ.get("PACC_JOBD_STATUS_CONTROL_WINDOW", "").strip()
+jobd_status_mmap_fallback = os.environ.get("PACC_JOBD_STATUS_MMAP_FALLBACK", "").strip()
+jobd_status_pwrite_present = "PACC_JOBD_STATUS_PWRITE" in os.environ
 jobd_status_pwrite = os.environ.get("PACC_JOBD_STATUS_PWRITE", "0").strip()
+jobd_msync_present = "PACC_JOBD_MSYNC" in os.environ
 jobd_msync = os.environ.get("PACC_JOBD_MSYNC", "1").strip()
 jobd_cbo_inval = os.environ.get("PACC_JOBD_CBO_INVAL", "0").strip() or "0"
 jobd_cbo_flush = os.environ.get("PACC_JOBD_CBO_FLUSH", "0").strip() or "0"
@@ -120,7 +128,7 @@ if jobd_threads != "4":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_KERNEL_THREADS={jobd_threads}")
 if jobd_trace != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_TRACE={jobd_trace}")
-if jobd_kmsg != "1":
+if jobd_kmsg_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_KMSG={jobd_kmsg}")
 if jobd_progress_status != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_PROGRESS_STATUS={jobd_progress_status}")
@@ -130,12 +138,20 @@ if jobd_mbox_poll_present or jobd_mbox_poll != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_MBOX_POLL={jobd_mbox_poll}")
 if jobd_poll_timeout_ms:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_POLL_TIMEOUT_MS={jobd_poll_timeout_ms}")
+if jobd_initial_scan_us:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_INITIAL_SCAN_US={jobd_initial_scan_us}")
 if jobd_idle_sleep_us:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_IDLE_SLEEP_US={jobd_idle_sleep_us}")
 if jobd_arg_wait_us:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_ARG_WAIT_US={jobd_arg_wait_us}")
 if jobd_force_elf != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FORCE_ELF={jobd_force_elf}")
+if jobd_preloaded_noop != "0":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_PRELOADED_NOOP={jobd_preloaded_noop}")
+if jobd_gemm_noop != "0":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_GEMM_NOOP={jobd_gemm_noop}")
+if jobd_gemm_tiled:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_GEMM_TILED={jobd_gemm_tiled}")
 if jobd_full_ddr_map_present or jobd_full_ddr_map != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FULL_DDR_MAP={jobd_full_ddr_map}")
 if jobd_full_ddr_map_bytes:
@@ -148,9 +164,11 @@ if jobd_force_devmem != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FORCE_DEVMEM={jobd_force_devmem}")
 if jobd_status_control_window:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_STATUS_CONTROL_WINDOW={jobd_status_control_window}")
-if jobd_status_pwrite:
+if jobd_status_mmap_fallback:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_STATUS_MMAP_FALLBACK={jobd_status_mmap_fallback}")
+if jobd_status_pwrite_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_STATUS_PWRITE={jobd_status_pwrite}")
-if jobd_msync:
+if jobd_msync_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_MSYNC={jobd_msync}")
 if jobd_cbo_inval != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_CBO_INVAL={jobd_cbo_inval}")

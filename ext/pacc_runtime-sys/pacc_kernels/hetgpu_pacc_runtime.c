@@ -1,8 +1,9 @@
 #if defined(__riscv) && defined(__has_include)
 #if __has_include(<riscv_vector.h>)
 #include <riscv_vector.h>
+#define HETGPU_HAVE_RISCV_VECTOR_H 1
 #endif
-#if __has_include(<sifive_vector.h>)
+#if defined(HETGPU_HAVE_RISCV_VECTOR_H) && __has_include(<sifive_vector.h>)
 #include <sifive_vector.h>
 #endif
 #endif
@@ -55,12 +56,19 @@ typedef signed int s32;
 #define PACC_DTYPE_INT8 0U
 #define PACC_DTYPE_UINT8 1U
 #define PACC_DTYPE_INT32 2U
+#define PACC_DTYPE_F16 3U
 #define PACC_DTYPE_F32 4U
 #define PACC_DTYPE_BF16 5U
 
 #define XM_INT8_TILE_M 4U
 #define XM_INT8_TILE_N 4U
 #define XM_INT8_TILE_K 8U
+#define XSFMM16_TILE_M 32U
+#define XSFMM16_TILE_N 32U
+#define XSFMM16_TILE_K 2U
+#define F32_TILE_M 32U
+#define F32_TILE_N 32U
+#define F32_TILE_K 32U
 
 struct RuntimeConfig {
     u32 pacc_id;
@@ -460,6 +468,10 @@ static int checked_add_u64(u64 a, u64 b, u64 *out) {
     return 1;
 }
 
+static u64 min_u64(u64 a, u64 b) {
+    return a < b ? a : b;
+}
+
 static float expf_fast(float x) {
     if (x < -20.0f) return 0.0f;
     if (x > 20.0f) x = 20.0f;
@@ -492,6 +504,38 @@ static float bf16_to_f32(u16 x) {
     return v.f;
 }
 
+static float f16_to_f32(u16 x) {
+    u32 sign = ((u32)x & 0x8000U) << 16;
+    u32 exp = ((u32)x >> 10) & 0x1fU;
+    u32 frac = (u32)x & 0x03ffU;
+    u32 bits;
+    union {
+        u32 u;
+        float f;
+    } v;
+
+    if (exp == 0) {
+        if (frac == 0) {
+            bits = sign;
+        } else {
+            exp = 127U - 15U + 1U;
+            while ((frac & 0x0400U) == 0) {
+                frac <<= 1;
+                --exp;
+            }
+            frac &= 0x03ffU;
+            bits = sign | (exp << 23) | (frac << 13);
+        }
+    } else if (exp == 0x1fU) {
+        bits = sign | 0x7f800000U | (frac << 13);
+    } else {
+        bits = sign | ((exp + (127U - 15U)) << 23) | (frac << 13);
+    }
+
+    v.u = bits;
+    return v.f;
+}
+
 static u16 f32_to_bf16(float x) {
     union {
         float f;
@@ -501,6 +545,30 @@ static u16 f32_to_bf16(float x) {
     u32 lsb = (v.u >> 16) & 1U;
     u32 rounding_bias = 0x7fffU + lsb;
     return (u16)((v.u + rounding_bias) >> 16);
+}
+
+static u16 f32_to_f16(float x) {
+    union {
+        float f;
+        u32 u;
+    } v;
+    u32 sign;
+    u32 mant;
+    int exp;
+
+    v.f = x;
+    sign = (v.u >> 16) & 0x8000U;
+    mant = v.u & 0x007fffffU;
+    exp = (int)((v.u >> 23) & 0xffU) - 127 + 15;
+    if (exp <= 0) {
+        if (exp < -10) return (u16)sign;
+        mant |= 0x00800000U;
+        return (u16)(sign | (((mant >> (1 - exp)) + 0x1000U) >> 13));
+    }
+    if (exp >= 0x1f) {
+        return (u16)(sign | 0x7c00U);
+    }
+    return (u16)(sign | ((u32)exp << 10) | ((mant + 0x1000U) >> 13));
 }
 
 static s32 round_to_i32(float x) {
@@ -533,6 +601,9 @@ static float load_typed(const void *base, u64 idx, u32 dtype) {
     if (dtype == PACC_DTYPE_INT32) {
         return (float)((const s32 *)base)[idx];
     }
+    if (dtype == PACC_DTYPE_F16) {
+        return f16_to_f32(((const u16 *)base)[idx]);
+    }
     if (dtype == PACC_DTYPE_F32) {
         return ((const float *)base)[idx];
     }
@@ -549,6 +620,8 @@ static void store_typed(void *base, u64 idx, u32 dtype, float value) {
         ((u8 *)base)[idx] = round_to_u8(value);
     } else if (dtype == PACC_DTYPE_INT32) {
         ((s32 *)base)[idx] = round_to_i32(value);
+    } else if (dtype == PACC_DTYPE_F16) {
+        ((u16 *)base)[idx] = f32_to_f16(value);
     } else if (dtype == PACC_DTYPE_F32) {
         ((float *)base)[idx] = value;
     } else if (dtype == PACC_DTYPE_BF16) {
@@ -558,19 +631,19 @@ static void store_typed(void *base, u64 idx, u32 dtype, float value) {
 
 static int dtype_supported(u32 dtype) {
     return dtype == PACC_DTYPE_INT8 || dtype == PACC_DTYPE_UINT8 ||
-           dtype == PACC_DTYPE_INT32 || dtype == PACC_DTYPE_F32 ||
-           dtype == PACC_DTYPE_BF16;
+           dtype == PACC_DTYPE_INT32 || dtype == PACC_DTYPE_F16 ||
+           dtype == PACC_DTYPE_F32 || dtype == PACC_DTYPE_BF16;
 }
 
 static u64 dtype_size(u32 dtype) {
     if (dtype == PACC_DTYPE_INT8 || dtype == PACC_DTYPE_UINT8) {
         return 1;
     }
+    if (dtype == PACC_DTYPE_F16 || dtype == PACC_DTYPE_BF16) {
+        return 2;
+    }
     if (dtype == PACC_DTYPE_INT32 || dtype == PACC_DTYPE_F32) {
         return 4;
-    }
-    if (dtype == PACC_DTYPE_BF16) {
-        return 2;
     }
     return 0;
 }
@@ -641,6 +714,130 @@ static u32 gemm_scalar_block(const struct GemmJob *job,
         }
     }
     return 0;
+}
+
+static void gemm_accumulate_notrans_tile(const struct GemmJob *job,
+                                         const void *a,
+                                         const void *b,
+                                         u64 row0,
+                                         u64 row1,
+                                         u64 col0,
+                                         u64 col1,
+                                         u64 k0,
+                                         u64 k1,
+                                         float *acc,
+                                         u64 acc_stride) {
+    for (u64 kk = k0; kk < k1; ++kk) {
+        for (u64 row = row0; row < row1; ++row) {
+            float av = load_typed(a, row + kk * (u64)job->lda, job->atype);
+            float *acc_row = acc + (row - row0) * acc_stride;
+            for (u64 col = col0; col < col1; ++col) {
+                float bv = load_typed(b, kk + col * (u64)job->ldb, job->btype);
+                acc_row[col - col0] += av * bv;
+            }
+        }
+    }
+}
+
+static void gemm_store_notrans_tile(const struct GemmJob *job,
+                                    void *c,
+                                    float alpha,
+                                    float beta,
+                                    u64 row0,
+                                    u64 row1,
+                                    u64 col0,
+                                    u64 col1,
+                                    const float *acc,
+                                    u64 acc_stride) {
+    for (u64 col = col0; col < col1; ++col) {
+        for (u64 row = row0; row < row1; ++row) {
+            u64 c_idx = row + col * (u64)job->ldc;
+            float old = beta != 0.0f ? load_typed(c, c_idx, job->ctype) : 0.0f;
+            float value = acc[(row - row0) * acc_stride + (col - col0)];
+            store_typed(c, c_idx, job->ctype, alpha * value + beta * old);
+        }
+    }
+}
+
+static int gemm_try_xsfmm16_tiled(const struct GemmJob *job,
+                                  const void *a,
+                                  const void *b,
+                                  void *c,
+                                  float alpha,
+                                  float beta,
+                                  u64 row_begin,
+                                  u64 row_end) {
+    int fp16 = job->atype == PACC_DTYPE_F16 && job->btype == PACC_DTYPE_F16;
+    int bf16 = job->atype == PACC_DTYPE_BF16 && job->btype == PACC_DTYPE_BF16;
+    if (job->transa || job->transb || (!fp16 && !bf16)) {
+        return 0;
+    }
+    if (job->ctype != PACC_DTYPE_F32 &&
+        job->ctype != PACC_DTYPE_F16 &&
+        job->ctype != PACC_DTYPE_BF16) {
+        return 0;
+    }
+    if (row_end > job->m) row_end = job->m;
+    if (row_begin >= row_end) return 1;
+
+    for (u64 row0 = row_begin; row0 < row_end; row0 += XSFMM16_TILE_M) {
+        u64 row1 = min_u64(row0 + XSFMM16_TILE_M, row_end);
+        for (u64 col0 = 0; col0 < job->n; col0 += XSFMM16_TILE_N) {
+            u64 col1 = min_u64(col0 + XSFMM16_TILE_N, job->n);
+            float acc[XSFMM16_TILE_M * XSFMM16_TILE_N];
+            memset(acc, 0, sizeof(acc));
+
+            for (u64 k0 = 0; k0 < job->k; k0 += XSFMM16_TILE_K) {
+                u64 k1 = min_u64(k0 + XSFMM16_TILE_K, job->k);
+                /*
+                 * Xsfmm32a16f shape: C[tm,tn] += A[tk,tm]^T * B[tk,tn].
+                 * With VLEN=1024b the natural TEW=32 tile is tm<=32, tn<=32,
+                 * and BF16/FP16 has KMAX=2. This scalar body is the fake-XM
+                 * version of one sf.mm.f.f tile and can be replaced in-place.
+                 */
+                gemm_accumulate_notrans_tile(job, a, b, row0, row1, col0, col1,
+                                             k0, k1, acc, XSFMM16_TILE_N);
+            }
+            gemm_store_notrans_tile(job, c, alpha, beta, row0, row1, col0, col1,
+                                    acc, XSFMM16_TILE_N);
+        }
+    }
+    return 1;
+}
+
+static int gemm_try_f32_tiled(const struct GemmJob *job,
+                              const void *a,
+                              const void *b,
+                              void *c,
+                              float alpha,
+                              float beta,
+                              u64 row_begin,
+                              u64 row_end) {
+    if (job->transa || job->transb ||
+        job->atype != PACC_DTYPE_F32 ||
+        job->btype != PACC_DTYPE_F32 ||
+        job->ctype != PACC_DTYPE_F32) {
+        return 0;
+    }
+    if (row_end > job->m) row_end = job->m;
+    if (row_begin >= row_end) return 1;
+
+    for (u64 row0 = row_begin; row0 < row_end; row0 += F32_TILE_M) {
+        u64 row1 = min_u64(row0 + F32_TILE_M, row_end);
+        for (u64 col0 = 0; col0 < job->n; col0 += F32_TILE_N) {
+            u64 col1 = min_u64(col0 + F32_TILE_N, job->n);
+            float acc[F32_TILE_M * F32_TILE_N];
+            memset(acc, 0, sizeof(acc));
+            for (u64 k0 = 0; k0 < job->k; k0 += F32_TILE_K) {
+                u64 k1 = min_u64(k0 + F32_TILE_K, job->k);
+                gemm_accumulate_notrans_tile(job, a, b, row0, row1, col0, col1,
+                                             k0, k1, acc, F32_TILE_N);
+            }
+            gemm_store_notrans_tile(job, c, alpha, beta, row0, row1, col0, col1,
+                                    acc, F32_TILE_N);
+        }
+    }
+    return 1;
 }
 
 #if defined(__clang__) && defined(__riscv_xsfvcp)
@@ -767,6 +964,16 @@ static void *gemm_worker_main(void *opaque) {
     if (worker->row0 >= worker->row1) {
         return 0;
     }
+    if (gemm_try_xsfmm16_tiled(worker->job, worker->a, worker->b, worker->c,
+                               worker->alpha, worker->beta,
+                               worker->row0, worker->row1)) {
+        return 0;
+    }
+    if (gemm_try_f32_tiled(worker->job, worker->a, worker->b, worker->c,
+                           worker->alpha, worker->beta,
+                           worker->row0, worker->row1)) {
+        return 0;
+    }
 #if defined(__clang__) && defined(__riscv_xsfvcp)
     if (gemm_try_xm_native(worker->job, worker->a, worker->b, worker->c,
                            worker->alpha, worker->beta,
@@ -793,6 +1000,12 @@ static u32 gemm_run_parallel(const struct GemmJob *job,
     u32 status = 0;
 
     if (nthreads <= 1) {
+        if (gemm_try_xsfmm16_tiled(job, a, b, c, alpha, beta, 0, job->m)) {
+            return 0;
+        }
+        if (gemm_try_f32_tiled(job, a, b, c, alpha, beta, 0, job->m)) {
+            return 0;
+        }
 #if defined(__clang__) && defined(__riscv_xsfvcp)
         if (gemm_try_xm_native(job, a, b, c, alpha, beta, 0, job->m)) {
             return 0;

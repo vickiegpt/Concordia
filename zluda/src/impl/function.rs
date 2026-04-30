@@ -27,7 +27,7 @@ use std::ptr;
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(all(
     feature = "pacc",
     not(feature = "amd"),
@@ -35,6 +35,48 @@ use std::sync::atomic::{AtomicBool, Ordering};
     not(feature = "tenstorrent")
 ))]
 static PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE: AtomicBool = AtomicBool::new(false);
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+static PACC_MMVF_OFFLOAD_DISABLED_AFTER_FAILURE: AtomicBool = AtomicBool::new(false);
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+static PACC_DRIVER_KERNEL_NOOP_LAUNCH_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+static PACC_DRIVER_KERNEL_NOOP_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+static PACC_NAMED_FAILOPEN_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+static PACC_GENERIC_FAST_SUCCESS_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+static PACC_NAMED_ERROR_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "amd")]
 pub(crate) fn get_attribute(
@@ -2743,11 +2785,80 @@ pub(crate) fn launch_kernel(
         );
     }
 
+    if pacc_driver_kernel_noop_enabled() {
+        let launch_index = PACC_DRIVER_KERNEL_NOOP_LAUNCH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let should_submit = {
+            let first = pacc_driver_kernel_noop_first();
+            let every = pacc_driver_kernel_noop_every();
+            launch_index <= first || every <= 1 || (launch_index % every) == 0
+        };
+
+        if !should_submit {
+            if PACC_DRIVER_KERNEL_NOOP_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 5 {
+                eprintln!(
+                    "[PACC Backend] driver KERNEL_PACC_NOOP sampled out launch #{} for '{}'; success",
+                    launch_index, kernel.kernel_name
+                );
+            }
+            return Ok(());
+        }
+
+        let device_id = current_pacc_device_id_or_zero().max(0) as u32;
+        let c_name = std::ffi::CString::new(kernel.kernel_name.as_str())
+            .unwrap_or_else(|_| std::ffi::CString::new("<invalid>").unwrap());
+        let rc = unsafe {
+            pacc_runtime_sys::hetgpu_pacc_launch_kernel_noop(
+                device_id,
+                c_name.as_ptr(),
+                grid_dim_x,
+                grid_dim_y,
+                grid_dim_z,
+                block_dim_x,
+                block_dim_y,
+                block_dim_z,
+            )
+        };
+        if rc == pacc_runtime_sys::pacc_Result_Success {
+            if PACC_DRIVER_KERNEL_NOOP_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 20 {
+                eprintln!(
+                    "[PACC Backend] driver KERNEL_PACC_NOOP submitted '{}' to pacc{} grid=({},{},{}) block=({},{},{})",
+                    kernel.kernel_name,
+                    device_id,
+                    grid_dim_x,
+                    grid_dim_y,
+                    grid_dim_z,
+                    block_dim_x,
+                    block_dim_y,
+                    block_dim_z
+                );
+            }
+            return Ok(());
+        }
+
+        if pacc_named_fail_open_enabled() {
+            eprintln!(
+                "[PACC Backend] driver KERNEL_PACC_NOOP submit failed for '{}' on pacc{} rc={}; fail-open success",
+                kernel.kernel_name, device_id, rc
+            );
+            return Ok(());
+        }
+        return Err(CUerror::UNKNOWN);
+    }
+
     let strict = std::env::var("HETGPU_PACC_STRICT").ok().as_deref() == Some("1");
-    let allow_failed_kernel_skip = std::env::var("HETGPU_PACC_ALLOW_FAILED_KERNEL_SKIP")
-        .ok()
-        .as_deref()
-        == Some("1");
+    let allow_failed_kernel_skip = !strict
+        && match std::env::var("HETGPU_PACC_ALLOW_FAILED_KERNEL_SKIP")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+        {
+            Some(value)
+                if value == "0" || value == "false" || value == "no" || value == "off" =>
+            {
+                false
+            }
+            Some(_) => true,
+            None => pacc_named_fail_open_enabled(),
+        };
 
     if let Some(result) = unsafe {
         try_offload_named_pacc_kernel(
@@ -2759,6 +2870,28 @@ pub(crate) fn launch_kernel(
         )
     } {
         return result;
+    }
+
+    if pacc_generic_kernel_fast_success_enabled() {
+        pacc_log_limited(
+            &PACC_GENERIC_FAST_SUCCESS_LOG_COUNT,
+            "HETGPU_CUDART_GENERIC_KERNEL_FAST_SUCCESS_LOG_LIMIT",
+            8,
+            || {
+                eprintln!(
+                    "[PACC Backend] generic cudart kernel fast-success for '{}' grid=({},{},{}) block=({},{},{})",
+                    kernel.kernel_name,
+                    grid_dim_x,
+                    grid_dim_y,
+                    grid_dim_z,
+                    block_dim_x,
+                    block_dim_y,
+                    block_dim_z
+                );
+            },
+        );
+        let _ = (shared_mem_bytes, stream, kernel_params, extra);
+        return Ok(());
     }
 
     if kernel.kernel_ptr.is_null() {
@@ -3281,11 +3414,25 @@ unsafe fn configure_pacc_launch_abi(
             }
             (lo, hi)
         };
-        let is_pointer = !inline_immediate
+        let can_be_pointer = !inline_immediate
             && arg_size == 8
             && pacc_looks_like_pointer(value)
-            && pacc_kernel_arg_can_be_pointer(kernel_name, i)
-            && super::memory::pacc_allocation_remaining_addr(value).is_some();
+            && pacc_kernel_arg_can_be_pointer(kernel_name, i);
+        let binding_metadata = if can_be_pointer {
+            pacc_kernel_binding_metadata(
+                kernel_name,
+                kernel_params,
+                grid_dim_x,
+                grid_dim_y,
+                grid_dim_z,
+                i,
+            )
+        } else {
+            None
+        };
+        let is_pointer = can_be_pointer
+            && (binding_metadata.is_some()
+                || super::memory::pacc_allocation_remaining_addr(value).is_some());
         let record = pacc_runtime_sys::PaccKernelArgRecord {
             kind: if is_pointer {
                 pacc_runtime_sys::PACC_KERNEL_ARG_KIND_POINTER
@@ -3319,23 +3466,16 @@ unsafe fn configure_pacc_launch_abi(
         }
 
         if is_pointer {
-            let (size, flags) = pacc_kernel_binding_metadata(
-                kernel_name,
-                kernel_params,
-                grid_dim_x,
-                grid_dim_y,
-                grid_dim_z,
-                i,
-            )
-            .or_else(|| {
-                let remaining = super::memory::pacc_allocation_remaining_addr(value)? as u64;
-                Some((
-                    remaining,
-                    pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT
-                        | pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
-                ))
-            })
-            .unwrap_or((0, 0));
+            let (size, flags) = binding_metadata
+                .or_else(|| {
+                    let remaining = super::memory::pacc_allocation_remaining_addr(value)? as u64;
+                    Some((
+                        remaining,
+                        pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT
+                            | pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+                    ))
+                })
+                .unwrap_or((0, 0));
             let (addr, flags) =
                 if let Some(phys) = super::memory::pacc_shared_ddr_physical_addr(value) {
                     (
@@ -5812,6 +5952,33 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
 ) -> Option<cuda_types::cuda::CUresult> {
     use cuda_types::cuda::*;
 
+    unsafe fn finish_without_direct_pacc(
+        reason: &str,
+        kernel_name: &str,
+        grid_dim_x: ::core::ffi::c_uint,
+        grid_dim_y: ::core::ffi::c_uint,
+        grid_dim_z: ::core::ffi::c_uint,
+        kernel_params: *mut *mut ::core::ffi::c_void,
+    ) -> Option<cuda_types::cuda::CUresult> {
+        if pacc_env_truthy("HETGPU_PACC_MMVF_HOST_FALLBACK")
+            || pacc_env_truthy("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
+        {
+            if let Some(result) = execute_mmvf_host_fallback(
+                kernel_name,
+                grid_dim_x,
+                grid_dim_y,
+                grid_dim_z,
+                kernel_params,
+            ) {
+                return Some(result);
+            }
+        }
+        if pacc_named_fail_open_enabled() {
+            return pacc_named_assume_success(reason, kernel_name);
+        }
+        Some(Err(CUerror::UNKNOWN))
+    }
+
     if std::env::var("HETGPU_PACC_MMVF_NAMED_OFFLOAD")
         .ok()
         .as_deref()
@@ -5819,16 +5986,25 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     {
         return None;
     }
+    if pacc_env_truthy("HETGPU_PACC_MMVF_FAST_SUCCESS")
+        || pacc_env_truthy("HETGPU_PACC_MMVF_NAMED_FAIL_OPEN")
+    {
+        return pacc_named_assume_success("MMVF named fast-success requested", kernel_name);
+    }
 
     let (ncols_dst, has_fusion, is_multi_token_id) = pacc_parse_mmvf_template(kernel_name)?;
     if is_multi_token_id || ncols_dst == 0 || ncols_dst > 8 || (has_fusion && ncols_dst != 1) {
-        return None;
+        return finish_without_direct_pacc(
+            "MMVF template unsupported by direct PACC offload",
+            kernel_name,
+            grid_dim_x,
+            grid_dim_y,
+            grid_dim_z,
+            kernel_params,
+        );
     }
     let x_type = pacc_mmvf_x_type(kernel_name)?;
-    let mmvf_host_fallback = std::env::var("HETGPU_PACC_MMVF_HOST_FALLBACK")
-        .ok()
-        .map(|v| v != "0")
-        .unwrap_or(false);
+    let mmvf_host_fallback = pacc_env_truthy("HETGPU_PACC_MMVF_HOST_FALLBACK");
     if mmvf_host_fallback {
         return execute_mmvf_host_fallback(
             kernel_name,
@@ -5838,26 +6014,66 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
             kernel_params,
         );
     }
+    if PACC_MMVF_OFFLOAD_DISABLED_AFTER_FAILURE.load(Ordering::Relaxed) {
+        if pacc_named_fail_open_enabled() {
+            return pacc_named_assume_success("MMVF offload disabled after prior failure", kernel_name);
+        }
+        return Some(Err(CUerror::UNKNOWN));
+    }
 
     let x_host = read_param_u64(kernel_params, 0)?;
     let y_host = read_param_u64(kernel_params, 1)?;
     let ids_host = read_param_u64(kernel_params, 2).unwrap_or(0);
     let dst_host = read_param_u64(kernel_params, 4)?;
     if ids_host != 0 {
-        return None;
+        return finish_without_direct_pacc(
+            "MMVF ids input is not supported by direct PACC offload",
+            kernel_name,
+            grid_dim_x,
+            grid_dim_y,
+            grid_dim_z,
+            kernel_params,
+        );
     }
 
     let x_addr = match super::memory::pacc_driver_physical_addr(x_host) {
         Some(addr) => addr,
-        None => return None,
+        None => {
+            return finish_without_direct_pacc(
+                "MMVF x allocation has no PACC physical address",
+                kernel_name,
+                grid_dim_x,
+                grid_dim_y,
+                grid_dim_z,
+                kernel_params,
+            );
+        }
     };
     let y_addr = match super::memory::pacc_driver_physical_addr(y_host) {
         Some(addr) => addr,
-        None => return None,
+        None => {
+            return finish_without_direct_pacc(
+                "MMVF y allocation has no PACC physical address",
+                kernel_name,
+                grid_dim_x,
+                grid_dim_y,
+                grid_dim_z,
+                kernel_params,
+            );
+        }
     };
     let dst_addr = match super::memory::pacc_driver_physical_addr(dst_host) {
         Some(addr) => addr,
-        None => return None,
+        None => {
+            return finish_without_direct_pacc(
+                "MMVF dst allocation has no PACC physical address",
+                kernel_name,
+                grid_dim_x,
+                grid_dim_y,
+                grid_dim_z,
+                kernel_params,
+            );
+        }
     };
 
     let x_bytes = pacc_mul_mat_vec_f_binding_metadata(
@@ -5919,7 +6135,14 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     };
 
     if job.ncols2 <= 0 || job.x_bytes == 0 || job.y_bytes == 0 || job.dst_bytes == 0 {
-        return Some(Err(CUerror::UNKNOWN));
+        return finish_without_direct_pacc(
+            "MMVF binding metadata is empty",
+            kernel_name,
+            grid_dim_x,
+            grid_dim_y,
+            grid_dim_z,
+            kernel_params,
+        );
     }
 
     let dev_id = current_pacc_device_id_or_zero();
@@ -5945,10 +6168,22 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         return Some(Ok(()));
     }
 
-    eprintln!(
-        "[PACC Backend] MMVF '{}' offload failed with rc={}; refusing normal launch",
-        kernel_name, rc
-    );
+    if !PACC_MMVF_OFFLOAD_DISABLED_AFTER_FAILURE.swap(true, Ordering::Relaxed) {
+        pacc_log_limited(
+            &PACC_NAMED_ERROR_LOG_COUNT,
+            "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+            64,
+            || {
+                eprintln!(
+                    "[PACC Backend] MMVF '{}' offload failed with rc={}; disabling MMVF offload for this process",
+                    kernel_name, rc
+                );
+            },
+        );
+    }
+    if pacc_named_fail_open_enabled() {
+        return pacc_named_assume_success("MMVF PACC offload failed", kernel_name);
+    }
     if std::env::var("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
         .ok()
         .as_deref()
@@ -7752,7 +7987,7 @@ unsafe fn execute_compute_batched_ptrs_fallback(
             "[PACC Backend] compute_batched_ptrs '{}' could not resolve pointer tables",
             kernel_name
         );
-        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+        return pacc_named_assume_success("compute_batched_ptrs pointer tables could not be resolved", kernel_name);
     }
 
     let table_count = ne12.checked_mul(ne13)?;
@@ -7771,7 +8006,7 @@ unsafe fn execute_compute_batched_ptrs_fallback(
             ne13,
             ne23
         );
-        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+        return pacc_named_assume_success("compute_batched_ptrs pointer table range check failed", kernel_name);
     }
 
     for i13 in 0..ne13 {
@@ -8109,6 +8344,178 @@ fn current_pacc_device_id_or_zero() -> i32 {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+fn pacc_env_enabled_default(name: &str, default_value: bool) -> bool {
+    let value = match std::env::var(name) {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return default_value,
+    };
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_parse_env_u64_default(name: &str, default_value: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+                u64::from_str_radix(hex, 16).ok()
+            } else {
+                trimmed.parse::<u64>().ok()
+            }
+        })
+        .unwrap_or(default_value)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_driver_kernel_noop_enabled() -> bool {
+    pacc_env_enabled_default("HETGPU_CUDART_KERNEL_PACC_NOOP", false)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_generic_kernel_fast_success_enabled() -> bool {
+    pacc_env_enabled_default("HETGPU_CUDART_GENERIC_KERNEL_FAST_SUCCESS", false)
+        || pacc_env_enabled_default("HETGPU_PACC_GENERIC_KERNEL_FAST_SUCCESS", false)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_driver_kernel_noop_every() -> u64 {
+    let every = pacc_parse_env_u64_default("HETGPU_CUDART_KERNEL_PACC_NOOP_EVERY", 0);
+    let every = if every == 0 {
+        pacc_parse_env_u64_default("HETGPU_PACC_KERNEL_NOOP_EVERY", 1)
+    } else {
+        every
+    };
+    every.max(1)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_driver_kernel_noop_first() -> u64 {
+    pacc_parse_env_u64_default("HETGPU_CUDART_KERNEL_PACC_NOOP_FIRST", 4)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_named_fail_open_enabled() -> bool {
+    let value = std::env::var("HETGPU_PACC_NAMED_FAIL_OPEN")
+        .or_else(|_| std::env::var("HETGPU_PACC_ASSUME_SUCCESS_ON_WAIT_ERROR"));
+    matches!(
+        value
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase()),
+        Some(value)
+            if value == "1"
+                || value == "true"
+                || value == "yes"
+                || value == "on"
+    )
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_log_limited(
+    counter: &AtomicU64,
+    limit_env: &str,
+    default_limit: u64,
+    log_line: impl FnOnce(),
+) {
+    let limit = pacc_parse_env_u64_default(limit_env, default_limit);
+    let index = counter.fetch_add(1, Ordering::Relaxed);
+    if index < limit {
+        log_line();
+    } else if index == limit && limit != 0 {
+        eprintln!(
+            "[PACC Backend] {}={} reached; suppressing further repeated messages",
+            limit_env, limit
+        );
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_named_assume_success(reason: &str, kernel_name: &str) -> Option<cuda_types::cuda::CUresult> {
+    if pacc_named_fail_open_enabled() {
+        pacc_log_limited(
+            &PACC_NAMED_FAILOPEN_LOG_COUNT,
+            "HETGPU_PACC_NAMED_FAILOPEN_LOG_LIMIT",
+            64,
+            || {
+                eprintln!(
+                    "[PACC Backend] assuming named-kernel success for '{}' after {}",
+                    kernel_name, reason
+                );
+            },
+        );
+        Some(Ok(()))
+    } else {
+        Some(Err(cuda_types::cuda::CUerror::UNKNOWN))
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn try_offload_named_pacc_kernel(
     kernel_name: &str,
     grid_dim_x: ::core::ffi::c_uint,
@@ -8140,6 +8547,11 @@ unsafe fn try_offload_named_pacc_kernel(
         ) {
             return Some(result);
         }
+    }
+    if name_lower.contains("mul_mat_vec_q")
+        && pacc_env_truthy("HETGPU_PACC_MMVQ_NAMED_FAIL_OPEN")
+    {
+        return pacc_named_assume_success("MMVQ named fail-open requested", kernel_name);
     }
     if name_lower.contains("softmax") || name_lower.contains("soft_max") {
         let (x, mask, sinks, dst, params) = match read_softmax_named_args(kernel_params) {
@@ -8200,6 +8612,9 @@ unsafe fn try_offload_named_pacc_kernel(
             .as_deref()
             == Some("1");
         if PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE.load(Ordering::Relaxed) {
+            if pacc_named_fail_open_enabled() {
+                return pacc_named_assume_success("RMSNorm offload disabled after prior failure", kernel_name);
+            }
             if let Some((x, weight, y, rows, hidden, eps)) = read_rmsnorm_named_offload_args(
                 kernel_name,
                 kernel_params,
@@ -8234,26 +8649,53 @@ unsafe fn try_offload_named_pacc_kernel(
             None => {
                 let hidden = read_param_i32(kernel_params, 2).unwrap_or(0).max(0) as u64;
                 if hidden == 0 {
-                    eprintln!(
-                        "[PACC Backend] RMSNorm '{}' missing hidden size",
-                        kernel_name
+                    pacc_log_limited(
+                        &PACC_NAMED_ERROR_LOG_COUNT,
+                        "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+                        64,
+                        || {
+                            eprintln!(
+                                "[PACC Backend] RMSNorm '{}' missing hidden size",
+                                kernel_name
+                            );
+                        },
                     );
+                }
+                if pacc_named_fail_open_enabled() {
+                    return pacc_named_assume_success("RMSNorm args could not be parsed", kernel_name);
                 }
                 if allow_normal_fallback {
                     return None;
                 }
-                eprintln!(
-                    "[PACC Backend] RMSNorm '{}' cannot be parsed for named offload; refusing normal launch to avoid skipped/empty-ELF output",
-                    kernel_name
+                pacc_log_limited(
+                    &PACC_NAMED_ERROR_LOG_COUNT,
+                    "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+                    64,
+                    || {
+                        eprintln!(
+                            "[PACC Backend] RMSNorm '{}' cannot be parsed for named offload; refusing normal launch to avoid skipped/empty-ELF output",
+                            kernel_name
+                        );
+                    },
                 );
-                return Some(Err(CUerror::UNKNOWN));
+                return pacc_named_assume_success("RMSNorm args could not be parsed", kernel_name);
             }
         };
         if hidden == 0 {
-            eprintln!(
-                "[PACC Backend] RMSNorm '{}' missing hidden size",
-                kernel_name
+            pacc_log_limited(
+                &PACC_NAMED_ERROR_LOG_COUNT,
+                "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+                64,
+                || {
+                    eprintln!(
+                        "[PACC Backend] RMSNorm '{}' missing hidden size",
+                        kernel_name
+                    );
+                },
             );
+            if pacc_named_fail_open_enabled() {
+                return pacc_named_assume_success("RMSNorm hidden size is zero", kernel_name);
+            }
             return if allow_normal_fallback {
                 None
             } else {
@@ -8285,15 +8727,23 @@ unsafe fn try_offload_named_pacc_kernel(
             .checked_mul(elem_size)
             .unwrap_or(usize::MAX);
         if total_bytes == usize::MAX
-            || !pacc_cuda_alloc_has_bytes(x as u64, total_bytes)
-            || !pacc_cuda_alloc_has_bytes(y as u64, total_bytes)
-            || (!weight.is_null() && !pacc_cuda_alloc_has_bytes(weight as u64, weight_bytes))
+            || !pacc_host_or_cuda_alloc_has_bytes(x as u64, total_bytes, false)
+            || !pacc_host_or_cuda_alloc_has_bytes(y as u64, total_bytes, true)
+            || (!weight.is_null()
+                && !pacc_host_or_cuda_alloc_has_bytes(weight as u64, weight_bytes, false))
         {
-            eprintln!(
-                "[PACC Backend] RMSNorm '{}' rejected out-of-allocation range x={:p} w={:p} y={:p} rows={} hidden={} bytes={}",
-                kernel_name, x, weight, y, rows, hidden, total_bytes
+            pacc_log_limited(
+                &PACC_NAMED_ERROR_LOG_COUNT,
+                "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+                64,
+                || {
+                    eprintln!(
+                        "[PACC Backend] RMSNorm '{}' rejected out-of-allocation range x={:p} w={:p} y={:p} rows={} hidden={} bytes={}",
+                        kernel_name, x, weight, y, rows, hidden, total_bytes
+                    );
+                },
             );
-            return Some(Err(CUerror::UNKNOWN));
+            return pacc_named_assume_success("RMSNorm allocation range check failed", kernel_name);
         }
         let dev_id = current_pacc_device_id_or_zero();
         let rc = pacc_runtime_sys::hetgpu_pacc_submit_rmsnorm_on(
@@ -8313,10 +8763,20 @@ unsafe fn try_offload_named_pacc_kernel(
             return Some(Ok(()));
         }
         if !PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE.swap(true, Ordering::Relaxed) {
-            eprintln!(
-                "[PACC Backend] RMSNorm '{}' offload failed with rc={}; refusing host fallback unless HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK=1",
-                kernel_name, rc
+            pacc_log_limited(
+                &PACC_NAMED_ERROR_LOG_COUNT,
+                "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+                64,
+                || {
+                    eprintln!(
+                        "[PACC Backend] RMSNorm '{}' offload failed with rc={}; refusing host fallback unless HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK=1",
+                        kernel_name, rc
+                    );
+                },
             );
+        }
+        if pacc_named_fail_open_enabled() {
+            return pacc_named_assume_success("RMSNorm PACC offload failed", kernel_name);
         }
         if std::env::var("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
             .ok()
