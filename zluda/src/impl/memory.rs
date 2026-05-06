@@ -971,11 +971,39 @@ fn pacc_read_u64(path: &str) -> Option<u64> {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+fn pacc_read_helper_u64_at(path: &str, offset: u64) -> Option<u64> {
+    use std::os::unix::fs::FileExt;
+
+    let file = std::fs::OpenOptions::new().read(true).open(path).ok()?;
+    let mut buf = [0u8; 8];
+    file.read_exact_at(&mut buf, offset).ok()?;
+    Some(u64::from_le_bytes(buf))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_shared_ddr_base_from_helper() -> Option<u64> {
+    const SHARED_DDR_BASE_INFO_OFF: u64 = 0x0200_4000;
+    let path = pacc_helper_path_for_device0();
+    pacc_read_helper_u64_at(&path, SHARED_DDR_BASE_INFO_OFF).filter(|&v| v != 0)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 fn pacc_shared_ddr_base() -> Option<u64> {
     pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr_coh/shared_ddr_base")
         .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr/shared_ddr_base"))
         .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_full/shared_ddr_base"))
         .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base"))
+        .or_else(|| pacc_shared_ddr_base_from_helper())
         .or_else(|| {
             std::env::var("HETGPU_PACC_SHARED_DDR_BASE")
                 .ok()
@@ -994,6 +1022,8 @@ fn pacc_shared_ddr_bytes() -> Option<usize> {
         .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr/shared_ddr_size"))
         .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_full/shared_ddr_size"))
         .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_size"))
+        .or_else(|| pacc_read_u64("/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_size"))
+        .or_else(|| pacc_read_u64("/sys/module/hetgpu_pacc_mbox_ddr/parameters/shared_ddr_size"))
         .or_else(|| {
             std::env::var("HETGPU_PACC_SHARED_DDR_BYTES")
                 .ok()

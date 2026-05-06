@@ -328,6 +328,15 @@ static int hetgpu_gemm_validate_region(
         DEBUG_LOG("%s invalid %s GEMM region ptr=%p elems=%zu elem=%zu", name, which, ptr, elems, elem_size);
         return 0;
     }
+    if (!hetgpu_pacc_is_device_ptr(ptr)) {
+        if (hetgpu_env_is_one("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM")) {
+            return 1;
+        }
+        fprintf(stderr,
+                "[hetGPU cublas_shim] %s refuses host %s GEMM region without HETGPU_PACC_ALLOW_HOST_DEVICE_MEM=1: ptr=%p need=%zu\n",
+                name, which, ptr, bytes);
+        return 0;
+    }
     size_t remaining = hetgpu_pacc_allocation_remaining(ptr);
     if (remaining != SIZE_MAX && bytes > remaining) {
         fprintf(stderr,

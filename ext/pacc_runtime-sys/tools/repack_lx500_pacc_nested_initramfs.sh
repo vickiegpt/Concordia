@@ -37,13 +37,28 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-cpio_offset="$(
-  set +o pipefail
-  grep -abo '070701' "${input_bin}" | head -1 | cut -d: -f1
-)"
-if [[ -z "${cpio_offset}" ]]; then
-  echo "could not find outer newc initramfs magic 070701 in ${input_bin}" >&2
-  exit 1
+parse_u64() {
+  local value="$1"
+  if [[ "${value}" == 0x* || "${value}" == 0X* ]]; then
+    printf '%d\n' "$((value))"
+  else
+    printf '%d\n' "${value}"
+  fi
+}
+
+cpio_offset="$(parse_u64 "${LX500_PACC_INITRAMFS_OFFSET:-0x4C4578}")"
+outer_space_size="$(parse_u64 "${LX500_PACC_INITRAMFS_LENGTH:-0x17d1e00}")"
+
+if [[ "${LX500_PACC_INITRAMFS_AUTODETECT:-0}" == "1" ]]; then
+  cpio_offset="$(
+    set +o pipefail
+    grep -abo '070701' "${input_bin}" | head -1 | cut -d: -f1
+  )"
+  if [[ -z "${cpio_offset}" ]]; then
+    echo "could not find outer newc initramfs magic 070701 in ${input_bin}" >&2
+    exit 1
+  fi
+  outer_space_size=0
 fi
 
 tmp="$(mktemp -d)"
@@ -59,10 +74,20 @@ outer_list="${tmp}/outer-list.txt"
 pad="${tmp}/pad.bin"
 
 input_size="$(stat -c '%s' "${input_bin}")"
-outer_space_size="$((input_size - cpio_offset))"
+if (( cpio_offset < 0 || cpio_offset > input_size )); then
+  echo "initramfs offset ${cpio_offset} is outside ${input_bin} (${input_size} bytes)" >&2
+  exit 1
+fi
+if (( outer_space_size == 0 )); then
+  outer_space_size="$((input_size - cpio_offset))"
+fi
+if (( outer_space_size < 0 || cpio_offset + outer_space_size > input_size )); then
+  echo "initramfs window offset=${cpio_offset} length=${outer_space_size} exceeds ${input_bin} (${input_size} bytes)" >&2
+  exit 1
+fi
 
 head -c "${cpio_offset}" "${input_bin}" > "${prefix}"
-tail -c +"$((cpio_offset + 1))" "${input_bin}" > "${outer_cpio}"
+dd if="${input_bin}" of="${outer_cpio}" bs=1 skip="${cpio_offset}" count="${outer_space_size}" status=none
 
 mkdir -p "${outer_root}" "${inner_root}"
 (
@@ -120,6 +145,7 @@ else
 fi
 
 cat "${prefix}" "${new_outer}" "${pad}" > "${output_bin}"
+tail -c +"$((cpio_offset + outer_space_size + 1))" "${input_bin}" >> "${output_bin}"
 
 printf 'input=%s\n' "${input_bin}"
 printf 'cpio_offset=%s\n' "${cpio_offset}"

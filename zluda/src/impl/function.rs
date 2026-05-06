@@ -5951,6 +5951,15 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     kernel_params: *mut *mut ::core::ffi::c_void,
 ) -> Option<cuda_types::cuda::CUresult> {
     use cuda_types::cuda::*;
+    let mmvf_trace = pacc_env_truthy("HETGPU_PACC_MMVF_TRACE")
+        || pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS");
+    macro_rules! trace_mmvf {
+        ($($arg:tt)*) => {
+            if mmvf_trace {
+                eprintln!($($arg)*);
+            }
+        };
+    }
 
     unsafe fn finish_without_direct_pacc(
         reason: &str,
@@ -5984,6 +5993,10 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         .as_deref()
         == Some("0")
     {
+        trace_mmvf!(
+            "[PACC Backend] MMVF '{}' direct offload disabled by HETGPU_PACC_MMVF_NAMED_OFFLOAD=0",
+            kernel_name
+        );
         return None;
     }
     if pacc_env_truthy("HETGPU_PACC_MMVF_FAST_SUCCESS")
@@ -5992,8 +6005,37 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         return pacc_named_assume_success("MMVF named fast-success requested", kernel_name);
     }
 
-    let (ncols_dst, has_fusion, is_multi_token_id) = pacc_parse_mmvf_template(kernel_name)?;
+    let (ncols_dst, has_fusion, is_multi_token_id) = match pacc_parse_mmvf_template(kernel_name) {
+        Some(parsed) => parsed,
+        None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' template parse failed grid={}x{}x{}",
+                kernel_name,
+                grid_dim_x,
+                grid_dim_y,
+                grid_dim_z
+            );
+            return None;
+        }
+    };
+    trace_mmvf!(
+        "[PACC Backend] MMVF '{}' parsed grid={}x{}x{} ncols_dst={} fusion={} multi_token_id={}",
+        kernel_name,
+        grid_dim_x,
+        grid_dim_y,
+        grid_dim_z,
+        ncols_dst,
+        has_fusion,
+        is_multi_token_id
+    );
     if is_multi_token_id || ncols_dst == 0 || ncols_dst > 8 || (has_fusion && ncols_dst != 1) {
+        trace_mmvf!(
+            "[PACC Backend] MMVF '{}' unsupported template ncols_dst={} fusion={} multi_token_id={}",
+            kernel_name,
+            ncols_dst,
+            has_fusion,
+            is_multi_token_id
+        );
         return finish_without_direct_pacc(
             "MMVF template unsupported by direct PACC offload",
             kernel_name,
@@ -6003,9 +6045,22 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
             kernel_params,
         );
     }
-    let x_type = pacc_mmvf_x_type(kernel_name)?;
+    let x_type = match pacc_mmvf_x_type(kernel_name) {
+        Some(value) => value,
+        None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' x_type parse failed",
+                kernel_name
+            );
+            return None;
+        }
+    };
     let mmvf_host_fallback = pacc_env_truthy("HETGPU_PACC_MMVF_HOST_FALLBACK");
     if mmvf_host_fallback {
+        trace_mmvf!(
+            "[PACC Backend] MMVF '{}' using explicit host fallback",
+            kernel_name
+        );
         return execute_mmvf_host_fallback(
             kernel_name,
             grid_dim_x,
@@ -6015,17 +6070,61 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         );
     }
     if PACC_MMVF_OFFLOAD_DISABLED_AFTER_FAILURE.load(Ordering::Relaxed) {
+        trace_mmvf!(
+            "[PACC Backend] MMVF '{}' rejected: offload disabled after prior failure",
+            kernel_name
+        );
         if pacc_named_fail_open_enabled() {
             return pacc_named_assume_success("MMVF offload disabled after prior failure", kernel_name);
         }
         return Some(Err(CUerror::UNKNOWN));
     }
 
-    let x_host = read_param_u64(kernel_params, 0)?;
-    let y_host = read_param_u64(kernel_params, 1)?;
+    let x_host = match read_param_u64(kernel_params, 0) {
+        Some(value) => value,
+        None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' missing x param[0]",
+                kernel_name
+            );
+            return None;
+        }
+    };
+    let y_host = match read_param_u64(kernel_params, 1) {
+        Some(value) => value,
+        None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' missing y param[1]",
+                kernel_name
+            );
+            return None;
+        }
+    };
     let ids_host = read_param_u64(kernel_params, 2).unwrap_or(0);
-    let dst_host = read_param_u64(kernel_params, 4)?;
+    let dst_host = match read_param_u64(kernel_params, 4) {
+        Some(value) => value,
+        None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' missing dst param[4]",
+                kernel_name
+            );
+            return None;
+        }
+    };
+    trace_mmvf!(
+        "[PACC Backend] MMVF '{}' host ptrs x=0x{:x} y=0x{:x} ids=0x{:x} dst=0x{:x}",
+        kernel_name,
+        x_host,
+        y_host,
+        ids_host,
+        dst_host
+    );
     if ids_host != 0 {
+        trace_mmvf!(
+            "[PACC Backend] MMVF '{}' rejected: ids ptr is nonzero 0x{:x}",
+            kernel_name,
+            ids_host
+        );
         return finish_without_direct_pacc(
             "MMVF ids input is not supported by direct PACC offload",
             kernel_name,
@@ -6039,6 +6138,11 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     let x_addr = match super::memory::pacc_driver_physical_addr(x_host) {
         Some(addr) => addr,
         None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' x host ptr 0x{:x} has no PACC physical address",
+                kernel_name,
+                x_host
+            );
             return finish_without_direct_pacc(
                 "MMVF x allocation has no PACC physical address",
                 kernel_name,
@@ -6052,6 +6156,11 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     let y_addr = match super::memory::pacc_driver_physical_addr(y_host) {
         Some(addr) => addr,
         None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' y host ptr 0x{:x} has no PACC physical address",
+                kernel_name,
+                y_host
+            );
             return finish_without_direct_pacc(
                 "MMVF y allocation has no PACC physical address",
                 kernel_name,
@@ -6065,6 +6174,11 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     let dst_addr = match super::memory::pacc_driver_physical_addr(dst_host) {
         Some(addr) => addr,
         None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' dst host ptr 0x{:x} has no PACC physical address",
+                kernel_name,
+                dst_host
+            );
             return finish_without_direct_pacc(
                 "MMVF dst allocation has no PACC physical address",
                 kernel_name,
@@ -6076,33 +6190,87 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         }
     };
 
-    let x_bytes = pacc_mul_mat_vec_f_binding_metadata(
+    let x_bytes = match pacc_mul_mat_vec_f_binding_metadata(
         kernel_name,
         kernel_params,
         grid_dim_x,
         grid_dim_y,
         grid_dim_z,
         0,
-    )?
-    .0;
-    let y_bytes = pacc_mul_mat_vec_f_binding_metadata(
+    ) {
+        Some((bytes, _flags)) => bytes,
+        None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' failed to derive x binding bytes",
+                kernel_name
+            );
+            return None;
+        }
+    };
+    let y_bytes = match pacc_mul_mat_vec_f_binding_metadata(
         kernel_name,
         kernel_params,
         grid_dim_x,
         grid_dim_y,
         grid_dim_z,
         1,
-    )?
-    .0;
-    let dst_bytes = pacc_mul_mat_vec_f_binding_metadata(
+    ) {
+        Some((bytes, _flags)) => bytes,
+        None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' failed to derive y binding bytes",
+                kernel_name
+            );
+            return None;
+        }
+    };
+    let dst_bytes = match pacc_mul_mat_vec_f_binding_metadata(
         kernel_name,
         kernel_params,
         grid_dim_x,
         grid_dim_y,
         grid_dim_z,
         4,
-    )?
-    .0;
+    ) {
+        Some((bytes, _flags)) => bytes,
+        None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' failed to derive dst binding bytes",
+                kernel_name
+            );
+            return None;
+        }
+    };
+    let nchannels_y = match read_param_uint3_value(kernel_params, 6) {
+        Some(value) => value,
+        None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' missing nchannels_y param[6]",
+                kernel_name
+            );
+            return None;
+        }
+    };
+    let channel_ratio = match read_param_uint3_value(kernel_params, 10) {
+        Some(value) => value,
+        None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' missing channel_ratio param[10]",
+                kernel_name
+            );
+            return None;
+        }
+    };
+    let sample_ratio = match read_param_uint3_value(kernel_params, 14) {
+        Some(value) => value,
+        None => {
+            trace_mmvf!(
+                "[PACC Backend] MMVF '{}' missing sample_ratio param[14]",
+                kernel_name
+            );
+            return None;
+        }
+    };
 
     let job = pacc_runtime_sys::HetgpuPaccMmvfJob {
         x_addr,
@@ -6119,15 +6287,15 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         x_type,
         reserved0: 0,
         ncols2: read_param_u32(kernel_params, 5).unwrap_or(0) as i32,
-        nchannels_y: read_param_uint3_value(kernel_params, 6)?,
+        nchannels_y,
         stride_row: read_param_u32(kernel_params, 7).unwrap_or(0) as i32,
         stride_col_y2: read_param_u32(kernel_params, 8).unwrap_or(0) as i32,
         stride_col_dst: read_param_u32(kernel_params, 9).unwrap_or(0) as i32,
-        channel_ratio: read_param_uint3_value(kernel_params, 10)?,
+        channel_ratio,
         stride_channel_x: read_param_u32(kernel_params, 11).unwrap_or(0) as i32,
         stride_channel_y: read_param_u32(kernel_params, 12).unwrap_or(0) as i32,
         stride_channel_dst: read_param_u32(kernel_params, 13).unwrap_or(0) as i32,
-        sample_ratio: read_param_uint3_value(kernel_params, 14)?,
+        sample_ratio,
         stride_sample_x: read_param_u32(kernel_params, 15).unwrap_or(0) as i32,
         stride_sample_y: read_param_u32(kernel_params, 16).unwrap_or(0) as i32,
         stride_sample_dst: read_param_u32(kernel_params, 17).unwrap_or(0) as i32,
@@ -6135,6 +6303,14 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     };
 
     if job.ncols2 <= 0 || job.x_bytes == 0 || job.y_bytes == 0 || job.dst_bytes == 0 {
+        trace_mmvf!(
+            "[PACC Backend] MMVF '{}' empty metadata ncols2={} x_bytes={} y_bytes={} dst_bytes={}",
+            kernel_name,
+            job.ncols2,
+            job.x_bytes,
+            job.y_bytes,
+            job.dst_bytes
+        );
         return finish_without_direct_pacc(
             "MMVF binding metadata is empty",
             kernel_name,
@@ -6146,13 +6322,29 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     }
 
     let dev_id = current_pacc_device_id_or_zero();
+    trace_mmvf!(
+        "[PACC Backend] MMVF '{}' submit dev={} x_addr=0x{:x} y_addr=0x{:x} dst_addr=0x{:x} bytes={}/{}/{} grid={}x{}x{} ncols2={} ncols_dst={} x_type={} stride_row={} stride_col_y2={} stride_col_dst={}",
+        kernel_name,
+        dev_id,
+        job.x_addr,
+        job.y_addr,
+        job.dst_addr,
+        job.x_bytes,
+        job.y_bytes,
+        job.dst_bytes,
+        job.grid_x,
+        job.grid_y,
+        job.grid_z,
+        job.ncols2,
+        job.ncols_dst,
+        job.x_type,
+        job.stride_row,
+        job.stride_col_y2,
+        job.stride_col_dst
+    );
     let rc = pacc_runtime_sys::hetgpu_pacc_submit_mmvf_on(dev_id, &job as *const _);
     if rc == 0 {
-        if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
-            .ok()
-            .as_deref()
-            == Some("1")
-        {
+        if mmvf_trace {
             eprintln!(
                 "[PACC Backend] offloaded MMVF '{}' dev={} grid={}x{}x{} ncols2={} ncols_dst={} x_type={}",
                 kernel_name,
@@ -6167,6 +6359,12 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         }
         return Some(Ok(()));
     }
+    trace_mmvf!(
+        "[PACC Backend] MMVF '{}' submit returned rc={} dev={} seq path failed",
+        kernel_name,
+        rc,
+        dev_id
+    );
 
     if !PACC_MMVF_OFFLOAD_DISABLED_AFTER_FAILURE.swap(true, Ordering::Relaxed) {
         pacc_log_limited(
@@ -8328,6 +8526,15 @@ fn current_pacc_device_id_or_zero() -> i32 {
     let device_count = super::driver::global_state()
         .map(|state| state.devices.len() as i32)
         .unwrap_or(1);
+    if let Some(forced) = std::env::var("HETGPU_PACC_FORCE_DEVICE")
+        .ok()
+        .or_else(|| std::env::var("HETGPU_PACC_DEVICE").ok())
+        .and_then(|v| v.parse::<i32>().ok())
+    {
+        if forced >= 0 && forced < device_count {
+            return forced;
+        }
+    }
     let device_id = super::context::get_current_pacc()
         .map(|ctx| ctx.device_id)
         .unwrap_or(0);

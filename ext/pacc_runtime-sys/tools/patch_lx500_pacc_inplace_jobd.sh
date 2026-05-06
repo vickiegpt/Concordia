@@ -83,9 +83,13 @@ jobd_trace = os.environ.get("PACC_JOBD_TRACE", "0").strip() or "0"
 jobd_kmsg_present = "PACC_JOBD_KMSG" in os.environ
 jobd_kmsg = os.environ.get("PACC_JOBD_KMSG", "0").strip() or "0"
 jobd_progress_status = os.environ.get("PACC_JOBD_PROGRESS_STATUS", "0").strip() or "0"
+jobd_diag_ring_present = "PACC_JOBD_DIAG_RING" in os.environ
+jobd_diag_ring = os.environ.get("PACC_JOBD_DIAG_RING", "1").strip() or "1"
 jobd_beacon = os.environ.get("PACC_JOBD_BEACON", "0").strip() or "0"
+jobd_pacc_id = os.environ.get("PACC_JOBD_PACC_ID", "").strip()
 jobd_mbox_poll_present = "PACC_JOBD_MBOX_POLL" in os.environ
 jobd_mbox_poll = os.environ.get("PACC_JOBD_MBOX_POLL", "0").strip() or "0"
+jobd_initial_mbox_poll = os.environ.get("PACC_JOBD_INITIAL_MBOX_POLL", "").strip()
 jobd_poll_timeout_ms = os.environ.get("PACC_JOBD_POLL_TIMEOUT_MS", "").strip()
 jobd_initial_scan_us = os.environ.get("PACC_JOBD_INITIAL_SCAN_US", "").strip()
 jobd_idle_sleep_us = os.environ.get("PACC_JOBD_IDLE_SLEEP_US", "").strip()
@@ -99,6 +103,7 @@ jobd_full_ddr_map = os.environ.get("PACC_JOBD_FULL_DDR_MAP", "0").strip() or "0"
 jobd_full_ddr_map_bytes = os.environ.get("PACC_JOBD_FULL_DDR_MAP_BYTES", "").strip()
 jobd_claim_id = os.environ.get("PACC_JOBD_CLAIM_ID", "0").strip() or "0"
 jobd_force_pread = os.environ.get("PACC_JOBD_FORCE_PREAD", "0").strip() or "0"
+jobd_control_pread = os.environ.get("PACC_JOBD_CONTROL_PREAD", "").strip()
 jobd_force_devmem = os.environ.get("PACC_JOBD_FORCE_DEVMEM", "0").strip() or "0"
 jobd_status_control_window = os.environ.get("PACC_JOBD_STATUS_CONTROL_WINDOW", "").strip()
 jobd_status_mmap_fallback = os.environ.get("PACC_JOBD_STATUS_MMAP_FALLBACK", "").strip()
@@ -132,10 +137,16 @@ if jobd_kmsg_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_KMSG={jobd_kmsg}")
 if jobd_progress_status != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_PROGRESS_STATUS={jobd_progress_status}")
+if jobd_diag_ring_present:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_DIAG_RING={jobd_diag_ring}")
 if jobd_beacon != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_BEACON={jobd_beacon}")
+if jobd_pacc_id:
+    rcs_lines.append(f"export HETGPU_PACC_ID={jobd_pacc_id}")
 if jobd_mbox_poll_present or jobd_mbox_poll != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_MBOX_POLL={jobd_mbox_poll}")
+if jobd_initial_mbox_poll:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_INITIAL_MBOX_POLL={jobd_initial_mbox_poll}")
 if jobd_poll_timeout_ms:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_POLL_TIMEOUT_MS={jobd_poll_timeout_ms}")
 if jobd_initial_scan_us:
@@ -160,6 +171,8 @@ if jobd_claim_id != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_CLAIM_ID={jobd_claim_id}")
 if jobd_force_pread != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FORCE_PREAD={jobd_force_pread}")
+if jobd_control_pread:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_CONTROL_PREAD={jobd_control_pread}")
 if jobd_force_devmem != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FORCE_DEVMEM={jobd_force_devmem}")
 if jobd_status_control_window:

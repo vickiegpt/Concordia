@@ -33,6 +33,7 @@ typedef signed int s32;
 #define HETGPU_PACC_JOB_SOFTMAX 2U
 #define HETGPU_PACC_JOB_RMSNORM 3U
 #define HETGPU_PACC_JOB_ALLREDUCE 4U
+#define HETGPU_PACC_JOB_MMVF 5U
 #define HETGPU_PACC_JOB_KERNEL 0U
 #define PACC_JOB_MAGIC 0x504143434a4f4231UL
 
@@ -167,6 +168,8 @@ struct RuntimeJobTable {
     u32 have_softmax;
     u32 have_rmsnorm;
     u32 have_allreduce;
+    u32 have_mmvf;
+    u32 reserved0;
     struct GemmJob gemm;
     struct SoftmaxJob softmax;
     struct RmsNormJob rmsnorm;
@@ -1355,6 +1358,9 @@ static u32 run_job_from_table(volatile struct Doorbell *control, volatile struct
     }
     if (doorbell->job_id == HETGPU_PACC_JOB_ALLREDUCE) {
         return table->have_allreduce ? 0xffff0006U : 0xffff0005U;
+    }
+    if (doorbell->job_id == HETGPU_PACC_JOB_MMVF) {
+        return table->have_mmvf ? 0xffff0007U : 0xffff0005U;
     }
     return 0xffff00ffU;
 }
