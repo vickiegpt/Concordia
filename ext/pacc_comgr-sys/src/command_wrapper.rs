@@ -861,6 +861,13 @@ fn riscv_march_with_required_extensions(march: &str) -> String {
     if !(march.starts_with("rv32") || march.starts_with("rv64")) {
         return march.to_string();
     }
+    let require_zbb_disabled = matches!(
+        std::env::var("HETGPU_PACC_REQUIRE_ZBB").ok().as_deref(),
+        Some("0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF")
+    );
+    if require_zbb_disabled || env_truthy("HETGPU_PACC_DISABLE_AUTO_ZBB") {
+        return march.to_string();
+    }
 
     let has_zbb = march
         .split('_')

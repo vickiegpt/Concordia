@@ -2748,6 +2748,35 @@ fn wait_shared_ddr_job_status(
         if let Some(result) = decode_pacc_host_status(&buf, expected_job_id, seq) {
             return result;
         }
+        if expected_job_id == hetgpu_pacc_job_id::KERNEL
+            && read_shared_ddr_status_window_cached(
+                shared_file,
+                dev.id,
+                HETGPU_PACC_BEACON_OFF,
+                &mut beacon_buf,
+            )
+            .is_ok()
+        {
+            let beacon_magic = u64::from_le_bytes(beacon_buf[0..8].try_into().unwrap());
+            let beacon_job_id = u32::from_le_bytes(beacon_buf[12..16].try_into().unwrap());
+            let beacon_phase = u32::from_le_bytes(beacon_buf[16..20].try_into().unwrap());
+            let beacon_detail = u32::from_le_bytes(beacon_buf[20..24].try_into().unwrap());
+            let beacon_seq = u64::from_le_bytes(beacon_buf[24..32].try_into().unwrap());
+            if beacon_magic == HETGPU_PACC_BEACON_MAGIC
+                && beacon_job_id == expected_job_id
+                && beacon_seq == seq
+                && beacon_phase == 0x511b
+                && beacon_detail == 0
+            {
+                if zluda_irq_trace_enabled() {
+                    eprintln!(
+                        "PACC ZLUDA IRQ: dev={} accepted kernel completion beacon phase=0x511b seq={}",
+                        dev.id, seq
+                    );
+                }
+                return Ok(());
+            }
+        }
 
         if poll_wait_enabled
             && poll_wait_consumed

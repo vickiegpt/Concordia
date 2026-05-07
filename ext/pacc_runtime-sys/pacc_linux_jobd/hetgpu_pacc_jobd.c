@@ -439,6 +439,9 @@ static uint8_t g_arg_slot_synthetic_control[HETGPU_PACC_CONTROL_BYTES];
 static uint64_t g_last_preloaded_seq_by_job[HETGPU_PACC_MAX_JOB_ID];
 static uint32_t g_diag_ring_index;
 static bool g_response_irq_pending;
+static bool g_kernel_completion_beacon_sticky;
+static uint64_t g_kernel_completion_beacon_seq;
+static uint32_t g_kernel_completion_beacon_status;
 
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static bool mirror_boot_marker_all_slots_mbox_mmap(int fd, uint32_t status);
@@ -516,6 +519,28 @@ static bool jobd_ddr_ioctl_enabled(void) {
 static bool jobd_force_elf_enabled(void) {
     return env_flag_true(getenv("HETGPU_PACC_JOBD_FORCE_ELF")) ||
            env_flag_true(getenv("HETGPU_PACC_JOBD_DISABLE_NATIVE"));
+}
+
+static bool jobd_disable_native_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_DISABLE_NATIVE"));
+}
+
+static bool jobd_force_elf_for_symbol(const char *symbol) {
+    if (jobd_disable_native_enabled()) {
+        return true;
+    }
+    if (!env_flag_true(getenv("HETGPU_PACC_JOBD_FORCE_ELF"))) {
+        return false;
+    }
+    return symbol && strstr(symbol, "k_bin_bcast");
+}
+
+static bool jobd_elf_fallback_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_ELF_FALLBACK");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return true;
 }
 
 static bool jobd_generic_noop_enabled(void) {
@@ -688,12 +713,16 @@ static bool jobd_arg_slot_scan_enabled(void) {
     return true;
 }
 
+static bool jobd_full_control_snapshot_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_FULL_CONTROL_SNAPSHOT"));
+}
+
 static bool jobd_redispatch_seen_arg_slot_enabled(void) {
     const char *value = getenv("HETGPU_PACC_JOBD_REDISPATCH_SEEN_ARG_SLOT");
     if (value && *value) {
         return env_flag_true(value);
     }
-    return true;
+    return false;
 }
 
 static bool jobd_runtime_table_refresh_enabled(void) {
@@ -1942,6 +1971,77 @@ pwrite_fallback:
     return 0;
 }
 
+static bool native_stage_read(uint64_t phys, size_t len, void **out) {
+    struct Map map = {0};
+    uint8_t *copy = NULL;
+    void *buf = NULL;
+
+    if (!out || len == 0) {
+        return false;
+    }
+    *out = NULL;
+
+    if (phys_is_shared_ddr(phys, len) && g_mbox_fd >= 0) {
+        if (map_phys(g_mbox_fd, phys, len, &map) == 0) {
+            sync_map_for_cpu(&map);
+            jobd_io_fence();
+            buf = malloc(len);
+            if (buf) {
+                memcpy(buf, map.ptr, len);
+            }
+            jobd_io_fence();
+            unmap_phys(&map);
+            if (buf) {
+                *out = buf;
+                return true;
+            }
+        }
+        if (read_phys_copy_pread_only(g_mbox_fd, phys, len, &copy) == 0 && copy) {
+            *out = copy;
+            return true;
+        }
+    }
+
+    buf = malloc(len);
+    if (!buf) {
+        return false;
+    }
+    memcpy(buf, (const void *)(uintptr_t)phys, len);
+    *out = buf;
+    return true;
+}
+
+static bool native_stage_write(uint64_t phys, const void *src, size_t len) {
+    struct Map map = {0};
+
+    if (!src) {
+        return false;
+    }
+    if (len == 0) {
+        return true;
+    }
+    if (phys_is_shared_ddr(phys, len) && g_mbox_fd >= 0) {
+        if (map_phys(g_mbox_fd, phys, len, &map) == 0) {
+            memcpy(map.ptr, src, len);
+            jobd_io_fence();
+            if (map.base && map.base != MAP_FAILED && map.map_len) {
+                if (jobd_msync_enabled() &&
+                    msync(map.base, map.map_len, MS_SYNC) != 0 && errno != EINVAL) {
+                    trace_msg("native stage shared DDR msync write failed: %s", strerror(errno));
+                }
+            }
+            jobd_flush_for_device(map.ptr, map.len);
+            unmap_phys(&map);
+            return true;
+        }
+        if (write_phys_copy_pwrite_only(g_mbox_fd, phys, src, len) == 0) {
+            return true;
+        }
+    }
+    memcpy((void *)(uintptr_t)phys, src, len);
+    return true;
+}
+
 static int map_phys_copy_fallback(int fd, uint64_t phys, size_t len, struct Map *out) {
     uint8_t *copy = NULL;
     if (!out || !g_ddr_info.ddr_base || phys < g_ddr_info.ddr_base ||
@@ -2785,7 +2885,7 @@ static void *gemm_worker_main(void *arg) {
 }
 
 static uint64_t jobd_gemm_single_thread_ops_threshold(void) {
-    return parse_env_u64_default("HETGPU_PACC_JOBD_GEMM_SINGLE_THREAD_OPS", 262144ULL);
+    return parse_env_u64_default("HETGPU_PACC_JOBD_GEMM_SINGLE_THREAD_OPS", 0);
 }
 
 static int run_gemm_matrix_threads(const struct GemmJob *job, const void *a,
@@ -4526,6 +4626,9 @@ struct BinBcastNativeWorker {
     int status;
 };
 
+static uint64_t kernel_binding_size_for_arg(const struct PaccJobImage *job,
+                                            uint32_t arg_index);
+
 static enum PaccBinBcastOp bin_bcast_op_from_symbol(const char *symbol) {
     if (!symbol) return PACC_BIN_BCAST_UNSUPPORTED;
     if (strstr(symbol, "op_repeatff")) return PACC_BIN_BCAST_REPEAT;
@@ -4563,6 +4666,18 @@ static int64_t kernel_cell_i64(const uint64_t *argv, size_t argc, size_t index) 
     return (int64_t)kernel_cell_u64(argv, argc, index);
 }
 
+static void kernel_cell_i32x4(const uint64_t *argv, size_t argc, size_t index,
+                              int32_t out[4]) {
+    const struct KernelParamCell *cell = kernel_argv_cell(argv, argc, index);
+    if (!out) return;
+    out[0] = out[1] = out[2] = out[3] = 0;
+    if (!cell) return;
+    out[0] = (int32_t)(uint32_t)cell->lo;
+    out[1] = (int32_t)(uint32_t)(cell->lo >> 32);
+    out[2] = (int32_t)(uint32_t)cell->hi;
+    out[3] = (int32_t)(uint32_t)(cell->hi >> 32);
+}
+
 static struct PaccUint3 kernel_cell_u3(const uint64_t *argv, size_t argc, size_t index) {
     const struct KernelParamCell *cell = kernel_argv_cell(argv, argc, index);
     struct PaccUint3 v = {0, 0, 0};
@@ -4586,6 +4701,53 @@ static float bin_bcast_apply(enum PaccBinBcastOp op, float a, float b) {
     case PACC_BIN_BCAST_DIV: return a / b;
     default: return a;
     }
+}
+
+static bool bin_bcast_add_extent(uint64_t dim, int32_t stride, uint64_t *acc) {
+    if (!acc || stride < 0) return false;
+    if (dim == 0) return false;
+    uint64_t ustride = (uint64_t)(uint32_t)stride;
+    uint64_t count = dim - 1u;
+    if (ustride != 0 && count > UINT64_MAX / ustride) return false;
+    uint64_t add = count * ustride;
+    if (*acc > UINT64_MAX - add) return false;
+    *acc += add;
+    return true;
+}
+
+static bool bin_bcast_required_elems(uint64_t d0, uint64_t d1,
+                                     uint64_t d2, uint64_t d3,
+                                     int32_t s0, int32_t s1,
+                                     int32_t s2, int32_t s3,
+                                     uint64_t *out) {
+    uint64_t max_elem = 0;
+    if (!out) return false;
+    if (!bin_bcast_add_extent(d0, s0, &max_elem) ||
+        !bin_bcast_add_extent(d1, s1, &max_elem) ||
+        !bin_bcast_add_extent(d2, s2, &max_elem) ||
+        !bin_bcast_add_extent(d3, s3, &max_elem)) {
+        return false;
+    }
+    if (max_elem == UINT64_MAX) return false;
+    *out = max_elem + 1u;
+    return true;
+}
+
+static bool bin_bcast_binding_covers(const char *symbol,
+                                     const char *label,
+                                     uint32_t arg_index,
+                                     uint64_t binding_bytes,
+                                     uint64_t required_elems) {
+    if (required_elems > UINT64_MAX / sizeof(float)) return false;
+    uint64_t required_bytes = required_elems * sizeof(float);
+    if (binding_bytes != 0 && required_bytes > binding_bytes) {
+        log_msg("native bin_bcast range rejected %s arg=%u need=%" PRIu64
+                "B binding=%" PRIu64 "B kernel=%s",
+                label ? label : "buffer", arg_index, required_bytes,
+                binding_bytes, symbol ? symbol : "<unknown>");
+        return false;
+    }
+    return true;
 }
 
 #if defined(__riscv_vector)
@@ -4722,7 +4884,7 @@ static int invoke_kernel_bin_bcast_native(const char *symbol,
     if (!env_flag_default_true("HETGPU_PACC_ENABLE_NATIVE_BIN_BCAST")) return 1;
     if (strstr(symbol, "k_bin_bcast_unravel")) return 1;
     if (!strstr(symbol, "EEfffJ")) return 1;
-    if (argc < 22 || argc > PACC_MAX_KERNEL_ARGS) return -1;
+    if (argc < 22 || argc > PACC_MAX_KERNEL_ARGS) return (int)0xffffb001u;
 
     struct BinBcastNativeCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -4756,11 +4918,131 @@ static int invoke_kernel_bin_bcast_native(const char *symbol,
     if (!ctx.dst || ctx.ne0 <= 0 || ctx.ne1 <= 0 || ctx.ne2 <= 0 || bin_bcast_fast_dim(ctx.ne3) == 0) {
         return 0;
     }
-    if (ctx.src1s_count == 0 && !ctx.src1) return -1;
+    if (ctx.src1s_count == 0 && !ctx.src1) return (int)0xffffb002u;
     for (size_t i = 0; i < ctx.src1s_count; i++) {
         ctx.src1s[i] = (const float *)(uintptr_t)kernel_cell_u64(argv, argc, 22 + i);
-        if (!ctx.src1s[i]) return -1;
+        if (!ctx.src1s[i]) return (int)(0xffffb010u | (uint32_t)(i & 0x0fu));
     }
+
+    uint64_t ne3 = bin_bcast_fast_dim(ctx.ne3);
+    uint64_t src0_required = 0;
+    uint64_t src1_required = 0;
+    uint64_t dst_required = 0;
+    uint64_t src1_ne0 = (uint64_t)ctx.ne0;
+    uint64_t src1_ne1 = (uint64_t)ctx.ne1;
+    uint64_t src1_ne2 = (uint64_t)ctx.ne2;
+    uint64_t src1_ne3 = ne3;
+    uint32_t ne10 = bin_bcast_fast_dim(ctx.ne10);
+    uint32_t ne11 = bin_bcast_fast_dim(ctx.ne11);
+    uint32_t ne12 = bin_bcast_fast_dim(ctx.ne12);
+    uint32_t ne13 = bin_bcast_fast_dim(ctx.ne13);
+    if (ne10 != 0 && src1_ne0 > ne10) src1_ne0 = ne10;
+    if (ne11 != 0 && src1_ne1 > ne11) src1_ne1 = ne11;
+    if (ne12 != 0 && src1_ne2 > ne12) src1_ne2 = ne12;
+    if (ne13 != 0 && src1_ne3 > ne13) src1_ne3 = ne13;
+    if ((ctx.src0 &&
+         !bin_bcast_required_elems((uint64_t)ctx.ne0, (uint64_t)ctx.ne1,
+                                   (uint64_t)ctx.ne2, ne3,
+                                   ctx.s00, ctx.s01, ctx.s02, ctx.s03,
+                                   &src0_required)) ||
+        !bin_bcast_required_elems(src1_ne0, src1_ne1, src1_ne2, src1_ne3,
+                                  ctx.s10, ctx.s11, ctx.s12, ctx.s13,
+                                  &src1_required) ||
+        !bin_bcast_required_elems((uint64_t)ctx.ne0, (uint64_t)ctx.ne1,
+                                  (uint64_t)ctx.ne2, ne3,
+                                  1, ctx.s1, ctx.s2, ctx.s3,
+                                  &dst_required)) {
+        log_msg("native bin_bcast invalid extent args: ne=(%d,%d,%d,%" PRIu64
+                ") s=(%d,%d,%d,%d) src=(%d,%d,%d,%d) kernel=%s",
+                ctx.ne0, ctx.ne1, ctx.ne2, ne3,
+                ctx.s1, ctx.s2, ctx.s3, ctx.s00,
+                ctx.s01, ctx.s02, ctx.s03, ctx.s10,
+                symbol ? symbol : "<unknown>");
+        return (int)0xffffb003u;
+    }
+    bool src0_aliases_dst =
+        ctx.src0 == (const float *)ctx.dst &&
+        ctx.s00 == 1 &&
+        ctx.s01 == ctx.s1 &&
+        ctx.s02 == ctx.s2 &&
+        ctx.s03 == ctx.s3;
+    if (ctx.src0 && !src0_aliases_dst &&
+        !bin_bcast_binding_covers(symbol, "src0", 0,
+                                  kernel_binding_size_for_arg(job, 0),
+                                  src0_required)) {
+        return (int)0xffffb004u;
+    }
+    if (ctx.src1s_count == 0 &&
+        !bin_bcast_binding_covers(symbol, "src1", 1,
+                                  kernel_binding_size_for_arg(job, 1),
+                                  src1_required)) {
+        return (int)0xffffb005u;
+    }
+    for (size_t i = 0; i < ctx.src1s_count; i++) {
+        uint32_t arg_index = (uint32_t)(22 + i);
+        if (!bin_bcast_binding_covers(symbol, "src1s", arg_index,
+                                      kernel_binding_size_for_arg(job, arg_index),
+                                      src1_required)) {
+            return (int)(0xffffb020u | (uint32_t)(i & 0x0fu));
+        }
+    }
+    if (!bin_bcast_binding_covers(symbol, "dst", 2,
+                                  kernel_binding_size_for_arg(job, 2),
+                                  dst_required)) {
+        return (int)0xffffb006u;
+    }
+
+    uint64_t src0_bytes = kernel_binding_size_for_arg(job, 0);
+    uint64_t src1_bytes = kernel_binding_size_for_arg(job, 1);
+    uint64_t dst_bytes = kernel_binding_size_for_arg(job, 2);
+    const float *src0_writeback = ctx.src0;
+    const float *src1_writeback = ctx.src1;
+    float *dst_writeback = ctx.dst;
+    void *local_src0 = NULL;
+    void *local_src1 = NULL;
+    void *local_dst = NULL;
+    void *local_src1s[PACC_MAX_KERNEL_ARGS];
+    memset(local_src1s, 0, sizeof(local_src1s));
+
+    uint64_t local_max = parse_env_u64_default("PACC_JOBD_BIN_BCAST_LOCAL_MAX_BYTES",
+                                               1u << 20);
+    if (local_max != 0) {
+        if (dst_bytes != 0 && dst_bytes <= local_max) {
+            if (native_stage_read((uint64_t)(uintptr_t)ctx.dst,
+                                  (size_t)dst_bytes, &local_dst)) {
+                ctx.dst = (float *)local_dst;
+            }
+        }
+        if (src0_aliases_dst && local_dst) {
+            ctx.src0 = (const float *)local_dst;
+        } else if (ctx.src0 && src0_bytes != 0 && src0_bytes <= local_max) {
+            if (native_stage_read((uint64_t)(uintptr_t)ctx.src0,
+                                  (size_t)src0_bytes, &local_src0)) {
+                ctx.src0 = (const float *)local_src0;
+            }
+        }
+        if (ctx.src1s_count == 0) {
+            if (ctx.src1 && src1_bytes != 0 && src1_bytes <= local_max) {
+                if (native_stage_read((uint64_t)(uintptr_t)ctx.src1,
+                                      (size_t)src1_bytes, &local_src1)) {
+                    ctx.src1 = (const float *)local_src1;
+                }
+            }
+        } else {
+            for (size_t i = 0; i < ctx.src1s_count; i++) {
+                uint32_t arg_index = (uint32_t)(22 + i);
+                uint64_t bytes = kernel_binding_size_for_arg(job, arg_index);
+                if (bytes != 0 && bytes <= local_max) {
+                    if (native_stage_read((uint64_t)(uintptr_t)ctx.src1s[i],
+                                          (size_t)bytes, &local_src1s[i])) {
+                        ctx.src1s[i] = (const float *)local_src1s[i];
+                    }
+                }
+            }
+        }
+    }
+    (void)src0_writeback;
+    (void)src1_writeback;
 
     uint64_t rows = (uint64_t)(uint32_t)ctx.ne1 *
                     (uint64_t)(uint32_t)ctx.ne2 *
@@ -4769,6 +5051,7 @@ static int invoke_kernel_bin_bcast_native(const char *symbol,
     trace_msg("native bin_bcast %s rows=%" PRIu64 " ne0=%d workers=%u fused=%zu",
               symbol, rows, ctx.ne0, workers, ctx.src1s_count);
 
+    int status = 0;
     if (workers <= 1 || rows <= 1) {
         struct BinBcastNativeWorker worker = {
             .ctx = &ctx,
@@ -4777,44 +5060,53 @@ static int invoke_kernel_bin_bcast_native(const char *symbol,
             .status = 0,
         };
         bin_bcast_native_worker_main(&worker);
-        trace_msg("native bin_bcast done %s status=%d elapsed_us=%" PRIu64,
-                  symbol, worker.status, monotonic_us() - t0);
-        return worker.status;
-    }
-
-    pthread_t threads[PACC_KERNEL_MAX_THREADS];
-    struct BinBcastNativeWorker worker[PACC_KERNEL_MAX_THREADS];
-    unsigned created = 0;
-    uint64_t chunk = (rows + workers - 1u) / workers;
-    memset(worker, 0, sizeof(worker));
-    for (unsigned i = 0; i < workers; i++) {
-        uint64_t begin = (uint64_t)i * chunk;
-        uint64_t end = begin + chunk;
-        if (begin >= rows) break;
-        if (end > rows) end = rows;
-        worker[i].ctx = &ctx;
-        worker[i].begin_row = begin;
-        worker[i].end_row = end;
-        worker[i].status = -1;
-        if (pthread_create(&threads[i], NULL, bin_bcast_native_worker_main, &worker[i]) != 0) {
-            log_msg("native bin_bcast failed to create worker %u", i);
-            for (unsigned j = 0; j < created; j++) {
-                pthread_join(threads[j], NULL);
+        status = worker.status;
+    } else {
+        pthread_t threads[PACC_KERNEL_MAX_THREADS];
+        struct BinBcastNativeWorker worker[PACC_KERNEL_MAX_THREADS];
+        unsigned created = 0;
+        uint64_t chunk = (rows + workers - 1u) / workers;
+        memset(worker, 0, sizeof(worker));
+        for (unsigned i = 0; i < workers; i++) {
+            uint64_t begin = (uint64_t)i * chunk;
+            uint64_t end = begin + chunk;
+            if (begin >= rows) break;
+            if (end > rows) end = rows;
+            worker[i].ctx = &ctx;
+            worker[i].begin_row = begin;
+            worker[i].end_row = end;
+            worker[i].status = -1;
+            if (pthread_create(&threads[i], NULL, bin_bcast_native_worker_main, &worker[i]) != 0) {
+                log_msg("native bin_bcast failed to create worker %u", i);
+                for (unsigned j = 0; j < created; j++) {
+                    pthread_join(threads[j], NULL);
+                }
+                status = (int)0xffffb007u;
+                goto bin_bcast_native_done;
             }
-            return -1;
+            created++;
         }
-        created++;
-    }
 
-    int status = 0;
-    for (unsigned i = 0; i < created; i++) {
-        pthread_join(threads[i], NULL);
-        if (worker[i].status != 0 && status == 0) {
-            status = worker[i].status;
+        for (unsigned i = 0; i < created; i++) {
+            pthread_join(threads[i], NULL);
+            if (worker[i].status != 0 && status == 0) {
+                status = worker[i].status;
+            }
         }
+    }
+bin_bcast_native_done:
+    if (status == 0 && local_dst) {
+        (void)native_stage_write((uint64_t)(uintptr_t)dst_writeback,
+                                 local_dst, (size_t)dst_bytes);
     }
     trace_msg("native bin_bcast done %s status=%d elapsed_us=%" PRIu64,
               symbol, status, monotonic_us() - t0);
+    free(local_src0);
+    free(local_src1);
+    free(local_dst);
+    for (size_t i = 0; i < ctx.src1s_count; i++) {
+        free(local_src1s[i]);
+    }
     return status;
 }
 
@@ -5489,10 +5781,12 @@ struct RopeNormNativeCtx {
     uint64_t freq_elems;
     uint64_t row_indices_elems;
     int32_t set_rows_stride;
+    int32_t sections[4];
     uint32_t row_count;
     uint32_t pair_count;
     bool forward;
     bool has_ff;
+    bool is_imrope;
     enum PaccRopeScalarType x_type;
     enum PaccRopeScalarType dst_type;
 };
@@ -6143,6 +6437,15 @@ static void rope_native_store_pair(const struct RopeNormNativeCtx *ctx,
     }
 }
 
+static void rope_native_store_one(const struct RopeNormNativeCtx *ctx,
+                                  int64_t index, float value) {
+    if (ctx->dst_type == PACC_ROPE_SCALAR_F16) {
+        ((uint16_t *)ctx->dst)[index] = pacc_f32_to_f16(value);
+    } else {
+        ((float *)ctx->dst)[index] = value;
+    }
+}
+
 static float rope_native_ramp(float low, float high, int32_t i0) {
     float denom = high - low;
     if (denom < 0.001f) denom = 0.001f;
@@ -6210,6 +6513,152 @@ static bool rope_norm_parse_template(const char *symbol,
     *x_type_out = x_type;
     *dst_type_out = dst_type;
     return true;
+}
+
+static bool rope_multi_parse_template(const char *symbol,
+                                      bool *forward_out,
+                                      bool *has_ff_out,
+                                      enum PaccRopeScalarType *type_out) {
+    const char *p = symbol ? strstr(symbol, "rope_multi") : NULL;
+    if (!p) return false;
+    p = strstr(p, "ILb");
+    if (!p || (p[3] != '0' && p[3] != '1')) return false;
+    const char *q = strstr(p + 4, "ELb");
+    if (!q || (q[3] != '0' && q[3] != '1')) return false;
+
+    const char *types = q + 4;
+    if (*types == 'E') types++;
+
+    enum PaccRopeScalarType type = PACC_ROPE_SCALAR_UNSUPPORTED;
+    if (types[0] == 'f') {
+        type = PACC_ROPE_SCALAR_F32;
+    } else if (strncmp(types, "6__half", 7) == 0) {
+        type = PACC_ROPE_SCALAR_F16;
+    } else {
+        return false;
+    }
+
+    *forward_out = p[3] == '1';
+    *has_ff_out = q[3] == '1';
+    *type_out = type;
+    return true;
+}
+
+static void *rope_multi_native_worker_main(void *opaque) {
+    struct RopeNormNativeWorker *worker = (struct RopeNormNativeWorker *)opaque;
+    const struct RopeNormNativeCtx *ctx = worker->ctx;
+    const int32_t sect_dims =
+        ctx->sections[0] + ctx->sections[1] + ctx->sections[2] + ctx->sections[3];
+    const int32_t sec_w = ctx->sections[0] + ctx->sections[1];
+
+    if (sect_dims <= 0 || ctx->n_dims <= 0) {
+        worker->status = -1;
+        return NULL;
+    }
+
+    for (uint64_t idx = worker->begin; idx < worker->end; idx++) {
+        uint32_t pair = (uint32_t)(idx % ctx->pair_count);
+        uint32_t row_dst = (uint32_t)(idx / ctx->pair_count);
+        int32_t i0 = (int32_t)(pair * 2u);
+        if (i0 >= ctx->ne00) continue;
+
+        uint32_t ne01 = (uint32_t)ctx->ne01;
+        uint32_t ne02 = (uint32_t)ctx->ne02;
+        uint32_t i3 = row_dst / (ne01 * ne02);
+        uint32_t i2 = (row_dst - i3 * ne01 * ne02) / ne01;
+        uint32_t i1 = row_dst - i3 * ne01 * ne02 - i2 * ne01;
+
+        int64_t idst = (int64_t)(i0 / 2) +
+                       (int64_t)i1 * ctx->s1 +
+                       (int64_t)i2 * ctx->s2 +
+                       (int64_t)i3 * ctx->s3;
+        int64_t ix = (int64_t)(i0 / 2) +
+                     (int64_t)i1 * ctx->s01 +
+                     (int64_t)i2 * ctx->s02 +
+                     (int64_t)i3 * ctx->s03;
+
+        if (i0 >= ctx->n_dims) {
+            int64_t src0 = ix + i0 / 2;
+            int64_t src1 = src0 + 1;
+            int64_t dst0 = idst + i0 / 2;
+            int64_t dst1 = dst0 + 1;
+            if (src0 < 0 || dst0 < 0 ||
+                (ctx->x_elems != 0 && (uint64_t)src1 >= ctx->x_elems) ||
+                (ctx->dst_elems != 0 && (uint64_t)dst1 >= ctx->dst_elems)) {
+                worker->status = -1;
+                return NULL;
+            }
+            rope_native_store_one(ctx, dst0, rope_native_load(ctx, ctx->x, src0));
+            rope_native_store_one(ctx, dst1, rope_native_load(ctx, ctx->x, src1));
+            continue;
+        }
+
+        if (!ctx->pos || (ctx->has_ff && !ctx->freq_factors)) {
+            worker->status = -1;
+            return NULL;
+        }
+
+        int32_t sector = (i0 / 2) % sect_dims;
+        int32_t axis = 0;
+        if (ctx->is_imrope) {
+            if (sector % 3 == 1 && sector < 3 * ctx->sections[1]) {
+                axis = 1;
+            } else if (sector % 3 == 2 && sector < 3 * ctx->sections[2]) {
+                axis = 2;
+            } else if (sector % 3 == 0 && sector < 3 * ctx->sections[0]) {
+                axis = 0;
+            } else {
+                axis = 3;
+            }
+        } else {
+            if (sector < ctx->sections[0]) {
+                axis = 0;
+            } else if (sector < sec_w) {
+                axis = 1;
+            } else if (sector < sec_w + ctx->sections[2]) {
+                axis = 2;
+            } else {
+                axis = 3;
+            }
+        }
+
+        uint64_t pos_index = (uint64_t)i2 + (uint64_t)ne02 * (uint64_t)axis;
+        if (ctx->pos_elems != 0 && pos_index >= ctx->pos_elems) {
+            worker->status = -1;
+            return NULL;
+        }
+        if (ctx->has_ff && ctx->freq_elems != 0 &&
+            (uint64_t)(i0 / 2) >= ctx->freq_elems) {
+            worker->status = -1;
+            return NULL;
+        }
+
+        int64_t src0 = ix;
+        int64_t src1 = ix + ctx->n_dims / 2;
+        int64_t dst0 = idst;
+        int64_t dst1 = idst + ctx->n_dims / 2;
+        if (src0 < 0 || dst0 < 0 ||
+            (ctx->x_elems != 0 && (uint64_t)src1 >= ctx->x_elems) ||
+            (ctx->dst_elems != 0 && (uint64_t)dst1 >= ctx->dst_elems)) {
+            worker->status = -1;
+            return NULL;
+        }
+
+        float theta_base =
+            (float)ctx->pos[pos_index] * powf(ctx->theta_scale, (float)i0 * 0.5f);
+        float freq_factor = ctx->has_ff ? ctx->freq_factors[i0 / 2] : 1.0f;
+        float cos_theta = 1.0f;
+        float sin_theta = 0.0f;
+        rope_native_yarn(ctx, theta_base / freq_factor, i0, &cos_theta, &sin_theta);
+
+        float x0 = rope_native_load(ctx, ctx->x, src0);
+        float x1 = rope_native_load(ctx, ctx->x, src1);
+        rope_native_store_one(ctx, dst0, x0 * cos_theta - x1 * sin_theta);
+        rope_native_store_one(ctx, dst1, x0 * sin_theta + x1 * cos_theta);
+    }
+
+    worker->status = 0;
+    return NULL;
 }
 
 static void *rope_norm_native_worker_main(void *opaque) {
@@ -6370,37 +6819,38 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
                                                1u << 20);
     if (local_max != 0) {
         if (x_bytes != 0 && x_bytes <= local_max) {
-            local_x = malloc((size_t)x_bytes);
-            if (local_x) {
-                memcpy(local_x, ctx.x, (size_t)x_bytes);
+            if (native_stage_read((uint64_t)(uintptr_t)ctx.x,
+                                  (size_t)x_bytes, &local_x)) {
                 ctx.x = local_x;
             }
         }
         if (dst_bytes != 0 && dst_bytes <= local_max) {
-            local_dst = malloc((size_t)dst_bytes);
-            if (local_dst) {
-                memcpy(local_dst, ctx.dst, (size_t)dst_bytes);
+            if (native_stage_read((uint64_t)(uintptr_t)ctx.dst,
+                                  (size_t)dst_bytes, &local_dst)) {
                 ctx.dst = local_dst;
             }
         }
         if (ctx.pos && pos_bytes != 0 && pos_bytes <= local_max) {
-            local_pos = (int32_t *)malloc((size_t)pos_bytes);
-            if (local_pos) {
-                memcpy(local_pos, ctx.pos, (size_t)pos_bytes);
+            void *stage = NULL;
+            if (native_stage_read((uint64_t)(uintptr_t)ctx.pos,
+                                  (size_t)pos_bytes, &stage)) {
+                local_pos = (int32_t *)stage;
                 ctx.pos = local_pos;
             }
         }
         if (ctx.freq_factors && freq_bytes != 0 && freq_bytes <= local_max) {
-            local_freq = (float *)malloc((size_t)freq_bytes);
-            if (local_freq) {
-                memcpy(local_freq, ctx.freq_factors, (size_t)freq_bytes);
+            void *stage = NULL;
+            if (native_stage_read((uint64_t)(uintptr_t)ctx.freq_factors,
+                                  (size_t)freq_bytes, &stage)) {
+                local_freq = (float *)stage;
                 ctx.freq_factors = local_freq;
             }
         }
         if (ctx.row_indices && rows_bytes != 0 && rows_bytes <= local_max) {
-            local_rows = (int64_t *)malloc((size_t)rows_bytes);
-            if (local_rows) {
-                memcpy(local_rows, ctx.row_indices, (size_t)rows_bytes);
+            void *stage = NULL;
+            if (native_stage_read((uint64_t)(uintptr_t)ctx.row_indices,
+                                  (size_t)rows_bytes, &stage)) {
+                local_rows = (int64_t *)stage;
                 ctx.row_indices = local_rows;
             }
         }
@@ -6426,7 +6876,8 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
         int worker_status = worker.status;
         if (worker_status == 0 && local_dst) {
             uint64_t dst_bytes = kernel_binding_size_for_arg(job, 1);
-            memcpy(dst_writeback, local_dst, (size_t)dst_bytes);
+            (void)native_stage_write((uint64_t)(uintptr_t)dst_writeback,
+                                     local_dst, (size_t)dst_bytes);
         }
         trace_msg("native rope_norm done %s status=%d elapsed_us=%" PRIu64,
                   symbol, worker_status, monotonic_us() - t0);
@@ -6476,7 +6927,8 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
     }
     if (status == 0 && local_dst) {
         uint64_t dst_bytes = kernel_binding_size_for_arg(job, 1);
-        memcpy(dst_writeback, local_dst, (size_t)dst_bytes);
+        (void)native_stage_write((uint64_t)(uintptr_t)dst_writeback,
+                                 local_dst, (size_t)dst_bytes);
     }
     trace_msg("native rope_norm done %s status=%d elapsed_us=%" PRIu64,
               symbol, status, monotonic_us() - t0);
@@ -6485,6 +6937,201 @@ static int invoke_kernel_rope_norm_native(const char *symbol,
     free(local_pos);
     free(local_freq);
     free(local_rows);
+    return status;
+}
+
+static int invoke_kernel_rope_multi_native(const char *symbol,
+                                           const uint64_t *argv,
+                                           const struct PaccJobImage *job,
+                                           size_t argc) {
+    uint64_t t0 = monotonic_us();
+    if (!symbol || !strstr(symbol, "rope_multi")) return 1;
+    if (!job || argc < 21) return -1;
+
+    struct RopeNormNativeCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    if (!rope_multi_parse_template(symbol, &ctx.forward, &ctx.has_ff,
+                                   &ctx.x_type)) {
+        return 1;
+    }
+    ctx.dst_type = ctx.x_type;
+
+    ctx.x = (const void *)(uintptr_t)kernel_cell_u64(argv, argc, 0);
+    ctx.dst = (void *)(uintptr_t)kernel_cell_u64(argv, argc, 1);
+    ctx.ne00 = kernel_cell_i32(argv, argc, 2);
+    ctx.ne01 = kernel_cell_i32(argv, argc, 3);
+    ctx.ne02 = kernel_cell_i32(argv, argc, 4);
+    ctx.s01 = kernel_cell_i32(argv, argc, 5);
+    ctx.s02 = kernel_cell_i32(argv, argc, 6);
+    ctx.s03 = kernel_cell_i32(argv, argc, 7);
+    ctx.s1 = kernel_cell_i32(argv, argc, 8);
+    ctx.s2 = kernel_cell_i32(argv, argc, 9);
+    ctx.s3 = kernel_cell_i32(argv, argc, 10);
+    ctx.n_dims = kernel_cell_i32(argv, argc, 11);
+    ctx.pos = (const int32_t *)(uintptr_t)kernel_cell_u64(argv, argc, 12);
+    ctx.freq_scale = kernel_cell_f32(argv, argc, 13);
+    ctx.ext_factor = kernel_cell_f32(argv, argc, 14);
+    ctx.attn_factor = kernel_cell_f32(argv, argc, 15);
+    {
+        uint64_t corr = kernel_cell_u64(argv, argc, 16);
+        uint32_t lo = (uint32_t)corr;
+        uint32_t hi = (uint32_t)(corr >> 32);
+        memcpy(&ctx.corr_low, &lo, sizeof(ctx.corr_low));
+        memcpy(&ctx.corr_high, &hi, sizeof(ctx.corr_high));
+    }
+    ctx.theta_scale = kernel_cell_f32(argv, argc, 17);
+    ctx.freq_factors = (const float *)(uintptr_t)kernel_cell_u64(argv, argc, 18);
+    kernel_cell_i32x4(argv, argc, 19, ctx.sections);
+    ctx.is_imrope = kernel_cell_i32(argv, argc, 20) != 0;
+    ctx.row_count = pacc_nonzero_dim(job->header.grid_x) *
+                    pacc_nonzero_dim(job->header.block_x);
+    ctx.pair_count = pacc_nonzero_dim(job->header.grid_y) *
+                     pacc_nonzero_dim(job->header.block_y);
+
+    uint64_t x_bytes = kernel_binding_size_for_arg(job, 0);
+    uint64_t dst_bytes = kernel_binding_size_for_arg(job, 1);
+    uint64_t pos_bytes = kernel_binding_size_for_arg(job, 12);
+    uint64_t freq_bytes = kernel_binding_size_for_arg(job, 18);
+    uint64_t elem_bytes = ctx.x_type == PACC_ROPE_SCALAR_F16 ? 2u : 4u;
+    if (x_bytes != 0) ctx.x_elems = x_bytes / elem_bytes;
+    if (dst_bytes != 0) ctx.dst_elems = dst_bytes / elem_bytes;
+    if (pos_bytes != 0) ctx.pos_elems = pos_bytes / sizeof(int32_t);
+    if (freq_bytes != 0) ctx.freq_elems = freq_bytes / sizeof(float);
+
+    int32_t sect_dims = ctx.sections[0] + ctx.sections[1] +
+                        ctx.sections[2] + ctx.sections[3];
+    if (!ctx.x || !ctx.dst || !ctx.pos || ctx.ne00 <= 0 ||
+        ctx.ne01 <= 0 || ctx.ne02 <= 0 || ctx.n_dims <= 0 ||
+        ctx.pair_count == 0 || ctx.row_count == 0 ||
+        ctx.x_elems == 0 || ctx.dst_elems == 0 || sect_dims <= 0) {
+        log_msg("native rope_multi invalid args: x=%p/%" PRIu64
+                "B dst=%p/%" PRIu64 "B pos=%p/%" PRIu64
+                "B ne=(%d,%d,%d) n_dims=%d sections=(%d,%d,%d,%d)"
+                " rows=%u pairs=%u",
+                ctx.x, x_bytes, ctx.dst, dst_bytes, ctx.pos, pos_bytes,
+                ctx.ne00, ctx.ne01, ctx.ne02, ctx.n_dims,
+                ctx.sections[0], ctx.sections[1],
+                ctx.sections[2], ctx.sections[3],
+                ctx.row_count, ctx.pair_count);
+        return -1;
+    }
+
+    void *local_x = NULL;
+    void *local_dst = NULL;
+    int32_t *local_pos = NULL;
+    float *local_freq = NULL;
+    void *dst_writeback = ctx.dst;
+    uint64_t local_max = parse_env_u64_default("PACC_JOBD_ROPE_LOCAL_MAX_BYTES",
+                                               1u << 20);
+    if (local_max != 0) {
+        if (x_bytes != 0 && x_bytes <= local_max) {
+            if (native_stage_read((uint64_t)(uintptr_t)ctx.x,
+                                  (size_t)x_bytes, &local_x)) {
+                ctx.x = local_x;
+            }
+        }
+        if (dst_bytes != 0 && dst_bytes <= local_max) {
+            if (native_stage_read((uint64_t)(uintptr_t)ctx.dst,
+                                  (size_t)dst_bytes, &local_dst)) {
+                ctx.dst = local_dst;
+            }
+        }
+        if (pos_bytes != 0 && pos_bytes <= local_max) {
+            void *stage = NULL;
+            if (native_stage_read((uint64_t)(uintptr_t)ctx.pos,
+                                  (size_t)pos_bytes, &stage)) {
+                local_pos = (int32_t *)stage;
+                ctx.pos = local_pos;
+            }
+        }
+        if (ctx.freq_factors && freq_bytes != 0 && freq_bytes <= local_max) {
+            void *stage = NULL;
+            if (native_stage_read((uint64_t)(uintptr_t)ctx.freq_factors,
+                                  (size_t)freq_bytes, &stage)) {
+                local_freq = (float *)stage;
+                ctx.freq_factors = local_freq;
+            }
+        }
+    }
+
+    uint64_t work_items = (uint64_t)ctx.row_count * ctx.pair_count;
+    unsigned workers = kernel_worker_threads(work_items);
+    trace_msg("native rope_multi %s rows=%u pairs=%u work=%" PRIu64
+              " workers=%u fwd=%u ff=%u type=%d imrope=%u"
+              " sections=(%d,%d,%d,%d)",
+              symbol, ctx.row_count, ctx.pair_count, work_items, workers,
+              ctx.forward ? 1U : 0U, ctx.has_ff ? 1U : 0U,
+              ctx.x_type, ctx.is_imrope ? 1U : 0U,
+              ctx.sections[0], ctx.sections[1],
+              ctx.sections[2], ctx.sections[3]);
+
+    if (workers <= 1 || work_items <= 1) {
+        struct RopeNormNativeWorker worker = {
+            .ctx = &ctx,
+            .begin = 0,
+            .end = work_items,
+            .status = 0,
+        };
+        rope_multi_native_worker_main(&worker);
+        int worker_status = worker.status;
+        if (worker_status == 0 && local_dst) {
+            (void)native_stage_write((uint64_t)(uintptr_t)dst_writeback,
+                                     local_dst, (size_t)dst_bytes);
+        }
+        trace_msg("native rope_multi done %s status=%d elapsed_us=%" PRIu64,
+                  symbol, worker_status, monotonic_us() - t0);
+        free(local_x);
+        free(local_dst);
+        free(local_pos);
+        free(local_freq);
+        return worker_status;
+    }
+
+    pthread_t threads[PACC_KERNEL_MAX_THREADS];
+    struct RopeNormNativeWorker worker[PACC_KERNEL_MAX_THREADS];
+    unsigned created = 0;
+    uint64_t chunk = (work_items + workers - 1u) / workers;
+    memset(worker, 0, sizeof(worker));
+    for (unsigned i = 0; i < workers; i++) {
+        uint64_t begin = (uint64_t)i * chunk;
+        uint64_t end = begin + chunk;
+        if (begin >= work_items) break;
+        if (end > work_items) end = work_items;
+        worker[i].ctx = &ctx;
+        worker[i].begin = begin;
+        worker[i].end = end;
+        worker[i].status = -1;
+        if (pthread_create(&threads[i], NULL, rope_multi_native_worker_main, &worker[i]) != 0) {
+            log_msg("native rope_multi failed to create worker %u", i);
+            for (unsigned j = 0; j < created; j++) {
+                pthread_join(threads[j], NULL);
+            }
+            free(local_x);
+            free(local_dst);
+            free(local_pos);
+            free(local_freq);
+            return -1;
+        }
+        created++;
+    }
+
+    int status = 0;
+    for (unsigned i = 0; i < created; i++) {
+        pthread_join(threads[i], NULL);
+        if (worker[i].status != 0 && status == 0) {
+            status = worker[i].status;
+        }
+    }
+    if (status == 0 && local_dst) {
+        (void)native_stage_write((uint64_t)(uintptr_t)dst_writeback,
+                                 local_dst, (size_t)dst_bytes);
+    }
+    trace_msg("native rope_multi done %s status=%d elapsed_us=%" PRIu64,
+              symbol, status, monotonic_us() - t0);
+    free(local_x);
+    free(local_dst);
+    free(local_pos);
+    free(local_freq);
     return status;
 }
 
@@ -6722,6 +7369,12 @@ static int invoke_kernel_native(const char *symbol,
                                 const uint64_t *args,
                                 const struct PaccJobImage *job,
                                 size_t argc) {
+    if (jobd_force_elf_for_symbol(symbol)) {
+        trace_msg("native shortcut skipped for %s; forcing direct ELF",
+                  symbol ? symbol : "<unknown>");
+        return 1;
+    }
+
     int native_status = invoke_kernel_bin_bcast_native(symbol, args, job, argc);
     if (native_status <= 0) {
         return native_status;
@@ -6747,6 +7400,10 @@ static int invoke_kernel_native(const char *symbol,
         return native_status;
     }
     native_status = invoke_kernel_rope_norm_native(symbol, args, job, argc);
+    if (native_status <= 0) {
+        return native_status;
+    }
+    native_status = invoke_kernel_rope_multi_native(symbol, args, job, argc);
     if (native_status <= 0) {
         return native_status;
     }
@@ -7079,6 +7736,25 @@ static void release_kernel_binding_maps(struct KernelBindingMap *maps, size_t co
             }
             if (jobd_msync_enabled() && maps[i].map.base) {
                 msync(maps[i].map.base, maps[i].map.map_len, MS_SYNC);
+            }
+            jobd_flush_for_device(maps[i].map.ptr, maps[i].map.len);
+        }
+        unmap_phys(&maps[i].map);
+    }
+}
+
+static void release_kernel_binding_maps_native_fast(struct KernelBindingMap *maps,
+                                                    size_t count,
+                                                    bool copyback_outputs) {
+    for (size_t i = 0; i < count; i++) {
+        bool needs_copyback =
+            copyback_outputs &&
+            ((maps[i].flags & PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT) != 0);
+        if (needs_copyback) {
+            if (flush_map_to_phys(&maps[i].map) != 0) {
+                log_msg("native kernel binding copy-back failed: arg=%u phys=0x%" PRIx64
+                        " len=%zu",
+                        maps[i].arg_index, maps[i].map.phys, maps[i].map.len);
             }
             jobd_flush_for_device(maps[i].map.ptr, maps[i].map.len);
         }
@@ -7463,8 +8139,8 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
     void *fn = NULL;
     PaccSetLaunchFn set_launch = NULL;
     int status = 0;
-    uint64_t parse_retries = parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_PARSE_RETRIES", 64);
-    uint64_t parse_retry_us = parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_PARSE_RETRY_US", 2000);
+    uint64_t parse_retries = parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_PARSE_RETRIES", 4096);
+    uint64_t parse_retry_us = parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_PARSE_RETRY_US", 1000);
 
     memset(binding_maps, 0, sizeof(binding_maps));
     memset(&loaded, 0, sizeof(loaded));
@@ -7554,11 +8230,28 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
     if (symbol[0]) {
         int native_status = invoke_kernel_native(symbol, argv, &job, argc);
         if (native_status <= 0) {
-            release_kernel_binding_maps(binding_maps, binding_map_count);
+            uint32_t native_u = (uint32_t)native_status;
+            uint32_t error_status = (native_u & 0xffff0000u) == 0xffff0000u
+                ? native_u
+                : 0xffff5007u;
+            write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, error_status, native_u);
+            release_kernel_binding_maps_native_fast(binding_maps,
+                                                    binding_map_count,
+                                                    native_status == 0);
             free(image_copy);
             unmap_phys(&map);
-            return native_status == 0 ? 0 : 0xffff5007;
+            return native_status == 0 ? 0 : (int)error_status;
         }
+    }
+
+    if (!jobd_elf_fallback_enabled()) {
+        log_msg("kernel native miss: seq=%" PRIu64 " symbol=%s; direct ELF fallback disabled",
+                desc->seq, symbol[0] ? symbol : "<unnamed>");
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5010u, 0);
+        release_kernel_binding_maps(binding_maps, binding_map_count);
+        free(image_copy);
+        unmap_phys(&map);
+        return 0xffff5010u;
     }
 
     if (load_kernel_image(job.elf, job.elf_len, job.header.kernel_name_hash,
@@ -7969,12 +8662,34 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
     return 0xffff00ff;
 }
 
+static bool kernel_completion_visible(int fd, uint64_t seq, uint32_t status) {
+    struct HostStatus seen;
+    uint8_t *copy = NULL;
+    uint64_t phys = shared_ddr_control_phys(HETGPU_PACC_COMPLETION_OFF, sizeof(seen));
+    bool ok = false;
+
+    memset(&seen, 0, sizeof(seen));
+    if (read_phys_copy(fd, phys, sizeof(seen), &copy) == 0 && copy) {
+        memcpy(&seen, copy, sizeof(seen));
+        free(copy);
+        ok = seen.magic == HETGPU_PACC_JOB_MAGIC &&
+             seen.version == HETGPU_PACC_JOB_VERSION &&
+             seen.job_id == PACC_KERNEL_JOB_ID &&
+             seen.seq == seq &&
+             seen.status == status;
+    }
+    return ok;
+}
+
 static enum DispatchPollResult maybe_dispatch_kernel_job(
     int fd,
     volatile struct Doorbell *ctl,
     uint64_t *last_kernel_seq) {
     static uint64_t last_idle_report_seq;
     static uint64_t last_invalid_report_seq;
+    static uint64_t pending_completion_seq;
+    static uint32_t pending_completion_status;
+    static bool pending_completion_valid;
     const struct PaccJobDesc *kernel_desc = (const struct PaccJobDesc *)(const void *)ctl;
     struct PaccJobDesc desc;
     int status;
@@ -8013,14 +8728,51 @@ static enum DispatchPollResult maybe_dispatch_kernel_job(
         return DISPATCH_IDLE;
     }
 
-    *last_kernel_seq = desc.seq;
-    trace_msg("new kernel doorbell: seq=%" PRIu64 " addr=0x%" PRIx64 " len=%" PRIu64,
-              desc.seq, desc.addr, desc.len);
-    mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x5101);
-    write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x5101, (uint32_t)(desc.len & 0xffffffffu));
-    status = dispatch_kernel_job(fd, &desc);
+    if (pending_completion_valid && pending_completion_seq == desc.seq) {
+        status = (int)pending_completion_status;
+        trace_msg("retry kernel completion publish: seq=%" PRIu64 " status=0x%x",
+                  desc.seq, (uint32_t)status);
+    } else {
+        if (pending_completion_valid && pending_completion_seq != desc.seq) {
+            trace_msg("dropping stale pending kernel completion: old_seq=%" PRIu64
+                      " new_seq=%" PRIu64,
+                      pending_completion_seq, desc.seq);
+            pending_completion_valid = false;
+        }
+        g_kernel_completion_beacon_sticky = false;
+        trace_msg("new kernel doorbell: seq=%" PRIu64 " addr=0x%" PRIx64 " len=%" PRIu64,
+                  desc.seq, desc.addr, desc.len);
+        mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x5101);
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x5101, (uint32_t)(desc.len & 0xffffffffu));
+        status = dispatch_kernel_job(fd, &desc);
+        pending_completion_seq = desc.seq;
+        pending_completion_status = (uint32_t)status;
+        pending_completion_valid = true;
+    }
     write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc.seq, (uint32_t)status, 0);
     mirror_host_status(fd, PACC_KERNEL_JOB_ID, desc.seq, (uint32_t)status);
+    if (kernel_completion_visible(fd, desc.seq, (uint32_t)status)) {
+        if (last_kernel_seq) {
+            *last_kernel_seq = desc.seq;
+        }
+        pending_completion_valid = false;
+        g_kernel_completion_beacon_sticky = true;
+        g_kernel_completion_beacon_seq = desc.seq;
+        g_kernel_completion_beacon_status = (uint32_t)status;
+        if ((uint32_t)status == 0) {
+            for (unsigned i = 0; i < 3; i++) {
+                write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x511b, 0);
+                sleep_us(1000);
+            }
+        } else {
+            write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x511b, (uint32_t)status);
+        }
+    } else {
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x511a, (uint32_t)status);
+        trace_msg("kernel completion not visible after mirror: seq=%" PRIu64 " status=0x%x; will retry",
+                  desc.seq, (uint32_t)status);
+        sleep_us(1000);
+    }
     g_response_irq_pending = true;
     trace_msg("kernel dispatch done: seq=%" PRIu64 " status=0x%x",
               desc.seq, (uint32_t)status);
@@ -8166,11 +8918,6 @@ static enum DispatchPollResult dispatch_any_job(
     uint64_t *last_kernel_seq) {
     enum DispatchPollResult result;
 
-    result = maybe_dispatch_arg_slot_job(fd, jobs, strict, last_seq, last_table_seq);
-    if (result == DISPATCH_HANDLED) {
-        return result;
-    }
-
     result = maybe_dispatch_preloaded_job(fd, ctl, jobs, strict, last_seq, last_table_seq);
     if (result == DISPATCH_HANDLED) {
         return result;
@@ -8180,17 +8927,17 @@ static enum DispatchPollResult dispatch_any_job(
         return result == DISPATCH_HANDLED ? result : DISPATCH_IDLE;
     }
 
-    result = maybe_dispatch_arg_slot_job(fd, jobs, strict, last_seq, last_table_seq);
+    result = maybe_dispatch_kernel_job(fd, ctl, last_kernel_seq);
     if (result == DISPATCH_HANDLED) {
         return result;
     }
-
-    result = maybe_dispatch_kernel_job(fd, ctl, last_kernel_seq);
-    if (result != DISPATCH_INVALID) {
-        return result;
+    if (result == DISPATCH_IDLE) {
+        result = maybe_dispatch_arg_slot_job(fd, jobs, strict, last_seq, last_table_seq);
+        return result == DISPATCH_HANDLED ? result : DISPATCH_IDLE;
     }
 
-    return DISPATCH_INVALID;
+    result = maybe_dispatch_arg_slot_job(fd, jobs, strict, last_seq, last_table_seq);
+    return result == DISPATCH_HANDLED ? result : DISPATCH_INVALID;
 }
 
 static void maybe_heartbeat_control(int fd,
@@ -8355,7 +9102,8 @@ static uint32_t load_dispatch_snapshot(int fd,
     detail = control_snapshot_detail(snapshot, last_seq, last_kernel_seq, NULL);
     mirror_diag_progress_status(fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
                                 0x70230000u | detail);
-    if ((detail & 0x3u) != 0) {
+    if ((detail & 0x2u) != 0 ||
+        (((detail & 0x1u) != 0) && jobd_full_control_snapshot_enabled())) {
         mirror_diag_progress_status(fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
                                     0x70240000u | detail);
         if (read_control_snapshot(fd, snapshot, HETGPU_PACC_CONTROL_BYTES) == 0) {
@@ -9039,9 +9787,22 @@ int main(int argc, char **argv) {
                                                heartbeat_tick + 1,
                                                0x7a100000u);
         }
+        pending_job = control_has_pending_job(map_fd, last_seq, last_kernel_seq);
+        if (g_kernel_completion_beacon_sticky && !pending_job) {
+            mirror_host_status(map_fd,
+                               PACC_KERNEL_JOB_ID,
+                               g_kernel_completion_beacon_seq,
+                               g_kernel_completion_beacon_status);
+            write_jobd_beacon(map_fd,
+                              PACC_KERNEL_JOB_ID,
+                              g_kernel_completion_beacon_seq,
+                              g_kernel_completion_beacon_status == 0 ? 0x511b : g_kernel_completion_beacon_status,
+                              g_kernel_completion_beacon_status == 0 ? 0 : g_kernel_completion_beacon_status);
+            sleep_when_idle();
+            continue;
+        }
         mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7001);
         write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7001, 0);
-        pending_job = control_has_pending_job(map_fd, last_seq, last_kernel_seq);
         mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
                                pending_job ? 0x7005 : 0x7002);
         write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,

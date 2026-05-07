@@ -3379,8 +3379,13 @@ unsafe fn configure_pacc_launch_abi(
             break;
         }
 
-        let inline_immediate = !pacc_looks_like_host_param_addr(param as usize);
         let arg_size = pacc_kernel_arg_size(kernel_name, i);
+        let inline_immediate = if arg_size == 1 {
+            let addr = param as usize;
+            !(addr >= 0x1_0000 && addr < 0x0000_8000_0000_0000usize)
+        } else {
+            !pacc_looks_like_host_param_addr(param as usize)
+        };
         let mut record_flags = 0u32;
         let (value, value_hi) = if !inline_immediate && arg_size > 16 {
             let offset = (raw_param_blob.len() + 7) & !7;

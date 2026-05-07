@@ -78,6 +78,7 @@ def patch_payload(entries, label: str, name: str, payload: bytes, pad: int = 0, 
     print(f"patched {label}:{name}: {len(payload)} bytes into {size}-byte slot")
     return True
 
+jobd_threads_present = "PACC_JOBD_KERNEL_THREADS" in os.environ
 jobd_threads = os.environ.get("PACC_JOBD_KERNEL_THREADS", "4").strip() or "4"
 jobd_trace = os.environ.get("PACC_JOBD_TRACE", "0").strip() or "0"
 jobd_kmsg_present = "PACC_JOBD_KMSG" in os.environ
@@ -95,6 +96,7 @@ jobd_initial_scan_us = os.environ.get("PACC_JOBD_INITIAL_SCAN_US", "").strip()
 jobd_idle_sleep_us = os.environ.get("PACC_JOBD_IDLE_SLEEP_US", "").strip()
 jobd_arg_wait_us = os.environ.get("PACC_JOBD_ARG_WAIT_US", "").strip()
 jobd_force_elf = os.environ.get("PACC_JOBD_FORCE_ELF", "0").strip() or "0"
+jobd_generic_noop = os.environ.get("PACC_JOBD_GENERIC_NOOP", "").strip()
 jobd_preloaded_noop = os.environ.get("PACC_JOBD_PRELOADED_NOOP", "0").strip() or "0"
 jobd_gemm_noop = os.environ.get("PACC_JOBD_GEMM_NOOP", "0").strip() or "0"
 jobd_gemm_tiled = os.environ.get("PACC_JOBD_GEMM_TILED", "").strip()
@@ -119,17 +121,21 @@ jobd_boot_marker = os.environ.get("PACC_JOBD_BOOT_MARKER", "0").strip() or "0"
 jobd_seed_current_jobs = os.environ.get("PACC_JOBD_SEED_CURRENT_JOBS", "").strip()
 jobd_shared_ddr_user_off = os.environ.get("PACC_JOBD_SHARED_DDR_USER_OFF", "").strip()
 jobd_shared_ddr_fd_user_off = os.environ.get("PACC_JOBD_SHARED_DDR_FD_USER_OFF", "").strip()
+jobd_bin_bcast_local_max = os.environ.get("PACC_JOBD_BIN_BCAST_LOCAL_MAX_BYTES", "").strip()
 jobd_rope_local_max = os.environ.get("PACC_JOBD_ROPE_LOCAL_MAX_BYTES", "").strip()
 jobd_mmvf_local_x_max = os.environ.get("PACC_JOBD_MMVF_LOCAL_X_MAX_BYTES", "").strip()
 jobd_mmvf_local_y_max = os.environ.get("PACC_JOBD_MMVF_LOCAL_Y_MAX_BYTES", "").strip()
+jobd_arg_slot_scan = os.environ.get("PACC_JOBD_ARG_SLOT_SCAN", os.environ.get("HETGPU_PACC_JOBD_ARG_SLOT_SCAN", "")).strip()
 jobd_kernel_slot_map = os.environ.get("PACC_JOBD_KERNEL_SLOT_MAP", os.environ.get("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP", "")).strip()
 jobd_kernel_slot_map_bytes = os.environ.get("PACC_JOBD_KERNEL_SLOT_MAP_BYTES", os.environ.get("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP_BYTES", "")).strip()
 jobd_kernel_slot_map_off = os.environ.get("PACC_JOBD_KERNEL_SLOT_MAP_OFF", os.environ.get("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP_OFF", "")).strip()
+jobd_helper_io_chunk_bytes = os.environ.get("PACC_JOBD_HELPER_IO_CHUNK_BYTES", os.environ.get("HETGPU_PACC_JOBD_HELPER_IO_CHUNK_BYTES", "")).strip()
+jobd_env_in_bashrc = os.environ.get("PACC_JOBD_ENV_IN_BASHRC", "0").strip() or "0"
 
 rcs_lines = [
     "#!/bin/sh",
 ]
-if jobd_threads != "4":
+if jobd_threads_present or jobd_threads != "4":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_KERNEL_THREADS={jobd_threads}")
 if jobd_trace != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_TRACE={jobd_trace}")
@@ -157,6 +163,8 @@ if jobd_arg_wait_us:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_ARG_WAIT_US={jobd_arg_wait_us}")
 if jobd_force_elf != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FORCE_ELF={jobd_force_elf}")
+if jobd_generic_noop:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_GENERIC_NOOP={jobd_generic_noop}")
 if jobd_preloaded_noop != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_PRELOADED_NOOP={jobd_preloaded_noop}")
 if jobd_gemm_noop != "0":
@@ -199,18 +207,24 @@ if jobd_shared_ddr_user_off:
     rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_USER_OFF={jobd_shared_ddr_user_off}")
 if jobd_shared_ddr_fd_user_off:
     rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_FD_USER_OFF={jobd_shared_ddr_fd_user_off}")
+if jobd_bin_bcast_local_max:
+    rcs_lines.append(f"export PACC_JOBD_BIN_BCAST_LOCAL_MAX_BYTES={jobd_bin_bcast_local_max}")
 if jobd_rope_local_max:
     rcs_lines.append(f"export PACC_JOBD_ROPE_LOCAL_MAX_BYTES={jobd_rope_local_max}")
 if jobd_mmvf_local_x_max:
     rcs_lines.append(f"export PACC_JOBD_MMVF_LOCAL_X_MAX_BYTES={jobd_mmvf_local_x_max}")
 if jobd_mmvf_local_y_max:
     rcs_lines.append(f"export PACC_JOBD_MMVF_LOCAL_Y_MAX_BYTES={jobd_mmvf_local_y_max}")
+if jobd_arg_slot_scan:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_ARG_SLOT_SCAN={jobd_arg_slot_scan}")
 if jobd_kernel_slot_map:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_KERNEL_SLOT_MAP={jobd_kernel_slot_map}")
 if jobd_kernel_slot_map_bytes:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_KERNEL_SLOT_MAP_BYTES={jobd_kernel_slot_map_bytes}")
 if jobd_kernel_slot_map_off:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_KERNEL_SLOT_MAP_OFF={jobd_kernel_slot_map_off}")
+if jobd_helper_io_chunk_bytes:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_HELPER_IO_CHUNK_BYTES={jobd_helper_io_chunk_bytes}")
 shared_ddr_base = os.environ.get("PACC_JOBD_SHARED_DDR_BASE", "").strip()
 shared_ddr_size = os.environ.get("PACC_JOBD_SHARED_DDR_SIZE", "").strip()
 if shared_ddr_base:
@@ -218,6 +232,22 @@ if shared_ddr_base:
 if shared_ddr_size:
     rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_BYTES={shared_ddr_size}")
 rcs_lines.append("exec /home/root/pacc_skl_test --mbox=/dev/mbox </dev/console >/dev/console 2>&1")
+compact_rcs_lines = [rcs_lines[0]]
+exports = [line[len("export "):] for line in rcs_lines[1:] if line.startswith("export ")]
+rest = [line for line in rcs_lines[1:] if not line.startswith("export ")]
+env_payload = None
+if jobd_env_in_bashrc != "0":
+    env_payload = ("\n".join(exports) + "\n").encode()
+    compact_rcs_lines = [
+        rcs_lines[0],
+        "set -a;. /etc/skel/.bashrc;set +a",
+        "exec /home/root/pacc_skl_test --mbox=/dev/mbox --config=/dev/null </dev/console >/dev/console 2>&1",
+    ]
+elif exports:
+    compact_rcs_lines.append("export " + " ".join(exports))
+if jobd_env_in_bashrc == "0":
+    compact_rcs_lines.extend(rest)
+rcs_lines = compact_rcs_lines
 rcs = ("\n".join(rcs_lines) + "\n").encode()
 
 default_conf = b"""gemm 2 2 2 0x20000800 0x20000840 0x20002800 2 2 2 0 0 1
@@ -229,7 +259,7 @@ outer = parse_newc(image)
 patched = 0
 patched += patch_payload(outer, "outer", "home/root/pacc_skl_test", jobd_bytes, 0)
 patched += patch_payload(outer, "outer", "etc/init.d/rcS", rcs, ord("\n"))
-patched += patch_payload(outer, "outer", "etc/skel/.bashrc", conf_bytes or default_conf, ord("\n"))
+patched += patch_payload(outer, "outer", "etc/skel/.bashrc", env_payload or conf_bytes or default_conf, ord("\n"))
 
 inner_name = "core-image-minimal-qemuriscv64.cpio"
 if inner_name in outer:
@@ -237,7 +267,7 @@ if inner_name in outer:
     inner_entries = parse_newc(image, inner["data"], inner["size"])
     patched += patch_payload(inner_entries, "inner", "home/root/pacc_skl_test", jobd_bytes, 0)
     patched += patch_payload(inner_entries, "inner", "etc/init.d/rcS", rcs, ord("\n"))
-    patched += patch_payload(inner_entries, "inner", "etc/skel/.bashrc", conf_bytes or default_conf, ord("\n"))
+    patched += patch_payload(inner_entries, "inner", "etc/skel/.bashrc", env_payload or conf_bytes or default_conf, ord("\n"))
 
 if patched == 0:
     raise SystemExit("no payloads patched")

@@ -119,6 +119,9 @@ def sanitize_ptx_for_parser(path: str) -> None:
 
 def compile_one(src: str, cmd: list[str], out_dir: str, clang: str, host_target: str, prelude: str):
     out = os.path.join(out_dir, os.path.basename(src) + ".ptx")
+    if os.path.exists(out) and os.path.getsize(out) > 50:
+        return src, 0, ""
+
     new = [
         clang,
         f"--target={host_target}",
@@ -199,6 +202,10 @@ def main() -> int:
     if only:
         needles = [item for item in only.split(os.pathsep) if item]
         work = [(src, cmd) for src, cmd in work if any(needle in src for needle in needles)]
+    exclude = os.environ.get("HETGPU_SOURCE_TO_PTX_EXCLUDE")
+    if exclude:
+        needles = [item for item in exclude.split(os.pathsep) if item]
+        work = [(src, cmd) for src, cmd in work if not any(needle in src for needle in needles)]
     prelude = write_cuda_prelude(out_dir)
 
     if jobs == 1 or len(work) <= 1:
