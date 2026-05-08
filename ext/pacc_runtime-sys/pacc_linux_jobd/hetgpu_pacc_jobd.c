@@ -442,6 +442,10 @@ static bool g_response_irq_pending;
 static bool g_kernel_completion_beacon_sticky;
 static uint64_t g_kernel_completion_beacon_seq;
 static uint32_t g_kernel_completion_beacon_status;
+static bool g_preloaded_completion_sticky;
+static uint32_t g_preloaded_completion_job_id;
+static uint64_t g_preloaded_completion_seq;
+static uint32_t g_preloaded_completion_status;
 
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static bool mirror_boot_marker_all_slots_mbox_mmap(int fd, uint32_t status);
@@ -450,6 +454,7 @@ static void mirror_diag_event(int fd, uint32_t job_id, uint64_t seq, uint32_t st
 static void mirror_diag_progress_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static void mirror_progress_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static void write_jobd_beacon(int fd, uint32_t job_id, uint64_t seq, uint32_t phase, uint32_t detail);
+static bool mirror_host_status_control_window_direct(uint32_t job_id, uint64_t seq, uint32_t status);
 static int write_phys_copy_pwrite_only(int fd, uint64_t phys, const void *src, size_t len);
 static int write_phys_copy(int fd, uint64_t phys, const void *src, size_t len);
 static bool write_shared_ddr_devmem_direct(uint64_t phys, const void *src, size_t len);
@@ -705,6 +710,14 @@ static bool jobd_control_pread_enabled(void) {
     return false;
 }
 
+static bool jobd_kernel_metadata_first_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_KERNEL_METADATA_FIRST");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return true;
+}
+
 static bool jobd_arg_slot_scan_enabled(void) {
     const char *value = getenv("HETGPU_PACC_JOBD_ARG_SLOT_SCAN");
     if (value && *value) {
@@ -735,6 +748,14 @@ static bool jobd_progress_status_enabled(void) {
 
 static bool jobd_progress_completion_enabled(void) {
     return env_flag_true(getenv("HETGPU_PACC_JOBD_PROGRESS_COMPLETION"));
+}
+
+static bool jobd_loop_trace_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_LOOP_TRACE"));
+}
+
+static bool jobd_sticky_kernel_completion_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_STICKY_KERNEL_COMPLETION"));
 }
 
 static bool jobd_diag_ring_enabled(void) {
@@ -1361,7 +1382,8 @@ static void read_pacc_id_from_mbox(int mbox_fd) {
 }
 
 static bool claim_pacc_id_from_shared_ddr(int fd) {
-    const uint64_t claim_value = HETGPU_PACC_ID_CLAIM_MAGIC | 1ULL;
+    struct timespec ts = {0};
+    uint64_t claim_token;
 
     if (!g_ddr_info.ddr_base ||
         g_ddr_info.ddr_size < HETGPU_PACC_COUNT * HETGPU_PACC_CONTROL_BYTES) {
@@ -1370,6 +1392,11 @@ static bool claim_pacc_id_from_shared_ddr(int fd) {
                 g_ddr_info.ddr_base, g_ddr_info.ddr_size);
         return false;
     }
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    claim_token = HETGPU_PACC_ID_CLAIM_MAGIC |
+                  0x100ULL |
+                  (((uint64_t)ts.tv_nsec ^ (uint64_t)(uintptr_t)&ts) & 0xffULL);
 
     for (uint32_t slot = 0; slot < HETGPU_PACC_COUNT; slot++) {
         struct Map map = {0};
@@ -1383,16 +1410,21 @@ static bool claim_pacc_id_from_shared_ddr(int fd) {
         }
         volatile uint64_t *claim = (volatile uint64_t *)map.ptr;
         __sync_synchronize();
-        if (__sync_bool_compare_and_swap(claim, 0ULL, claim_value)) {
+        if (*claim == 0ULL) {
+            *claim = claim_token;
             __sync_synchronize();
             if (jobd_msync_enabled()) {
                 msync(map.base, map.map_len, MS_SYNC);
             }
-            unmap_phys(&map);
-            g_pacc_id = slot;
-            log_msg("pacc id %" PRIu64 " claimed from shared DDR slot %u",
-                    g_pacc_id, slot);
-            return true;
+            jobd_io_fence();
+            sleep_us(1000);
+            if (*claim == claim_token) {
+                unmap_phys(&map);
+                g_pacc_id = slot;
+                log_msg("pacc id %" PRIu64 " claimed from shared DDR slot %u via store",
+                        g_pacc_id, slot);
+                return true;
+            }
         }
         trace_msg("pacc id claim slot %u already owned by 0x%" PRIx64,
                   slot, *claim);
@@ -1893,8 +1925,12 @@ static void write_jobd_beacon(int fd, uint32_t job_id, uint64_t seq, uint32_t ph
     }
     phys = shared_ddr_control_phys(HETGPU_PACC_BEACON_OFF, sizeof(beacon));
     jobd_io_fence();
-    if (write_phys_copy_pwrite_only(fd, phys, &beacon, sizeof(beacon)) != 0 &&
-        write_phys_copy(fd, phys, &beacon, sizeof(beacon)) != 0) {
+    if (write_phys_copy(fd, phys, &beacon, sizeof(beacon)) == 0) {
+        jobd_io_fence();
+        return;
+    }
+    if (!jobd_status_pwrite_enabled() ||
+        write_phys_copy_pwrite_only(fd, phys, &beacon, sizeof(beacon)) != 0) {
         if (write_shared_ddr_devmem_direct(phys, &beacon, sizeof(beacon))) {
             jobd_io_fence();
             return;
@@ -2042,6 +2078,96 @@ static bool native_stage_write(uint64_t phys, const void *src, size_t len) {
     return true;
 }
 
+static bool native_stage_read_pread(uint64_t phys, size_t len, void **out) {
+    uint8_t *copy = NULL;
+
+    if (!out || len == 0) {
+        return false;
+    }
+    *out = NULL;
+
+    if (phys_is_shared_ddr(phys, len) && !phys_is_shared_ddr_control(phys, len)) {
+        return native_stage_read(phys, len, out);
+    }
+
+    if (phys_is_shared_ddr(phys, len) && !phys_is_shared_ddr_control(phys, len) &&
+        g_mbox_fd >= 0 && g_ddr_info.ddr_base && phys >= g_ddr_info.ddr_base) {
+        uint64_t ddr_off = phys - g_ddr_info.ddr_base;
+        if ((uint64_t)len <= g_ddr_info.ddr_size &&
+            ddr_off <= g_ddr_info.ddr_size - (uint64_t)len) {
+            uint64_t fd_off = g_shared_ddr_fd_user_off + ddr_off;
+            size_t done = 0;
+            size_t chunk = jobd_helper_io_chunk_bytes();
+            copy = (uint8_t *)malloc(len);
+            if (copy) {
+                while (done < len) {
+                    size_t want = len - done;
+                    if (want > chunk) want = chunk;
+                    ssize_t got = pread(g_mbox_fd, copy + done, want, (off_t)(fd_off + done));
+                    if (got <= 0) {
+                        free(copy);
+                        copy = NULL;
+                        break;
+                    }
+                    done += (size_t)got;
+                }
+                if (copy) {
+                    *out = copy;
+                    return true;
+                }
+            }
+        }
+    }
+
+    if (phys_is_shared_ddr(phys, len) && g_mbox_fd >= 0 &&
+        read_phys_copy_pread_only(g_mbox_fd, phys, len, &copy) == 0 && copy) {
+        *out = copy;
+        return true;
+    }
+    return native_stage_read(phys, len, out);
+}
+
+static bool native_stage_write_pwrite(uint64_t phys, const void *src, size_t len) {
+    if (!src) {
+        return false;
+    }
+    if (len == 0) {
+        return true;
+    }
+    if (phys_is_shared_ddr(phys, len) && !phys_is_shared_ddr_control(phys, len)) {
+        return native_stage_write(phys, src, len);
+    }
+    if (phys_is_shared_ddr(phys, len) && !phys_is_shared_ddr_control(phys, len) &&
+        g_mbox_fd >= 0 && g_ddr_info.ddr_base && phys >= g_ddr_info.ddr_base) {
+        uint64_t ddr_off = phys - g_ddr_info.ddr_base;
+        if ((uint64_t)len <= g_ddr_info.ddr_size &&
+            ddr_off <= g_ddr_info.ddr_size - (uint64_t)len) {
+            uint64_t fd_off = g_shared_ddr_fd_user_off + ddr_off;
+            const uint8_t *buf = (const uint8_t *)src;
+            size_t done = 0;
+            size_t chunk = jobd_helper_io_chunk_bytes();
+            while (done < len) {
+                size_t want = len - done;
+                if (want > chunk) want = chunk;
+                ssize_t put = pwrite(g_mbox_fd, buf + done, want, (off_t)(fd_off + done));
+                if (put <= 0) {
+                    break;
+                }
+                done += (size_t)put;
+            }
+            if (done == len) {
+                jobd_io_fence();
+                return true;
+            }
+        }
+    }
+    if (phys_is_shared_ddr(phys, len) && g_mbox_fd >= 0 &&
+        write_phys_copy_pwrite_only(g_mbox_fd, phys, src, len) == 0) {
+        return true;
+    }
+    return native_stage_write(phys, src, len);
+}
+
 static int map_phys_copy_fallback(int fd, uint64_t phys, size_t len, struct Map *out) {
     uint8_t *copy = NULL;
     if (!out || !g_ddr_info.ddr_base || phys < g_ddr_info.ddr_base ||
@@ -2155,6 +2281,27 @@ static int read_control_snapshot(int fd, void *out, size_t len) {
     memcpy(out, copy, len);
     free(copy);
     return 0;
+}
+
+static bool read_mbox_kernel_desc(int mbox_fd, struct PaccJobDesc *desc) {
+    struct PaccJobDesc tmp;
+    ssize_t got;
+
+    if (mbox_fd < 0 || !desc) {
+        return false;
+    }
+    memset(&tmp, 0, sizeof(tmp));
+    jobd_io_fence();
+    got = pread(mbox_fd, &tmp, sizeof(tmp), 0);
+    jobd_io_fence();
+    if (got != (ssize_t)sizeof(tmp)) {
+        return false;
+    }
+    if (tmp.buf_info != PACC_JOB_MAGIC || tmp.seq == 0 || tmp.addr == 0 || tmp.len == 0) {
+        return false;
+    }
+    *desc = tmp;
+    return true;
 }
 
 static bool probe_shared_ddr_mmap_at(int fd, uint64_t user_off) {
@@ -5220,14 +5367,37 @@ static enum PaccMmvfXType mmvf_type_from_symbol(const char *symbol) {
     return PACC_MMVF_UNSUPPORTED;
 }
 
-static uint64_t kernel_binding_size_for_arg(const struct PaccJobImage *job, uint32_t arg_index) {
+static const struct PaccKernelBufferBinding *kernel_binding_for_arg(const struct PaccJobImage *job,
+                                                                    uint32_t arg_index) {
     if (!job || !job->bindings) return 0;
     for (size_t i = 0; i < job->binding_count; i++) {
         if (job->bindings[i].arg_index == arg_index) {
-            return job->bindings[i].size;
+            return &job->bindings[i];
         }
     }
     return 0;
+}
+
+static uint64_t kernel_binding_size_for_arg(const struct PaccJobImage *job, uint32_t arg_index) {
+    const struct PaccKernelBufferBinding *binding = kernel_binding_for_arg(job, arg_index);
+    return binding ? binding->size : 0;
+}
+
+static bool kernel_binding_phys_size_for_arg(const struct PaccJobImage *job,
+                                             uint32_t arg_index,
+                                             uint64_t *phys,
+                                             size_t *size) {
+    const struct PaccKernelBufferBinding *binding = kernel_binding_for_arg(job, arg_index);
+    if (!binding || !binding->addr || !binding->size || binding->size > (uint64_t)SIZE_MAX) {
+        return false;
+    }
+    if (phys) {
+        *phys = binding->addr;
+    }
+    if (size) {
+        *size = (size_t)binding->size;
+    }
+    return true;
 }
 
 static size_t kernel_binding_map_bytes(const struct PaccKernelBufferBinding *binding,
@@ -7365,6 +7535,405 @@ static int invoke_kernel_set_rows_native(const char *symbol,
     return status;
 }
 
+static int invoke_kernel_deepep_layout_native(const char *symbol,
+                                              const uint64_t *argv,
+                                              const struct PaccJobImage *job,
+                                              size_t argc) {
+    if (!symbol || !strstr(symbol, "deep_ep") || !strstr(symbol, "get_dispatch_layout")) {
+        return 1;
+    }
+    if (argc < 9) {
+        log_msg("native deepep layout invalid argc=%zu symbol=%s", argc, symbol);
+        return -1;
+    }
+
+    int num_tokens = kernel_cell_i32(argv, argc, 5);
+    int num_topk = kernel_cell_i32(argv, argc, 6);
+    int num_ranks = kernel_cell_i32(argv, argc, 7);
+    int num_experts = kernel_cell_i32(argv, argc, 8);
+
+    if (num_tokens < 0 || num_topk <= 0 || num_ranks <= 0 || num_experts <= 0) {
+        log_msg("native deepep layout invalid scalar args: tokens=%d topk_n=%d ranks=%d experts=%d",
+                num_tokens, num_topk, num_ranks, num_experts);
+        return -1;
+    }
+
+    int num_expert_per_rank = num_experts / num_ranks;
+    if (num_expert_per_rank <= 0) {
+        return -1;
+    }
+
+    size_t nt = (size_t)num_tokens;
+    size_t nk = (size_t)num_topk;
+    size_t nr = (size_t)num_ranks;
+    size_t ne = (size_t)num_experts;
+    if (nt && nk > SIZE_MAX / nt) {
+        log_msg("native deepep layout topk element count overflow");
+        return -1;
+    }
+    size_t topk_elems = nt * nk;
+    if (topk_elems > SIZE_MAX / sizeof(int64_t) ||
+        nr > SIZE_MAX / sizeof(int) ||
+        ne > SIZE_MAX / sizeof(int) ||
+        (nt && nr > SIZE_MAX / nt)) {
+        log_msg("native deepep layout byte count overflow");
+        return -1;
+    }
+    size_t topk_bytes = topk_elems * sizeof(int64_t);
+    size_t rank_bytes = nr * sizeof(int);
+    size_t expert_bytes = ne * sizeof(int);
+    size_t token_rank_elems = nt * nr;
+    size_t in_rank_bytes = token_rank_elems * sizeof(uint8_t);
+
+    int num_rdma_ranks = 0;
+    size_t rdma_bytes = 0;
+    if (num_ranks > 8 && (num_ranks % 8) == 0) {
+        num_rdma_ranks = num_ranks / 8;
+        rdma_bytes = (size_t)num_rdma_ranks * sizeof(int);
+    }
+
+    uint64_t topk_phys = 0, rank_phys = 0, rdma_phys = 0, expert_phys = 0, in_rank_phys = 0;
+    size_t topk_bind_bytes = 0, rank_bind_bytes = 0, rdma_bind_bytes = 0;
+    size_t expert_bind_bytes = 0, in_rank_bind_bytes = 0;
+    if (!kernel_binding_phys_size_for_arg(job, 0, &topk_phys, &topk_bind_bytes) ||
+        !kernel_binding_phys_size_for_arg(job, 1, &rank_phys, &rank_bind_bytes) ||
+        !kernel_binding_phys_size_for_arg(job, 3, &expert_phys, &expert_bind_bytes) ||
+        !kernel_binding_phys_size_for_arg(job, 4, &in_rank_phys, &in_rank_bind_bytes)) {
+        log_msg("native deepep layout missing required binding metadata");
+        return -1;
+    }
+    bool have_rdma = kernel_binding_phys_size_for_arg(job, 2, &rdma_phys, &rdma_bind_bytes);
+    if (topk_bind_bytes < topk_bytes ||
+        rank_bind_bytes < rank_bytes ||
+        expert_bind_bytes < expert_bytes ||
+        in_rank_bind_bytes < in_rank_bytes ||
+        (rdma_bytes && (!have_rdma || rdma_bind_bytes < rdma_bytes))) {
+        log_msg("native deepep layout binding too small: topk=%zu/%zu rank=%zu/%zu "
+                "rdma=%zu/%zu expert=%zu/%zu in_rank=%zu/%zu",
+                topk_bind_bytes, topk_bytes, rank_bind_bytes, rank_bytes,
+                rdma_bind_bytes, rdma_bytes, expert_bind_bytes, expert_bytes,
+                in_rank_bind_bytes, in_rank_bytes);
+        return -1;
+    }
+
+    if (num_ranks == 1 && env_flag_default_true("HETGPU_PACC_DEEPEP_LAYOUT_FAST_RANK1")) {
+        int rank_one = num_tokens;
+        uint8_t *in_rank_one = token_rank_elems ? (uint8_t *)calloc(token_rank_elems, sizeof(uint8_t)) : NULL;
+        int *expert_zero = ne ? (int *)calloc(ne, sizeof(int)) : NULL;
+        if ((token_rank_elems && !in_rank_one) || (ne && !expert_zero)) {
+            free(in_rank_one);
+            free(expert_zero);
+            return -1;
+        }
+        if (in_rank_one) {
+            memset(in_rank_one, 1, token_rank_elems);
+        }
+        bool ok =
+            native_stage_write_pwrite(rank_phys, &rank_one, sizeof(rank_one)) &&
+            native_stage_write_pwrite(expert_phys, expert_zero, expert_bytes) &&
+            (!in_rank_bytes || native_stage_write_pwrite(in_rank_phys, in_rank_one, in_rank_bytes));
+        free(in_rank_one);
+        free(expert_zero);
+        return ok ? 0 : -1;
+    }
+
+    void *topk_copy = NULL;
+    if (topk_bytes && !native_stage_read_pread(topk_phys, topk_bytes, &topk_copy)) {
+        log_msg("native deepep layout failed to read topk phys=0x%llx bytes=%zu",
+                (unsigned long long)topk_phys, topk_bytes);
+        return -1;
+    }
+    const int64_t *topk_idx = (const int64_t *)topk_copy;
+    int *num_tokens_per_rank = (int *)calloc(nr, sizeof(int));
+    int *num_tokens_per_rdma_rank = rdma_bytes ? (int *)calloc((size_t)num_rdma_ranks, sizeof(int)) : NULL;
+    int *num_tokens_per_expert = (int *)calloc(ne, sizeof(int));
+    uint8_t *is_token_in_rank = token_rank_elems ? (uint8_t *)calloc(token_rank_elems, sizeof(uint8_t)) : NULL;
+    uint8_t *seen_rank = (uint8_t *)calloc((size_t)num_ranks, 1);
+    uint8_t *seen_rdma = NULL;
+    int status = -1;
+
+    if (!num_tokens_per_rank || (rdma_bytes && !num_tokens_per_rdma_rank) ||
+        !num_tokens_per_expert || (token_rank_elems && !is_token_in_rank) || !seen_rank) {
+        log_msg("native deepep layout allocation failed");
+        goto out;
+    }
+    if (rdma_bytes) {
+        seen_rdma = (uint8_t *)calloc((size_t)num_rdma_ranks, 1);
+        if (!seen_rdma) {
+            log_msg("native deepep layout rdma allocation failed");
+            goto out;
+        }
+    }
+
+    for (int token = 0; token < num_tokens; token++) {
+        memset(seen_rank, 0, (size_t)num_ranks);
+        if (seen_rdma) {
+            memset(seen_rdma, 0, (size_t)num_rdma_ranks);
+        }
+
+        const int64_t *row = topk_idx + (size_t)token * (size_t)num_topk;
+        for (int j = 0; j < num_topk; j++) {
+            int expert = (int)row[j];
+            if (expert < 0 || expert >= num_experts) {
+                continue;
+            }
+            num_tokens_per_expert[expert]++;
+
+            int rank = expert / num_expert_per_rank;
+            if (rank < 0) {
+                rank = 0;
+            } else if (rank >= num_ranks) {
+                rank = num_ranks - 1;
+            }
+            seen_rank[rank] = 1;
+            if (seen_rdma) {
+                seen_rdma[rank / 8] = 1;
+            }
+        }
+
+        for (int rank = 0; rank < num_ranks; rank++) {
+            if (seen_rank[rank]) {
+                num_tokens_per_rank[rank]++;
+                is_token_in_rank[(size_t)token * (size_t)num_ranks + (size_t)rank] = 1;
+            }
+        }
+        if (seen_rdma) {
+            for (int rank = 0; rank < num_rdma_ranks; rank++) {
+                if (seen_rdma[rank]) {
+                    num_tokens_per_rdma_rank[rank]++;
+                }
+            }
+        }
+    }
+
+    void *rank_arg_ptr = (void *)(uintptr_t)kernel_cell_u64(argv, argc, 1);
+    void *rdma_arg_ptr = have_rdma ? (void *)(uintptr_t)kernel_cell_u64(argv, argc, 2) : NULL;
+    void *expert_arg_ptr = (void *)(uintptr_t)kernel_cell_u64(argv, argc, 3);
+    void *in_rank_arg_ptr = (void *)(uintptr_t)kernel_cell_u64(argv, argc, 4);
+    if (rank_arg_ptr && rank_bytes) {
+        memcpy(rank_arg_ptr, num_tokens_per_rank, rank_bytes);
+    }
+    if (rdma_arg_ptr && rdma_bytes) {
+        memcpy(rdma_arg_ptr, num_tokens_per_rdma_rank, rdma_bytes);
+    }
+    if (expert_arg_ptr && expert_bytes) {
+        memcpy(expert_arg_ptr, num_tokens_per_expert, expert_bytes);
+    }
+    if (in_rank_arg_ptr && in_rank_bytes) {
+        memcpy(in_rank_arg_ptr, is_token_in_rank, in_rank_bytes);
+    }
+    jobd_io_fence();
+
+    if (!native_stage_write_pwrite(rank_phys, num_tokens_per_rank, rank_bytes) ||
+        (rdma_bytes && !native_stage_write_pwrite(rdma_phys, num_tokens_per_rdma_rank, rdma_bytes)) ||
+        !native_stage_write_pwrite(expert_phys, num_tokens_per_expert, expert_bytes) ||
+        (in_rank_bytes && !native_stage_write_pwrite(in_rank_phys, is_token_in_rank, in_rank_bytes))) {
+        log_msg("native deepep layout failed to write output buffers");
+        goto out;
+    }
+
+    trace_msg("native deepep layout done: tokens=%d topk=%d ranks=%d experts=%d",
+              num_tokens, num_topk, num_ranks, num_experts);
+    status = 0;
+
+out:
+    free(is_token_in_rank);
+    free(num_tokens_per_expert);
+    free(num_tokens_per_rdma_rank);
+    free(num_tokens_per_rank);
+    free(topk_copy);
+    free(seen_rdma);
+    free(seen_rank);
+    return status;
+}
+
+static int32_t kernel_arg_record_i32_for_arg(const struct PaccJobImage *job, uint32_t arg_index) {
+    if (!job || !job->arg_records || arg_index >= job->arg_count) {
+        return 0;
+    }
+    return (int32_t)job->arg_records[arg_index].value;
+}
+
+static void deepep_direct_marker(uint64_t seq, uint32_t status, uint32_t aux) {
+    if (seq) {
+        mirror_host_status(g_mbox_fd, PACC_KERNEL_JOB_ID, seq, status);
+        write_jobd_beacon(g_mbox_fd, PACC_KERNEL_JOB_ID, seq, status, aux);
+    }
+}
+
+static int invoke_kernel_deepep_layout_native_direct(const char *symbol,
+                                                     const struct PaccJobImage *job,
+                                                     uint64_t seq) {
+    if (!symbol || !strstr(symbol, "deep_ep") || !strstr(symbol, "get_dispatch_layout")) {
+        return 1;
+    }
+    deepep_direct_marker(seq, 0x5d010000u, 0);
+    if (!job || job->arg_count < 9) {
+        log_msg("native deepep layout direct invalid argc=%zu symbol=%s",
+                job ? job->arg_count : 0, symbol);
+        return -1;
+    }
+
+    int num_tokens = kernel_arg_record_i32_for_arg(job, 5);
+    int num_topk = kernel_arg_record_i32_for_arg(job, 6);
+    int num_ranks = kernel_arg_record_i32_for_arg(job, 7);
+    int num_experts = kernel_arg_record_i32_for_arg(job, 8);
+
+    if (num_tokens < 0 || num_topk <= 0 || num_ranks <= 0 || num_experts <= 0) {
+        log_msg("native deepep layout direct invalid scalar args: tokens=%d topk_n=%d ranks=%d experts=%d",
+                num_tokens, num_topk, num_ranks, num_experts);
+        return -1;
+    }
+
+    int num_expert_per_rank = num_experts / num_ranks;
+    if (num_expert_per_rank <= 0) {
+        return -1;
+    }
+
+    size_t nt = (size_t)num_tokens;
+    size_t nk = (size_t)num_topk;
+    size_t nr = (size_t)num_ranks;
+    size_t ne = (size_t)num_experts;
+    if (nt && nk > SIZE_MAX / nt) {
+        return -1;
+    }
+    size_t topk_elems = nt * nk;
+    if (topk_elems > SIZE_MAX / sizeof(int64_t) ||
+        nr > SIZE_MAX / sizeof(int) ||
+        ne > SIZE_MAX / sizeof(int) ||
+        (nt && nr > SIZE_MAX / nt)) {
+        return -1;
+    }
+    size_t topk_bytes = topk_elems * sizeof(int64_t);
+    size_t rank_bytes = nr * sizeof(int);
+    size_t expert_bytes = ne * sizeof(int);
+    size_t token_rank_elems = nt * nr;
+    size_t in_rank_bytes = token_rank_elems * sizeof(uint8_t);
+
+    int num_rdma_ranks = 0;
+    size_t rdma_bytes = 0;
+    if (num_ranks > 8 && (num_ranks % 8) == 0) {
+        num_rdma_ranks = num_ranks / 8;
+        rdma_bytes = (size_t)num_rdma_ranks * sizeof(int);
+    }
+
+    uint64_t topk_phys = 0, rank_phys = 0, rdma_phys = 0, expert_phys = 0, in_rank_phys = 0;
+    size_t topk_bind_bytes = 0, rank_bind_bytes = 0, rdma_bind_bytes = 0;
+    size_t expert_bind_bytes = 0, in_rank_bind_bytes = 0;
+    if (!kernel_binding_phys_size_for_arg(job, 0, &topk_phys, &topk_bind_bytes) ||
+        !kernel_binding_phys_size_for_arg(job, 1, &rank_phys, &rank_bind_bytes) ||
+        !kernel_binding_phys_size_for_arg(job, 3, &expert_phys, &expert_bind_bytes) ||
+        !kernel_binding_phys_size_for_arg(job, 4, &in_rank_phys, &in_rank_bind_bytes)) {
+        log_msg("native deepep layout direct missing required binding metadata");
+        return -1;
+    }
+    deepep_direct_marker(seq, 0x5d020000u, (uint32_t)(topk_bind_bytes & 0xffffffffu));
+    bool have_rdma = kernel_binding_phys_size_for_arg(job, 2, &rdma_phys, &rdma_bind_bytes);
+    if (topk_bind_bytes < topk_bytes ||
+        rank_bind_bytes < rank_bytes ||
+        expert_bind_bytes < expert_bytes ||
+        in_rank_bind_bytes < in_rank_bytes ||
+        (rdma_bytes && (!have_rdma || rdma_bind_bytes < rdma_bytes))) {
+        log_msg("native deepep layout direct binding too small: topk=%zu/%zu rank=%zu/%zu "
+                "rdma=%zu/%zu expert=%zu/%zu in_rank=%zu/%zu",
+                topk_bind_bytes, topk_bytes, rank_bind_bytes, rank_bytes,
+                rdma_bind_bytes, rdma_bytes, expert_bind_bytes, expert_bytes,
+                in_rank_bind_bytes, in_rank_bytes);
+        return -1;
+    }
+
+    void *topk_copy = NULL;
+    if (topk_bytes && !native_stage_read_pread(topk_phys, topk_bytes, &topk_copy)) {
+        log_msg("native deepep layout direct failed to read topk phys=0x%llx bytes=%zu",
+                (unsigned long long)topk_phys, topk_bytes);
+        return -1;
+    }
+    deepep_direct_marker(seq, 0x5d030000u, topk_copy ? (uint32_t)((const int64_t *)topk_copy)[0] : 0);
+
+    const int64_t *topk_idx = (const int64_t *)topk_copy;
+    int *num_tokens_per_rank = (int *)calloc(nr, sizeof(int));
+    int *num_tokens_per_rdma_rank = rdma_bytes ? (int *)calloc((size_t)num_rdma_ranks, sizeof(int)) : NULL;
+    int *num_tokens_per_expert = (int *)calloc(ne, sizeof(int));
+    uint8_t *is_token_in_rank = token_rank_elems ? (uint8_t *)calloc(token_rank_elems, sizeof(uint8_t)) : NULL;
+    uint8_t *seen_rank = (uint8_t *)calloc((size_t)num_ranks, 1);
+    uint8_t *seen_rdma = NULL;
+    int status = -1;
+
+    if (!num_tokens_per_rank || (rdma_bytes && !num_tokens_per_rdma_rank) ||
+        !num_tokens_per_expert || (token_rank_elems && !is_token_in_rank) || !seen_rank) {
+        goto direct_out;
+    }
+    if (rdma_bytes) {
+        seen_rdma = (uint8_t *)calloc((size_t)num_rdma_ranks, 1);
+        if (!seen_rdma) {
+            goto direct_out;
+        }
+    }
+
+    for (int token = 0; token < num_tokens; token++) {
+        memset(seen_rank, 0, (size_t)num_ranks);
+        if (seen_rdma) {
+            memset(seen_rdma, 0, (size_t)num_rdma_ranks);
+        }
+
+        const int64_t *row = topk_idx + (size_t)token * (size_t)num_topk;
+        for (int j = 0; j < num_topk; j++) {
+            int expert = (int)row[j];
+            if (expert < 0 || expert >= num_experts) {
+                continue;
+            }
+            num_tokens_per_expert[expert]++;
+
+            int rank = expert / num_expert_per_rank;
+            if (rank < 0) {
+                rank = 0;
+            } else if (rank >= num_ranks) {
+                rank = num_ranks - 1;
+            }
+            seen_rank[rank] = 1;
+            if (seen_rdma) {
+                seen_rdma[rank / 8] = 1;
+            }
+        }
+
+        for (int rank = 0; rank < num_ranks; rank++) {
+            if (seen_rank[rank]) {
+                num_tokens_per_rank[rank]++;
+                is_token_in_rank[(size_t)token * (size_t)num_ranks + (size_t)rank] = 1;
+            }
+        }
+        if (seen_rdma) {
+            for (int rank = 0; rank < num_rdma_ranks; rank++) {
+                if (seen_rdma[rank]) {
+                    num_tokens_per_rdma_rank[rank]++;
+                }
+            }
+        }
+    }
+
+    deepep_direct_marker(seq, 0x5d040000u, nr ? (uint32_t)num_tokens_per_rank[0] : 0);
+    if (!native_stage_write_pwrite(rank_phys, num_tokens_per_rank, rank_bytes) ||
+        (rdma_bytes && !native_stage_write_pwrite(rdma_phys, num_tokens_per_rdma_rank, rdma_bytes)) ||
+        !native_stage_write_pwrite(expert_phys, num_tokens_per_expert, expert_bytes) ||
+        (in_rank_bytes && !native_stage_write_pwrite(in_rank_phys, is_token_in_rank, in_rank_bytes))) {
+        log_msg("native deepep layout direct failed to write output buffers");
+        goto direct_out;
+    }
+    deepep_direct_marker(seq, 0x5d050000u, nr ? (uint32_t)num_tokens_per_rank[0] : 0);
+
+    status = 0;
+
+direct_out:
+    free(is_token_in_rank);
+    free(num_tokens_per_expert);
+    free(num_tokens_per_rdma_rank);
+    free(num_tokens_per_rank);
+    free(topk_copy);
+    free(seen_rdma);
+    free(seen_rank);
+    return status;
+}
+
 static int invoke_kernel_native(const char *symbol,
                                 const uint64_t *args,
                                 const struct PaccJobImage *job,
@@ -7388,6 +7957,10 @@ static int invoke_kernel_native(const char *symbol,
         return native_status;
     }
     native_status = invoke_kernel_set_rows_native(symbol, args, job, argc);
+    if (native_status <= 0) {
+        return native_status;
+    }
+    native_status = invoke_kernel_deepep_layout_native(symbol, args, job, argc);
     if (native_status <= 0) {
         return native_status;
     }
@@ -7915,9 +8488,15 @@ static void trace_kernel_param_cells(const char *symbol,
     }
 }
 
-static int parse_kernel_job_image(const uint8_t *image, size_t image_len, struct PaccJobImage *out) {
+static int parse_kernel_job_image_with_total(const uint8_t *image,
+                                             size_t image_len,
+                                             size_t total_len,
+                                             struct PaccJobImage *out) {
     size_t abi_len = PACC_KERNEL_LAUNCH_ABI_WIRE_BYTES;
     g_kernel_parse_error = 0;
+    if (total_len < image_len) {
+        total_len = image_len;
+    }
 
     if (!image || !out || image_len < PACC_JOB_IMAGE_HEADER_WIRE_BYTES) {
         log_msg("kernel image parse failed: image=%p out=%p len=%zu header=%zu",
@@ -7950,17 +8529,20 @@ static int parse_kernel_job_image(const uint8_t *image, size_t image_len, struct
         g_kernel_parse_error = 0x02;
         return -1;
     }
-    if (out->header.entry_offset > image_len ||
-        out->header.image_size > image_len - out->header.entry_offset) {
+    if (out->header.entry_offset > total_len ||
+        out->header.image_size > total_len - out->header.entry_offset) {
         log_msg("kernel image parse failed: ELF bounds entry=0x%" PRIx64
-                " image=0x%" PRIx64 " len=0x%zx flags=0x%x hash=0x%" PRIx64,
-                out->header.entry_offset, out->header.image_size, image_len,
+                " image=0x%" PRIx64 " len=0x%zx total=0x%zx flags=0x%x hash=0x%" PRIx64,
+                out->header.entry_offset, out->header.image_size, image_len, total_len,
                 out->header.flags, out->header.kernel_name_hash);
         g_kernel_parse_error = 0x03;
         return -1;
     }
-    out->elf = image + out->header.entry_offset;
     out->elf_len = (size_t)out->header.image_size;
+    if (out->header.entry_offset <= image_len &&
+        out->header.image_size <= image_len - out->header.entry_offset) {
+        out->elf = image + out->header.entry_offset;
+    }
 
     if (out->header.flags & PACC_JOB_FLAG_HAS_LAUNCH_ABI) {
         if (image_len < PACC_JOB_IMAGE_HEADER_WIRE_BYTES + abi_len) {
@@ -8074,6 +8656,10 @@ static int parse_kernel_job_image(const uint8_t *image, size_t image_len, struct
     return 0;
 }
 
+static int parse_kernel_job_image(const uint8_t *image, size_t image_len, struct PaccJobImage *out) {
+    return parse_kernel_job_image_with_total(image, image_len, image_len, out);
+}
+
 static void reset_kernel_job_image_view(struct Map *map, uint8_t **image_copy) {
     if (image_copy && *image_copy) {
         free(*image_copy);
@@ -8112,6 +8698,181 @@ static int load_kernel_job_image_view(int fd,
     return 0;
 }
 
+static bool kernel_metadata_section_need(size_t *need,
+                                         size_t entry_offset,
+                                         uint32_t offset,
+                                         uint32_t count,
+                                         uint32_t wire_bytes) {
+    size_t bytes;
+    size_t end;
+
+    if (!need || count == 0) {
+        return true;
+    }
+    if (count > SIZE_MAX / wire_bytes) {
+        return false;
+    }
+    bytes = (size_t)count * (size_t)wire_bytes;
+    if ((size_t)offset > SIZE_MAX - bytes) {
+        return false;
+    }
+    end = (size_t)offset + bytes;
+    if (end > entry_offset) {
+        return false;
+    }
+    if (end > *need) {
+        *need = end;
+    }
+    return true;
+}
+
+static bool kernel_metadata_blob_need(size_t *need,
+                                      size_t entry_offset,
+                                      uint32_t offset,
+                                      uint32_t size) {
+    size_t end;
+
+    if (!need || size == 0) {
+        return true;
+    }
+    if ((size_t)offset > SIZE_MAX - (size_t)size) {
+        return false;
+    }
+    end = (size_t)offset + (size_t)size;
+    if (end > entry_offset) {
+        return false;
+    }
+    if (end > *need) {
+        *need = end;
+    }
+    return true;
+}
+
+static bool kernel_metadata_prefix_len_from_head(const uint8_t *head,
+                                                 size_t head_len,
+                                                 size_t total_len,
+                                                 size_t *prefix_out) {
+    uint64_t magic;
+    uint32_t version;
+    uint32_t flags;
+    uint64_t entry_offset_u64;
+    uint64_t image_size;
+    size_t entry_offset;
+    size_t need = PACC_JOB_IMAGE_HEADER_WIRE_BYTES + PACC_KERNEL_LAUNCH_ABI_WIRE_BYTES;
+    const uint8_t *abi;
+    uint64_t abi_magic;
+    uint32_t abi_version;
+    uint32_t arg_count;
+    uint32_t binding_count;
+    uint32_t raw_size;
+    uint32_t name_size;
+    uint32_t arg_off;
+    uint32_t binding_off;
+    uint32_t raw_off;
+    uint32_t name_off;
+
+    if (!head || !prefix_out || head_len < need) {
+        return false;
+    }
+    magic = read_u64_le(head + 0);
+    version = read_u32_le(head + 8);
+    flags = read_u32_le(head + 12);
+    entry_offset_u64 = read_u64_le(head + 16);
+    image_size = read_u64_le(head + 24);
+    if (magic != PACC_JOB_MAGIC || version != PACC_JOB_VERSION ||
+        !(flags & PACC_JOB_FLAG_HAS_LAUNCH_ABI)) {
+        return false;
+    }
+    if (entry_offset_u64 > (uint64_t)SIZE_MAX ||
+        entry_offset_u64 > (uint64_t)total_len ||
+        image_size > (uint64_t)total_len - entry_offset_u64) {
+        return false;
+    }
+    entry_offset = (size_t)entry_offset_u64;
+    if (entry_offset < need) {
+        return false;
+    }
+
+    abi = head + PACC_JOB_IMAGE_HEADER_WIRE_BYTES;
+    abi_magic = read_u64_le(abi + 0);
+    abi_version = read_u32_le(abi + 8);
+    if (abi_magic != PACC_KERNEL_LAUNCH_ABI_MAGIC ||
+        abi_version != PACC_KERNEL_LAUNCH_ABI_VERSION) {
+        return false;
+    }
+
+    arg_off = read_u32_le(abi + 16);
+    arg_count = read_u32_le(abi + 20);
+    binding_off = read_u32_le(abi + 24);
+    binding_count = read_u32_le(abi + 28);
+    raw_off = read_u32_le(abi + 32);
+    raw_size = read_u32_le(abi + 36);
+    name_off = read_u32_le(abi + 40);
+    name_size = read_u32_le(abi + 44);
+
+    if (arg_count > PACC_MAX_KERNEL_ARGS ||
+        binding_count > PACC_MAX_KERNEL_BINDINGS) {
+        return false;
+    }
+    if (!kernel_metadata_section_need(&need, entry_offset, arg_off, arg_count,
+                                      PACC_KERNEL_ARG_RECORD_WIRE_BYTES) ||
+        !kernel_metadata_section_need(&need, entry_offset, binding_off, binding_count,
+                                      PACC_KERNEL_BUFFER_BINDING_WIRE_BYTES) ||
+        !kernel_metadata_blob_need(&need, entry_offset, raw_off, raw_size) ||
+        !kernel_metadata_blob_need(&need, entry_offset, name_off, name_size)) {
+        return false;
+    }
+
+    *prefix_out = need;
+    return true;
+}
+
+static int load_kernel_job_metadata_view(int fd,
+                                         const struct PaccJobDesc *desc,
+                                         uint8_t **image_copy,
+                                         const uint8_t **image,
+                                         size_t *image_len) {
+    size_t total_len;
+    size_t initial_len;
+    size_t prefix_len = 0;
+    uint8_t *head = NULL;
+    uint8_t *prefix = NULL;
+
+    if (!desc || !image_copy || !image || !image_len ||
+        desc->len < PACC_JOB_IMAGE_HEADER_WIRE_BYTES + PACC_KERNEL_LAUNCH_ABI_WIRE_BYTES ||
+        desc->len > (uint64_t)SIZE_MAX) {
+        return -1;
+    }
+    *image_copy = NULL;
+    *image = NULL;
+    *image_len = 0;
+
+    total_len = (size_t)desc->len;
+    initial_len = total_len < 4096u ? total_len : 4096u;
+    if (read_phys_copy(fd, desc->addr, initial_len, &head) != 0 || !head) {
+        return -1;
+    }
+    if (!kernel_metadata_prefix_len_from_head(head, initial_len, total_len, &prefix_len)) {
+        free(head);
+        return -1;
+    }
+    if (prefix_len <= initial_len) {
+        *image_copy = head;
+        *image = head;
+        *image_len = prefix_len;
+        return 0;
+    }
+
+    free(head);
+    if (read_phys_copy(fd, desc->addr, prefix_len, &prefix) != 0 || !prefix) {
+        return -1;
+    }
+    *image_copy = prefix;
+    *image = prefix;
+    *image_len = prefix_len;
+    return 0;
+}
+
 static bool kernel_job_parse_retryable(uint32_t detail) {
     switch (detail) {
     case 0x02: /* header magic/version not visible yet */
@@ -8121,6 +8882,66 @@ static bool kernel_job_parse_retryable(uint32_t detail) {
     default:
         return false;
     }
+}
+
+static int dispatch_kernel_job_metadata_fast(int fd, const struct PaccJobDesc *desc) {
+    struct PaccJobImage job;
+    uint8_t *image_copy = NULL;
+    const uint8_t *image = NULL;
+    size_t image_len = 0;
+    char symbol[256] = {0};
+
+    if (!jobd_kernel_metadata_first_enabled()) {
+        return 1;
+    }
+    if (!desc || desc->buf_info != PACC_JOB_MAGIC ||
+        desc->len < PACC_JOB_IMAGE_HEADER_WIRE_BYTES + PACC_KERNEL_LAUNCH_ABI_WIRE_BYTES) {
+        return 1;
+    }
+
+    if (load_kernel_job_metadata_view(fd, desc, &image_copy, &image, &image_len) != 0) {
+        return 1;
+    }
+    if (parse_kernel_job_image_with_total(image, image_len, (size_t)desc->len, &job) != 0) {
+        free(image_copy);
+        return 1;
+    }
+
+    write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x510e,
+                      (uint32_t)(image_len & 0xffffffffu));
+    if (job.kernel_name && job.kernel_name_size) {
+        size_t copy_len = job.kernel_name_size;
+        if (copy_len >= sizeof(symbol)) copy_len = sizeof(symbol) - 1u;
+        memcpy(symbol, job.kernel_name, copy_len);
+        symbol[copy_len] = '\0';
+    }
+
+    if (symbol[0] && jobd_generic_noop_enabled()) {
+        trace_msg("generic kernel noop metadata-fast: seq=%" PRIu64 " symbol=%s",
+                  desc->seq, symbol);
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x510f, 0);
+        free(image_copy);
+        return 0;
+    }
+
+    if (symbol[0]) {
+        int direct_native_status =
+            invoke_kernel_deepep_layout_native_direct(symbol, &job, desc->seq);
+        if (direct_native_status <= 0) {
+            uint32_t native_u = (uint32_t)direct_native_status;
+            uint32_t error_status = (native_u & 0xffff0000u) == 0xffff0000u
+                ? native_u
+                : 0xffff5d00u;
+            write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq,
+                              direct_native_status == 0 ? 0x5d11u : error_status,
+                              native_u);
+            free(image_copy);
+            return direct_native_status == 0 ? 0 : (int)error_status;
+        }
+    }
+
+    free(image_copy);
+    return 1;
 }
 
 static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
@@ -8147,6 +8968,11 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
     if (!desc || desc->buf_info != PACC_JOB_MAGIC || desc->len < sizeof(struct PaccJobImageHeader)) {
         return 0xffff5001;
     }
+    status = dispatch_kernel_job_metadata_fast(fd, desc);
+    if (status <= 0) {
+        return status;
+    }
+    status = 0;
     if (load_kernel_job_image_view(fd, desc, &map, &image_copy, &image) != 0) {
         write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0xffff5002u, errno ? (uint32_t)errno : 0);
         return 0xffff5002;
@@ -8211,6 +9037,21 @@ static int dispatch_kernel_job(int fd, const struct PaccJobDesc *desc) {
         write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq, 0x510f, 0);
         reset_kernel_job_image_view(&map, &image_copy);
         return 0;
+    }
+
+    if (symbol[0]) {
+        int direct_native_status = invoke_kernel_deepep_layout_native_direct(symbol, &job, desc->seq);
+        if (direct_native_status <= 0) {
+            uint32_t native_u = (uint32_t)direct_native_status;
+            uint32_t error_status = (native_u & 0xffff0000u) == 0xffff0000u
+                ? native_u
+                : 0xffff5d00u;
+            write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq,
+                              direct_native_status == 0 ? 0x5d10u : error_status,
+                              native_u);
+            reset_kernel_job_image_view(&map, &image_copy);
+            return direct_native_status == 0 ? 0 : (int)error_status;
+        }
     }
 
     if (build_kernel_launch_args(fd, &job, argv, &argc, arg_storage, binding_maps, &binding_map_count) != 0) {
@@ -8662,7 +9503,7 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
     return 0xffff00ff;
 }
 
-static bool kernel_completion_visible(int fd, uint64_t seq, uint32_t status) {
+static bool host_completion_visible(int fd, uint32_t job_id, uint64_t seq, uint32_t status) {
     struct HostStatus seen;
     uint8_t *copy = NULL;
     uint64_t phys = shared_ddr_control_phys(HETGPU_PACC_COMPLETION_OFF, sizeof(seen));
@@ -8674,11 +9515,43 @@ static bool kernel_completion_visible(int fd, uint64_t seq, uint32_t status) {
         free(copy);
         ok = seen.magic == HETGPU_PACC_JOB_MAGIC &&
              seen.version == HETGPU_PACC_JOB_VERSION &&
-             seen.job_id == PACC_KERNEL_JOB_ID &&
+             seen.job_id == job_id &&
              seen.seq == seq &&
              seen.status == status;
     }
     return ok;
+}
+
+static bool host_completion_seq_visible(int fd, uint32_t job_id, uint64_t seq) {
+    struct HostStatus seen;
+    uint8_t *copy = NULL;
+    uint64_t phys = shared_ddr_control_phys(HETGPU_PACC_COMPLETION_OFF, sizeof(seen));
+    bool ok = false;
+
+    memset(&seen, 0, sizeof(seen));
+    if (read_phys_copy_pread_only(fd, phys, sizeof(seen), &copy) != 0 || !copy) {
+        if (copy) {
+            free(copy);
+        }
+        if (read_phys_copy(fd, phys, sizeof(seen), &copy) != 0 || !copy) {
+            return false;
+        }
+    }
+    memcpy(&seen, copy, sizeof(seen));
+    free(copy);
+    ok = seen.magic == HETGPU_PACC_JOB_MAGIC &&
+         seen.version == HETGPU_PACC_JOB_VERSION &&
+         seen.job_id == job_id &&
+         seen.seq == seq;
+    return ok;
+}
+
+static bool kernel_completion_visible(int fd, uint64_t seq, uint32_t status) {
+    return host_completion_visible(fd, PACC_KERNEL_JOB_ID, seq, status);
+}
+
+static bool kernel_completion_seq_visible(int fd, uint64_t seq) {
+    return host_completion_seq_visible(fd, PACC_KERNEL_JOB_ID, seq);
 }
 
 static enum DispatchPollResult maybe_dispatch_kernel_job(
@@ -8716,7 +9589,7 @@ static enum DispatchPollResult maybe_dispatch_kernel_job(
         }
         return DISPATCH_INVALID;
     }
-    if (desc.seq == 0 || desc.seq == *last_kernel_seq) {
+    if (desc.seq == 0) {
         if (jobd_trace_enabled() && desc.seq != 0 && desc.seq != last_idle_report_seq) {
             last_idle_report_seq = desc.seq;
             trace_msg("kernel doorbell idle: seq=%" PRIu64
@@ -8726,6 +9599,21 @@ static enum DispatchPollResult maybe_dispatch_kernel_job(
                       last_kernel_seq ? *last_kernel_seq : 0);
         }
         return DISPATCH_IDLE;
+    }
+    if (desc.seq == *last_kernel_seq &&
+        kernel_completion_seq_visible(fd, desc.seq)) {
+        if (jobd_trace_enabled() && desc.seq != 0 && desc.seq != last_idle_report_seq) {
+            last_idle_report_seq = desc.seq;
+            trace_msg("kernel doorbell idle: seq=%" PRIu64
+                      " addr=0x%" PRIx64 " len=%" PRIu64
+                      " last=%" PRIu64,
+                      desc.seq, desc.addr, desc.len,
+                      last_kernel_seq ? *last_kernel_seq : 0);
+        }
+        return DISPATCH_IDLE;
+    }
+    if (desc.seq == *last_kernel_seq) {
+        write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x510d, 0);
     }
 
     if (pending_completion_valid && pending_completion_seq == desc.seq) {
@@ -8756,9 +9644,11 @@ static enum DispatchPollResult maybe_dispatch_kernel_job(
             *last_kernel_seq = desc.seq;
         }
         pending_completion_valid = false;
-        g_kernel_completion_beacon_sticky = true;
-        g_kernel_completion_beacon_seq = desc.seq;
-        g_kernel_completion_beacon_status = (uint32_t)status;
+        g_kernel_completion_beacon_sticky = jobd_sticky_kernel_completion_enabled();
+        if (g_kernel_completion_beacon_sticky) {
+            g_kernel_completion_beacon_seq = desc.seq;
+            g_kernel_completion_beacon_status = (uint32_t)status;
+        }
         if ((uint32_t)status == 0) {
             for (unsigned i = 0; i < 3; i++) {
                 write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x511b, 0);
@@ -8798,6 +9688,9 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
 
     uint64_t seq = ctl->seq;
     job_id = ctl->job_id;
+    if (g_preloaded_completion_sticky && g_preloaded_completion_seq != seq) {
+        g_preloaded_completion_sticky = false;
+    }
     ctl->status = 1;
     __sync_synchronize();
     mirror_diag_progress_status(fd, job_id, seq, 0x510e);
@@ -8812,18 +9705,29 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
     }
     mirror_progress_status(fd, job_id, seq, 0x5111);
     if (jobd_preloaded_noop_enabled(job_id)) {
-        *last_seq = seq;
-        mark_preloaded_job_seen(job_id, seq);
         ctl->status = 0;
         __sync_synchronize();
         mirror_host_status(fd, job_id, seq, 0);
-        write_jobd_beacon(fd, job_id, seq, 0x511f, 0);
-        g_response_irq_pending = true;
-        log_msg("preloaded noop complete: job_id=%u/%s seq=%" PRIu64,
-                job_id, job_name(job_id), seq);
-        trace_msg("preloaded noop complete: job_id=%u/%s seq=%" PRIu64,
+        if (host_completion_visible(fd, job_id, seq, 0)) {
+            *last_seq = seq;
+            mark_preloaded_job_seen(job_id, seq);
+            g_preloaded_completion_sticky = true;
+            g_preloaded_completion_job_id = job_id;
+            g_preloaded_completion_seq = seq;
+            g_preloaded_completion_status = 0;
+            write_jobd_beacon(fd, job_id, seq, 0x511f, 0);
+            g_response_irq_pending = true;
+            log_msg("preloaded noop complete: job_id=%u/%s seq=%" PRIu64,
+                    job_id, job_name(job_id), seq);
+            trace_msg("preloaded noop complete: job_id=%u/%s seq=%" PRIu64,
+                      job_id, job_name(job_id), seq);
+            return DISPATCH_HANDLED;
+        }
+        write_jobd_beacon(fd, job_id, seq, 0x511a, 0);
+        trace_msg("preloaded noop completion not visible after mirror: job_id=%u/%s seq=%" PRIu64,
                   job_id, job_name(job_id), seq);
-        return DISPATCH_HANDLED;
+        sleep_us(1000);
+        return DISPATCH_IDLE;
     }
     trace_msg("dispatch enter: job_id=%u/%s seq=%" PRIu64,
               job_id, job_name(job_id), seq);
@@ -8836,17 +9740,28 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
                   job_id, job_name(job_id), seq);
         return DISPATCH_IDLE;
     }
-    *last_seq = seq;
-    mark_preloaded_job_seen(job_id, seq);
     __sync_synchronize();
     ctl->status = (uint32_t)status;
     mirror_host_status(fd, job_id, seq, (uint32_t)status);
-    g_response_irq_pending = true;
-    log_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
-            job_id, job_name(job_id), seq, (uint32_t)status);
-    trace_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+    if (host_completion_visible(fd, job_id, seq, (uint32_t)status)) {
+        *last_seq = seq;
+        mark_preloaded_job_seen(job_id, seq);
+        g_preloaded_completion_sticky = true;
+        g_preloaded_completion_job_id = job_id;
+        g_preloaded_completion_seq = seq;
+        g_preloaded_completion_status = (uint32_t)status;
+        g_response_irq_pending = true;
+        log_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+                job_id, job_name(job_id), seq, (uint32_t)status);
+        trace_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+                  job_id, job_name(job_id), seq, (uint32_t)status);
+        return DISPATCH_HANDLED;
+    }
+    write_jobd_beacon(fd, job_id, seq, 0x511a, (uint32_t)status);
+    trace_msg("dispatch completion not visible after mirror: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
               job_id, job_name(job_id), seq, (uint32_t)status);
-    return DISPATCH_HANDLED;
+    sleep_us(1000);
+    return DISPATCH_IDLE;
 }
 
 static enum DispatchPollResult maybe_dispatch_arg_slot_job(
@@ -8894,18 +9809,29 @@ static enum DispatchPollResult maybe_dispatch_arg_slot_job(
         return DISPATCH_IDLE;
     }
 
-    if (last_seq) {
-        *last_seq = header.seq;
-    }
-    mark_preloaded_job_seen(header.job_id, header.seq);
     ctl->status = (uint32_t)status;
     mirror_host_status(fd, header.job_id, header.seq, (uint32_t)status);
-    g_response_irq_pending = true;
-    log_msg("arg-slot dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
-            header.job_id, job_name(header.job_id), header.seq, (uint32_t)status);
-    trace_msg("arg-slot dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+    if (host_completion_visible(fd, header.job_id, header.seq, (uint32_t)status)) {
+        if (last_seq) {
+            *last_seq = header.seq;
+        }
+        mark_preloaded_job_seen(header.job_id, header.seq);
+        g_preloaded_completion_sticky = true;
+        g_preloaded_completion_job_id = header.job_id;
+        g_preloaded_completion_seq = header.seq;
+        g_preloaded_completion_status = (uint32_t)status;
+        g_response_irq_pending = true;
+        log_msg("arg-slot dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+                header.job_id, job_name(header.job_id), header.seq, (uint32_t)status);
+        trace_msg("arg-slot dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+                  header.job_id, job_name(header.job_id), header.seq, (uint32_t)status);
+        return DISPATCH_HANDLED;
+    }
+    write_jobd_beacon(fd, header.job_id, header.seq, 0x511a, (uint32_t)status);
+    trace_msg("arg-slot completion not visible after mirror: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
               header.job_id, job_name(header.job_id), header.seq, (uint32_t)status);
-    return DISPATCH_HANDLED;
+    sleep_us(1000);
+    return DISPATCH_IDLE;
 }
 
 static enum DispatchPollResult dispatch_any_job(
@@ -9229,6 +10155,27 @@ static bool mirror_host_status_mbox_dual_pwrite(const struct HostStatus *status_
     return wrote;
 }
 
+static bool mirror_host_status_control_window_direct(uint32_t job_id, uint64_t seq, uint32_t status) {
+    if (!g_control_window ||
+        HETGPU_PACC_COMPLETION_OFF > HETGPU_PACC_CONTROL_BYTES ||
+        sizeof(struct HostStatus) > HETGPU_PACC_CONTROL_BYTES - HETGPU_PACC_COMPLETION_OFF) {
+        return false;
+    }
+
+    volatile struct HostStatus *host =
+        (volatile struct HostStatus *)(g_control_window + HETGPU_PACC_COMPLETION_OFF);
+    jobd_io_fence();
+    host->magic = HETGPU_PACC_JOB_MAGIC;
+    host->version = HETGPU_PACC_JOB_VERSION;
+    host->job_id = job_id;
+    host->status = status;
+    host->seq = seq;
+    jobd_io_fence();
+    jobd_flush_for_device((const void *)host, sizeof(*host));
+    jobd_io_fence();
+    return true;
+}
+
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status) {
     struct Map map = {0};
     uint64_t phys = shared_ddr_control_phys(HETGPU_PACC_COMPLETION_OFF, sizeof(struct HostStatus));
@@ -9241,6 +10188,13 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
         .seq = seq,
     };
     bool wrote = false;
+
+    if (!jobd_status_pwrite_enabled() &&
+        mirror_host_status_control_window_direct(job_id, seq, status)) {
+        trace_msg("mirror_host_status control-window: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+                  job_id, job_name(job_id), seq, status);
+        return;
+    }
 
     if (write_shared_ddr_devmem_direct(phys, &status_msg, sizeof(status_msg))) {
         wrote = true;
@@ -9670,7 +10624,13 @@ int main(int argc, char **argv) {
     }
     early_devmem_diag_marker(devmem, 0x6d130000u, 4);
     if (jobd_claim_pacc_id_enabled()) {
-        claim_pacc_id_from_shared_ddr(map_fd);
+        if (claim_pacc_id_from_shared_ddr(map_fd)) {
+            early_devmem_diag_marker(devmem, 0x6d140000u | ((uint32_t)g_pacc_id << 8), 5);
+        } else {
+            early_devmem_diag_marker(devmem, 0x6d14e000u | ((uint32_t)g_pacc_id << 8), 5);
+        }
+    } else {
+        early_devmem_diag_marker(devmem, 0x6d14f000u | ((uint32_t)g_pacc_id << 8), 5);
     }
     if (jobd_full_ddr_map_enabled() && g_ddr_info.ddr_base && g_ddr_info.ddr_size) {
         uint64_t map_bytes = jobd_full_ddr_map_bytes();
@@ -9717,12 +10677,15 @@ int main(int argc, char **argv) {
     uint64_t last_table_seq = 0;
     uint64_t last_kernel_seq = 0;
     uint64_t heartbeat_tick = 0;
+    early_devmem_diag_marker(devmem, 0x6d150000u | ((uint32_t)g_pacc_id << 8), 6);
     ctl = scan_for_control(map_fd, &g_ddr_info, &control_map);
     if (!ctl) {
+        early_devmem_diag_marker(devmem, 0x6d15e000u | ((uint32_t)g_pacc_id << 8), 6);
         if (close_map_fd) close(map_fd);
         close(mbox_fd);
         return 1;
     }
+    early_devmem_diag_marker(devmem, 0x6d160000u | ((uint32_t)g_pacc_id << 8), 7);
     g_control_window = (volatile uint8_t *)ctl;
     g_control_map_base = control_map.base;
     g_control_map_len = control_map.map_len;
@@ -9772,6 +10735,9 @@ int main(int argc, char **argv) {
     if (!initial_dispatched) {
         uint32_t status = 0x6bc00000u | (initial_detail & 0xffffu);
         mirror_host_status(map_fd, PACC_KERNEL_JOB_ID, initial_seq, status);
+        if (jobd_loop_trace_enabled()) {
+            mirror_host_status_control_window_direct(PACC_KERNEL_JOB_ID, initial_seq, 0x6bd00000u);
+        }
         write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, initial_seq, 0x6ac0, initial_detail);
     }
     for (;;) {
@@ -9781,13 +10747,36 @@ int main(int argc, char **argv) {
         bool woke_from_poll = false;
         uint32_t snapshot_detail = 0;
 
+        if (jobd_loop_trace_enabled()) {
+            mirror_host_status_control_window_direct(PACC_KERNEL_JOB_ID, heartbeat_tick + 1, 0x7b100000u);
+        }
         if (jobd_boot_marker_enabled()) {
             (void)mirror_host_status_mbox_mmap(mbox_fd,
                                                PACC_KERNEL_JOB_ID,
                                                heartbeat_tick + 1,
                                                0x7a100000u);
         }
+        if (jobd_loop_trace_enabled()) {
+            mirror_host_status_control_window_direct(PACC_KERNEL_JOB_ID, heartbeat_tick + 1, 0x7b110000u);
+        }
         pending_job = control_has_pending_job(map_fd, last_seq, last_kernel_seq);
+        if (jobd_loop_trace_enabled()) {
+            mirror_host_status_control_window_direct(PACC_KERNEL_JOB_ID, heartbeat_tick + 1,
+                                                     pending_job ? 0x7b120001u : 0x7b120000u);
+        }
+        if (g_preloaded_completion_sticky && !pending_job) {
+            mirror_host_status(map_fd,
+                               g_preloaded_completion_job_id,
+                               g_preloaded_completion_seq,
+                               g_preloaded_completion_status);
+            write_jobd_beacon(map_fd,
+                              g_preloaded_completion_job_id,
+                              g_preloaded_completion_seq,
+                              g_preloaded_completion_status == 0 ? 0x511b : g_preloaded_completion_status,
+                              g_preloaded_completion_status);
+            sleep_when_idle();
+            continue;
+        }
         if (g_kernel_completion_beacon_sticky && !pending_job) {
             mirror_host_status(map_fd,
                                PACC_KERNEL_JOB_ID,
@@ -9898,6 +10887,34 @@ after_response_irq:
                 trace_msg("post-IRQ scan matched new job after %" PRIu64
                           " scans detail=0x%x",
                           scans, snapshot_detail);
+            }
+        }
+        if ((snapshot_detail & 0x3u) == 0) {
+            struct PaccJobDesc mbox_desc;
+            if (read_mbox_kernel_desc(mbox_fd, &mbox_desc) &&
+                mbox_desc.seq != last_kernel_seq &&
+                !kernel_completion_seq_visible(map_fd, mbox_desc.seq)) {
+                memset(g_control_snapshot, 0, sizeof(g_control_snapshot));
+                memcpy(g_control_snapshot, &mbox_desc, sizeof(mbox_desc));
+                dispatch_ctl = (volatile struct Doorbell *)(void *)g_control_snapshot;
+                snapshot_detail = control_snapshot_detail(g_control_snapshot,
+                                                          last_seq,
+                                                          last_kernel_seq,
+                                                          NULL);
+                write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID,
+                                  mbox_desc.seq, 0x7080, snapshot_detail);
+            } else {
+                write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID,
+                                  last_kernel_seq, 0x7081, snapshot_detail);
+            }
+        }
+        if ((snapshot_detail & 0x1f2u) == 0x1f0u) {
+            const struct PaccJobDesc *snap_desc =
+                (const struct PaccJobDesc *)(const void *)g_control_snapshot;
+            if (snap_desc->seq != 0 && snap_desc->seq == last_kernel_seq) {
+                last_kernel_seq = 0;
+                write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID,
+                                  snap_desc->seq, 0x7082, snapshot_detail);
             }
         }
         if (!dispatch_ctl) {

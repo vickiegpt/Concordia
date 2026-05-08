@@ -98,6 +98,14 @@ static int hetgpu_cudart_debug_logs_enabled(void) {
     return enabled;
 }
 
+static void hetgpu_cuda_malloc_trace(const char *tag) {
+    const char *env = getenv("HETGPU_CUDART_MALLOC_TRACE");
+    if (env && env[0] == '1' && tag) {
+        write(STDERR_FILENO, tag, strlen(tag));
+        write(STDERR_FILENO, "\n", 1);
+    }
+}
+
 #if defined(HETGPU_DEBUG_LOGS)
 #define HETGPU_LOG(...) do { if (hetgpu_cudart_debug_logs_enabled()) fprintf(stderr, __VA_ARGS__); } while (0)
 #else
@@ -123,6 +131,20 @@ typedef void* CUdeviceptr;
 typedef void* CUmodule;
 typedef void* CUfunction;
 typedef void* CUstream;
+
+enum cudaMemoryType {
+    cudaMemoryTypeUnregistered = 0,
+    cudaMemoryTypeHost = 1,
+    cudaMemoryTypeDevice = 2,
+    cudaMemoryTypeManaged = 3
+};
+
+struct cudaPointerAttributes {
+    enum cudaMemoryType type;
+    int device;
+    void* devicePointer;
+    void* hostPointer;
+};
 
 #define HETGPU_CUDA_SUCCESS 0
 #define HETGPU_CUDA_ERROR_INVALID_VALUE 1
@@ -359,6 +381,9 @@ extern CUresult cuMemFree_v2(CUdeviceptr dptr);
 extern CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void* srcHost, size_t ByteCount);
 extern CUresult cuMemcpyDtoH_v2(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount);
 extern CUresult cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc, size_t N);
+extern int hetgpu_pacc_ipc_get_mem_handle(const void* ptr, void* handle, size_t handle_len);
+extern int hetgpu_pacc_ipc_open_mem_handle(void** devPtr, const void* handle, unsigned int flags);
+extern int hetgpu_pacc_ipc_close_mem_handle(void* devPtr);
 extern CUresult cuLaunchKernel(CUfunction f,
                                unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ,
                                unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ,
@@ -382,6 +407,14 @@ typedef void* cudaMemPool_t;
 typedef void* cudaUserObject_t;
 typedef void* cudaFunction_t;
 typedef struct { unsigned int x, y, z; } dim3;
+typedef struct {
+    dim3 gridDim;
+    dim3 blockDim;
+    size_t dynamicSmemBytes;
+    cudaStream_t stream;
+    void *attrs;
+    unsigned int numAttrs;
+} cudaLaunchConfig_t;
 typedef struct { size_t width, height, depth; } cudaExtent;
 typedef struct { size_t x, y, z; } cudaPos;
 typedef struct { void *ptr; size_t pitch; size_t xsize; size_t ysize; } cudaPitchedPtr;
@@ -542,6 +575,34 @@ cudaError_t cudaGraphAddEmptyNode(cudaGraphNode_t* pGraphNode,
     return 0;
 }
 
+cudaError_t cudaGraphAddNode_v2(cudaGraphNode_t* pGraphNode,
+                                cudaGraph_t graph,
+                                const cudaGraphNode_t* pDependencies,
+                                size_t numDependencies,
+                                void* nodeParams) {
+    (void)graph;
+    (void)pDependencies;
+    (void)numDependencies;
+    (void)nodeParams;
+    if (pGraphNode) {
+        *pGraphNode = (cudaGraphNode_t)0;
+    }
+    return 0;
+}
+
+cudaError_t cudaGraphConditionalHandleCreate(void** pHandle,
+                                             cudaGraph_t graph,
+                                             unsigned int defaultLaunchValue,
+                                             unsigned int flags) {
+    (void)graph;
+    (void)defaultLaunchValue;
+    (void)flags;
+    if (pHandle) {
+        *pHandle = (void*)0;
+    }
+    return 0;
+}
+
 // Stream capture info APIs (stubs)
 cudaError_t cudaStreamGetCaptureInfo(cudaStream_t stream,
                                      cudaStreamCaptureStatus* pStatus,
@@ -588,6 +649,21 @@ cudaError_t cudaStreamIsCapturing(cudaStream_t stream,
 cudaError_t cudaStreamBeginCapture(cudaStream_t stream,
                                    cudaStreamCaptureMode mode) {
     (void)stream; (void)mode;
+    return 0;
+}
+
+cudaError_t cudaStreamBeginCaptureToGraph(cudaStream_t stream,
+                                          cudaGraph_t graph,
+                                          const cudaGraphNode_t* dependencies,
+                                          const void* dependencyData,
+                                          size_t numDependencies,
+                                          cudaStreamCaptureMode mode) {
+    (void)stream;
+    (void)graph;
+    (void)dependencies;
+    (void)dependencyData;
+    (void)numDependencies;
+    (void)mode;
     return 0;
 }
 
@@ -1255,15 +1331,37 @@ cudaError_t cudaDeviceGetByPCIBusId(int* device, const char* pciBusId) {
 
 // Pointer attributes
 cudaError_t cudaPointerGetAttributes(void* attributes, const void* ptr) {
-    (void)attributes; (void)ptr; return 0;
+    if (!attributes) return HETGPU_CUDA_ERROR_INVALID_VALUE;
+    struct cudaPointerAttributes* out = (struct cudaPointerAttributes*)attributes;
+    memset(out, 0, sizeof(*out));
+    if (ptr && hetgpu_likely_device_ptr(ptr)) {
+        out->type = cudaMemoryTypeDevice;
+        out->device = 0;
+        out->devicePointer = (void*)ptr;
+        out->hostPointer = NULL;
+    } else {
+        out->type = cudaMemoryTypeUnregistered;
+        out->device = -1;
+        out->devicePointer = NULL;
+        out->hostPointer = (void*)ptr;
+    }
+    return HETGPU_CUDA_SUCCESS;
 }
 
 // IPC APIs
 cudaError_t cudaIpcGetEventHandle(void* handle, cudaEvent_t event) { (void)handle; (void)event; return 0; }
 cudaError_t cudaIpcOpenEventHandle(cudaEvent_t* event, void* handle) { if (event) *event = (cudaEvent_t)0; (void)handle; return 0; }
-cudaError_t cudaIpcGetMemHandle(void* handle, void* devPtr) { (void)handle; (void)devPtr; return 0; }
-cudaError_t cudaIpcOpenMemHandle(void** devPtr, void* handle, unsigned int flags) { if (devPtr) *devPtr = (void*)0; (void)handle; (void)flags; return 0; }
-cudaError_t cudaIpcCloseMemHandle(void* devPtr) { (void)devPtr; return 0; }
+cudaError_t cudaIpcGetMemHandle(void* handle, void* devPtr) {
+    if (!handle || !devPtr) return 1;
+    return hetgpu_pacc_ipc_get_mem_handle(devPtr, handle, 64) == 0 ? 0 : 1;
+}
+cudaError_t cudaIpcOpenMemHandle(void** devPtr, void* handle, unsigned int flags) {
+    if (!devPtr || !handle) return 1;
+    return hetgpu_pacc_ipc_open_mem_handle(devPtr, handle, flags) == 0 ? 0 : 1;
+}
+cudaError_t cudaIpcCloseMemHandle(void* devPtr) {
+    return hetgpu_pacc_ipc_close_mem_handle(devPtr) == 0 ? 0 : 1;
+}
 
 // Graph APIs (additional)
 cudaError_t cudaGraphDestroy(cudaGraph_t graph) { (void)graph; return 0; }
@@ -1481,7 +1579,28 @@ cudaError_t cudaOccupancyMaxPotentialBlockSizeVariableSMem(int* minGridSize, int
     return 0;
 }
 cudaError_t cudaThreadExchangeStreamCaptureMode(cudaStreamCaptureMode* mode) { if (mode) *mode = 0; return 0; }
-cudaError_t cudaLaunchKernelExC(const void* params) { (void)params; return 0; }
+cudaError_t cudaLaunchKernelExC(const cudaLaunchConfig_t* config, const void* func, void** args) {
+    if (!config) return HETGPU_CUDA_ERROR_INVALID_VALUE;
+    const char* log_launch_ex = getenv("HETGPU_CUDART_LOG_LAUNCH_EX");
+    static int launch_ex_log_count = 0;
+    if (log_launch_ex && strcmp(log_launch_ex, "1") == 0 && launch_ex_log_count < 64) {
+        fprintf(stderr,
+                "[cudart_shim] cudaLaunchKernelExC func=%p grid=(%u,%u,%u) block=(%u,%u,%u) shared=%zu stream=%p args=%p\n",
+                func,
+                config->gridDim.x, config->gridDim.y, config->gridDim.z,
+                config->blockDim.x, config->blockDim.y, config->blockDim.z,
+                config->dynamicSmemBytes,
+                config->stream,
+                args);
+        launch_ex_log_count++;
+    }
+    return __cudaLaunchKernel(func,
+                              config->gridDim,
+                              config->blockDim,
+                              args,
+                              config->dynamicSmemBytes,
+                              config->stream);
+}
 
 typedef struct {
     dim3 grid_dim;
@@ -2298,6 +2417,129 @@ static int compile_ggml_cuda_sources_to_ptx(const char* so_path, const char* ptx
     return compiled_count;
 }
 
+static int compile_deepep_legacy_sources_to_ptx(const char* so_path, const char* ptx_dir) {
+    if (!so_path || !ptx_dir || !strstr(so_path, "DeepEP")) {
+        return 0;
+    }
+
+    char repo_root[512] = {0};
+    const char* override_root = getenv("HETGPU_DEEPEP_ROOT");
+    if (override_root && override_root[0] != '\0') {
+        strncpy(repo_root, override_root, sizeof(repo_root) - 1);
+    } else {
+        const char* marker = strstr(so_path, "/build/");
+        if (!marker) {
+            marker = strstr(so_path, "/deep_ep/_C.");
+        }
+        if (!marker) {
+            return 0;
+        }
+        size_t root_len = (size_t)(marker - so_path);
+        if (root_len == 0 || root_len >= sizeof(repo_root)) {
+            return 0;
+        }
+        memcpy(repo_root, so_path, root_len);
+        repo_root[root_len] = '\0';
+    }
+
+    char layout_src[640];
+    char intranode_src[640];
+    char layout_ptx[640];
+    char intranode_ptx[640];
+    snprintf(layout_src, sizeof(layout_src), "%s/csrc/kernels/legacy/layout.cu", repo_root);
+    snprintf(intranode_src, sizeof(intranode_src), "%s/csrc/kernels/legacy/intranode.cu", repo_root);
+    snprintf(layout_ptx, sizeof(layout_ptx), "%s/layout.cu.ptx", ptx_dir);
+    snprintf(intranode_ptx, sizeof(intranode_ptx), "%s/intranode.cu.ptx", ptx_dir);
+
+    if (access(layout_src, R_OK) != 0 || access(intranode_src, R_OK) != 0) {
+        fprintf(stderr, "[cudart_shim] DeepEP legacy CUDA sources not found under %s\n", repo_root);
+        return 0;
+    }
+
+    const char* common_flags =
+        "-DTHRUST_IGNORE_CUB_VERSION_CHECK "
+        "-D_CG_LIMIT_INCLUDED_DEPENDENCIES "
+        "-D__CUDACC_VER_MAJOR__=12 "
+        "-D__CUDACC_VER_MINOR__=9 "
+        "-D__CUDACC_VER_BUILD__=0 "
+        "-D__CUDACC_VER_BUILD_ID__=0 "
+        "--cuda-gpu-arch=sm_80 "
+        "--cuda-path=/home/ubuntu/fake_cuda "
+        "-I/home/ubuntu/fake_cuda/include "
+        "--gcc-install-dir=/usr/lib/gcc/riscv64-linux-gnu/13 "
+        "-Wno-unknown-cuda-version "
+        "-I/usr/local/cuda/include/cccl "
+        "-I/home/ubuntu/pytorch-main/torch/include "
+        "-I/home/ubuntu/pytorch-main/torch/include/torch/csrc/api/include "
+        "-I/home/ubuntu/fake_cuda/include "
+        "-I/usr/include/python3.12 "
+        "-D__CUDA_NO_HALF_OPERATORS__ "
+        "-D__CUDA_NO_HALF_CONVERSIONS__ "
+        "-D__CUDA_NO_BFLOAT16_CONVERSIONS__ "
+        "-D__CUDA_NO_HALF2_OPERATORS__ "
+        "-O3 "
+        "-DHETGPU_DEEPEP_LEGACY_ONLY "
+        "-DDISABLE_AGGRESSIVE_PTX_INSTRS "
+        "-DTORCH_API_INCLUDE_EXTENSION_H "
+        "-DTORCH_EXTENSION_NAME=_C "
+        "-std=c++20 "
+        "--cuda-device-only "
+        "-S";
+
+    char cmd[8192];
+    int written = snprintf(
+        cmd,
+        sizeof(cmd),
+        "unset LD_PRELOAD HETGPU_PACC_ALLOW_HOST_DEVICE_MEM HETGPU_PACC_LOG_KERNEL_LAUNCHES "
+        "HETGPU_CUDART_REGISTRY_LOG HETGPU_PTX_EXTRACT_LOG HETGPU_CUDART_LOG_LAUNCH_EX; "
+        "/usr/bin/clang++-20 %s -I\"%s/deep_ep/include\" -I\"%s/third-party/fmt/include\" "
+        "\"%s\" -o \"%s\" && "
+        "/usr/bin/clang++-20 %s -I\"%s/deep_ep/include\" -I\"%s/third-party/fmt/include\" "
+        "\"%s\" -o \"%s\" 2>&1",
+        common_flags,
+        repo_root,
+        repo_root,
+        layout_src,
+        layout_ptx,
+        common_flags,
+        repo_root,
+        repo_root,
+        intranode_src,
+        intranode_ptx);
+    if (written < 0 || (size_t)written >= sizeof(cmd)) {
+        fprintf(stderr, "[cudart_shim] DeepEP source->PTX command was truncated\n");
+        return 0;
+    }
+
+    fprintf(stderr, "[cudart_shim] Falling back to DeepEP legacy source->PTX compilation under %s\n", repo_root);
+    FILE* p = popen(cmd, "r");
+    if (!p) {
+        return 0;
+    }
+
+    const char* log_lazy_ptx = getenv("HETGPU_CUDART_LOG_LAZY_PTX");
+    int log_output = log_lazy_ptx && strcmp(log_lazy_ptx, "1") == 0;
+    char line[512];
+    while (fgets(line, sizeof(line), p)) {
+        if (log_output || strstr(line, "error:") || strstr(line, "Error")) {
+            fprintf(stderr, "[cudart_shim][deepep-ptx] %s", line);
+        }
+    }
+
+    int status = pclose(p);
+    int rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    int compiled_count = 0;
+    if (access(layout_ptx, R_OK) == 0) {
+        compiled_count++;
+    }
+    if (access(intranode_ptx, R_OK) == 0) {
+        compiled_count++;
+    }
+
+    fprintf(stderr, "[cudart_shim] DeepEP source->PTX compile returned rc=%d count=%d\n", rc, compiled_count);
+    return compiled_count;
+}
+
 // Extract all PTX from a .so file using cuobjdump
 static const char* extract_ptx_from_so(const char* so_path) {
     // Check cache first
@@ -2319,7 +2561,7 @@ static const char* extract_ptx_from_so(const char* so_path) {
 
     // Create output directory
     snprintf(g_ptx_cache[cache_idx].ptx_dir, sizeof(g_ptx_cache[cache_idx].ptx_dir),
-             "/tmp/hetgpu_so_ptx_%d", cache_idx);
+             "/tmp/hetgpu_so_ptx_%ld_%d", (long)getpid(), cache_idx);
     mkdir(g_ptx_cache[cache_idx].ptx_dir, 0755);
 
     HETGPU_LOG("[cudart_shim] Extracting PTX from %s to %s\n",
@@ -2347,6 +2589,9 @@ static const char* extract_ptx_from_so(const char* so_path) {
     refresh_ptx_cache_entry(cache_idx);
     if (g_ptx_cache[cache_idx].ptx_count == 0 && strstr(so_path, "libggml-cuda.so") != NULL) {
         compile_ggml_cuda_sources_to_ptx(so_path, g_ptx_cache[cache_idx].ptx_dir);
+        refresh_ptx_cache_entry(cache_idx);
+    } else if (g_ptx_cache[cache_idx].ptx_count == 0 && strstr(so_path, "DeepEP") != NULL) {
+        compile_deepep_legacy_sources_to_ptx(so_path, g_ptx_cache[cache_idx].ptx_dir);
         refresh_ptx_cache_entry(cache_idx);
     }
 
@@ -2425,6 +2670,14 @@ static char* find_matching_ptx(const char* ptx_dir, const char* pattern, size_t*
 
 static const char* ptx_filename_hint_for_kernel(const char* kernel_name) {
     if (!kernel_name) return NULL;
+    if (strstr(kernel_name, "get_dispatch_layout")) return "layout.cu.ptx";
+    if (strstr(kernel_name, "deep_ep") &&
+        (strstr(kernel_name, "notify_dispatch") ||
+         strstr(kernel_name, "cached_notify_dispatch") ||
+         strstr(kernel_name, "cached_notify_combine") ||
+         strstr(kernel_name, "dispatch") ||
+         strstr(kernel_name, "combine") ||
+         strstr(kernel_name, "barrier"))) return "intranode.cu.ptx";
     if (strstr(kernel_name, "rms_norm") || strstr(kernel_name, "l2_norm")) return "norm.cu.ptx";
     if (strstr(kernel_name, "rope_")) return "rope.cu.ptx";
     if (strstr(kernel_name, "soft_max")) return "softmax.cu.ptx";
@@ -3410,20 +3663,35 @@ cudaError_t cudaMemGetInfo(size_t* free, size_t* total) {
 
 // Basic memory/runtime APIs - forward to driver API for proper tracking
 cudaError_t cudaMalloc(void** devPtr, size_t size) {
+    hetgpu_cuda_malloc_trace("[cudart_malloc] entry");
     if (!devPtr) return 1; // cudaErrorInvalidValue
 
-    // Ensure a current context exists (PyTorch may not call cudaSetDevice first)
+    // In PACC mode cuMemAlloc_v2 can allocate from the shared-DDR arena without
+    // a CUDA context. Calling cudaSetDevice from this low-level allocation path
+    // re-enters Rust global_state initialization and can trap on this RISC-V
+    // toolchain, so keep the old context creation path opt-in for diagnostics.
     CUcontext cur = NULL;
+    hetgpu_cuda_malloc_trace("[cudart_malloc] ctx get before");
     (void)cuCtxGetCurrent(&cur);
-    if (cur == NULL) {
+    hetgpu_cuda_malloc_trace("[cudart_malloc] ctx get after");
+    const char* ensure_context = getenv("HETGPU_CUDART_MALLOC_ENSURE_CONTEXT");
+    if (cur == NULL && ensure_context && strcmp(ensure_context, "1") == 0) {
         int dev = 0;
+        hetgpu_cuda_malloc_trace("[cudart_malloc] get device before");
         (void)cudaGetDevice(&dev);
+        hetgpu_cuda_malloc_trace("[cudart_malloc] get device after");
+        hetgpu_cuda_malloc_trace("[cudart_malloc] set device before");
         (void)cudaSetDevice(dev);
+        hetgpu_cuda_malloc_trace("[cudart_malloc] set device after");
+        hetgpu_cuda_malloc_trace("[cudart_malloc] ctx get2 before");
         (void)cuCtxGetCurrent(&cur);
+        hetgpu_cuda_malloc_trace("[cudart_malloc] ctx get2 after");
     }
 
     CUdeviceptr dptr = 0;
+    hetgpu_cuda_malloc_trace("[cudart_malloc] cuMemAlloc before");
     CUresult result = cuMemAlloc_v2(&dptr, size);
+    hetgpu_cuda_malloc_trace("[cudart_malloc] cuMemAlloc after");
     if (result != 0) {
         const char* real_mem = getenv("HETGPU_PACC_REAL_DEVICE_MEM");
         if (hetgpu_strict_pacc() ||
@@ -3446,7 +3714,9 @@ cudaError_t cudaMalloc(void** devPtr, size_t size) {
         *devPtr = ptr;
         return ptr ? 0 : 2; // cudaErrorMemoryAllocation if NULL
     }
+    hetgpu_cuda_malloc_trace("[cudart_malloc] store before");
     *devPtr = (void*)dptr;
+    hetgpu_cuda_malloc_trace("[cudart_malloc] store after");
     return 0;
 }
 

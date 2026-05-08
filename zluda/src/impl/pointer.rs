@@ -429,10 +429,47 @@ pub(crate) fn get_attribute(
         return Err(CUerror::INVALID_VALUE);
     }
     match attribute {
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_CONTEXT => {
+            unsafe {
+                *(data.cast::<CUcontext>()) =
+                    super::context::peek_current().unwrap_or(CUcontext(::std::ptr::null_mut()));
+            }
+            Ok(())
+        }
         CUpointer_attribute::CU_POINTER_ATTRIBUTE_MEMORY_TYPE => {
             unsafe {
-                *(data as *mut u32) = 1;
-            } // CU_MEMORYTYPE_HOST stub
+                *(data.cast::<CUmemorytype>()) = CUmemorytype::CU_MEMORYTYPE_DEVICE;
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_DEVICE_POINTER => {
+            unsafe {
+                *(data.cast::<CUdeviceptr>()) = ptr;
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_HOST_POINTER => {
+            unsafe {
+                *(data.cast::<*mut ::core::ffi::c_void>()) = ::std::ptr::null_mut();
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_IS_MANAGED => {
+            unsafe {
+                *(data.cast::<i32>()) = 0;
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_MAPPED => {
+            unsafe {
+                *(data.cast::<i32>()) = 1;
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_BUFFER_ID => {
+            unsafe {
+                *(data.cast::<u64>()) = ptr.0 as u64;
+            }
             Ok(())
         }
         CUpointer_attribute::CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL => {

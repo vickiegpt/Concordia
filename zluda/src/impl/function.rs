@@ -2992,6 +2992,30 @@ fn pacc_max_launch_params() -> usize {
 fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
     let name = kernel_name.to_lowercase();
 
+    if name.contains("deep_ep") {
+        if name.contains("get_dispatch_layout") {
+            return Some(9);
+        }
+        if name.contains("cached_notify_dispatch") {
+            return Some(5);
+        }
+        if name.contains("notify_dispatch") {
+            return Some(15);
+        }
+        if name.contains("cached_notify_combine") {
+            return Some(7);
+        }
+        if name.contains("dispatch") {
+            return Some(25);
+        }
+        if name.contains("combine") {
+            return Some(17);
+        }
+        if name.contains("barrier") {
+            return Some(3);
+        }
+    }
+
     // ggml-cuda direct launch kernels are passed through cudaLaunchKernel with a
     // plain `void **kernelParams` array. That array is not null-terminated, so
     // our generic "scan until NULL" path can walk past the end and segfault.
@@ -3548,6 +3572,29 @@ unsafe fn configure_pacc_launch_abi(
 ))]
 fn pacc_kernel_arg_can_be_pointer(kernel_name: &str, index: usize) -> bool {
     let name = kernel_name.to_ascii_lowercase();
+    if name.contains("deep_ep") {
+        if name.contains("get_dispatch_layout") {
+            return index <= 4;
+        }
+        if name.contains("cached_notify_dispatch") {
+            return matches!(index, 0 | 2 | 3);
+        }
+        if name.contains("notify_dispatch") {
+            return matches!(index, 0 | 1 | 2 | 3 | 7 | 8 | 9 | 12 | 13);
+        }
+        if name.contains("cached_notify_combine") {
+            return matches!(index, 0 | 1 | 5);
+        }
+        if name.contains("dispatch") {
+            return index <= 12 || index == 21;
+        }
+        if name.contains("combine") {
+            return index <= 9 || index == 14;
+        }
+        if name.contains("barrier") {
+            return index == 0;
+        }
+    }
     if name.contains("mul_mat_vec_q_moe") {
         return index <= 3;
     }
@@ -3592,7 +3639,35 @@ fn pacc_kernel_arg_can_be_pointer(kernel_name: &str, index: usize) -> bool {
 ))]
 fn pacc_kernel_arg_size(kernel_name: &str, index: usize) -> usize {
     let name = kernel_name.to_ascii_lowercase();
-    if name.contains("mul_mat_vec_q_moe") {
+    if name.contains("deep_ep") {
+        if name.contains("get_dispatch_layout") {
+            if matches!(index, 5..=8) {
+                return 4;
+            }
+        } else if name.contains("cached_notify_dispatch") {
+            if matches!(index, 1 | 4) {
+                return 4;
+            }
+        } else if name.contains("notify_dispatch") {
+            if matches!(index, 4..=6 | 10 | 11 | 14) {
+                return 4;
+            }
+        } else if name.contains("cached_notify_combine") {
+            if matches!(index, 2..=4 | 6) {
+                return 4;
+            }
+        } else if name.contains("dispatch") {
+            if matches!(index, 13..=20 | 22..=24) {
+                return 4;
+            }
+        } else if name.contains("combine") {
+            if matches!(index, 10..=13 | 15..=16) {
+                return 4;
+            }
+        } else if name.contains("barrier") && index == 1 {
+            return 4;
+        }
+    } else if name.contains("mul_mat_vec_q_moe") {
         if index == 5 {
             return 12;
         }
@@ -3698,6 +3773,9 @@ unsafe fn pacc_kernel_binding_metadata(
     index: usize,
 ) -> Option<(u64, u32)> {
     let name = kernel_name.to_ascii_lowercase();
+    if name.contains("deep_ep") && name.contains("get_dispatch_layout") {
+        return pacc_deepep_layout_binding_metadata(kernel_params, index);
+    }
     if name.contains("mul_mat_vec_q_moe") {
         return pacc_mul_mat_vec_q_moe_binding_metadata(
             kernel_name,
@@ -3818,6 +3896,57 @@ unsafe fn pacc_kernel_binding_metadata(
         return pacc_gated_delta_net_binding_metadata(kernel_name, kernel_params, index);
     }
     None
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn pacc_deepep_layout_binding_metadata(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+) -> Option<(u64, u32)> {
+    let num_tokens = read_param_i32(kernel_params, 5)?.max(0) as u64;
+    let num_topk = read_param_i32(kernel_params, 6)?.max(0) as u64;
+    let num_ranks = read_param_i32(kernel_params, 7)?.max(0) as u64;
+    let num_experts = read_param_i32(kernel_params, 8)?.max(0) as u64;
+
+    let i32_bytes = std::mem::size_of::<i32>() as u64;
+    let topk_bytes = std::mem::size_of::<i64>() as u64;
+    let (bytes, flags) = match index {
+        0 => (
+            num_tokens.saturating_mul(num_topk).saturating_mul(topk_bytes),
+            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+        ),
+        1 => (
+            num_ranks.saturating_mul(i32_bytes),
+            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+        ),
+        2 => {
+            let rdma_ranks = if num_ranks > 8 && num_ranks % 8 == 0 {
+                num_ranks / 8
+            } else {
+                1
+            };
+            (
+                rdma_ranks.saturating_mul(i32_bytes),
+                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            )
+        }
+        3 => (
+            num_experts.saturating_mul(i32_bytes),
+            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+        ),
+        4 => (
+            num_tokens.saturating_mul(num_ranks),
+            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+        ),
+        _ => return None,
+    };
+
+    pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
 }
 
 #[cfg(all(

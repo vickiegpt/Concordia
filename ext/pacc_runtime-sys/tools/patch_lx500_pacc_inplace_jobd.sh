@@ -84,6 +84,8 @@ jobd_trace = os.environ.get("PACC_JOBD_TRACE", "0").strip() or "0"
 jobd_kmsg_present = "PACC_JOBD_KMSG" in os.environ
 jobd_kmsg = os.environ.get("PACC_JOBD_KMSG", "0").strip() or "0"
 jobd_progress_status = os.environ.get("PACC_JOBD_PROGRESS_STATUS", "0").strip() or "0"
+jobd_progress_completion = os.environ.get("PACC_JOBD_PROGRESS_COMPLETION", "0").strip() or "0"
+jobd_loop_trace = os.environ.get("PACC_JOBD_LOOP_TRACE", "0").strip() or "0"
 jobd_diag_ring_present = "PACC_JOBD_DIAG_RING" in os.environ
 jobd_diag_ring = os.environ.get("PACC_JOBD_DIAG_RING", "1").strip() or "1"
 jobd_beacon = os.environ.get("PACC_JOBD_BEACON", "0").strip() or "0"
@@ -104,8 +106,10 @@ jobd_full_ddr_map_present = "PACC_JOBD_FULL_DDR_MAP" in os.environ
 jobd_full_ddr_map = os.environ.get("PACC_JOBD_FULL_DDR_MAP", "0").strip() or "0"
 jobd_full_ddr_map_bytes = os.environ.get("PACC_JOBD_FULL_DDR_MAP_BYTES", "").strip()
 jobd_claim_id = os.environ.get("PACC_JOBD_CLAIM_ID", "0").strip() or "0"
+jobd_pacc_id_ioctl = os.environ.get("PACC_JOBD_PACC_ID_IOCTL", "0").strip() or "0"
 jobd_force_pread = os.environ.get("PACC_JOBD_FORCE_PREAD", "0").strip() or "0"
 jobd_control_pread = os.environ.get("PACC_JOBD_CONTROL_PREAD", "").strip()
+jobd_control_window_read = os.environ.get("PACC_JOBD_CONTROL_WINDOW_READ", "").strip()
 jobd_force_devmem = os.environ.get("PACC_JOBD_FORCE_DEVMEM", "0").strip() or "0"
 jobd_status_control_window = os.environ.get("PACC_JOBD_STATUS_CONTROL_WINDOW", "").strip()
 jobd_status_mmap_fallback = os.environ.get("PACC_JOBD_STATUS_MMAP_FALLBACK", "").strip()
@@ -126,6 +130,7 @@ jobd_rope_local_max = os.environ.get("PACC_JOBD_ROPE_LOCAL_MAX_BYTES", "").strip
 jobd_mmvf_local_x_max = os.environ.get("PACC_JOBD_MMVF_LOCAL_X_MAX_BYTES", "").strip()
 jobd_mmvf_local_y_max = os.environ.get("PACC_JOBD_MMVF_LOCAL_Y_MAX_BYTES", "").strip()
 jobd_arg_slot_scan = os.environ.get("PACC_JOBD_ARG_SLOT_SCAN", os.environ.get("HETGPU_PACC_JOBD_ARG_SLOT_SCAN", "")).strip()
+jobd_redispatch_seen_arg_slot = os.environ.get("PACC_JOBD_REDISPATCH_SEEN_ARG_SLOT", os.environ.get("HETGPU_PACC_JOBD_REDISPATCH_SEEN_ARG_SLOT", "")).strip()
 jobd_kernel_slot_map = os.environ.get("PACC_JOBD_KERNEL_SLOT_MAP", os.environ.get("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP", "")).strip()
 jobd_kernel_slot_map_bytes = os.environ.get("PACC_JOBD_KERNEL_SLOT_MAP_BYTES", os.environ.get("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP_BYTES", "")).strip()
 jobd_kernel_slot_map_off = os.environ.get("PACC_JOBD_KERNEL_SLOT_MAP_OFF", os.environ.get("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP_OFF", "")).strip()
@@ -143,6 +148,10 @@ if jobd_kmsg_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_KMSG={jobd_kmsg}")
 if jobd_progress_status != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_PROGRESS_STATUS={jobd_progress_status}")
+if jobd_progress_completion != "0":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_PROGRESS_COMPLETION={jobd_progress_completion}")
+if jobd_loop_trace != "0":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_LOOP_TRACE={jobd_loop_trace}")
 if jobd_diag_ring_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_DIAG_RING={jobd_diag_ring}")
 if jobd_beacon != "0":
@@ -177,10 +186,14 @@ if jobd_full_ddr_map_bytes:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FULL_DDR_MAP_BYTES={jobd_full_ddr_map_bytes}")
 if jobd_claim_id != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_CLAIM_ID={jobd_claim_id}")
+if jobd_pacc_id_ioctl != "0":
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_PACC_ID_IOCTL={jobd_pacc_id_ioctl}")
 if jobd_force_pread != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FORCE_PREAD={jobd_force_pread}")
 if jobd_control_pread:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_CONTROL_PREAD={jobd_control_pread}")
+if jobd_control_window_read:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_CONTROL_WINDOW_READ={jobd_control_window_read}")
 if jobd_force_devmem != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FORCE_DEVMEM={jobd_force_devmem}")
 if jobd_status_control_window:
@@ -217,6 +230,8 @@ if jobd_mmvf_local_y_max:
     rcs_lines.append(f"export PACC_JOBD_MMVF_LOCAL_Y_MAX_BYTES={jobd_mmvf_local_y_max}")
 if jobd_arg_slot_scan:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_ARG_SLOT_SCAN={jobd_arg_slot_scan}")
+if jobd_redispatch_seen_arg_slot:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_REDISPATCH_SEEN_ARG_SLOT={jobd_redispatch_seen_arg_slot}")
 if jobd_kernel_slot_map:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_KERNEL_SLOT_MAP={jobd_kernel_slot_map}")
 if jobd_kernel_slot_map_bytes:
