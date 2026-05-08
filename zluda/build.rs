@@ -64,6 +64,7 @@ fn main() {
         }
         shim_build.arg("-fPIC");
         shim_build.arg("-Wno-unused-parameter");
+        shim_build.arg("-D_GLIBCXX_USE_CXX11_ABI=0");
         if enable_logs {
             shim_build.arg("-DHETGPU_DEBUG_LOGS");
         }
