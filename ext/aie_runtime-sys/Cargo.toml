@@ -10,6 +10,9 @@ build = "build.rs"
 name = "aie_runtime_sys"
 path = "src/lib.rs"
 
+[features]
+hw-test = []
+
 [build-dependencies]
 bindgen = "0.69"
 pkg-config = "0.3"

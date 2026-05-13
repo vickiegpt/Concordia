@@ -16,6 +16,7 @@ pub(crate) mod emit_llvm;
 pub mod emit_pacc_vcix;
 pub mod emit_tmatmul_asm;
 pub(crate) mod emit_tosa_mlir;
+pub(crate) mod emit_tosa_aie;
 mod expand_operands;
 mod fix_special_registers;
 mod fix_special_registers2;
@@ -572,6 +573,52 @@ pub fn to_mlir_module<'input>(_ast: ast::Module<'input>) -> Result<String, Trans
         "to_mlir_module - MLIR backend requires additional passes that are not yet integrated"
             .to_string(),
     ))
+}
+
+/// Convert a raw PTX source string to AIE-shaped TOSA MLIR.
+///
+/// This runs the minimal PTX pipeline required to reach the emit_tosa_aie
+/// pass and emits TOSA structured for mlir-aie consumption.
+pub fn ptx_to_tosa_aie(ptx_source: &str) -> Result<String, TranslateError> {
+    let ast = ptx_parser::parse_module_checked(ptx_source)
+        .map_err(|e| TranslateError::Todo(format!("PTX parse error: {:?}", e)))?;
+
+    // Run the same early passes emit_tosa_mlir uses, stopping just before
+    // that pass. For M1 we invoke emit_tosa_aie directly on the un-lowered
+    // AST path — this mirrors how `to_mlir_module` is structured.
+    let (id_defs, directives) = normalize_and_lower_for_tosa(ast)?;
+    emit_tosa_aie::run(id_defs, directives)
+}
+
+/// Run the normalization passes required before TOSA emission.
+///
+/// Mirrors the early portion of `to_llvm_module`'s pipeline through
+/// `expand_operands`, which is the point where directive operands become
+/// `SpirvWord`s — the shape `emit_tosa_aie::run` expects. Passes that
+/// expand to LLVM intrinsics / saturation / control-flow lowering are
+/// intentionally skipped.
+fn normalize_and_lower_for_tosa<'input>(
+    ast: ast::Module<'input>,
+) -> Result<
+    (
+        GlobalStringIdentResolver2<'input>,
+        Vec<Directive2<ast::Instruction<SpirvWord>, SpirvWord>>,
+    ),
+    TranslateError,
+> {
+    let mut flat_resolver = GlobalStringIdentResolver2::<'input>::new(SpirvWord(1));
+    let directives = {
+        let mut scoped_resolver = ScopedResolver::new(&mut flat_resolver);
+        let sreg_map = SpecialRegistersMap::new(&mut scoped_resolver)?;
+        let directives = normalize_identifiers::run(&mut scoped_resolver, ast.directives)?;
+        drop(scoped_resolver);
+        let directives = replace_known_functions::run(&mut flat_resolver, directives);
+        let directives = normalize_predicates2::run(&mut flat_resolver, directives)?;
+        let directives = resolve_function_pointers::run(directives)?;
+        let directives = fix_special_registers::run(&mut flat_resolver, &sreg_map, directives)?;
+        expand_operands::run(&mut flat_resolver, directives)?
+    };
+    Ok((flat_resolver, directives))
 }
 
 /// Convert PTX AST to TMatmul assembly - HIGH-LEVEL API
