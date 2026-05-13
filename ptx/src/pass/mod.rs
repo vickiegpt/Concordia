@@ -575,6 +575,38 @@ pub fn to_mlir_module<'input>(_ast: ast::Module<'input>) -> Result<String, Trans
     ))
 }
 
+/// Convert a raw PTX source string to AIE-shaped TOSA MLIR.
+///
+/// This runs the minimal PTX pipeline required to reach the emit_tosa_aie
+/// pass and emits TOSA structured for mlir-aie consumption.
+pub fn ptx_to_tosa_aie(ptx_source: &str) -> Result<String, TranslateError> {
+    let ast = ptx_parser::parse_module_checked(ptx_source)
+        .map_err(|e| TranslateError::Todo(format!("PTX parse error: {:?}", e)))?;
+
+    // Run the same early passes emit_tosa_mlir uses, stopping just before
+    // that pass. For M1 we invoke emit_tosa_aie directly on the un-lowered
+    // AST path — this mirrors how `to_mlir_module` is structured.
+    let (id_defs, directives) = normalize_and_lower_for_tosa(ast)?;
+    emit_tosa_aie::run(id_defs, directives)
+}
+
+/// Run the normalization passes required before TOSA emission. For M1 this
+/// is a thin pass-through — the emitter handles un-lowered directives.
+/// TODO(M2+): reuse the full pipeline from `emit_tosa_mlir`'s caller.
+fn normalize_and_lower_for_tosa<'input>(
+    _ast: ast::Module<'input>,
+) -> Result<
+    (
+        GlobalStringIdentResolver2<'input>,
+        Vec<Directive2<ast::Instruction<SpirvWord>, SpirvWord>>,
+    ),
+    TranslateError,
+> {
+    Err(TranslateError::Todo(
+        "normalize_and_lower_for_tosa not wired for M1 — emit_tosa_aie is invoked directly from comgr".to_string(),
+    ))
+}
+
 /// Convert PTX AST to TMatmul assembly - HIGH-LEVEL API
 ///
 /// This is the main entry point for compiling PTX to TMatmul assembly.
