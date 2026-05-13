@@ -48,6 +48,10 @@ static bool shared_ddr_dma_sync = true;
 module_param(shared_ddr_dma_sync, bool, 0444);
 MODULE_PARM_DESC(shared_ddr_dma_sync,
 		 "Run DMA cache sync for shared DDR helper reads/writes, including fixed physical windows");
+static int shared_ddr_memremap_mode;
+module_param(shared_ddr_memremap_mode, int, 0444);
+MODULE_PARM_DESC(shared_ddr_memremap_mode,
+		 "Fixed shared DDR memremap mode: 0=auto, 1=WC, 2=WT, 3=WB");
 
 static dev_t g_dev;
 static struct cdev g_cdev;
@@ -103,6 +107,22 @@ static gfp_t shared_ddr_gfp_flags(void)
 	return GFP_KERNEL | __GFP_ZERO;
 }
 
+static void *shared_ddr_memremap_fixed(phys_addr_t base, unsigned long size)
+{
+	switch (shared_ddr_memremap_mode) {
+	case 1:
+		return memremap(base, size, MEMREMAP_WC);
+	case 2:
+		return memremap(base, size, MEMREMAP_WT);
+	case 3:
+		return memremap(base, size, MEMREMAP_WB);
+	default:
+		break;
+	}
+
+	return memremap(base, size, MEMREMAP_WC);
+}
+
 static int shared_ddr_base_show(struct seq_file *m, void *unused)
 {
 	seq_printf(m, "0x%llx\n", (unsigned long long)shared_ddr_base);
@@ -152,7 +172,22 @@ static ssize_t mbox_write(struct file *file, const char __user *buf, size_t len,
 			return 0;
 		if (!mutex_trylock(&g_lock))
 			return -EBUSY;
-		if (copy_from_user((u8 *)g_shared_ddr_mem + ddr_off, buf, n)) {
+		if (g_shared_ddr_iomem) {
+			u8 tmp[256];
+			size_t done = 0;
+
+			while (done < n) {
+				size_t want = min_t(size_t, sizeof(tmp), n - done);
+
+				if (copy_from_user(tmp, buf + done, want)) {
+					mutex_unlock(&g_lock);
+					return -EFAULT;
+				}
+				memcpy_toio((u8 __iomem *)g_shared_ddr_mem + ddr_off + done,
+					    tmp, want);
+				done += want;
+			}
+		} else if (copy_from_user((u8 *)g_shared_ddr_mem + ddr_off, buf, n)) {
 			mutex_unlock(&g_lock);
 			return -EFAULT;
 		}
@@ -246,7 +281,23 @@ static ssize_t mbox_read(struct file *file, char __user *buf, size_t len, loff_t
 		if (!mutex_trylock(&g_lock))
 			return -EBUSY;
 		shared_ddr_sync_for_cpu(ddr_off, n);
-		if (copy_to_user(buf, (u8 *)g_shared_ddr_mem + ddr_off, n)) {
+		if (g_shared_ddr_iomem) {
+			u8 tmp[256];
+			size_t done = 0;
+
+			while (done < n) {
+				size_t want = min_t(size_t, sizeof(tmp), n - done);
+
+				memcpy_fromio(tmp,
+					      (u8 __iomem *)g_shared_ddr_mem + ddr_off + done,
+					      want);
+				if (copy_to_user(buf + done, tmp, want)) {
+					mutex_unlock(&g_lock);
+					return -EFAULT;
+				}
+				done += want;
+			}
+		} else if (copy_to_user(buf, (u8 *)g_shared_ddr_mem + ddr_off, n)) {
 			mutex_unlock(&g_lock);
 			return -EFAULT;
 		}
@@ -376,6 +427,7 @@ static int mbox_mmap(struct file *file, struct vm_area_struct *vma)
 
 	if (g_shared_ddr_iomem) {
 		phys = (phys_addr_t)g_shared_ddr_dma + map_off;
+		vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 		return remap_pfn_range(vma, vma->vm_start, phys >> PAGE_SHIFT,
 				       map_size, vma->vm_page_prot);
 	}
@@ -428,12 +480,12 @@ static int __init hetgpu_pacc_mbox_init(void)
 	if (shared_ddr_size) {
 		if (shared_ddr_base_override) {
 			g_shared_ddr_dma = (dma_addr_t)shared_ddr_base_override;
-			g_shared_ddr_mem = memremap(shared_ddr_base_override,
-						    shared_ddr_size, MEMREMAP_WC);
-			if (!g_shared_ddr_mem)
+			g_shared_ddr_mem = shared_ddr_memremap_fixed(shared_ddr_base_override,
+								     shared_ddr_size);
+			if (!g_shared_ddr_mem && shared_ddr_memremap_mode == 0)
 				g_shared_ddr_mem = memremap(shared_ddr_base_override,
 							    shared_ddr_size, MEMREMAP_WT);
-			if (!g_shared_ddr_mem)
+			if (!g_shared_ddr_mem && shared_ddr_memremap_mode == 0)
 				g_shared_ddr_mem = memremap(shared_ddr_base_override,
 							    shared_ddr_size, MEMREMAP_WB);
 			if (!g_shared_ddr_mem) {

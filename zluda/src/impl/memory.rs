@@ -1071,6 +1071,7 @@ fn pacc_parse_env_usize(name: &str) -> Option<usize> {
 fn pacc_helper_path_for_device0() -> String {
     match std::env::var("HETGPU_PACC_MBOX_DEVICE") {
         Ok(pattern) if pattern.contains("%d") => pattern.replace("%d", "0"),
+        Ok(pattern) if pattern.contains("{}") => pattern.replace("{}", "0"),
         Ok(path) => path,
         Err(_) => "/dev/hetgpu_pacc_mbox_ddr_coh0".to_string(),
     }
@@ -1167,7 +1168,15 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
             .read(true)
             .write(true)
             .open(&path)
-            .map_err(|_| CUerror::OUT_OF_MEMORY)?;
+            .map_err(|err| {
+                if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "[PACC Backend] shared-DDR CUDA heap open {} failed: {}",
+                        path, err
+                    );
+                }
+                CUerror::OUT_OF_MEMORY
+            })?;
         pacc_alloc_trace(b"[pacc_alloc] shared open");
         let ptr = unsafe {
             pacc_alloc_trace(b"[pacc_alloc] shared mmap before");
@@ -1182,6 +1191,15 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
         };
         pacc_alloc_trace(b"[pacc_alloc] shared mmap after");
         if ptr == libc::MAP_FAILED {
+            if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+                eprintln!(
+                    "[PACC Backend] shared-DDR CUDA heap mmap {} offset=0x{:x} bytes={} failed: {}",
+                    path,
+                    heap_offset,
+                    window_bytes,
+                    std::io::Error::last_os_error()
+                );
+            }
             return Err(CUerror::OUT_OF_MEMORY);
         }
 

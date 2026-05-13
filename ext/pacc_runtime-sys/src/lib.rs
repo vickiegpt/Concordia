@@ -29,6 +29,7 @@ use std::os::raw::c_char;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -54,6 +55,7 @@ fn open_sync_write(path: impl AsRef<Path>) -> std::io::Result<File> {
 static PACC_RMSNORM_SUBMIT_ERROR_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static PACC_MMVF_SUBMIT_ERROR_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static PACC_ASSUME_WAIT_SUCCESS_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+static PACC_RMSNORM_SENTINEL_PRECHECK_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 // Proper encoding: _IOWR(type, nr, size) = (3<<30)|(size<<16)|(type<<8)|nr
 const fn _iowr(ty: u64, nr: u64, size: u64) -> u64 {
@@ -242,6 +244,7 @@ pub const PACC_DMA_DDR_TO_DDR_CTL: u64 = 0x783c_0000_03600;
 const PACC_JOB_MAGIC: u64 = 0x5041_4343_4a4f_4231; // "PACCJOB1"
 const HETGPU_PACC_JOB_MAGIC: u64 = 0x4847_5055_5041_4343; // "HGPUPACC"
 const HETGPU_PACC_BEACON_MAGIC: u64 = 0x4847_5055_4243_4e31; // "HGPUBCN1"
+const HETGPU_PACC_ALIGNED_COMPLETION_MAGIC: u64 = 0x4847_5055_524d_5344; // "HGPURMSD"
 const HETGPU_PACC_JOB_VERSION: u32 = 1;
 const PACC_JOB_DESC_BYTES: usize = std::mem::size_of::<pacc_mbox_job_desc>();
 const PACC_JOB_HEADER_BYTES: usize = std::mem::size_of::<PaccJobImageHeader>();
@@ -920,7 +923,7 @@ fn extract_bo_phys(bo: &pacc_bo, requested_size: u64) -> std::io::Result<u64> {
 pub struct PaccDevice {
     pub id: usize,
     pub fd: RawFd,
-    file: File,
+    file: Mutex<Option<File>>,
     is_mbox_helper: bool,
 }
 
@@ -1035,7 +1038,7 @@ impl PaccDevice {
         let dev = PaccDevice {
             id,
             fd,
-            file,
+            file: Mutex::new(Some(file)),
             is_mbox_helper,
         };
         if std::env::var("HETGPU_PACC_BOOT_RUNTIME").ok().as_deref() == Some("1") {
@@ -1119,6 +1122,50 @@ impl PaccDevice {
         }
         std::sync::atomic::fence(Ordering::SeqCst);
         let mut arg = shared_ddr;
+        if env_flag_enabled("HETGPU_PACC_MBOX_IRQ")
+            || env_flag_enabled("HETGPU_PACC_ZLUDA_IRQ_MBOX_HELPER")
+        {
+            let dev = mailbox_helper_path_for_pacc(self.id);
+            let helper_file = OpenOptions::new().read(true).write(true).open(&dev);
+            match helper_file {
+                Ok(file) => {
+                    let helper_fd = file.as_raw_fd();
+                    let mut helper_cmd = IOC_ZLUDA_IRQ;
+                    let mut helper_ret = unsafe { libc::ioctl(helper_fd, IOC_ZLUDA_IRQ, 0usize) };
+                    if helper_ret < 0 {
+                        helper_cmd = IOC_ZLUDA_IRQ_LEGACY;
+                        helper_ret =
+                            unsafe { libc::ioctl(helper_fd, IOC_ZLUDA_IRQ_LEGACY, &mut arg as *mut _) };
+                    }
+                    if helper_ret >= 0 {
+                        if zluda_irq_trace_enabled() {
+                            eprintln!(
+                                "PACC ZLUDA IRQ: dev={} shared_ddr_base=0x{:x} shared_ddr_size=0x{:x} via mailbox helper {} ioctl 0x{:x}",
+                                self.id, shared_ddr.ddr_base, shared_ddr.ddr_size, dev, helper_cmd
+                            );
+                        }
+                        return Ok(());
+                    }
+                    if env_flag_enabled("HETGPU_PACC_MBOX_IRQ_STRICT") {
+                        let err = std::io::Error::last_os_error();
+                        return Err(Error::new(
+                            err.kind(),
+                            format!(
+                                "PACC ZLUDA IRQ mailbox helper ioctl 0x{helper_cmd:x} failed on {dev}: {err}"
+                            ),
+                        ));
+                    }
+                }
+                Err(err) => {
+                    if env_flag_enabled("HETGPU_PACC_MBOX_IRQ_STRICT") {
+                        return Err(Error::new(
+                            err.kind(),
+                            format!("failed to open PACC mailbox IRQ helper {dev}: {err}"),
+                        ));
+                    }
+                }
+            }
+        }
         let fd = self.fd;
         let mut irq_cmd = IOC_ZLUDA_IRQ;
         let mut ret = unsafe { libc::ioctl(fd, IOC_ZLUDA_IRQ, 0usize) };
@@ -1197,6 +1244,30 @@ impl PaccDevice {
         poll_fd_response(self.fd, &format!("/dev/pacc{}", self.id), timeout_ms)
     }
 
+    fn release_device_fd_before_wait(&self) {
+        if !env_flag_enabled("HETGPU_PACC_RELEASE_DEVICE_FD_BEFORE_WAIT") {
+            return;
+        }
+        match self.file.lock() {
+            Ok(mut file) => {
+                if file.take().is_some() && zluda_irq_trace_enabled() {
+                    eprintln!(
+                        "PACC ZLUDA IRQ: dev={} released device fd before shared-DDR completion wait",
+                        self.id
+                    );
+                }
+            }
+            Err(_) => {
+                if zluda_irq_trace_enabled() {
+                    eprintln!(
+                        "PACC ZLUDA IRQ: dev={} could not lock device fd for release before wait",
+                        self.id
+                    );
+                }
+            }
+        }
+    }
+
     pub fn poll_helper_response(&self, helper_file: &File, timeout_ms: u64) -> std::io::Result<()> {
         poll_fd_response(
             helper_file.as_raw_fd(),
@@ -1239,7 +1310,13 @@ impl PaccDevice {
         }
 
         Ok(PaccBoMap {
-            file: self.file.try_clone()?,
+            file: self
+                .file
+                .lock()
+                .map_err(|_| Error::new(ErrorKind::Other, "PACC device file mutex poisoned"))?
+                .as_ref()
+                .ok_or_else(|| Error::new(ErrorKind::Other, "PACC device fd was released"))?
+                .try_clone()?,
             bo: request,
             phys,
             ptr: ptr.cast(),
@@ -1384,6 +1461,7 @@ impl PaccDevice {
             return self.submit_preloaded_job_mailbox(job_id, seq, &doorbell, arg_bytes);
         }
 
+        let _ = self.clear_preloaded_arg_slot(job_id);
         self.stage_preloaded_job_args(job_id, seq, arg_bytes)?;
         self.stage_preloaded_doorbell(&doorbell)?;
 
@@ -1462,6 +1540,7 @@ impl PaccDevice {
             return Ok(seq);
         }
 
+        let _ = self.clear_preloaded_arg_slot(job_id);
         self.stage_preloaded_job_args(job_id, seq, arg_bytes)?;
         if env_flag_enabled("HETGPU_PACC_PRE_DOORBELL_IRQ") {
             self.zluda_irq(shared_ddr_info())?;
@@ -1524,6 +1603,7 @@ impl PaccDevice {
         }
         self.zluda_irq(shared_ddr_info())?;
         nvtop_record_submit(self.id as usize, job_id, seq, None, 0);
+        self.release_device_fd_before_wait();
         let result = self.wait_preloaded_job_status(job_id, seq);
         nvtop_record_complete(self.id as usize, job_id, seq, &result);
         if result.is_ok() {
@@ -1556,7 +1636,20 @@ impl PaccDevice {
             )
         };
         if use_shared_ddr_control_window() {
-            return write_shared_ddr_control_window(self.id, HETGPU_PACC_DOORBELL_OFF, bytes);
+            write_shared_ddr_control_window(self.id, HETGPU_PACC_DOORBELL_OFF, bytes)?;
+            if env_flag_enabled("HETGPU_PACC_RUNTIME_MBOX_DESC")
+                || env_flag_enabled("HETGPU_PACC_PRELOADED_MBOX_DESC")
+            {
+                write_ap2pacc_mailbox(self.id, HETGPU_PACC_DOORBELL_OFF, bytes)?
+                    .then_some(())
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::NotFound,
+                            "PACC AP2PACC mailbox is not available for runtime doorbell",
+                        )
+                    })?;
+            }
+            return Ok(());
         }
         Err(Error::new(
             ErrorKind::Unsupported,
@@ -1943,11 +2036,25 @@ static NEXT_RUNTIME_JOB_SEQ: AtomicU64 = AtomicU64::new(1);
 static NEXT_GEMM_DEVICE: AtomicUsize = AtomicUsize::new(0);
 
 fn next_gemm_device() -> usize {
-    std::env::var("HETGPU_PACC_GEMM_DEVICE")
+    if let Some(id) = std::env::var("HETGPU_PACC_GEMM_DEVICE")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&id| id < PACC_CORE_NUM)
-        .unwrap_or_else(|| NEXT_GEMM_DEVICE.fetch_add(1, Ordering::Relaxed) % PACC_CORE_NUM)
+    {
+        return id;
+    }
+    if let Ok(devices) = std::env::var("HETGPU_PACC_GEMM_DEVICES") {
+        let parsed: Vec<usize> = devices
+            .split(',')
+            .filter_map(|s| s.trim().parse::<usize>().ok())
+            .filter(|&id| id < PACC_CORE_NUM)
+            .collect();
+        if !parsed.is_empty() {
+            let idx = NEXT_GEMM_DEVICE.fetch_add(1, Ordering::Relaxed) % parsed.len();
+            return parsed[idx];
+        }
+    }
+    NEXT_GEMM_DEVICE.fetch_add(1, Ordering::Relaxed) % PACC_CORE_NUM
 }
 
 fn normalize_pacc_device_id(dev_id: i32) -> usize {
@@ -2593,6 +2700,71 @@ fn decode_pacc_host_status(
     None
 }
 
+fn pacc_job_timeout_grace_ms() -> u64 {
+    parse_env_usize("HETGPU_PACC_JOB_TIMEOUT_GRACE_MS", 5_000) as u64
+}
+
+fn wait_shared_ddr_job_status_grace(
+    dev: &PaccDevice,
+    expected_job_id: u32,
+    seq: u64,
+    shared_file: &mut Option<File>,
+    buf: &mut [u8; 32],
+    start: std::time::Instant,
+    reason: &str,
+) -> Option<std::io::Result<()>> {
+    let grace_ms = pacc_job_timeout_grace_ms();
+    if grace_ms == 0 {
+        return None;
+    }
+    let grace_start = std::time::Instant::now();
+    let grace_deadline = std::time::Duration::from_millis(grace_ms);
+    if zluda_irq_trace_enabled() {
+        eprintln!(
+            "PACC ZLUDA IRQ: dev={} {} entering completion grace job_id={} seq={} grace_ms={} elapsed_us={}",
+            dev.id,
+            reason,
+            expected_job_id,
+            seq,
+            grace_ms,
+            start.elapsed().as_micros()
+        );
+    }
+    while grace_start.elapsed() < grace_deadline {
+        *shared_file = None;
+        std::sync::atomic::fence(Ordering::SeqCst);
+        match read_shared_ddr_status_window_cached(
+            shared_file,
+            dev.id,
+            HETGPU_PACC_COMPLETION_OFF,
+            buf,
+        ) {
+            Ok(()) => {
+                std::sync::atomic::fence(Ordering::SeqCst);
+                if let Some(result) = decode_pacc_host_status(buf, expected_job_id, seq) {
+                    if zluda_irq_trace_enabled() {
+                        eprintln!(
+                            "PACC ZLUDA IRQ: dev={} completion became visible during grace job_id={} seq={} grace_elapsed_us={} total_elapsed_us={}",
+                            dev.id,
+                            expected_job_id,
+                            seq,
+                            grace_start.elapsed().as_micros(),
+                            start.elapsed().as_micros()
+                        );
+                    }
+                    return Some(result);
+                }
+            }
+            Err(err) if err.raw_os_error() == Some(libc::EBUSY) => {}
+            Err(err) => return Some(Err(err)),
+        }
+        std::thread::sleep(std::time::Duration::from_micros(
+            status_poll_sleep_us().max(50),
+        ));
+    }
+    None
+}
+
 fn wait_shared_ddr_job_status(
     dev: &PaccDevice,
     expected_job_id: u32,
@@ -2614,6 +2786,10 @@ fn wait_shared_ddr_job_status(
     let mut last_beacon: Option<(u64, u32, u32, u32, u64)> = None;
     let mut last_matching_beacon: Option<(u32, u32, u64)> = None;
     let mut logged_stale_completion = false;
+    let initial_sleep_us = status_initial_sleep_us();
+    if initial_sleep_us != 0 {
+        std::thread::sleep(std::time::Duration::from_micros(initial_sleep_us));
+    }
     let poll_wait_enabled = !use_process_mock_shared_ddr_window()
         && !use_pacc_bo_shared_ddr()
         && response_poll_enabled();
@@ -2827,6 +3003,17 @@ fn wait_shared_ddr_job_status(
                     )
                 })
                 .unwrap_or_default();
+            if let Some(result) = wait_shared_ddr_job_status_grace(
+                dev,
+                expected_job_id,
+                seq,
+                shared_file,
+                &mut buf,
+                start,
+                "status timeout",
+            ) {
+                return result;
+            }
             return Err(Error::new(
                 ErrorKind::TimedOut,
                 format!(
@@ -2861,6 +3048,17 @@ fn wait_shared_ddr_job_status(
             )
         })
         .unwrap_or_default();
+    if let Some(result) = wait_shared_ddr_job_status_grace(
+        dev,
+        expected_job_id,
+        seq,
+        shared_file,
+        &mut buf,
+        start,
+        "poll timeout",
+    ) {
+        return result;
+    }
     Err(Error::new(
         ErrorKind::TimedOut,
         format!(
@@ -2876,6 +3074,10 @@ fn response_poll_slice_ms() -> u64 {
 
 fn status_poll_sleep_us() -> u64 {
     parse_env_usize("HETGPU_PACC_STATUS_POLL_SLEEP_US", 50) as u64
+}
+
+fn status_initial_sleep_us() -> u64 {
+    parse_env_usize("HETGPU_PACC_STATUS_INITIAL_SLEEP_US", 0) as u64
 }
 
 fn response_poll_timeout_cap_ms() -> u64 {
@@ -3041,39 +3243,34 @@ fn mock_runtime_job(job_id: u32, arg_bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn write_ap2pacc_mailbox(pacc_id: usize, offset: u64, bytes: &[u8]) -> std::io::Result<bool> {
-    if !mailbox_sram_enabled() {
-        return Ok(false);
+    if prefer_mailbox_helper() || std::env::var("HETGPU_PACC_MAILBOX_DEVICE").is_ok() {
+        let dev = mailbox_helper_path_for_pacc(pacc_id);
+        if !std::path::Path::new(&dev).exists() {
+            return Ok(false);
+        }
+        let mut file = open_sync_write(&dev)?;
+        helper_write_all(&mut file, offset, bytes)?;
+        return Ok(true);
     }
-    if !prefer_mailbox_helper() {
+    if mailbox_sram_enabled() {
         write_ap2pacc_mailbox_phys(pacc_id, offset, bytes)?;
         return Ok(true);
     }
-    let dev = mailbox_helper_path_for_pacc(pacc_id);
-    if !std::path::Path::new(&dev).exists() {
-        return Ok(false);
-    }
-            let mut file = open_sync_write(&dev)?;
-    helper_write_all(&mut file, offset, bytes)?;
-    Ok(true)
+    Ok(false)
 }
 
 fn read_pacc2ap_mailbox(pacc_id: usize, offset: u64, bytes: &mut [u8]) -> std::io::Result<bool> {
-    if !mailbox_sram_enabled() {
+    if prefer_mailbox_helper() || std::env::var("HETGPU_PACC_MAILBOX_DEVICE").is_ok() {
+        let dev = mailbox_helper_path_for_pacc(pacc_id);
+        if std::path::Path::new(&dev).exists() {
+            let mut file = open_sync_read(&dev)?;
+            helper_read_exact(&mut file, offset, bytes)?;
+            return Ok(true);
+        }
         return Ok(false);
     }
-    if !prefer_mailbox_helper() {
+    if mailbox_sram_enabled() {
         read_pacc2ap_mailbox_phys(pacc_id, offset, bytes)?;
-        return Ok(true);
-    }
-    let dev = mailbox_helper_path_for_pacc(pacc_id);
-    if std::path::Path::new(&dev).exists() {
-        let mut file = open_sync_read(&dev)?;
-        helper_read_exact(&mut file, offset, bytes)?;
-        return Ok(true);
-    }
-    if pacc_id == 0 {
-        let mut map = PhysMap::map_rw(PACC2AP_MBOX_PHYS + offset, bytes.len())?;
-        bytes.copy_from_slice(map.as_mut_slice());
         return Ok(true);
     }
     Ok(false)
@@ -3414,7 +3611,7 @@ fn open_pacc_device_no_boot(id: usize) -> std::io::Result<PaccDevice> {
     Ok(PaccDevice {
         id,
         fd,
-        file,
+        file: Mutex::new(Some(file)),
         is_mbox_helper: false,
     })
 }
@@ -4147,6 +4344,10 @@ fn shared_ddr_status_helper_pread_enabled() -> bool {
     env_flag_enabled("HETGPU_PACC_STATUS_HELPER_PREAD")
 }
 
+fn shared_ddr_status_external_read_enabled() -> bool {
+    env_flag_enabled("HETGPU_PACC_STATUS_EXTERNAL_READ")
+}
+
 fn read_shared_ddr_status_window_mmap_cached(
     file: &mut Option<File>,
     pacc_id: usize,
@@ -4191,6 +4392,104 @@ fn read_shared_ddr_status_window_cached(
     bytes: &mut [u8],
 ) -> std::io::Result<()> {
     let control_offset = shared_ddr_control_offset(pacc_id, offset, bytes.len())?;
+    fn read_completion_mirror(
+        file: &mut File,
+        pacc_id: usize,
+        offset: u64,
+        bytes: &mut [u8],
+    ) -> std::io::Result<bool> {
+        if offset != HETGPU_PACC_COMPLETION_OFF {
+            return Ok(false);
+        }
+        let requested_mirror_base = match parse_optional_env_usize("HETGPU_PACC_COMPLETION_MIRROR_OFF") {
+            Some(0) => return Ok(false),
+            Some(v) => v as u64,
+            None => return Ok(false),
+        };
+        let mirror_bases = [requested_mirror_base, 0x100e0];
+        let control_offset = shared_ddr_control_offset(pacc_id, offset, bytes.len())?;
+        for mirror_base in mirror_bases {
+            if mirror_base == 0
+                || (mirror_base != requested_mirror_base && requested_mirror_base == 0x100e0)
+            {
+                continue;
+            }
+            let mirror_offset = mirror_base.checked_add(control_offset).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "PACC completion mirror overflow")
+            })?;
+            let helper_offset = HETGPU_PACC_SHARED_DDR_HELPER_OFF
+                .checked_add(mirror_offset)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        "PACC completion mirror helper offset overflow",
+                    )
+                })?;
+            let mut mirror = vec![0u8; bytes.len().max(128)];
+            helper_read_exact(file, helper_offset, &mut mirror)?;
+            let magic = u64::from_le_bytes(mirror[0..8].try_into().unwrap());
+            let version = u32::from_le_bytes(mirror[8..12].try_into().unwrap());
+            if magic == HETGPU_PACC_JOB_MAGIC && version == HETGPU_PACC_JOB_VERSION {
+                bytes.copy_from_slice(&mirror[..bytes.len()]);
+                if env_flag_enabled("HETGPU_PACC_STATUS_READ_TRACE") {
+                    eprintln!(
+                        "PACC status mirror read: off=0x{:x} raw={:02x?}",
+                        helper_offset, bytes
+                    );
+                }
+                return Ok(true);
+            }
+            if mirror.len() >= 128
+                && magic == HETGPU_PACC_ALIGNED_COMPLETION_MAGIC
+                && version == HETGPU_PACC_JOB_VERSION
+            {
+                let phase = u32::from_le_bytes(mirror[16..20].try_into().unwrap());
+                let (job_id, status) = if phase == 0x5151 {
+                    let job_id = u32::from_le_bytes(mirror[20..24].try_into().unwrap());
+                    let status =
+                        u32::try_from(u64::from_le_bytes(mirror[32..40].try_into().unwrap()))
+                            .unwrap_or(u32::MAX);
+                    (job_id, status)
+                } else if phase == 0x5140 {
+                    let status = u32::from_le_bytes(mirror[124..128].try_into().unwrap());
+                    (hetgpu_pacc_job_id::RMSNORM, status)
+                } else {
+                    continue;
+                };
+                let seq = u64::from_le_bytes(mirror[24..32].try_into().unwrap());
+                bytes.fill(0);
+                bytes[0..8].copy_from_slice(&HETGPU_PACC_JOB_MAGIC.to_le_bytes());
+                bytes[8..12].copy_from_slice(&HETGPU_PACC_JOB_VERSION.to_le_bytes());
+                bytes[12..16].copy_from_slice(&job_id.to_le_bytes());
+                bytes[16..20].copy_from_slice(&status.to_le_bytes());
+                bytes[24..32].copy_from_slice(&seq.to_le_bytes());
+                if env_flag_enabled("HETGPU_PACC_STATUS_READ_TRACE") {
+                    eprintln!(
+                        "PACC aligned completion read: off=0x{:x} raw={:02x?} synthesized={:02x?}",
+                        helper_offset, &mirror[..128], bytes
+                    );
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    if shared_ddr_status_external_read_enabled()
+        && !prefer_physmap_shared_ddr()
+        && !use_process_mock_shared_ddr_window()
+        && !use_pacc_bo_shared_ddr()
+    {
+        read_shared_ddr_window_external(pacc_id, control_offset, bytes)?;
+        if env_flag_enabled("HETGPU_PACC_STATUS_READ_TRACE") {
+            eprintln!(
+                "PACC status external read: dev={} off=0x{:x} raw={:02x?}",
+                pacc_id,
+                HETGPU_PACC_SHARED_DDR_HELPER_OFF + control_offset,
+                bytes
+            );
+        }
+        return Ok(());
+    }
     if shared_ddr_status_helper_pread_enabled()
         && !prefer_physmap_shared_ddr()
         && !use_process_mock_shared_ddr_window()
@@ -4212,6 +4511,9 @@ fn read_shared_ddr_status_window_cached(
                     bytes
                 );
             }
+            if read_completion_mirror(&mut file, pacc_id, offset, bytes)? {
+                return Ok(());
+            }
             return Ok(());
         }
         if let Some(file) = file.as_mut() {
@@ -4227,6 +4529,9 @@ fn read_shared_ddr_status_window_cached(
                     bytes
                 );
             }
+            if read_completion_mirror(file, pacc_id, offset, bytes)? {
+                return Ok(());
+            }
             return Ok(());
         }
     }
@@ -4237,8 +4542,12 @@ fn pacc_gemm_trace_enabled() -> bool {
     std::env::var("HETGPU_PACC_GEMM_TRACE").ok().as_deref() == Some("1")
 }
 
+fn pacc_gemm_output_settle_us() -> u64 {
+    parse_env_usize("HETGPU_PACC_GEMM_OUTPUT_SETTLE_US", 0) as u64
+}
+
 fn open_pacc_mailbox_file(pacc_id: usize) -> Option<File> {
-    if !prefer_mailbox_helper() || !mailbox_sram_enabled() {
+    if !prefer_mailbox_helper() && std::env::var("HETGPU_PACC_MAILBOX_DEVICE").is_err() {
         return None;
     }
     let dev = mailbox_helper_path_for_pacc(pacc_id);
@@ -4250,12 +4559,6 @@ fn open_pacc_mailbox_file(pacc_id: usize) -> Option<File> {
 }
 
 fn open_pacc_mailbox_helper_file(pacc_id: usize) -> std::io::Result<File> {
-    if !mailbox_sram_enabled() {
-        return Err(Error::new(
-            ErrorKind::Unsupported,
-            "PACC mailbox SRAM helper is disabled; use shared DDR control",
-        ));
-    }
     let dev = mailbox_helper_path_for_pacc(pacc_id);
     if !std::path::Path::new(&dev).exists() {
         return Err(Error::new(
@@ -4272,9 +4575,6 @@ fn write_ap2pacc_mailbox_cached(
     offset: u64,
     bytes: &[u8],
 ) -> std::io::Result<bool> {
-    if !mailbox_sram_enabled() {
-        return Ok(false);
-    }
     if let Some(file) = file.as_mut() {
         helper_write_all(file, offset, bytes)?;
         return Ok(true);
@@ -4288,9 +4588,6 @@ fn read_pacc2ap_mailbox_cached(
     offset: u64,
     bytes: &mut [u8],
 ) -> std::io::Result<bool> {
-    if !mailbox_sram_enabled() {
-        return Ok(false);
-    }
     if let Some(file) = file.as_mut() {
         helper_read_exact(file, offset, bytes)?;
         return Ok(true);
@@ -4477,6 +4774,8 @@ fn submit_gemm_runtime_job_cached(
         Some(job),
         staged_bytes,
     );
+    *mailbox_file = None;
+    shared_file = None;
     let result = wait_preloaded_gemm_status_cached(dev, seq, &mut shared_file, mailbox_file);
     nvtop_record_complete(dev.id, hetgpu_pacc_job_id::GEMM, seq, &result);
     result
@@ -6111,16 +6410,36 @@ unsafe fn submit_gemm_staged_single_shared_ddr(
     } else {
         (a_src, b_src, None)
     };
+    let alpha_value = read_f32_arg(alpha, 1.0);
+    let beta_value = read_f32_arg(beta, 0.0);
+    let gemm_wait_output = output_wait_enabled_default("HETGPU_PACC_GEMM_WAIT_OUTPUT", true)
+        && beta_value == 0.0
+        && pacc_c_bytes != 0;
+    let output_sentinel = parse_env_usize("HETGPU_PACC_GEMM_OUTPUT_SENTINEL", 0xa5) as u8;
     write_shared_ddr_window(slot_off + a_off, a_payload)?;
     write_shared_ddr_window(slot_off + b_off, b_payload)?;
-    if let Some(c_payload) = c_payload {
+    if gemm_wait_output {
+        let sentinel = vec![output_sentinel; pacc_c_bytes];
+        write_shared_ddr_window(slot_off + c_off, &sentinel)?;
+        let mut sentinel_probe = vec![0u8; pacc_c_bytes];
+        let mut sentinel_file = None;
+        output_wait_sentinel_visible(
+            &mut sentinel_file,
+            slot_off + c_off,
+            &mut sentinel_probe,
+            output_sentinel,
+            "hetgpu_pacc_submit_gemm_staged",
+            "GEMM output",
+            "HETGPU_PACC_GEMM_OUTPUT_TIMEOUT_MS",
+            dev_id,
+            0,
+        )?;
+    } else if let Some(c_payload) = c_payload {
         write_shared_ddr_window(slot_off + c_off, c_payload)?;
     } else if pacc_c_bytes != 0 {
         let zero = vec![0u8; pacc_c_bytes];
         write_shared_ddr_window(slot_off + c_off, &zero)?;
     }
-    let alpha_value = read_f32_arg(alpha, 1.0);
-    let beta_value = read_f32_arg(beta, 0.0);
     write_shared_ddr_window(slot_off + alpha_off, &alpha_value.to_ne_bytes())?;
     write_shared_ddr_window(slot_off + beta_off, &beta_value.to_ne_bytes())?;
 
@@ -6157,7 +6476,26 @@ unsafe fn submit_gemm_staged_single_shared_ddr(
     PaccDevice::open(dev_id)?.submit_runtime_job(hetgpu_pacc_job_id::GEMM, &job)?;
 
     let mut c_storage = vec![0u8; pacc_c_bytes];
-    read_shared_ddr_window(slot_off + c_off, &mut c_storage)?;
+    if gemm_wait_output {
+        let mut output_file = None;
+        wait_shared_ddr_output_change(
+            &mut output_file,
+            slot_off + c_off,
+            &mut c_storage,
+            output_sentinel,
+            "hetgpu_pacc_submit_gemm_staged",
+            "GEMM output",
+            "HETGPU_PACC_GEMM_OUTPUT_TIMEOUT_MS",
+            dev_id,
+            0,
+        )?;
+    } else {
+        let output_settle_us = pacc_gemm_output_settle_us();
+        if output_settle_us != 0 {
+            std::thread::sleep(std::time::Duration::from_micros(output_settle_us));
+        }
+        read_shared_ddr_window(slot_off + c_off, &mut c_storage)?;
+    }
     if compact_stage {
         unpack_gemm_c_block_rowmajor_f32_bytes(
             &c_storage,
@@ -6703,6 +7041,10 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
                 ),
             )
         })?;
+        let output_settle_us = pacc_gemm_output_settle_us();
+        if output_settle_us != 0 {
+            std::thread::sleep(std::time::Duration::from_micros(output_settle_us));
+        }
         read_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, &mut c_partial)?;
         for (i, chunk) in c_partial.chunks_exact(4).enumerate() {
             c_accum[i] += f32::from_ne_bytes(chunk.try_into().unwrap());
@@ -7361,6 +7703,26 @@ unsafe fn submit_rmsnorm_typed_impl(
     dtype: u32,
     label: &str,
 ) -> i32 {
+    if env_flag_enabled("HETGPU_PACC_RMSNORM_HOST_FALLBACK") {
+        let result = run_rmsnorm_host_fallback(x, weight, y, rows, hidden, eps, dtype);
+        return match result {
+            Ok(()) => 0,
+            Err(e) => {
+                pacc_log_limited(
+                    &PACC_RMSNORM_SUBMIT_ERROR_LOG_COUNT,
+                    "HETGPU_PACC_RMSNORM_ERROR_LOG_LIMIT",
+                    64,
+                    || {
+                        eprintln!(
+                            "{}: host RMSNorm fallback failed dev={} x=0x{:x} w=0x{:x} y=0x{:x} rows={} hidden={} eps={} dtype={}: {}",
+                            label, dev_id, x as usize, weight as usize, y as usize, rows, hidden, eps, dtype, e
+                        );
+                    },
+                );
+                -1
+            }
+        };
+    }
     let staged = std::env::var("HETGPU_PACC_RMSNORM_STAGE_SHARED_DDR")
         .ok()
         .as_deref()
@@ -7387,6 +7749,56 @@ unsafe fn submit_rmsnorm_typed_impl(
             -1
         }
     }
+}
+
+unsafe fn run_rmsnorm_host_fallback(
+    x: *const std::ffi::c_void,
+    weight: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    rows: u64,
+    hidden: u64,
+    eps: f32,
+    dtype: u32,
+) -> std::io::Result<()> {
+    if x.is_null() || y.is_null() || rows == 0 || hidden == 0 {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "invalid RMSNorm host fallback arguments",
+        ));
+    }
+    pacc_dtype_size(dtype as i32).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Unsupported,
+            format!("unsupported RMSNorm host fallback dtype {}", dtype),
+        )
+    })?;
+    let rows_usize = usize::try_from(rows)
+        .map_err(|_| Error::new(ErrorKind::InvalidInput, "RMSNorm rows overflow"))?;
+    let hidden_usize = usize::try_from(hidden)
+        .map_err(|_| Error::new(ErrorKind::InvalidInput, "RMSNorm hidden overflow"))?;
+
+    for row in 0..rows_usize {
+        let base = row
+            .checked_mul(hidden_usize)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "RMSNorm index overflow"))?;
+        let mut sumsq = 0.0f32;
+        for col in 0..hidden_usize {
+            let v = gemm_read_f32(x, dtype as i32, base + col)?;
+            sumsq += v * v;
+        }
+        let scale = 1.0f32 / (sumsq / hidden as f32 + eps).sqrt();
+        for col in 0..hidden_usize {
+            let idx = base + col;
+            let w = if weight.is_null() {
+                1.0f32
+            } else {
+                gemm_read_f32(weight, dtype as i32, col)?
+            };
+            let v = gemm_read_f32(x, dtype as i32, idx)?;
+            gemm_write_from_f32(y, dtype as i32, idx, v * scale * w)?;
+        }
+    }
+    Ok(())
 }
 
 unsafe fn submit_rmsnorm_direct_runtime_job(
@@ -7433,6 +7845,16 @@ fn output_wait_enabled(name: &str) -> bool {
     )
 }
 
+fn output_wait_enabled_default(name: &str, default_enabled: bool) -> bool {
+    match std::env::var(name) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => default_enabled,
+    }
+}
+
 fn mmvf_output_timeout_assume_success_enabled() -> bool {
     matches!(
         std::env::var("HETGPU_PACC_MMVF_ASSUME_SUCCESS_ON_OUTPUT_TIMEOUT")
@@ -7450,8 +7872,258 @@ fn output_wait_timeout_ms(timeout_env: &str) -> u64 {
     parse_env_usize(timeout_env, default_timeout) as u64
 }
 
+fn output_wait_settle_us(timeout_env: &str) -> u64 {
+    let default_settle = parse_env_usize("HETGPU_PACC_OUTPUT_SETTLE_US", 0);
+    if timeout_env.is_empty() {
+        return default_settle as u64;
+    }
+    let settle_env = timeout_env.replace("TIMEOUT_MS", "SETTLE_US");
+    parse_env_usize(&settle_env, default_settle) as u64
+}
+
+fn output_wait_poll_us(timeout_env: &str) -> u64 {
+    let default_poll = if timeout_env.contains("RMSNORM") {
+        10_000
+    } else if timeout_env.contains("GEMM") {
+        5_000_000
+    } else {
+        50
+    };
+    if timeout_env.is_empty() {
+        return parse_env_usize("HETGPU_PACC_OUTPUT_POLL_US", default_poll) as u64;
+    }
+    let poll_env = timeout_env.replace("TIMEOUT_MS", "POLL_US");
+    parse_env_usize(
+        &poll_env,
+        parse_env_usize("HETGPU_PACC_OUTPUT_POLL_US", default_poll),
+    ) as u64
+}
+
+fn output_wait_ready_mode(timeout_env: &str) -> String {
+    let default_mode = if timeout_env.contains("RMSNORM") {
+        "sample"
+    } else if timeout_env.contains("GEMM") {
+        "sample"
+    } else {
+        "any"
+    };
+    if timeout_env.is_empty() {
+        return std::env::var("HETGPU_PACC_OUTPUT_READY_MODE")
+            .unwrap_or_else(|_| default_mode.to_string())
+            .trim()
+            .to_ascii_lowercase();
+    }
+    let mode_env = timeout_env.replace("TIMEOUT_MS", "READY_MODE");
+    std::env::var(&mode_env)
+        .or_else(|_| std::env::var("HETGPU_PACC_OUTPUT_READY_MODE"))
+        .unwrap_or_else(|_| default_mode.to_string())
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn output_wait_sample_bytes(timeout_env: &str, len: usize) -> usize {
+    let default_sample = len.min(64).max(1);
+    if timeout_env.is_empty() {
+        return parse_env_usize("HETGPU_PACC_OUTPUT_READY_SAMPLE_BYTES", default_sample)
+            .min(len)
+            .max(1);
+    }
+    let sample_env = timeout_env.replace("TIMEOUT_MS", "READY_SAMPLE_BYTES");
+    parse_env_usize(
+        &sample_env,
+        parse_env_usize("HETGPU_PACC_OUTPUT_READY_SAMPLE_BYTES", default_sample),
+    )
+    .min(len)
+    .max(1)
+}
+
+fn output_wait_max_sentinel_run(timeout_env: &str) -> usize {
+    let default_run = if timeout_env.contains("RMSNORM") {
+        16
+    } else {
+        0
+    };
+    if timeout_env.is_empty() {
+        return parse_env_usize("HETGPU_PACC_OUTPUT_READY_MAX_SENTINEL_RUN", default_run);
+    }
+    let run_env = timeout_env.replace("TIMEOUT_MS", "READY_MAX_SENTINEL_RUN");
+    parse_env_usize(
+        &run_env,
+        parse_env_usize("HETGPU_PACC_OUTPUT_READY_MAX_SENTINEL_RUN", default_run),
+    )
+}
+
+fn output_wait_sentinel_timeout_ms(timeout_env: &str) -> u64 {
+    let default_timeout = parse_env_usize("HETGPU_PACC_OUTPUT_SENTINEL_TIMEOUT_MS", 5_000);
+    if timeout_env.is_empty() {
+        return default_timeout as u64;
+    }
+    let sentinel_env = timeout_env.replace("TIMEOUT_MS", "SENTINEL_TIMEOUT_MS");
+    parse_env_usize(&sentinel_env, default_timeout) as u64
+}
+
+fn output_has_long_sentinel_run(bytes: &[u8], sentinel: u8, max_run: usize) -> bool {
+    if max_run == 0 {
+        return false;
+    }
+    let mut run = 0usize;
+    for &b in bytes {
+        if b == sentinel {
+            run += 1;
+            if run >= max_run {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+fn output_wait_bytes_ready(bytes: &[u8], sentinel: u8, timeout_env: &str) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    if output_has_long_sentinel_run(
+        bytes,
+        sentinel,
+        output_wait_max_sentinel_run(timeout_env),
+    ) {
+        return false;
+    }
+    match output_wait_ready_mode(timeout_env).as_str() {
+        "all" | "complete" => bytes.iter().all(|&b| b != sentinel),
+        "sample" | "samples" | "head_tail" | "head-tail" => {
+            let sample = output_wait_sample_bytes(timeout_env, bytes.len());
+            let head_ready = bytes[..sample].iter().any(|&b| b != sentinel);
+            let tail_start = bytes.len().saturating_sub(sample);
+            let tail_ready = bytes[tail_start..].iter().any(|&b| b != sentinel);
+            if bytes.len() <= sample * 2 {
+                head_ready && tail_ready
+            } else {
+                let mid = bytes.len() / 2;
+                let mid_start = mid.saturating_sub(sample / 2);
+                let mid_end = mid_start.saturating_add(sample).min(bytes.len());
+                let mid_ready = bytes[mid_start..mid_end].iter().any(|&b| b != sentinel);
+                head_ready && mid_ready && tail_ready
+            }
+        }
+        _ => bytes.iter().any(|&b| b != sentinel),
+    }
+}
+
+fn output_wait_external_read_enabled(timeout_env: &str) -> bool {
+    let specific = if timeout_env.is_empty() {
+        None
+    } else {
+        std::env::var(timeout_env.replace("TIMEOUT_MS", "EXTERNAL_READ")).ok()
+    };
+    matches!(
+        specific
+            .or_else(|| std::env::var("HETGPU_PACC_OUTPUT_EXTERNAL_READ").ok())
+            .map(|v| v.trim().to_ascii_lowercase()),
+        Some(v) if v == "1" || v == "true" || v == "yes" || v == "on"
+    )
+}
+
+fn read_shared_ddr_window_external(
+    dev_id: usize,
+    offset: u64,
+    bytes: &mut [u8],
+) -> std::io::Result<()> {
+    let helper = std::env::var("HETGPU_PACC_OUTPUT_READ_HELPER")
+        .unwrap_or_else(|_| "/tmp/pacc_read_window".to_string());
+    let helper_off = HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset;
+    let output = Command::new(&helper)
+        .arg(dev_id.to_string())
+        .arg(format!("0x{:x}", helper_off))
+        .arg(bytes.len().to_string())
+        .output()
+        .map_err(|e| {
+            Error::new(
+                e.kind(),
+                format!(
+                    "failed to run {helper} dev={dev_id} helper_off=0x{helper_off:x} logical_off=0x{offset:x} len={}: {e}",
+                    bytes.len()
+                ),
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::new(
+            ErrorKind::Other,
+            format!(
+                "{helper} failed dev={dev_id} helper_off=0x{helper_off:x} logical_off=0x{offset:x} len={} status={} stderr={} stdout_len={}",
+                bytes.len(),
+                output.status,
+                stderr.trim(),
+                output.stdout.len()
+            ),
+        ));
+    }
+    if output.stdout.len() != bytes.len() {
+        return Err(Error::new(
+            ErrorKind::UnexpectedEof,
+            format!(
+                "{helper} returned {} bytes, expected {} dev={dev_id} helper_off=0x{helper_off:x} logical_off=0x{offset:x}",
+                output.stdout.len(),
+                bytes.len()
+            ),
+        ));
+    }
+    bytes.copy_from_slice(&output.stdout);
+    Ok(())
+}
+
+fn output_wait_sentinel_visible(
+    _shared_file: &mut Option<File>,
+    offset: u64,
+    bytes: &mut [u8],
+    sentinel: u8,
+    label: &str,
+    output_desc: &str,
+    timeout_env: &str,
+    dev_id: usize,
+    row0: usize,
+) -> std::io::Result<()> {
+    let timeout_ms = output_wait_sentinel_timeout_ms(timeout_env);
+    let poll_us = output_wait_poll_us(timeout_env);
+    let external_read = output_wait_external_read_enabled(timeout_env);
+    let sentinel_run = output_wait_max_sentinel_run(timeout_env).max(1);
+    let start = std::time::Instant::now();
+    loop {
+        if external_read {
+            read_shared_ddr_window_external(dev_id, offset, bytes)?;
+        } else {
+            read_shared_ddr_window(offset, bytes)?;
+        }
+        if output_has_long_sentinel_run(bytes, sentinel, sentinel_run) {
+            return Ok(());
+        }
+        if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                format!(
+                    "{}: timed out waiting for {} sentinel dev={} row0={} off=0x{:x} bytes={} first={:02x?} last={:02x?}",
+                    label,
+                    output_desc,
+                    dev_id,
+                    row0,
+                    offset,
+                    bytes.len(),
+                    &bytes[..bytes.len().min(16)],
+                    &bytes[bytes.len().saturating_sub(16)..]
+                ),
+            ));
+        }
+        if poll_us != 0 {
+            std::thread::sleep(std::time::Duration::from_micros(poll_us));
+        }
+    }
+}
+
 fn wait_shared_ddr_output_change(
-    shared_file: &mut Option<File>,
+    _shared_file: &mut Option<File>,
     offset: u64,
     bytes: &mut [u8],
     sentinel: u8,
@@ -7462,28 +8134,51 @@ fn wait_shared_ddr_output_change(
     row0: usize,
 ) -> std::io::Result<()> {
     let timeout_ms = output_wait_timeout_ms(timeout_env);
+    let poll_us = output_wait_poll_us(timeout_env);
+    let external_read = output_wait_external_read_enabled(timeout_env);
     let start = std::time::Instant::now();
     loop {
-        read_shared_ddr_window_cached(shared_file, offset, bytes)?;
-        if bytes.iter().any(|&b| b != sentinel) {
-            return Ok(());
+        // Fresh helper reads are important here: on this platform a helper fd
+        // opened before the PACC write can observe a stale shared-DDR view for
+        // tens of seconds, while a fresh fd sees the updated output promptly.
+        if external_read {
+            read_shared_ddr_window_external(dev_id, offset, bytes)?;
+        } else {
+            read_shared_ddr_window(offset, bytes)?;
+        }
+        if output_wait_bytes_ready(bytes, sentinel, timeout_env) {
+            let settle_us = output_wait_settle_us(timeout_env);
+            if settle_us != 0 {
+                std::thread::sleep(std::time::Duration::from_micros(settle_us));
+                if external_read {
+                    read_shared_ddr_window_external(dev_id, offset, bytes)?;
+                } else {
+                    read_shared_ddr_window(offset, bytes)?;
+                }
+            }
+            if output_wait_bytes_ready(bytes, sentinel, timeout_env) {
+                return Ok(());
+            }
         }
         if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
             return Err(Error::new(
                 ErrorKind::TimedOut,
                 format!(
-                    "{}: timed out waiting for {} dev={} row0={} off=0x{:x} bytes={} first={:02x?}",
+                    "{}: timed out waiting for {} dev={} row0={} off=0x{:x} bytes={} first={:02x?} last={:02x?}",
                     label,
                     output_desc,
                     dev_id,
                     row0,
                     offset,
                     bytes.len(),
-                    &bytes[..bytes.len().min(16)]
+                    &bytes[..bytes.len().min(16)],
+                    &bytes[bytes.len().saturating_sub(16)..]
                 ),
             ));
         }
-        std::thread::sleep(std::time::Duration::from_micros(50));
+        if poll_us != 0 {
+            std::thread::sleep(std::time::Duration::from_micros(poll_us));
+        }
     }
 }
 
@@ -7578,7 +8273,7 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
         .map_err(|_| Error::new(ErrorKind::InvalidInput, "RMSNorm slot offset overflow"))?;
     let shared_base = shared_ddr_base();
     let mut shared_file = open_shared_ddr_window_file(dev_id);
-    let pacc_dev = PaccDevice::open(dev_id)?;
+    let mut pacc_dev = Some(PaccDevice::open(dev_id)?);
     let trace = rmsnorm_trace_enabled();
     let zero_output = std::env::var("HETGPU_PACC_RMSNORM_ZERO_OUTPUT")
         .ok()
@@ -7618,15 +8313,48 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
     let mut y_stage = vec![0u8; max_chunk_bytes];
 
     let mut row0 = 0usize;
+    let mut chunk_index = 0usize;
     while row0 < rows_usize {
         let remaining = rows_usize - row0;
         let mut chunk_rows = remaining.min(max_rows);
-        let (chunk_bytes, y_off, total_bytes) = loop {
+        let (chunk_bytes, chunk_x_off, y_off, total_bytes) = loop {
             let chunk_bytes = chunk_rows.checked_mul(row_bytes).ok_or_else(|| {
                 Error::new(ErrorKind::InvalidInput, "RMSNorm chunk size overflow")
             })?;
-            let y_off = align_up_usize(
+            let base_y_off = align_up_usize(
                 x_off.checked_add(chunk_bytes).ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidInput, "RMSNorm chunk y offset overflow")
+                })?,
+                64,
+            )
+            .ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "RMSNorm chunk y offset overflow")
+            })?;
+            let base_total_bytes = base_y_off.checked_add(chunk_bytes).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "RMSNorm chunk total overflow")
+            })?;
+            let stride_align = parse_env_usize("HETGPU_PACC_RMSNORM_CHUNK_STRIDE_ALIGN", 4096)
+                .max(64);
+            let chunk_stride = align_up_usize(base_total_bytes.saturating_sub(x_off), stride_align)
+                .ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidInput, "RMSNorm chunk stride overflow")
+                })?
+                .max(64);
+            let ring_capacity = if slot_bytes > x_off {
+                ((slot_bytes - x_off) / chunk_stride).max(1)
+            } else {
+                1
+            };
+            let chunk_ring_index = chunk_index % ring_capacity;
+            let chunk_x_off = x_off
+                .checked_add(chunk_ring_index.checked_mul(chunk_stride).ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidInput, "RMSNorm chunk ring offset overflow")
+                })?)
+                .ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidInput, "RMSNorm chunk ring offset overflow")
+                })?;
+            let y_off = align_up_usize(
+                chunk_x_off.checked_add(chunk_bytes).ok_or_else(|| {
                     Error::new(ErrorKind::InvalidInput, "RMSNorm chunk y offset overflow")
                 })?,
                 64,
@@ -7638,7 +8366,7 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
                 Error::new(ErrorKind::InvalidInput, "RMSNorm chunk total overflow")
             })?;
             if total_bytes <= slot_bytes {
-                break (chunk_bytes, y_off, total_bytes);
+                break (chunk_bytes, chunk_x_off, y_off, total_bytes);
             }
             chunk_rows = chunk_rows.checked_sub(1).ok_or_else(|| {
                 Error::new(ErrorKind::InvalidInput, "RMSNorm chunk does not fit slot")
@@ -7661,11 +8389,11 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
                 label,
                 dev_id,
                 row0,
-                slot_off + x_off as u64,
+                slot_off + chunk_x_off as u64,
                 chunk_bytes
             );
         }
-        write_shared_ddr_window_cached(&mut shared_file, slot_off + x_off as u64, x_slice)
+        write_shared_ddr_window_cached(&mut shared_file, slot_off + chunk_x_off as u64, x_slice)
             .map_err(|e| {
                 Error::new(
                     e.kind(),
@@ -7674,12 +8402,13 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
                         label,
                         dev_id,
                         row0,
-                        slot_off + x_off as u64,
+                        slot_off + chunk_x_off as u64,
                         chunk_bytes,
                         e
                     ),
                 )
             })?;
+        let mut output_sentinel_visible = false;
         if wait_output || zero_output {
             y_stage[..chunk_bytes].fill(if wait_output { output_sentinel } else { 0 });
             write_shared_ddr_window_cached(
@@ -7701,10 +8430,51 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
                     ),
                 )
             })?;
+            if wait_output {
+                match output_wait_sentinel_visible(
+                    &mut shared_file,
+                    slot_off + y_off as u64,
+                    &mut y_stage[..chunk_bytes],
+                    output_sentinel,
+                    label,
+                    "RMSNorm output",
+                    "HETGPU_PACC_RMSNORM_OUTPUT_TIMEOUT_MS",
+                    dev_id,
+                    row0,
+                ) {
+                    Ok(()) => {
+                        output_sentinel_visible = true;
+                    }
+                    Err(e) => {
+                        if output_wait_enabled_default(
+                            "HETGPU_PACC_RMSNORM_REQUIRE_SENTINEL_VISIBLE",
+                            false,
+                        ) {
+                            return Err(e);
+                        }
+                        pacc_log_limited(
+                            &PACC_RMSNORM_SENTINEL_PRECHECK_LOG_COUNT,
+                            "HETGPU_PACC_RMSNORM_SENTINEL_PRECHECK_WARN_LIMIT",
+                            16,
+                            || {
+                                eprintln!(
+                                    "{}: RMSNorm output sentinel was not visible before submit; continuing to mbox job dev={} row0={} off=0x{:x} bytes={}: {}",
+                                    label,
+                                    dev_id,
+                                    row0,
+                                    slot_off + y_off as u64,
+                                    chunk_bytes,
+                                    e
+                                );
+                            },
+                        );
+                    }
+                }
+            }
         }
 
         let job = HetgpuPaccRmsNormJob {
-            x_addr: shared_base + slot_off + x_off as u64,
+            x_addr: shared_base + slot_off + chunk_x_off as u64,
             weight_addr: if weight.is_null() {
                 0
             } else {
@@ -7731,7 +8501,9 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
         }
         if wait_output {
             pacc_dev
-                .submit_runtime_job_async(hetgpu_pacc_job_id::RMSNORM, &job)
+                .as_ref()
+                .ok_or_else(|| Error::new(ErrorKind::Other, "PACC device handle is closed"))?
+                .submit_runtime_job(hetgpu_pacc_job_id::RMSNORM, &job)
                 .map_err(|e| {
                     Error::new(
                         e.kind(),
@@ -7741,19 +8513,66 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
                         ),
                     )
                 })?;
-            wait_shared_ddr_output_change(
-                &mut shared_file,
-                slot_off + y_off as u64,
-                &mut y_stage[..chunk_bytes],
-                output_sentinel,
-                label,
-                "RMSNorm output",
-                "HETGPU_PACC_RMSNORM_OUTPUT_TIMEOUT_MS",
-                dev_id,
-                row0,
-            )?;
+            if output_sentinel_visible {
+                // Completion can become visible before the PACC-side shared-DDR
+                // payload repair has flushed the full row. Keep reading the output
+                // window itself until the sentinel is gone from head/mid/tail.
+                wait_shared_ddr_output_change(
+                    &mut shared_file,
+                    slot_off + y_off as u64,
+                    &mut y_stage[..chunk_bytes],
+                    output_sentinel,
+                    label,
+                    "RMSNorm output",
+                    "HETGPU_PACC_RMSNORM_OUTPUT_TIMEOUT_MS",
+                    dev_id,
+                    row0,
+                )?;
+            } else if output_wait_external_read_enabled("HETGPU_PACC_RMSNORM_OUTPUT_TIMEOUT_MS") {
+                read_shared_ddr_window_external(
+                    dev_id,
+                    slot_off + y_off as u64,
+                    &mut y_stage[..chunk_bytes],
+                )
+                .map_err(|e| {
+                    Error::new(
+                        e.kind(),
+                        format!(
+                            "{}: failed external read RMSNorm y after completion dev={} row0={} off=0x{:x} bytes={}: {}",
+                            label,
+                            dev_id,
+                            row0,
+                            slot_off + y_off as u64,
+                            chunk_bytes,
+                            e
+                        ),
+                    )
+                })?;
+            } else {
+                read_shared_ddr_window_cached(
+                    &mut shared_file,
+                    slot_off + y_off as u64,
+                    &mut y_stage[..chunk_bytes],
+                )
+                .map_err(|e| {
+                    Error::new(
+                        e.kind(),
+                        format!(
+                            "{}: failed to read RMSNorm y after completion dev={} row0={} off=0x{:x} bytes={}: {}",
+                            label,
+                            dev_id,
+                            row0,
+                            slot_off + y_off as u64,
+                            chunk_bytes,
+                            e
+                        ),
+                    )
+                })?;
+            }
         } else {
             pacc_dev
+                .as_ref()
+                .ok_or_else(|| Error::new(ErrorKind::Other, "PACC device handle is closed"))?
                 .submit_runtime_job(hetgpu_pacc_job_id::RMSNORM, &job)
                 .map_err(|e| {
                     Error::new(
@@ -7787,6 +8606,10 @@ unsafe fn submit_rmsnorm_staged_shared_ddr(
         }
         std::ptr::copy_nonoverlapping(y_stage.as_ptr(), y.cast::<u8>().add(host_off), chunk_bytes);
         row0 += chunk_rows;
+        chunk_index = chunk_index.wrapping_add(1);
+        if wait_output && row0 < rows_usize {
+            pacc_dev = Some(PaccDevice::open(dev_id)?);
+        }
     }
     Ok(())
 }
@@ -7894,6 +8717,17 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_mmvf_on(
             let mut shared_file = open_shared_ddr_window_file(dev_id);
             let mut dst_stage = vec![sentinel; dst_len];
             write_shared_ddr_window_cached(&mut shared_file, dst_off, &dst_stage)?;
+            output_wait_sentinel_visible(
+                &mut shared_file,
+                dst_off,
+                &mut dst_stage,
+                sentinel,
+                "hetgpu_pacc_submit_mmvf_on",
+                "MMVF output",
+                "HETGPU_PACC_MMVF_OUTPUT_TIMEOUT_MS",
+                dev_id,
+                0,
+            )?;
             dev.submit_runtime_job_async(hetgpu_pacc_job_id::MMVF, &job)?;
             match wait_shared_ddr_output_change(
                 &mut shared_file,

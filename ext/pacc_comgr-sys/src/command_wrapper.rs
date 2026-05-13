@@ -1383,6 +1383,14 @@ fn compile_bc_to_xm_object_via_sanitized_ll(
     fs::write(&sanitized_ll_file, sanitized)?;
 
     let clang = pacc_clang_tool("HETGPU_PACC_CLANG");
+    if !tool_is_available(&clang) {
+        eprintln!(
+            "PACC: clang tool '{}' is unavailable; using llc for sanitized LLVM IR codegen",
+            clang
+        );
+        return compile_sanitized_ll_to_xm_object_with_llc(&sanitized_ll_file, output_file, config);
+    }
+
     let march = riscv_march_with_required_extensions(&pacc_codegen_march(config));
     let mut cmd = Command::new(clang);
     cmd.arg("-target")
@@ -1403,11 +1411,81 @@ fn compile_bc_to_xm_object_via_sanitized_ll(
             std::env::var("HETGPU_PACC_SOURCE_SYSROOT").unwrap_or_else(|_| "/".to_string());
         let gcc_toolchain = std::env::var("HETGPU_PACC_SOURCE_GCC_TOOLCHAIN")
             .unwrap_or_else(|_| "/usr".to_string());
-        cmd.arg(format!("--sysroot={}", sysroot))
-            .arg(format!("--gcc-toolchain={}", gcc_toolchain));
+            cmd.arg(format!("--sysroot={}", sysroot))
+                .arg(format!("--gcc-toolchain={}", gcc_toolchain));
     }
 
-    run_command(&mut cmd, "sanitized LLVM IR -> RISC-V object")
+    match run_command(&mut cmd, "sanitized LLVM IR -> RISC-V object") {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            eprintln!(
+                "PACC: clang invocation failed for sanitized LLVM IR ({}); retrying with llc",
+                err
+            );
+            compile_sanitized_ll_to_xm_object_with_llc(&sanitized_ll_file, output_file, config)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn compile_sanitized_ll_to_xm_object_with_llc(
+    input_ll: &Path,
+    output_file: &Path,
+    config: &crate::PaccConfig,
+) -> io::Result<()> {
+    let llc = llc_tool();
+    let march = riscv_march_with_required_extensions(&pacc_codegen_march(config));
+    let mattr = riscv_llc_mattr_from_march(&march);
+    let mut cmd = Command::new(llc);
+    cmd.arg(format!("-mtriple={}", config.target_triple))
+        .arg("-filetype=obj")
+        .arg("-relocation-model=pic")
+        .arg(format!("-mattr={}", mattr))
+        .arg(input_ll)
+        .arg("-o")
+        .arg(output_file);
+    run_command(&mut cmd, "sanitized LLVM IR -> RISC-V object via llc")
+}
+
+fn riscv_llc_mattr_from_march(march: &str) -> String {
+    let lower = march.to_ascii_lowercase();
+    let mut attrs: Vec<String> = Vec::new();
+    let mut push_attr = |name: &str| {
+        if !name.is_empty() && !attrs.iter().any(|existing| existing == name) {
+            attrs.push(name.to_string());
+        }
+    };
+
+    let rest = lower
+        .strip_prefix("rv32")
+        .or_else(|| lower.strip_prefix("rv64"))
+        .unwrap_or(lower.as_str());
+    let mut parts = rest.split('_');
+    if let Some(base) = parts.next() {
+        if base.contains('g') {
+            for ext in ["m", "a", "f", "d"] {
+                push_attr(ext);
+            }
+        }
+        for ext in ["m", "a", "f", "d", "c", "v"] {
+            if base.contains(ext) {
+                push_attr(ext);
+            }
+        }
+    }
+    for ext in parts {
+        push_attr(ext);
+    }
+
+    if attrs.is_empty() {
+        "+m,+a,+f,+d,+c".to_string()
+    } else {
+        attrs
+            .into_iter()
+            .map(|attr| format!("+{attr}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 fn sanitize_llvm23_ir_for_llvm20(input: &str) -> String {
@@ -1617,6 +1695,10 @@ fn llvm_dis_tool() -> String {
     )
 }
 
+fn llc_tool() -> String {
+    bundled_llvm_tool("HETGPU_PACC_LLC", "llc", &["llc-21", "/usr/bin/llc-21", "llc"])
+}
+
 fn pacc_clang_tool(env_var: &str) -> String {
     bundled_llvm_tool(
         env_var,
@@ -1631,6 +1713,18 @@ fn existing_tool(path: PathBuf) -> Option<String> {
     } else {
         None
     }
+}
+
+fn tool_is_available(tool: &str) -> bool {
+    let path = Path::new(tool);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path_var).any(|dir| dir.join(tool).is_file())
 }
 
 fn llvm_tool_from_build_dir(build_dir: &Path, tool_name: &str) -> Option<String> {
