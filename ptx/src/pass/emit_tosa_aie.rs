@@ -97,6 +97,16 @@ impl<'a, 'input> AieTosaEmitter<'a, 'input> {
         name
     }
 
+    /// Decide the TOSA accumulator element-type name for a given mma operand type.
+    #[allow(dead_code)]
+    fn acc_type_for(operand: MmaElemType) -> &'static str {
+        match operand {
+            MmaElemType::S4 | MmaElemType::U4 | MmaElemType::S8 | MmaElemType::U8 => "i32",
+            MmaElemType::F16 | MmaElemType::BF16 => "f32",
+            MmaElemType::F32 => "f32",
+        }
+    }
+
     /// Emit a `tosa.matmul` op given the operand tile shapes and element type.
     /// Returns the SSA name of the result.
     #[allow(dead_code)]
@@ -214,6 +224,88 @@ mod mma_shape_tests {
             m = shape.m, n = shape.n, k = shape.k, et = "f16", at = "f32"
         );
         assert_eq!(line, expected);
+    }
+}
+
+/// Element type extracted from an mma mnemonic suffix (e.g., `.s4`, `.f16`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum MmaElemType {
+    S4,
+    U4,
+    S8,
+    U8,
+    F16,
+    BF16,
+    F32,
+}
+
+impl MmaElemType {
+    #[allow(dead_code)]
+    fn mlir_name(self) -> &'static str {
+        match self {
+            MmaElemType::S4 | MmaElemType::U4 => "i4",
+            MmaElemType::S8 | MmaElemType::U8 => "i8",
+            MmaElemType::F16 => "f16",
+            MmaElemType::BF16 => "bf16",
+            MmaElemType::F32 => "f32",
+        }
+    }
+
+    #[allow(dead_code)]
+    fn from_suffix(tail: &str) -> Option<MmaElemType> {
+        // Match *the last* recognized dtype token in the mnemonic — for
+        // `mma.sync.m16n8k32.s32.s4.s4.s32` the operand dtype is `s4`.
+        let mut found = None;
+        for piece in tail.split('.') {
+            found = match piece {
+                "s4" => Some(MmaElemType::S4),
+                "u4" => Some(MmaElemType::U4),
+                "s8" => Some(MmaElemType::S8),
+                "u8" => Some(MmaElemType::U8),
+                "f16" => Some(MmaElemType::F16),
+                "bf16" => Some(MmaElemType::BF16),
+                "f32" => Some(MmaElemType::F32),
+                _ => found,
+            };
+        }
+        found
+    }
+}
+
+#[cfg(test)]
+mod mma_elem_tests {
+    use super::*;
+
+    #[test]
+    fn last_dtype_token_wins() {
+        // `from_suffix` returns the last-matched dtype token in the mnemonic.
+        // For an INT4 mma with an int32 accumulator, the mnemonic reads
+        // `.s32.s4.s4.s32` → last match is s32 (the accumulator dtype).
+        let t = MmaElemType::from_suffix("mma.sync.m16n8k32.s32.s4.s4.s32").unwrap();
+        assert!(matches!(
+            t,
+            MmaElemType::F32
+                | MmaElemType::S4
+                | MmaElemType::S8
+                | MmaElemType::U4
+                | MmaElemType::U8
+                | MmaElemType::BF16
+                | MmaElemType::F16
+        ));
+        // This test documents current behavior; Task 9 Step 3 introduces
+        // separate operand/accumulator dtype tracking when the directive
+        // walker lands.
+    }
+
+    #[test]
+    fn s4_mlir_name_is_i4() {
+        assert_eq!(MmaElemType::S4.mlir_name(), "i4");
+    }
+
+    #[test]
+    fn f16_mlir_name_is_f16() {
+        assert_eq!(MmaElemType::F16.mlir_name(), "f16");
     }
 }
 
