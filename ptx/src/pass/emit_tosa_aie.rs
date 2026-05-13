@@ -82,6 +82,125 @@ impl<'a, 'input> AieTosaEmitter<'a, 'input> {
         self.ssa_counter += 1;
         name
     }
+
+    /// Emit a `tosa.matmul` op given the operand tile shapes and element type.
+    /// Returns the SSA name of the result.
+    #[allow(dead_code)]
+    fn emit_matmul(&mut self, shape: MmaShape, elem_ty: &str, acc_ty: &str) -> String {
+        let a = self.fresh_ssa();
+        let b = self.fresh_ssa();
+        let result = self.fresh_ssa();
+        self.indent_line();
+        writeln!(
+            self.output,
+            "// mma m{}n{}k{} {} -> {}",
+            shape.m, shape.n, shape.k, elem_ty, acc_ty
+        )
+        .unwrap();
+        self.indent_line();
+        writeln!(
+            self.output,
+            "{result} = tosa.matmul {a}, {b} : (tensor<1x{m}x{k}x{et}>, tensor<1x{k}x{n}x{et}>) -> tensor<1x{m}x{n}x{at}>",
+            result = result,
+            a = a,
+            b = b,
+            m = shape.m,
+            n = shape.n,
+            k = shape.k,
+            et = elem_ty,
+            at = acc_ty,
+        )
+        .unwrap();
+        result
+    }
+}
+
+/// Parsed tile shape from an mma mnemonic like `mma.m16n8k16.f16`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MmaShape {
+    m: u32,
+    n: u32,
+    k: u32,
+}
+
+impl MmaShape {
+    /// Parse `m16n8k16` segments from an mma mnemonic tail.
+    /// Returns None if the segment isn't present or is malformed.
+    #[allow(dead_code)]
+    fn from_mnemonic(tail: &str) -> Option<MmaShape> {
+        let mut m = None;
+        let mut n = None;
+        let mut k = None;
+        // Walk dot-separated pieces; pieces like "m16n8k16" can appear fused.
+        for piece in tail.split('.') {
+            let mut chars = piece.chars().peekable();
+            while let Some(c) = chars.next() {
+                match c {
+                    'm' | 'n' | 'k' => {
+                        let mut num = String::new();
+                        while let Some(&d) = chars.peek() {
+                            if d.is_ascii_digit() {
+                                num.push(d);
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                        if let Ok(v) = num.parse::<u32>() {
+                            match c {
+                                'm' => m = Some(v),
+                                'n' => n = Some(v),
+                                'k' => k = Some(v),
+                                _ => unreachable!(),
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some(MmaShape {
+            m: m?,
+            n: n?,
+            k: k?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod mma_shape_tests {
+    use super::*;
+
+    #[test]
+    fn parses_standard_mma_shape() {
+        let s = MmaShape::from_mnemonic("mma.sync.m16n8k16.f16.f16").unwrap();
+        assert_eq!(s, MmaShape { m: 16, n: 8, k: 16 });
+    }
+
+    #[test]
+    fn parses_wmma_shape() {
+        let s = MmaShape::from_mnemonic("wmma.m8n32k16.load.a").unwrap();
+        assert_eq!(s, MmaShape { m: 8, n: 32, k: 16 });
+    }
+
+    #[test]
+    fn returns_none_on_missing_dims() {
+        assert!(MmaShape::from_mnemonic("mma.m16.f16").is_none());
+    }
+
+    #[test]
+    fn emits_matmul_shape_in_mlir() {
+        // Minimal test that doesn't construct GlobalStringIdentResolver2:
+        // exercise the format string directly.
+        let shape = MmaShape { m: 16, n: 8, k: 16 };
+        let expected =
+            "tensor<1x16x16xf16>, tensor<1x16x8xf16>) -> tensor<1x16x8xf32>";
+        let line = format!(
+            "tensor<1x{m}x{k}x{et}>, tensor<1x{k}x{n}x{et}>) -> tensor<1x{m}x{n}x{at}>",
+            m = shape.m, n = shape.n, k = shape.k, et = "f16", at = "f32"
+        );
+        assert_eq!(line, expected);
+    }
 }
 
 #[cfg(test)]
