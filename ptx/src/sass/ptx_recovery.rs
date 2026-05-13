@@ -888,45 +888,19 @@ mod tests {
 
     #[test]
     fn test_ptx_reconstructor_basic() {
+        use super::super::instruction::SassRegister;
+
         let mut recon = PtxReconstructor::new(75);
 
-        let inst = EnhancedSassInstruction {
-            address: 0,
-            opcode: "FADD".to_string(),
-            opcode_class: SassOpcodeClass::FloatArithmetic,
-            modifiers: vec![],
-            data_type: Some(SassDataType::F32),
-            dest_operands: vec![SassOperand::Register(
-                super::super::instruction::SassRegister {
-                    prefix: "R".to_string(),
-                    number: 0,
-                    is_64bit: false,
-                },
-            )],
-            src_operands: vec![
-                SassOperand::Register(super::super::instruction::SassRegister {
-                    prefix: "R".to_string(),
-                    number: 1,
-                    is_64bit: false,
-                }),
-                SassOperand::Register(super::super::instruction::SassRegister {
-                    prefix: "R".to_string(),
-                    number: 2,
-                    is_64bit: false,
-                }),
-            ],
-            predicate: None,
-            encoding: None,
-            latency: 0,
-            throughput: 0.0,
-            functional_unit: None,
-            ptx_template: None,
-            ptx_file: None,
-            ptx_line: None,
-            function_name: None,
-            data_dependencies: vec![],
-            basic_block_id: None,
-        };
+        let mut inst = EnhancedSassInstruction::new("FADD".to_string(), 0);
+        inst.opcode_class = SassOpcodeClass::FloatArithmetic;
+        inst.data_type = Some(SassDataType::F32);
+        inst.dest_operands
+            .push(SassOperand::Register(SassRegister::new("R", 0)));
+        inst.src_operands
+            .push(SassOperand::Register(SassRegister::new("R", 1)));
+        inst.src_operands
+            .push(SassOperand::Register(SassRegister::new("R", 2)));
 
         let ptx = recon.reconstruct_instruction(&inst);
         assert!(ptx.contains("add.f32"));
