@@ -590,11 +590,15 @@ pub fn ptx_to_tosa_aie(ptx_source: &str) -> Result<String, TranslateError> {
     emit_tosa_aie::run(id_defs, directives)
 }
 
-/// Run the normalization passes required before TOSA emission. For M1 this
-/// is a thin pass-through — the emitter handles un-lowered directives.
-/// TODO(M2+): reuse the full pipeline from `emit_tosa_mlir`'s caller.
+/// Run the normalization passes required before TOSA emission.
+///
+/// Mirrors the early portion of `to_llvm_module`'s pipeline through
+/// `expand_operands`, which is the point where directive operands become
+/// `SpirvWord`s — the shape `emit_tosa_aie::run` expects. Passes that
+/// expand to LLVM intrinsics / saturation / control-flow lowering are
+/// intentionally skipped.
 fn normalize_and_lower_for_tosa<'input>(
-    _ast: ast::Module<'input>,
+    ast: ast::Module<'input>,
 ) -> Result<
     (
         GlobalStringIdentResolver2<'input>,
@@ -602,9 +606,19 @@ fn normalize_and_lower_for_tosa<'input>(
     ),
     TranslateError,
 > {
-    Err(TranslateError::Todo(
-        "normalize_and_lower_for_tosa not wired for M1 — emit_tosa_aie is invoked directly from comgr".to_string(),
-    ))
+    let mut flat_resolver = GlobalStringIdentResolver2::<'input>::new(SpirvWord(1));
+    let directives = {
+        let mut scoped_resolver = ScopedResolver::new(&mut flat_resolver);
+        let sreg_map = SpecialRegistersMap::new(&mut scoped_resolver)?;
+        let directives = normalize_identifiers::run(&mut scoped_resolver, ast.directives)?;
+        drop(scoped_resolver);
+        let directives = replace_known_functions::run(&mut flat_resolver, directives);
+        let directives = normalize_predicates2::run(&mut flat_resolver, directives)?;
+        let directives = resolve_function_pointers::run(directives)?;
+        let directives = fix_special_registers::run(&mut flat_resolver, &sreg_map, directives)?;
+        expand_operands::run(&mut flat_resolver, directives)?
+    };
+    Ok((flat_resolver, directives))
 }
 
 /// Convert PTX AST to TMatmul assembly - HIGH-LEVEL API

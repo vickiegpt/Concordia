@@ -62,11 +62,25 @@ impl<'a, 'input> AieTosaEmitter<'a, 'input> {
         &mut self,
         directive: Directive2<ast::Instruction<SpirvWord>, SpirvWord>,
     ) -> Result<(), TranslateError> {
-        // M1: accept any directive, emit a stub function. Real emission is
-        // filled in by Tasks 5 and onward.
-        let _ = directive;
-        self.indent_line();
-        writeln!(self.output, "// directive stub").unwrap();
+        match directive {
+            Directive2::Method(method) => {
+                // Emit a `func.func` wrapper for each PTX kernel entry.
+                // Body is a stub that returns; instruction emission comes in
+                // Task 9 when we walk `method.body`.
+                let id = method.name.0;
+                self.indent_line();
+                writeln!(self.output, "func.func @kernel_{id}() {{").unwrap();
+                self.indent += 1;
+                self.indent_line();
+                writeln!(self.output, "return").unwrap();
+                self.indent -= 1;
+                self.indent_line();
+                writeln!(self.output, "}}").unwrap();
+            }
+            Directive2::Variable(_, _) => {
+                // Globals not yet supported in M1.
+            }
+        }
         Ok(())
     }
 
@@ -218,5 +232,22 @@ mod tests {
         writeln!(s, "}}").unwrap();
         assert!(s.starts_with("module {"));
         assert!(s.contains("}"));
+    }
+
+    #[test]
+    fn minimal_ptx_kernel_emits_func() {
+        let ptx = r#"
+.version 7.0
+.target sm_80
+.address_size 64
+
+.visible .entry trivial() {
+    ret;
+}
+"#;
+        let out = super::super::ptx_to_tosa_aie(ptx).expect("tosa emit failed");
+        assert!(out.contains("module {"), "has module wrapper");
+        assert!(out.contains("func.func @kernel_"), "has func.func for entry");
+        assert!(out.contains("return"), "has return");
     }
 }
