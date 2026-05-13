@@ -1527,3 +1527,77 @@ impl std::fmt::Display for NvidiaComgrError {
 
 #[cfg(feature = "nvidia")]
 impl std::error::Error for NvidiaComgrError {}
+
+// --------------------------------------------------------------------------
+// AIE backend (AMD Strix NPU via mlir-aie + XRT).
+// --------------------------------------------------------------------------
+
+#[cfg(feature = "aie")]
+#[derive(Debug)]
+pub enum AieComgrError {
+    ParseFailed(String),
+    LoweringFailed(String),
+    ToolchainNotFound(String),
+    ToolchainFailed { step: String, stderr: String, exit_code: i32 },
+    Io(String),
+    InvalidInput(String),
+}
+
+#[cfg(feature = "aie")]
+impl std::fmt::Display for AieComgrError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AieComgrError::ParseFailed(m) => write!(f, "PTX parse failed: {m}"),
+            AieComgrError::LoweringFailed(m) => write!(f, "PTX→TOSA lowering failed: {m}"),
+            AieComgrError::ToolchainNotFound(m) => write!(f, "mlir-aie toolchain not found: {m}"),
+            AieComgrError::ToolchainFailed { step, stderr, exit_code } => {
+                write!(f, "{step} failed (exit {exit_code}):\n{stderr}")
+            }
+            AieComgrError::Io(m) => write!(f, "I/O error: {m}"),
+            AieComgrError::InvalidInput(m) => write!(f, "invalid input: {m}"),
+        }
+    }
+}
+
+#[cfg(feature = "aie")]
+impl std::error::Error for AieComgrError {}
+
+#[cfg(feature = "aie")]
+impl From<aie_comgr_sys::AieComgrError> for AieComgrError {
+    fn from(e: aie_comgr_sys::AieComgrError) -> Self {
+        use aie_comgr_sys::AieComgrError as Src;
+        match e {
+            Src::ToolchainNotFound(s) => AieComgrError::ToolchainNotFound(s),
+            Src::ToolchainFailed { step, stderr, exit_code } => {
+                AieComgrError::ToolchainFailed { step: step.to_string(), stderr, exit_code }
+            }
+            Src::Io(ioe) => AieComgrError::Io(ioe.to_string()),
+            Src::InvalidInput(s) => AieComgrError::InvalidInput(s),
+        }
+    }
+}
+
+/// Compile PTX text to an AIE XCLBIN for Strix NPU.
+///
+/// NOTE: unlike other backends, `main_buffer` holds PTX **text** (UTF-8),
+/// not LLVM bitcode. The AIE raising pass pattern-matches PTX shape, which
+/// is more stable than LLVM IR for the patterns we care about.
+#[cfg(feature = "aie")]
+pub fn compile_bitcode_aie(
+    device: &CStr,
+    main_buffer: &[u8],
+    _ptx_impl: &[u8],
+) -> Result<Vec<u8>, AieComgrError> {
+    let _ = device; // currently only "strix" is supported; config is fixed
+
+    let ptx_source = std::str::from_utf8(main_buffer)
+        .map_err(|e| AieComgrError::InvalidInput(format!("PTX must be valid UTF-8: {e}")))?;
+
+    let tosa = ptx::pass::ptx_to_tosa_aie(ptx_source)
+        .map_err(|e| AieComgrError::LoweringFailed(format!("{:?}", e)))?;
+
+    let config = aie_comgr_sys::AieCompileConfig::strix();
+    let xclbin = aie_comgr_sys::compile_tosa_to_xclbin(&tosa, &config)?;
+
+    Ok(xclbin)
+}

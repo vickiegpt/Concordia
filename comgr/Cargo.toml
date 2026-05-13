@@ -13,6 +13,7 @@ gemmini = []
 cutile = []
 pacc = []
 nvidia = ["dep:nvidia_sass"]
+aie = ["dep:aie_comgr_sys", "dep:aie_runtime_sys", "dep:ptx"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -25,6 +26,9 @@ gemmini_comgr_sys = { path = "../ext/gemmini_comgr-sys" }
 cutile_comgr_sys = { path = "../ext/cutile_comgr-sys" }
 pacc_comgr_sys = { path = "../ext/pacc_comgr-sys" }
 nvidia_sass = { path = "../nvidia_sass", optional = true }
+aie_comgr_sys = { path = "../ext/aie_comgr-sys", optional = true }
+aie_runtime_sys = { path = "../ext/aie_runtime-sys", optional = true }
+ptx = { path = "../ptx", optional = true }
 hip_runtime_sys = { path = "../ext/hip_runtime-sys"  }
 ze_runtime_sys = { path = "../ext/ze_runtime-sys"  }
 libc = "0.2"
