@@ -795,6 +795,9 @@ static bool jobd_arg_slot_scan_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
+    if (getenv("HETGPU_PACC_ID")) {
+        return false;
+    }
     return true;
 }
 
@@ -1642,12 +1645,13 @@ static void read_shared_ddr_info_from_mbox(int mbox_fd) {
 
 static void read_pacc_id_from_mbox(int mbox_fd) {
     const char *env = getenv("HETGPU_PACC_ID");
+    const char *ioctl_env = getenv("HETGPU_PACC_JOBD_PACC_ID_IOCTL");
     unsigned long pacc_id = 0;
     if (parse_u64_checked(env, &g_pacc_id)) {
         log_msg("pacc id %" PRIu64 " from env", g_pacc_id);
         return;
     }
-    if (!env_flag_true(getenv("HETGPU_PACC_JOBD_PACC_ID_IOCTL"))) {
+    if (ioctl_env && *ioctl_env && !env_flag_true(ioctl_env)) {
         g_pacc_id = 0;
         log_msg("pacc id defaulting to pacc0; skipped /dev/mbox pacc-id ioctl");
         return;
@@ -2323,7 +2327,15 @@ static int read_shared_ddr_control_copy_pread_for_pacc(int fd,
 
     io_fd = g_mbox_fd >= 0 ? g_mbox_fd : fd;
     for (size_t c = 0; c < candidate_count; c++) {
-        if (pread_fd_copy_exact(io_fd, candidates[c], len, out) == 0) {
+        uint8_t *buf = NULL;
+        if (pread_fd_copy_exact(io_fd, candidates[c], len, &buf) == 0) {
+            uint64_t head = 0;
+            memcpy(&head, buf, len < sizeof(head) ? len : sizeof(head));
+            if (head == 0 && c + 1 < candidate_count) {
+                free(buf);
+                continue;
+            }
+            *out = buf;
             g_last_arg_header_candidate = (uint32_t)c;
             return 0;
         }
@@ -3348,6 +3360,10 @@ static void select_pacc_id_from_arg_slot_candidate(uint32_t candidate,
         return;
     }
     if (g_pacc_id == candidate) {
+        return;
+    }
+    if (getenv("HETGPU_PACC_ID")) {
+        trace_msg("ignoring arg-slot pacc id switch to %u while HETGPU_PACC_ID is fixed", candidate);
         return;
     }
 
@@ -5672,6 +5688,11 @@ static unsigned kernel_worker_threads(uint64_t total_threads) {
     return (unsigned)requested;
 }
 
+static uint64_t scale_f32_single_thread_max_elements(void) {
+    return parse_env_u64_default("HETGPU_PACC_JOBD_SCALE_F32_SINGLE_THREAD_MAX_ELEMS",
+                                 8192ULL);
+}
+
 enum PaccBinBcastOp {
     PACC_BIN_BCAST_UNSUPPORTED = 0,
     PACC_BIN_BCAST_REPEAT,
@@ -6982,6 +7003,34 @@ struct ScaleF32NativeWorker {
     int status;
 };
 
+struct CpyScalarF32NativeCtx {
+    const char *src;
+    char *dst;
+    int64_t ne;
+    int64_t ne00;
+    int64_t ne01;
+    int64_t ne02;
+    int64_t nb00;
+    int64_t nb01;
+    int64_t nb02;
+    int64_t nb03;
+    int64_t ne10;
+    int64_t ne11;
+    int64_t ne12;
+    int64_t nb10;
+    int64_t nb11;
+    int64_t nb12;
+    int64_t nb13;
+    bool contiguous;
+};
+
+struct CpyScalarF32NativeWorker {
+    const struct CpyScalarF32NativeCtx *ctx;
+    uint64_t begin;
+    uint64_t end;
+    int status;
+};
+
 enum PaccGetRowsScalarType {
     PACC_GET_ROWS_SCALAR_UNSUPPORTED = 0,
     PACC_GET_ROWS_SCALAR_F16,
@@ -7318,6 +7367,10 @@ static int invoke_kernel_scale_f32_native(const char *symbol,
     if (!ctx.src || !ctx.dst) return -1;
 
     unsigned workers = kernel_worker_threads(ctx.nelements);
+    uint64_t single_thread_max = scale_f32_single_thread_max_elements();
+    if (workers > 1 && single_thread_max != 0 && ctx.nelements <= single_thread_max) {
+        workers = 1;
+    }
     trace_msg("native scale_f32 %s elems=%" PRIu64
               " scale=%g bias=%g workers=%u",
               symbol, ctx.nelements, ctx.scale, ctx.bias, workers);
@@ -7367,6 +7420,155 @@ static int invoke_kernel_scale_f32_native(const char *symbol,
         }
     }
     trace_msg("native scale_f32 done %s status=%d elapsed_us=%" PRIu64,
+              symbol, status, monotonic_us() - t0);
+    return status;
+}
+
+static void *cpy_scalar_f32_native_worker_main(void *opaque) {
+    struct CpyScalarF32NativeWorker *worker =
+        (struct CpyScalarF32NativeWorker *)opaque;
+    const struct CpyScalarF32NativeCtx *ctx = worker->ctx;
+
+    if (ctx->contiguous) {
+        const float *src = (const float *)(const void *)ctx->src;
+        float *dst = (float *)(void *)ctx->dst;
+        for (uint64_t i = worker->begin; i < worker->end; i++) {
+            dst[i] = src[i];
+        }
+        worker->status = 0;
+        return NULL;
+    }
+
+    for (uint64_t u = worker->begin; u < worker->end; u++) {
+        int64_t i = (int64_t)u;
+        int64_t i03 = i / (ctx->ne00 * ctx->ne01 * ctx->ne02);
+        int64_t i02 = (i - i03 * ctx->ne00 * ctx->ne01 * ctx->ne02) /
+                      (ctx->ne00 * ctx->ne01);
+        int64_t i01 = (i - i03 * ctx->ne00 * ctx->ne01 * ctx->ne02 -
+                       i02 * ctx->ne01 * ctx->ne00) / ctx->ne00;
+        int64_t i00 = i - i03 * ctx->ne00 * ctx->ne01 * ctx->ne02 -
+                      i02 * ctx->ne01 * ctx->ne00 - i01 * ctx->ne00;
+        int64_t x_offset = i00 * ctx->nb00 + i01 * ctx->nb01 +
+                           i02 * ctx->nb02 + i03 * ctx->nb03;
+
+        int64_t i13 = i / (ctx->ne10 * ctx->ne11 * ctx->ne12);
+        int64_t i12 = (i - i13 * ctx->ne10 * ctx->ne11 * ctx->ne12) /
+                      (ctx->ne10 * ctx->ne11);
+        int64_t i11 = (i - i13 * ctx->ne10 * ctx->ne11 * ctx->ne12 -
+                       i12 * ctx->ne10 * ctx->ne11) / ctx->ne10;
+        int64_t i10 = i - i13 * ctx->ne10 * ctx->ne11 * ctx->ne12 -
+                      i12 * ctx->ne10 * ctx->ne11 - i11 * ctx->ne10;
+        int64_t dst_offset = i10 * ctx->nb10 + i11 * ctx->nb11 +
+                             i12 * ctx->nb12 + i13 * ctx->nb13;
+        memcpy(ctx->dst + dst_offset, ctx->src + x_offset, sizeof(float));
+    }
+    worker->status = 0;
+    return NULL;
+}
+
+static int invoke_kernel_cpy_scalar_f32_native(const char *symbol,
+                                               const uint64_t *args,
+                                               const struct PaccJobImage *job,
+                                               size_t argc) {
+    uint64_t t0 = monotonic_us();
+    (void)job;
+    if (!symbol || !strstr(symbol, "cpy_scalar")) return 1;
+    if (!env_flag_default_true("HETGPU_PACC_ENABLE_NATIVE_CPY_SCALAR")) return 1;
+    if (!strstr(symbol, "cpy_1_scalarIff") &&
+        !strstr(symbol, "cpy_scalar_contiguousIff")) {
+        return 1;
+    }
+
+    struct CpyScalarF32NativeCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.contiguous = strstr(symbol, "cpy_scalar_contiguousIff") != NULL;
+    ctx.src = (const char *)(uintptr_t)kernel_cell_u64(args, argc, 0);
+    ctx.dst = (char *)(uintptr_t)kernel_cell_u64(args, argc, 1);
+    if (!ctx.src || !ctx.dst) return -1;
+
+    if (ctx.contiguous) {
+        if (argc < 3) return -1;
+        ctx.ne = kernel_cell_i64(args, argc, 2);
+    } else {
+        if (argc < 17) return -1;
+        ctx.ne = kernel_cell_i64(args, argc, 2);
+        ctx.ne00 = kernel_cell_i64(args, argc, 3);
+        ctx.ne01 = kernel_cell_i64(args, argc, 4);
+        ctx.ne02 = kernel_cell_i64(args, argc, 5);
+        ctx.nb00 = kernel_cell_i64(args, argc, 6);
+        ctx.nb01 = kernel_cell_i64(args, argc, 7);
+        ctx.nb02 = kernel_cell_i64(args, argc, 8);
+        ctx.nb03 = kernel_cell_i64(args, argc, 9);
+        ctx.ne10 = kernel_cell_i64(args, argc, 10);
+        ctx.ne11 = kernel_cell_i64(args, argc, 11);
+        ctx.ne12 = kernel_cell_i64(args, argc, 12);
+        ctx.nb10 = kernel_cell_i64(args, argc, 13);
+        ctx.nb11 = kernel_cell_i64(args, argc, 14);
+        ctx.nb12 = kernel_cell_i64(args, argc, 15);
+        ctx.nb13 = kernel_cell_i64(args, argc, 16);
+        if (ctx.ne00 <= 0 || ctx.ne01 <= 0 || ctx.ne02 <= 0 ||
+            ctx.ne10 <= 0 || ctx.ne11 <= 0 || ctx.ne12 <= 0 ||
+            ctx.nb00 < 0 || ctx.nb01 < 0 || ctx.nb02 < 0 || ctx.nb03 < 0 ||
+            ctx.nb10 < 0 || ctx.nb11 < 0 || ctx.nb12 < 0 || ctx.nb13 < 0) {
+            return -1;
+        }
+    }
+    if (ctx.ne <= 0) return 0;
+
+    uint64_t total = (uint64_t)ctx.ne;
+    unsigned workers = kernel_worker_threads(total);
+    if (workers > 1 && total <= 8192u) {
+        workers = 1;
+    }
+    trace_msg("native cpy_scalar_f32 %s elems=%" PRIu64
+              " contiguous=%u workers=%u",
+              symbol, total, ctx.contiguous ? 1u : 0u, workers);
+
+    if (workers <= 1 || total <= 1) {
+        struct CpyScalarF32NativeWorker worker = {
+            .ctx = &ctx,
+            .begin = 0,
+            .end = total,
+            .status = 0,
+        };
+        cpy_scalar_f32_native_worker_main(&worker);
+        trace_msg("native cpy_scalar_f32 done %s status=%d elapsed_us=%" PRIu64,
+                  symbol, worker.status, monotonic_us() - t0);
+        return worker.status;
+    }
+
+    pthread_t threads[PACC_KERNEL_MAX_THREADS];
+    struct CpyScalarF32NativeWorker worker[PACC_KERNEL_MAX_THREADS];
+    unsigned created = 0;
+    uint64_t chunk = (total + workers - 1u) / workers;
+    memset(worker, 0, sizeof(worker));
+    for (unsigned i = 0; i < workers; i++) {
+        uint64_t begin = (uint64_t)i * chunk;
+        uint64_t end = begin + chunk;
+        if (begin >= total) break;
+        if (end > total) end = total;
+        worker[i].ctx = &ctx;
+        worker[i].begin = begin;
+        worker[i].end = end;
+        worker[i].status = -1;
+        if (pthread_create(&threads[i], NULL,
+                           cpy_scalar_f32_native_worker_main, &worker[i]) != 0) {
+            for (unsigned j = 0; j < created; j++) {
+                pthread_join(threads[j], NULL);
+            }
+            return -1;
+        }
+        created++;
+    }
+
+    int status = 0;
+    for (unsigned i = 0; i < created; i++) {
+        pthread_join(threads[i], NULL);
+        if (worker[i].status != 0 && status == 0) {
+            status = worker[i].status;
+        }
+    }
+    trace_msg("native cpy_scalar_f32 done %s status=%d elapsed_us=%" PRIu64,
               symbol, status, monotonic_us() - t0);
     return status;
 }
@@ -8909,6 +9111,10 @@ static int invoke_kernel_native(const char *symbol,
     if (native_status <= 0) {
         return native_status;
     }
+    native_status = invoke_kernel_cpy_scalar_f32_native(symbol, args, job, argc);
+    if (native_status <= 0) {
+        return native_status;
+    }
     native_status = invoke_kernel_scale_f32_native(symbol, args, job, argc);
     if (native_status <= 0) {
         return native_status;
@@ -9882,6 +10088,50 @@ static int dispatch_kernel_job_metadata_fast(int fd, const struct PaccJobDesc *d
                               native_u);
             free(image_copy);
             return direct_native_status == 0 ? 0 : (int)error_status;
+        }
+    }
+
+    if (symbol[0] && (strstr(symbol, "scale_f32") ||
+                      strstr(symbol, "cpy_scalar"))) {
+        uint64_t argv[PACC_MAX_KERNEL_ARGS];
+        struct KernelParamCell arg_storage[PACC_MAX_KERNEL_ARGS];
+        struct KernelBindingMap binding_maps[PACC_MAX_KERNEL_BINDINGS];
+        size_t argc = 0;
+        size_t binding_map_count = 0;
+        bool is_cpy_scalar = strstr(symbol, "cpy_scalar") != NULL;
+        memset(argv, 0, sizeof(argv));
+        memset(arg_storage, 0, sizeof(arg_storage));
+        memset(binding_maps, 0, sizeof(binding_maps));
+
+        if (build_kernel_launch_args(fd, &job, argv, &argc, arg_storage,
+                                     binding_maps, &binding_map_count) == 0) {
+            int direct_native_status = is_cpy_scalar
+                ? invoke_kernel_cpy_scalar_f32_native(symbol, argv, &job, argc)
+                : invoke_kernel_scale_f32_native(symbol, argv, &job, argc);
+            if (direct_native_status <= 0) {
+                uint32_t native_u = (uint32_t)direct_native_status;
+                uint32_t error_status = (native_u & 0xffff0000u) == 0xffff0000u
+                    ? native_u
+                    : 0xffff5c00u;
+                write_jobd_beacon(fd, PACC_KERNEL_JOB_ID, desc->seq,
+                                  direct_native_status == 0
+                                      ? (is_cpy_scalar ? 0x5c20u : 0x5c10u)
+                                      : error_status,
+                                  native_u);
+                release_kernel_binding_maps_native_fast(binding_maps,
+                                                        binding_map_count,
+                                                        direct_native_status == 0);
+                free(image_copy);
+                return direct_native_status == 0 ? 0 : (int)error_status;
+            }
+            release_kernel_binding_maps_native_fast(binding_maps,
+                                                    binding_map_count,
+                                                    false);
+        } else {
+            uint32_t detail = g_kernel_arg_error & 0x00ffu;
+            trace_msg("metadata-fast native arg build miss: seq=%" PRIu64
+                      " symbol=%s detail=0x%x; falling back to full image path",
+                      desc->seq, symbol, detail);
         }
     }
 

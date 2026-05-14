@@ -4038,11 +4038,33 @@ cudaError_t cudaGraphExecUpdate(cudaGraphExec_t hGraphExec,
                                 cudaGraphExecUpdateResult *updateResult_out) {
     (void)hGraphExec;
     (void)hGraph;
-    if (hErrorNode_out) {
+    uintptr_t error_node_addr = (uintptr_t)hErrorNode_out;
+    uintptr_t result_addr = (uintptr_t)updateResult_out;
+    int error_node_writable =
+        error_node_addr >= 0x10000ULL && error_node_addr < 0x0000800000000000ULL;
+    int result_writable =
+        result_addr >= 0x10000ULL && result_addr < 0x0000800000000000ULL;
+
+    if (error_node_writable) {
         *hErrorNode_out = NULL;
     }
-    if (updateResult_out) {
+    if (result_writable) {
         *updateResult_out = 0;
+    } else if (error_node_writable) {
+        /*
+         * CUDA 12 exposes a three-argument ABI:
+         *   cudaGraphExecUpdate(exec, graph, cudaGraphExecUpdateResultInfo *)
+         * Older callers pass the error node and result as separate output
+         * pointers.  This shim symbol must tolerate both; if the fourth
+         * register is not a user pointer, treat the third argument as the
+         * result-info struct and fill the leading fields used by ggml.
+         */
+        char *result_info = (char *)hErrorNode_out;
+        cudaGraphNode_t *error_node = (cudaGraphNode_t *)result_info;
+        cudaGraphExecUpdateResult *result =
+            (cudaGraphExecUpdateResult *)(result_info + sizeof(cudaGraphNode_t));
+        *error_node = NULL;
+        *result = 0;
     }
     return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
 }

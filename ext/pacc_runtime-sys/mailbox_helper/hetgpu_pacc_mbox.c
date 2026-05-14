@@ -52,6 +52,10 @@ static int shared_ddr_memremap_mode;
 module_param(shared_ddr_memremap_mode, int, 0444);
 MODULE_PARM_DESC(shared_ddr_memremap_mode,
 		 "Fixed shared DDR memremap mode: 0=auto, 1=WC, 2=WT, 3=WB");
+static bool local_doorbell_bit = true;
+module_param(local_doorbell_bit, bool, 0444);
+MODULE_PARM_DESC(local_doorbell_bit,
+		 "Use local PACC doorbell bit 0 for ZLUDA IRQs instead of AP-visible minor bit");
 
 static dev_t g_dev;
 static struct cdev g_cdev;
@@ -396,7 +400,7 @@ static long mbox_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return -EBUSY;
 	iowrite32(0xffffffff, g_mbox_db[minor] + 0x10);
 	wmb();
-	iowrite32(1U << minor, g_mbox_db[minor] + 0x0);
+	iowrite32(local_doorbell_bit ? 1U : (1U << minor), g_mbox_db[minor] + 0x0);
 	mb();
 	mutex_unlock(&g_lock);
 	return 0;

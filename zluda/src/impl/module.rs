@@ -2092,12 +2092,12 @@ unsafe impl Sync for Module {}
     not(feature = "tenstorrent")
 ))]
 fn current_pacc_device_id() -> Result<i32, CUerror> {
-    let device_count = super::driver::global_state()?.devices.len() as i32;
+    let _ = super::driver::global_state()?;
     let device_id = match super::context::get_current_pacc() {
         Ok(ctx) => ctx.device_id,
-        Err(_) => 0,
+        Err(_) => super::driver::pacc_physical_device_for_logical(0),
     };
-    if device_id >= 0 && device_id < device_count {
+    if (0..4).contains(&device_id) {
         Ok(device_id)
     } else {
         Ok(0)

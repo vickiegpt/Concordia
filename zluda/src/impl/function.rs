@@ -3102,6 +3102,16 @@ fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
     if name.contains("gated_delta_net_cuda") {
         return Some(22);
     }
+    if name.contains("vectorized_gather_kernel") {
+        return Some(9);
+    }
+    if name.contains("direct_copy_kernel_cuda")
+        || (name.contains("unrolled_elementwise_kernel")
+            && name.contains("loadwithcast")
+            && name.contains("storewithcast"))
+    {
+        return Some(6);
+    }
 
     None
 }
@@ -3722,6 +3732,8 @@ fn pacc_kernel_arg_size(kernel_name: &str, index: usize) -> usize {
         if index == 20 {
             return 1;
         }
+    } else if name.contains("scale_f32") && matches!(index, 2 | 3) {
+        return 4;
     } else if name.contains("k_argsort_f32_i32") && matches!(index, 2 | 3) {
         return 4;
     } else if name.contains("concat_f32_dim") && matches!(index, 3 | 4) {
@@ -7809,6 +7821,26 @@ unsafe fn read_param_i64(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn read_param_bool(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+) -> Option<bool> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    let param = *kernel_params.add(index);
+    if param.is_null() || (param as usize) < 0x1_0000 {
+        return None;
+    }
+    Some((param as *const u8).read_unaligned() != 0)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn read_param_uint3_z(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
@@ -8706,6 +8738,255 @@ fn pacc_cuda_alloc_has_elems<T>(ptr: *const T, elems: usize) -> bool {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn execute_vectorized_gather_host_copy(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let out_addr = read_param_u64(kernel_params, 0)?;
+    let inp_addr = read_param_u64(kernel_params, 1)?;
+    let idx_addr = read_param_u64(kernel_params, 2)?;
+    let num_ind = read_param_i32(kernel_params, 3)?.max(0) as usize;
+    let slice_size = read_param_i64(kernel_params, 4)?.max(0) as usize;
+    let ind_dim_size = read_param_i64(kernel_params, 5)?.max(0);
+    let inp_stride = read_param_i64(kernel_params, 6)?;
+    let out_stride = read_param_i64(kernel_params, 7)?;
+    let allow_neg_indices = read_param_bool(kernel_params, 8).unwrap_or(false);
+
+    if num_ind == 0 || slice_size == 0 {
+        return Some(Ok(()));
+    }
+    if inp_stride < 0 || out_stride < 0 || ind_dim_size <= 0 {
+        eprintln!(
+            "[PACC Backend] vectorized_gather '{}' rejected invalid shape num_ind={} slice={} ind_dim={} inp_stride={} out_stride={}",
+            kernel_name, num_ind, slice_size, ind_dim_size, inp_stride, out_stride
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let index_is_i64 = !kernel_name.contains("ILi16EiE");
+    let idx_elem_size = if index_is_i64 {
+        std::mem::size_of::<i64>()
+    } else {
+        std::mem::size_of::<i32>()
+    };
+    let Some(idx_bytes) = num_ind.checked_mul(idx_elem_size) else {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let out_stride = out_stride as usize;
+    let inp_stride = inp_stride as usize;
+    let Some(out_last_off) = num_ind
+        .checked_sub(1)
+        .and_then(|last| last.checked_mul(out_stride))
+    else {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let Some(out_bytes) = out_last_off.checked_add(slice_size) else {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    if !pacc_host_or_cuda_alloc_has_bytes(idx_addr, idx_bytes, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(out_addr, out_bytes, true)
+    {
+        eprintln!(
+            "[PACC Backend] vectorized_gather '{}' rejected out/idx allocation out=0x{:x} out_bytes={} idx=0x{:x} idx_bytes={}",
+            kernel_name, out_addr, out_bytes, idx_addr, idx_bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let mut max_src_end = 0usize;
+    for i in 0..num_ind {
+        let mut ind = if index_is_i64 {
+            (idx_addr as *const i64).add(i).read_unaligned()
+        } else {
+            (idx_addr as *const i32).add(i).read_unaligned() as i64
+        };
+        if allow_neg_indices && ind < 0 {
+            ind += ind_dim_size;
+        }
+        if ind < 0 || ind >= ind_dim_size {
+            eprintln!(
+                "[PACC Backend] vectorized_gather '{}' index {} out of bounds at {} (dim={})",
+                kernel_name, ind, i, ind_dim_size
+            );
+            return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+        }
+        let Some(src_off) = (ind as usize).checked_mul(inp_stride) else {
+            return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+        };
+        let Some(src_end) = src_off.checked_add(slice_size) else {
+            return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+        };
+        max_src_end = max_src_end.max(src_end);
+    }
+
+    if !pacc_host_or_cuda_alloc_has_bytes(inp_addr, max_src_end, false) {
+        eprintln!(
+            "[PACC Backend] vectorized_gather '{}' rejected input allocation inp=0x{:x} bytes={}",
+            kernel_name, inp_addr, max_src_end
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let inp = inp_addr as *const u8;
+    let out = out_addr as *mut u8;
+    for i in 0..num_ind {
+        let mut ind = if index_is_i64 {
+            (idx_addr as *const i64).add(i).read_unaligned()
+        } else {
+            (idx_addr as *const i32).add(i).read_unaligned() as i64
+        };
+        if allow_neg_indices && ind < 0 {
+            ind += ind_dim_size;
+        }
+        let src_off = (ind as usize).saturating_mul(inp_stride);
+        let dst_off = i.saturating_mul(out_stride);
+        std::ptr::copy_nonoverlapping(inp.add(src_off), out.add(dst_off), slice_size);
+    }
+
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled vectorized_gather '{}' on host-copy path num_ind={} slice={} ind_dim={} idx={} ",
+            kernel_name,
+            num_ind,
+            slice_size,
+            ind_dim_size,
+            if index_is_i64 { "i64" } else { "i32" }
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn read_param_data_pair(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+) -> Option<(u64, u64)> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    let param = *kernel_params.add(index);
+    if param.is_null() || (param as usize) < 0x1_0000 {
+        return None;
+    }
+    let data = param as *const u64;
+    let out = data.read_unaligned();
+    let inp = data.add(1).read_unaligned();
+    if out < 0x1_0000 || inp < 0x1_0000 {
+        return None;
+    }
+    Some((out, inp))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_direct_copy_bool_host_cast(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    block_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or_else(|| {
+            (grid_dim_x as usize)
+                .saturating_mul(block_dim_x as usize)
+                .saturating_mul(4)
+        });
+    if n == 0 {
+        return Some(Ok(()));
+    }
+
+    let mut pair = None;
+    for index in 1..6 {
+        if let Some((out_addr, inp_addr)) = read_param_data_pair(kernel_params, index) {
+            if pacc_host_or_cuda_alloc_has_bytes(out_addr, n, true)
+                && pacc_host_or_cuda_alloc_has_bytes(inp_addr, n, false)
+            {
+                pair = Some((index, out_addr, inp_addr));
+                break;
+            }
+        }
+    }
+    let Some((pair_index, out_addr, inp_addr)) = pair else {
+        eprintln!(
+            "[PACC Backend] direct_copy '{}' could not locate TensorIterator data pair for n={}",
+            kernel_name, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    let inp_remaining = super::memory::pacc_allocation_remaining_addr(inp_addr as usize)
+        .or_else(|| {
+            if pacc_host_range_has_perms(inp_addr as usize, n.saturating_mul(8), false) {
+                Some(n.saturating_mul(8))
+            } else if pacc_host_range_has_perms(inp_addr as usize, n.saturating_mul(4), false) {
+                Some(n.saturating_mul(4))
+            } else if pacc_host_range_has_perms(inp_addr as usize, n.saturating_mul(2), false) {
+                Some(n.saturating_mul(2))
+            } else if pacc_host_range_has_perms(inp_addr as usize, n, false) {
+                Some(n)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(n);
+    let src_elem = if inp_remaining >= n.saturating_mul(8) {
+        8
+    } else if inp_remaining >= n.saturating_mul(4) {
+        4
+    } else if inp_remaining >= n.saturating_mul(2) {
+        2
+    } else {
+        1
+    };
+
+    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, n, true)
+        || !pacc_host_or_cuda_alloc_has_bytes(inp_addr, n.saturating_mul(src_elem), false)
+    {
+        eprintln!(
+            "[PACC Backend] direct_copy '{}' rejected allocation range out=0x{:x} inp=0x{:x} n={} src_elem={}",
+            kernel_name, out_addr, inp_addr, n, src_elem
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let out = out_addr as *mut u8;
+    let inp = inp_addr as *const u8;
+    for i in 0..n {
+        let nonzero = match src_elem {
+            8 => (inp.add(i * 8) as *const u64).read_unaligned() != 0,
+            4 => (inp.add(i * 4) as *const u32).read_unaligned() != 0,
+            2 => (inp.add(i * 2) as *const u16).read_unaligned() != 0,
+            _ => inp.add(i).read_unaligned() != 0,
+        };
+        out.add(i).write(if nonzero { 1 } else { 0 });
+    }
+
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled direct_copy '{}' on host bool-cast path n={} src_elem={} pair_param={}",
+            kernel_name, n, src_elem, pair_index
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn execute_scale_f32_fallback(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
@@ -8925,22 +9206,20 @@ unsafe fn execute_get_rows_float_fallback(
     not(feature = "tenstorrent")
 ))]
 fn current_pacc_device_id_or_zero() -> i32 {
-    let device_count = super::driver::global_state()
-        .map(|state| state.devices.len() as i32)
-        .unwrap_or(1);
+    let _ = super::driver::global_state();
     if let Some(forced) = std::env::var("HETGPU_PACC_FORCE_DEVICE")
         .ok()
         .or_else(|| std::env::var("HETGPU_PACC_DEVICE").ok())
         .and_then(|v| v.parse::<i32>().ok())
     {
-        if forced >= 0 && forced < device_count {
+        if (0..4).contains(&forced) {
             return forced;
         }
     }
     let device_id = super::context::get_current_pacc()
         .map(|ctx| ctx.device_id)
-        .unwrap_or(0);
-    if device_id >= 0 && device_id < device_count {
+        .unwrap_or_else(|_| super::driver::pacc_physical_device_for_logical(0));
+    if (0..4).contains(&device_id) {
         device_id
     } else {
         0
@@ -9488,6 +9767,23 @@ unsafe fn try_offload_named_pacc_kernel(
             grid_dim_x,
             grid_dim_y,
             grid_dim_z,
+        );
+    }
+
+    if name_lower.contains("vectorized_gather_kernel") {
+        return execute_vectorized_gather_host_copy(kernel_name, kernel_params);
+    }
+
+    if name_lower.contains("direct_copy_kernel_cuda")
+        || (name_lower.contains("unrolled_elementwise_kernel")
+            && name_lower.contains("loadwithcast")
+            && name_lower.contains("storewithcast"))
+    {
+        return execute_direct_copy_bool_host_cast(
+            kernel_name,
+            grid_dim_x,
+            1,
+            kernel_params,
         );
     }
 

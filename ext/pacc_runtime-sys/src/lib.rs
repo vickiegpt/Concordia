@@ -4245,14 +4245,37 @@ fn write_shared_ddr_control_window(
     offset: u64,
     bytes: &[u8],
 ) -> std::io::Result<()> {
+    let logical_offset = offset;
     let offset = shared_ddr_control_offset(pacc_id, offset, bytes.len())?;
     if !shared_ddr_control_mmap_enabled() {
         let dev = helper_path_for_pacc(pacc_id);
         if std::path::Path::new(&dev).exists() {
             let mut file = open_sync_rw(&dev)?;
+            if env_flag_enabled("HETGPU_PACC_CONTROL_WRITE_TRACE") {
+                eprintln!(
+                    "PACC control write: pacc={} helper={} logical=0x{:x} control=0x{:x} helper_off=0x{:x} len={} first={:02x?}",
+                    pacc_id,
+                    dev,
+                    logical_offset,
+                    offset,
+                    HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset,
+                    bytes.len(),
+                    &bytes[..bytes.len().min(32)]
+                );
+            }
             helper_write_all(&mut file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)?;
             return Ok(());
         }
+    }
+    if env_flag_enabled("HETGPU_PACC_CONTROL_WRITE_TRACE") {
+        eprintln!(
+            "PACC control write: pacc={} physmap logical=0x{:x} control=0x{:x} len={} first={:02x?}",
+            pacc_id,
+            logical_offset,
+            offset,
+            bytes.len(),
+            &bytes[..bytes.len().min(32)]
+        );
     }
     write_shared_ddr_window(offset, bytes)
 }
@@ -4263,12 +4286,34 @@ fn write_shared_ddr_control_window_cached(
     offset: u64,
     bytes: &[u8],
 ) -> std::io::Result<()> {
+    let logical_offset = offset;
     let offset = shared_ddr_control_offset(pacc_id, offset, bytes.len())?;
     if !shared_ddr_control_mmap_enabled() {
         if let Some(file) = file.as_mut() {
+            if env_flag_enabled("HETGPU_PACC_CONTROL_WRITE_TRACE") {
+                eprintln!(
+                    "PACC control write cached: pacc={} logical=0x{:x} control=0x{:x} helper_off=0x{:x} len={} first={:02x?}",
+                    pacc_id,
+                    logical_offset,
+                    offset,
+                    HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset,
+                    bytes.len(),
+                    &bytes[..bytes.len().min(32)]
+                );
+            }
             helper_write_all(file, HETGPU_PACC_SHARED_DDR_HELPER_OFF + offset, bytes)?;
             return Ok(());
         }
+    }
+    if env_flag_enabled("HETGPU_PACC_CONTROL_WRITE_TRACE") {
+        eprintln!(
+            "PACC control write cached fallback: pacc={} logical=0x{:x} control=0x{:x} len={} first={:02x?}",
+            pacc_id,
+            logical_offset,
+            offset,
+            bytes.len(),
+            &bytes[..bytes.len().min(32)]
+        );
     }
     write_shared_ddr_window_cached(file, offset, bytes)
 }

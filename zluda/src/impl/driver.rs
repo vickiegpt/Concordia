@@ -60,6 +60,22 @@ fn pacc_visible_physical_devices() -> Vec<i32> {
     (0..count as i32).collect()
 }
 
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn pacc_physical_device_for_logical(logical_id: i32) -> i32 {
+    let visible = pacc_visible_physical_devices();
+    if logical_id >= 0 {
+        if let Some(&physical_id) = visible.get(logical_id as usize) {
+            return physical_id;
+        }
+    }
+    visible.first().copied().unwrap_or(0)
+}
+
 /// Get a handle to our own .so (libnvcuda.so) so we can resolve cu* symbols
 /// from OUR library, not the system's /lib/x86_64-linux-gnu/libcuda.so.1.
 #[cfg(unix)]
