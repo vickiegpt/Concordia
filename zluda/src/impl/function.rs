@@ -1,4 +1,9 @@
-#[cfg(any(feature = "tenstorrent", feature = "nvidia", feature = "pacc"))]
+#[cfg(any(
+    feature = "tenstorrent",
+    feature = "nvidia",
+    feature = "pacc",
+    feature = "tmatmul"
+))]
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
@@ -77,6 +82,93 @@ static PACC_GENERIC_FAST_SUCCESS_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
     not(feature = "tenstorrent")
 ))]
 static PACC_NAMED_ERROR_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn get_attribute(
+    pi: *mut i32,
+    attrib: CUfunction_attribute,
+    _func: &crate::r#impl::module::TMatmulKernel,
+) -> CUresult {
+    if pi.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    let value = match attrib {
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK => 1024,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES => 0,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_CONST_SIZE_BYTES => 0,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES => 0,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_NUM_REGS => 32,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_PTX_VERSION => 75,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_BINARY_VERSION => 75,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_CACHE_MODE_CA => 0,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES => 65536,
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT => 0,
+        _ => return Err(CUerror::INVALID_VALUE),
+    };
+
+    unsafe {
+        *pi = value;
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn launch_kernel(
+    _f: &crate::r#impl::module::TMatmulKernel,
+    _grid_dim_x: ::core::ffi::c_uint,
+    _grid_dim_y: ::core::ffi::c_uint,
+    _grid_dim_z: ::core::ffi::c_uint,
+    _block_dim_x: ::core::ffi::c_uint,
+    _block_dim_y: ::core::ffi::c_uint,
+    _block_dim_z: ::core::ffi::c_uint,
+    _shared_mem_bytes: ::core::ffi::c_uint,
+    _stream: *mut ::core::ffi::c_void,
+    _kernel_params: *mut *mut ::core::ffi::c_void,
+    _extra: *mut *mut ::core::ffi::c_void,
+) -> CUresult {
+    if super::checkpoint::check_checkpoint_at_launch() {
+        return Ok(());
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn launch_kernel_ex(
+    config: &CUlaunchConfig,
+    f: &crate::r#impl::module::TMatmulKernel,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    extra: *mut *mut ::core::ffi::c_void,
+) -> CUresult {
+    launch_kernel(
+        f,
+        config.gridDimX,
+        config.gridDimY,
+        config.gridDimZ,
+        config.blockDimX,
+        config.blockDimY,
+        config.blockDimZ,
+        config.sharedMemBytes,
+        config.hStream.0 as *mut _,
+        kernel_params,
+        extra,
+    )
+}
 
 #[cfg(feature = "amd")]
 pub(crate) fn get_attribute(

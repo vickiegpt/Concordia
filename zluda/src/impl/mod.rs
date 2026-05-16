@@ -797,6 +797,133 @@ impl<'a> FromCuda<'a, CUfunction_attribute_enum> for CUfunction_attribute_enum {
     }
 }
 
+// TMatmul-specific FromCuda implementations for virtual CUDA handles.
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl<'a> FromCuda<'a, *mut CUuuid_st> for *mut [u8; 16] {
+    fn from_cuda(x: &'a *mut CUuuid_st) -> Result<Self, CUerror> {
+        Ok(x.cast::<[u8; 16]>())
+    }
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl<'a> FromCuda<'a, *mut i8> for *mut [u8; 8] {
+    fn from_cuda(x: &'a *mut i8) -> Result<Self, CUerror> {
+        Ok(x.cast::<[u8; 8]>())
+    }
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl<'a> FromCuda<'a, *mut u32> for *mut u32 {
+    fn from_cuda(x: &'a *mut u32) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl<'a> FromCuda<'a, *mut CUfunction> for &'a mut CUfunction {
+    fn from_cuda(x: &'a *mut CUfunction) -> Result<Self, CUerror> {
+        match unsafe { x.as_mut() } {
+            Some(x) => Ok(x),
+            None => Err(CUerror::INVALID_VALUE),
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl<'a> FromCuda<'a, CUstream> for *mut ::core::ffi::c_void {
+    fn from_cuda(x: &'a CUstream) -> Result<Self, CUerror> {
+        Ok(x.0 as *mut ::core::ffi::c_void)
+    }
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl<'a> FromCuda<'a, CUdeviceptr_v2> for CUdeviceptr_v2 {
+    fn from_cuda(x: &'a CUdeviceptr_v2) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl<'a> FromCuda<'a, CUpointer_attribute_enum> for CUpointer_attribute_enum {
+    fn from_cuda(x: &'a CUpointer_attribute_enum) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl<'a> FromCuda<'a, CUfunction_attribute_enum> for CUfunction_attribute_enum {
+    fn from_cuda(x: &'a CUfunction_attribute_enum) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl<'a> FromCuda<'a, CUlimit> for CUlimit {
+    fn from_cuda(x: &'a CUlimit) -> Result<Self, CUerror> {
+        Ok(*x)
+    }
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+impl<'a> FromCuda<'a, *const CUlaunchConfig_st> for &'a CUlaunchConfig_st {
+    fn from_cuda(x: &'a *const CUlaunchConfig_st) -> Result<Self, CUerror> {
+        if x.is_null() {
+            return Err(CUerror::INVALID_VALUE);
+        }
+        Ok(unsafe { &**x })
+    }
+}
+
 // PACC-specific FromCuda implementations
 #[cfg(all(
     feature = "pacc",

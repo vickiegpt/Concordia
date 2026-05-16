@@ -16,6 +16,7 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
+#include <llvm/Support/Compiler.h>
 
 #pragma GCC diagnostic pop
 
@@ -26,9 +27,13 @@ namespace llvm {
 // while the prebuilt llvm-zluda archive we link against may not expose it.
 // IRBuilder headers can still emit references to the symbol, so provide the
 // ABI shim here and keep the bridge self-contained.
-TypeSize::operator TypeSize::ScalarTy() const { return getKnownMinValue(); }
+LLVM_ATTRIBUTE_WEAK TypeSize::operator TypeSize::ScalarTy() const {
+  return getKnownMinValue();
+}
 
-LLVMContext &Value::getContext() const { return getType()->getContext(); }
+LLVM_ATTRIBUTE_WEAK LLVMContext &Value::getContext() const {
+  return getType()->getContext();
+}
 } // namespace llvm
 
 static llvm::Align zludaAtomicValueAlign(llvm::Type *Ty) {
