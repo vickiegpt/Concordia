@@ -1254,6 +1254,7 @@ fn pacc_parse_env_usize(name: &str) -> Option<usize> {
 fn pacc_helper_path_for_device0() -> String {
     match std::env::var("HETGPU_PACC_MBOX_DEVICE") {
         Ok(pattern) if pattern.contains("%d") => pattern.replace("%d", "0"),
+        Ok(pattern) if pattern.contains("{}") => pattern.replace("{}", "0"),
         Ok(path) => path,
         Err(_) => "/dev/hetgpu_pacc_mbox_ddr_coh0".to_string(),
     }
@@ -1350,7 +1351,15 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
             .read(true)
             .write(true)
             .open(&path)
-            .map_err(|_| CUerror::OUT_OF_MEMORY)?;
+            .map_err(|err| {
+                if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "[PACC Backend] shared-DDR CUDA heap open {} failed: {}",
+                        path, err
+                    );
+                }
+                CUerror::OUT_OF_MEMORY
+            })?;
         pacc_alloc_trace(b"[pacc_alloc] shared open");
         let ptr = unsafe {
             pacc_alloc_trace(b"[pacc_alloc] shared mmap before");
@@ -1365,6 +1374,15 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
         };
         pacc_alloc_trace(b"[pacc_alloc] shared mmap after");
         if ptr == libc::MAP_FAILED {
+            if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+                eprintln!(
+                    "[PACC Backend] shared-DDR CUDA heap mmap {} offset=0x{:x} bytes={} failed: {}",
+                    path,
+                    heap_offset,
+                    window_bytes,
+                    std::io::Error::last_os_error()
+                );
+            }
             return Err(CUerror::OUT_OF_MEMORY);
         }
 
@@ -1605,6 +1623,7 @@ pub(crate) fn copy_dto_h_v2(
     let addr = src_device.0 as u64;
     {
         let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let map_entries = map.len();
         if let Some((base, alloc)) = map.iter_mut().find(|(base, alloc)| {
             let start = **base;
             let end = start.saturating_add(alloc.size as u64);
@@ -1624,6 +1643,22 @@ pub(crate) fn copy_dto_h_v2(
                 }
                 return Ok(());
             }
+            if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+                eprintln!(
+                    "[PACC Backend] cuMemcpyDtoH host-backed src=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
+                    addr, *base, offset, byte_count, alloc.size, map_entries
+                );
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(src_device.0 as *const u8, dst_host as *mut u8, byte_count);
+            }
+            return Ok(());
+        }
+        if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+            eprintln!(
+                "[PACC Backend] cuMemcpyDtoH src not in alloc map: src=0x{:x} bytes={} map_entries={}",
+                addr, byte_count, map_entries
+            );
         }
     }
     if addr >= 0x1000 && addr < 0x1_0000_0000 {
@@ -1652,6 +1687,7 @@ pub(crate) fn copy_hto_d_v2(
     let addr = dst_device.0 as u64;
     {
         let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let map_entries = map.len();
         if let Some((base, alloc)) = map.iter_mut().find(|(base, alloc)| {
             let start = **base;
             let end = start.saturating_add(alloc.size as u64);
@@ -1676,6 +1712,22 @@ pub(crate) fn copy_hto_d_v2(
                 bo.flush().map_err(|_| CUerror::UNKNOWN)?;
                 return Ok(());
             }
+            if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+                eprintln!(
+                    "[PACC Backend] cuMemcpyHtoD host-backed dst=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
+                    addr, *base, offset, byte_count, alloc.size, map_entries
+                );
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(src_host as *const u8, dst_device.0 as *mut u8, byte_count);
+            }
+            return Ok(());
+        }
+        if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+            eprintln!(
+                "[PACC Backend] cuMemcpyHtoD dst not in alloc map: dst=0x{:x} bytes={} map_entries={}",
+                addr, byte_count, map_entries
+            );
         }
     }
     if addr >= 0x1000 && addr < 0x1_0000_0000 {

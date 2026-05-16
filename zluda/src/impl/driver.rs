@@ -27,6 +27,55 @@ use super::LiveCheck;
 #[cfg(unix)]
 use libc::{dlsym, RTLD_DEFAULT};
 
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_visible_physical_devices() -> Vec<i32> {
+    let raw = std::env::var("HETGPU_PACC_VISIBLE_DEVICES").unwrap_or_else(|_| "4".to_string());
+    if raw
+        .chars()
+        .any(|c| c == ',' || c == ';' || c == ':' || c.is_ascii_whitespace())
+    {
+        let mut devices = Vec::new();
+        for part in raw.split(|c: char| {
+            c == ',' || c == ';' || c == ':' || c.is_ascii_whitespace()
+        }) {
+            if part.is_empty() {
+                continue;
+            }
+            if let Ok(dev) = part.parse::<i32>() {
+                if (0..4).contains(&dev) && !devices.contains(&dev) {
+                    devices.push(dev);
+                }
+            }
+        }
+        if !devices.is_empty() {
+            return devices;
+        }
+    }
+    let count = raw.parse::<usize>().unwrap_or(4).clamp(1, 4);
+    (0..count as i32).collect()
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn pacc_physical_device_for_logical(logical_id: i32) -> i32 {
+    let visible = pacc_visible_physical_devices();
+    if logical_id >= 0 {
+        if let Some(&physical_id) = visible.get(logical_id as usize) {
+            return physical_id;
+        }
+    }
+    visible.first().copied().unwrap_or(0)
+}
+
 /// Get a handle to our own .so (libnvcuda.so) so we can resolve cu* symbols
 /// from OUR library, not the system's /lib/x86_64-linux-gnu/libcuda.so.1.
 #[cfg(unix)]
@@ -921,34 +970,32 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
 
     GLOBAL_STATE
         .get_or_init(|| {
-            let visible_devices = std::env::var("HETGPU_PACC_VISIBLE_DEVICES")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(4)
-                .clamp(1, 4);
+            let visible_physical_devices = pacc_visible_physical_devices();
 
             // PACC can expose one logical CUDA device per physical PACC.
             let comgr_isa = CString::new("riscv64-pacc-ime").map_err(|_| CUerror::UNKNOWN)?;
-            let mut devices = Vec::with_capacity(visible_devices);
+            let mut devices = Vec::with_capacity(visible_physical_devices.len());
 
             PACC_DEVICES.with(|map| {
                 let mut map = map.borrow_mut();
-                for dev_id in 0..visible_devices {
+                for (logical_id, physical_id) in visible_physical_devices.iter().copied().enumerate()
+                {
                     let device = Device {
                         _comgr_isa: comgr_isa.clone(),
-                        primary_context: LiveCheck::new(context::Context::new(dev_id as i32)),
+                        primary_context: LiveCheck::new(context::Context::new(physical_id)),
                     };
                     let device_box = Box::new(device.clone());
                     let device_ptr =
                         unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(device.clone()))) };
-                    map.insert(dev_id as i32, device_ptr);
+                    map.insert(logical_id as i32, device_ptr);
                     devices.push(*device_box);
                 }
             });
 
             eprintln!(
-                "[PACC Backend] exposing {} CUDA-visible PACC device(s)",
-                visible_devices
+                "[PACC Backend] exposing {} CUDA-visible PACC device(s): {:?}",
+                visible_physical_devices.len(),
+                visible_physical_devices
             );
 
             Ok(GlobalState { devices })

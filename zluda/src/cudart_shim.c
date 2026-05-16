@@ -17,6 +17,39 @@
 // SIGFPE handler - log first occurrence then disable FP exceptions to continue
 static int sigfpe_count = 0;
 
+static unsigned long long hetgpu_parse_u64_env(const char *name, unsigned long long fallback) {
+    const char *value = getenv(name);
+    if (!value || !*value) return fallback;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(value, &end, 0);
+    if (end == value || parsed == 0) return fallback;
+    return parsed;
+}
+
+static int hetgpu_pacc_physical_device_for_logical(int logical) {
+    const char *visible = getenv("HETGPU_PACC_VISIBLE_DEVICES");
+    if (!visible || !*visible) return logical;
+    if (!strchr(visible, ',') && !strchr(visible, ';') && !strchr(visible, ':') &&
+        !strchr(visible, ' ') && !strchr(visible, '\t')) {
+        return logical;
+    }
+    int current_logical = 0;
+    const char *p = visible;
+    while (*p) {
+        while (*p == ',' || *p == ';' || *p == ':' || *p == ' ' || *p == '\t') ++p;
+        if (!*p) break;
+        char *end = NULL;
+        long physical = strtol(p, &end, 0);
+        if (end == p) break;
+        if (physical >= 0 && physical < 4) {
+            if (current_logical == logical) return (int)physical;
+            current_logical++;
+        }
+        p = end;
+    }
+    return logical;
+}
+
 static void sigfpe_handler(int sig, siginfo_t *info, void *ucontext_raw) {
     sigfpe_count++;
     if (sigfpe_count <= 3) {
@@ -918,11 +951,16 @@ cudaError_t cudaGetDeviceProperties(cudaDeviceProp_t prop, int device) {
     cudaDeviceProp_full p;
     memset(&p, 0, sizeof(p));
 
+    int physical_device = hetgpu_pacc_physical_device_for_logical(device);
+
     // Device name
-    snprintf(p.name, sizeof(p.name), "Virtual GPU (hetGPU PACC%d sm_80)", device);
+    snprintf(p.name, sizeof(p.name), "Virtual GPU (hetGPU PACC%d sm_80)", physical_device);
 
     // Memory properties
-    p.totalGlobalMem = 4ULL * 1024 * 1024 * 1024;  // 4GB
+    p.totalGlobalMem = (size_t)hetgpu_parse_u64_env(
+        "HETGPU_PACC_VRAM_BYTES",
+        4ULL * 1024 * 1024 * 1024
+    );
     p.sharedMemPerBlock = 48 * 1024;               // 48KB
     p.sharedMemPerMultiprocessor = 64 * 1024;      // 64KB
     p.totalConstMem = 64 * 1024;                   // 64KB
@@ -2559,9 +2597,35 @@ static const char* extract_ptx_from_so(const char* so_path) {
     int cache_idx = g_ptx_cache_count++;
     strncpy(g_ptx_cache[cache_idx].so_path, so_path, 511);
 
-    // Create output directory
-    snprintf(g_ptx_cache[cache_idx].ptx_dir, sizeof(g_ptx_cache[cache_idx].ptx_dir),
-             "/tmp/hetgpu_so_ptx_%ld_%d", (long)getpid(), cache_idx);
+    // Create output directory.  By default this is process-local, but large
+    // ggml-cuda source->PTX fallback compiles are expensive, so allow a stable
+    // cache root to be shared across short llama runs.
+    const char* stable_cache_root = getenv("HETGPU_CUDART_PTX_CACHE_DIR");
+    if (stable_cache_root && stable_cache_root[0] != '\0') {
+        mkdir(stable_cache_root, 0755);
+        const char* base = strrchr(so_path, '/');
+        base = base ? base + 1 : so_path;
+        char safe_name[96];
+        size_t safe_len = 0;
+        for (const char* p = base; *p && safe_len + 1 < sizeof(safe_name); ++p) {
+            char c = *p;
+            int keep = (c >= 'a' && c <= 'z') ||
+                       (c >= 'A' && c <= 'Z') ||
+                       (c >= '0' && c <= '9');
+            safe_name[safe_len++] = keep ? c : '_';
+        }
+        if (safe_len == 0) {
+            strncpy(safe_name, "module", sizeof(safe_name) - 1);
+            safe_name[sizeof(safe_name) - 1] = '\0';
+        } else {
+            safe_name[safe_len] = '\0';
+        }
+        snprintf(g_ptx_cache[cache_idx].ptx_dir, sizeof(g_ptx_cache[cache_idx].ptx_dir),
+                 "%s/%s", stable_cache_root, safe_name);
+    } else {
+        snprintf(g_ptx_cache[cache_idx].ptx_dir, sizeof(g_ptx_cache[cache_idx].ptx_dir),
+                 "/tmp/hetgpu_so_ptx_%ld_%d", (long)getpid(), cache_idx);
+    }
     mkdir(g_ptx_cache[cache_idx].ptx_dir, 0755);
 
     HETGPU_LOG("[cudart_shim] Extracting PTX from %s to %s\n",
@@ -3655,9 +3719,12 @@ cudaError_t cudaMallocFromPoolAsync(void** ptr,
 
 // Memory info
 cudaError_t cudaMemGetInfo(size_t* free, size_t* total) {
-    const size_t four_gb = (size_t)4 * 1024 * 1024 * 1024ULL;
-    if (free) *free = four_gb;
-    if (total) *total = four_gb;
+    size_t bytes = (size_t)hetgpu_parse_u64_env(
+        "HETGPU_PACC_VRAM_BYTES",
+        4ULL * 1024 * 1024 * 1024
+    );
+    if (free) *free = bytes;
+    if (total) *total = bytes;
     return 0;
 }
 
@@ -3971,11 +4038,33 @@ cudaError_t cudaGraphExecUpdate(cudaGraphExec_t hGraphExec,
                                 cudaGraphExecUpdateResult *updateResult_out) {
     (void)hGraphExec;
     (void)hGraph;
-    if (hErrorNode_out) {
+    uintptr_t error_node_addr = (uintptr_t)hErrorNode_out;
+    uintptr_t result_addr = (uintptr_t)updateResult_out;
+    int error_node_writable =
+        error_node_addr >= 0x10000ULL && error_node_addr < 0x0000800000000000ULL;
+    int result_writable =
+        result_addr >= 0x10000ULL && result_addr < 0x0000800000000000ULL;
+
+    if (error_node_writable) {
         *hErrorNode_out = NULL;
     }
-    if (updateResult_out) {
+    if (result_writable) {
         *updateResult_out = 0;
+    } else if (error_node_writable) {
+        /*
+         * CUDA 12 exposes a three-argument ABI:
+         *   cudaGraphExecUpdate(exec, graph, cudaGraphExecUpdateResultInfo *)
+         * Older callers pass the error node and result as separate output
+         * pointers.  This shim symbol must tolerate both; if the fourth
+         * register is not a user pointer, treat the third argument as the
+         * result-info struct and fill the leading fields used by ggml.
+         */
+        char *result_info = (char *)hErrorNode_out;
+        cudaGraphNode_t *error_node = (cudaGraphNode_t *)result_info;
+        cudaGraphExecUpdateResult *result =
+            (cudaGraphExecUpdateResult *)(result_info + sizeof(cudaGraphNode_t));
+        *error_node = NULL;
+        *result = 0;
     }
     return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
 }

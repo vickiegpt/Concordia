@@ -3194,6 +3194,16 @@ fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
     if name.contains("gated_delta_net_cuda") {
         return Some(22);
     }
+    if name.contains("vectorized_gather_kernel") {
+        return Some(9);
+    }
+    if name.contains("direct_copy_kernel_cuda")
+        || (name.contains("unrolled_elementwise_kernel")
+            && name.contains("loadwithcast")
+            && name.contains("storewithcast"))
+    {
+        return Some(6);
+    }
 
     None
 }
@@ -3814,6 +3824,8 @@ fn pacc_kernel_arg_size(kernel_name: &str, index: usize) -> usize {
         if index == 20 {
             return 1;
         }
+    } else if name.contains("scale_f32") && matches!(index, 2 | 3) {
+        return 4;
     } else if name.contains("k_argsort_f32_i32") && matches!(index, 2 | 3) {
         return 4;
     } else if name.contains("concat_f32_dim") && matches!(index, 3 | 4) {
@@ -5077,6 +5089,269 @@ unsafe fn execute_set_rows_host_fallback(
     eprintln!(
         "[PACC Backend] host-fallback k_set_rows '{}' ne_total={} ne00={} ne01={} ne02={} ne03={} idx_elem={} dst_elem={}",
         kernel_name, ne_total, ne00, ne01, ne02, ne03, idx_elem, dst_elem
+    );
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_cpy_scalar_host_fallback(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    use cuda_types::cuda::*;
+
+    if !kernel_name.contains("cpy_scalar") {
+        return None;
+    }
+    let (src_elem, dst_elem) = pacc_cpy_scalar_element_sizes(kernel_name)?;
+    if !matches!(src_elem, 2 | 4) || !matches!(dst_elem, 2 | 4) {
+        return None;
+    }
+
+    let src = read_param_u64(kernel_params, 0)?;
+    let dst = read_param_u64(kernel_params, 1)?;
+    let ne = read_param_u64(kernel_params, 2)?;
+    if ne == 0 {
+        return Some(Ok(()));
+    }
+
+    let contiguous = kernel_name
+        .to_ascii_lowercase()
+        .contains("cpy_scalar_contiguous");
+    let (src_len, dst_len) = if contiguous {
+        (
+            ne.saturating_mul(src_elem),
+            ne.saturating_mul(dst_elem),
+        )
+    } else {
+        let src_ne0 = read_param_u64(kernel_params, 3)?.max(1);
+        let src_ne1 = read_param_u64(kernel_params, 4)?.max(1);
+        let src_ne2 = read_param_u64(kernel_params, 5)?.max(1);
+        let src_ne012 = src_ne0.saturating_mul(src_ne1).saturating_mul(src_ne2).max(1);
+        let src_dims = [
+            src_ne0,
+            src_ne1,
+            src_ne2,
+            pacc_div_ceil_u64(ne, src_ne012).max(1),
+        ];
+        let src_strides = [
+            read_param_u64(kernel_params, 6)?,
+            read_param_u64(kernel_params, 7)?,
+            read_param_u64(kernel_params, 8)?,
+            read_param_u64(kernel_params, 9)?,
+        ];
+
+        let dst_ne0 = read_param_u64(kernel_params, 10)?.max(1);
+        let dst_ne1 = read_param_u64(kernel_params, 11)?.max(1);
+        let dst_ne2 = read_param_u64(kernel_params, 12)?.max(1);
+        let dst_ne012 = dst_ne0.saturating_mul(dst_ne1).saturating_mul(dst_ne2).max(1);
+        let dst_dims = [
+            dst_ne0,
+            dst_ne1,
+            dst_ne2,
+            pacc_div_ceil_u64(ne, dst_ne012).max(1),
+        ];
+        let dst_strides = [
+            read_param_u64(kernel_params, 13)?,
+            read_param_u64(kernel_params, 14)?,
+            read_param_u64(kernel_params, 15)?,
+            read_param_u64(kernel_params, 16)?,
+        ];
+
+        (
+            pacc_strided_extent_bytes_from_byte_strides(src_dims, src_strides, src_elem),
+            pacc_strided_extent_bytes_from_byte_strides(dst_dims, dst_strides, dst_elem),
+        )
+    };
+
+    let Some(src_len_usize) = usize::try_from(src_len).ok() else {
+        return Some(Err(CUerror::UNKNOWN));
+    };
+    let Some(dst_len_usize) = usize::try_from(dst_len).ok() else {
+        return Some(Err(CUerror::UNKNOWN));
+    };
+    if !pacc_host_or_cuda_alloc_has_bytes(src, src_len_usize, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(dst, dst_len_usize, true)
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback cpy_scalar '{}' rejected ranges src=0x{:x}/{} dst=0x{:x}/{}",
+            kernel_name, src, src_len, dst, dst_len
+        );
+        return Some(Err(CUerror::UNKNOWN));
+    }
+
+    let src_base = src as *const u8;
+    let dst_base = dst as *mut u8;
+    let dst_is_bf16 = kernel_name.contains("13__nv_bfloat16");
+    if contiguous {
+        if src_elem == dst_elem && !dst_is_bf16 {
+            std::ptr::copy_nonoverlapping(src_base, dst_base, dst_len_usize);
+        } else {
+            for i in 0..ne {
+                let value = pacc_read_elem_as_f32(src_base, i as i64, src_elem);
+                pacc_write_elem_from_f32_typed(dst_base, i as i64, dst_elem, value, dst_is_bf16);
+            }
+        }
+    } else {
+        let src_ne0 = read_param_u64(kernel_params, 3)?.max(1);
+        let src_ne1 = read_param_u64(kernel_params, 4)?.max(1);
+        let src_ne2 = read_param_u64(kernel_params, 5)?.max(1);
+        let src_ne012 = src_ne0.saturating_mul(src_ne1).saturating_mul(src_ne2).max(1);
+        let src_ne03 = pacc_div_ceil_u64(ne, src_ne012).max(1);
+        let src_strides = [
+            read_param_u64(kernel_params, 6)? / src_elem,
+            read_param_u64(kernel_params, 7)? / src_elem,
+            read_param_u64(kernel_params, 8)? / src_elem,
+            read_param_u64(kernel_params, 9)? / src_elem,
+        ];
+
+        let dst_ne0 = read_param_u64(kernel_params, 10)?.max(1);
+        let dst_ne1 = read_param_u64(kernel_params, 11)?.max(1);
+        let dst_ne2 = read_param_u64(kernel_params, 12)?.max(1);
+        let dst_ne012 = dst_ne0.saturating_mul(dst_ne1).saturating_mul(dst_ne2).max(1);
+        let dst_ne03 = pacc_div_ceil_u64(ne, dst_ne012).max(1);
+        let dst_strides = [
+            read_param_u64(kernel_params, 13)? / dst_elem,
+            read_param_u64(kernel_params, 14)? / dst_elem,
+            read_param_u64(kernel_params, 15)? / dst_elem,
+            read_param_u64(kernel_params, 16)? / dst_elem,
+        ];
+
+        for i in 0..ne {
+            let src_i0 = i % src_ne0;
+            let src_i1 = (i / src_ne0) % src_ne1;
+            let src_i2 = (i / src_ne0 / src_ne1) % src_ne2;
+            let src_i3 = (i / src_ne012).min(src_ne03.saturating_sub(1));
+            let dst_i0 = i % dst_ne0;
+            let dst_i1 = (i / dst_ne0) % dst_ne1;
+            let dst_i2 = (i / dst_ne0 / dst_ne1) % dst_ne2;
+            let dst_i3 = (i / dst_ne012).min(dst_ne03.saturating_sub(1));
+            let src_index = src_i0
+                .saturating_mul(src_strides[0])
+                .saturating_add(src_i1.saturating_mul(src_strides[1]))
+                .saturating_add(src_i2.saturating_mul(src_strides[2]))
+                .saturating_add(src_i3.saturating_mul(src_strides[3]));
+            let dst_index = dst_i0
+                .saturating_mul(dst_strides[0])
+                .saturating_add(dst_i1.saturating_mul(dst_strides[1]))
+                .saturating_add(dst_i2.saturating_mul(dst_strides[2]))
+                .saturating_add(dst_i3.saturating_mul(dst_strides[3]));
+            let value = pacc_read_elem_as_f32(src_base, src_index as i64, src_elem);
+            pacc_write_elem_from_f32_typed(dst_base, dst_index as i64, dst_elem, value, dst_is_bf16);
+        }
+    }
+
+    eprintln!(
+        "[PACC Backend] host-fallback cpy_scalar '{}' ne={} src_elem={} dst_elem={} contiguous={}",
+        kernel_name, ne, src_elem, dst_elem, contiguous
+    );
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_convert_unary_host_fallback(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    use cuda_types::cuda::*;
+
+    if !kernel_name.contains("convert_unary") {
+        return None;
+    }
+    let (src_elem, dst_elem) = pacc_parse_convert_unary_element_sizes(kernel_name)?;
+    if !matches!(src_elem, 2 | 4) || !matches!(dst_elem, 2 | 4) {
+        return None;
+    }
+
+    let src = read_param_u64(kernel_params, 0)?;
+    let dst = read_param_u64(kernel_params, 1)?;
+    let ne00 = read_param_i64(kernel_params, 2)?.max(0) as u64;
+    let ne01 = read_param_i64(kernel_params, 3)?.max(0) as u64;
+    let ne0203 = read_param_i64(kernel_params, 4)?.max(0) as u64;
+    if ne00 == 0 || ne01 == 0 || ne0203 == 0 {
+        return Some(Ok(()));
+    }
+    let ne02 = read_param_uint3_z(kernel_params, 5)?.max(1) as u64;
+    let ne03 = pacc_div_ceil_u64(ne0203, ne02).max(1);
+    let s01_i = read_param_i64(kernel_params, 6)?;
+    let s02_i = read_param_i64(kernel_params, 7)?;
+    let s03_i = read_param_i64(kernel_params, 8)?;
+    if s01_i < 0 || s02_i < 0 || s03_i < 0 {
+        eprintln!(
+            "[PACC Backend] host-fallback convert_unary '{}' rejected negative stride s01={} s02={} s03={}",
+            kernel_name, s01_i, s02_i, s03_i
+        );
+        return Some(Err(CUerror::UNKNOWN));
+    }
+    let s01 = s01_i as u64;
+    let s02 = s02_i as u64;
+    let s03 = s03_i as u64;
+
+    let src_bytes =
+        pacc_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], src_elem);
+    let dst_bytes = ne00
+        .saturating_mul(ne01)
+        .saturating_mul(ne0203)
+        .saturating_mul(dst_elem);
+    let Some(src_len) = usize::try_from(src_bytes).ok() else {
+        return Some(Err(CUerror::UNKNOWN));
+    };
+    let Some(dst_len) = usize::try_from(dst_bytes).ok() else {
+        return Some(Err(CUerror::UNKNOWN));
+    };
+    if !pacc_host_or_cuda_alloc_has_bytes(src, src_len, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(dst, dst_len, true)
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback convert_unary '{}' rejected ranges src=0x{:x}/{} dst=0x{:x}/{}",
+            kernel_name, src, src_bytes, dst, dst_bytes
+        );
+        return Some(Err(CUerror::UNKNOWN));
+    }
+
+    let src_base = src as *const u8;
+    let dst_base = dst as *mut u8;
+    let dst_is_bf16 = kernel_name.contains("13__nv_bfloat16");
+    for i0203 in 0..ne0203 {
+        let i02 = i0203 % ne02;
+        let i03 = i0203 / ne02;
+        for i01 in 0..ne01 {
+            for i00 in 0..ne00 {
+                let src_index = i03
+                    .saturating_mul(s03)
+                    .saturating_add(i02.saturating_mul(s02))
+                    .saturating_add(i01.saturating_mul(s01))
+                    .saturating_add(i00);
+                let dst_index = i0203
+                    .saturating_mul(ne01)
+                    .saturating_add(i01)
+                    .saturating_mul(ne00)
+                    .saturating_add(i00);
+                let value = pacc_read_elem_as_f32(src_base, src_index as i64, src_elem);
+                pacc_write_elem_from_f32_typed(
+                    dst_base,
+                    dst_index as i64,
+                    dst_elem,
+                    value,
+                    dst_is_bf16,
+                );
+            }
+        }
+    }
+
+    eprintln!(
+        "[PACC Backend] host-fallback convert_unary '{}' ne00={} ne01={} ne0203={} src_elem={} dst_elem={}",
+        kernel_name, ne00, ne01, ne0203, src_elem, dst_elem
     );
     Some(Ok(()))
 }
@@ -7638,6 +7913,26 @@ unsafe fn read_param_i64(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn read_param_bool(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+) -> Option<bool> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    let param = *kernel_params.add(index);
+    if param.is_null() || (param as usize) < 0x1_0000 {
+        return None;
+    }
+    Some((param as *const u8).read_unaligned() != 0)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn read_param_uint3_z(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
@@ -8378,8 +8673,6 @@ unsafe fn execute_compute_batched_ptrs_fallback(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
 ) -> Option<cuda_types::cuda::CUresult> {
-    use crate::r#impl::memory::pacc_resolve_device_addr;
-
     let src0 = read_param_u64(kernel_params, 0)?;
     let src1 = read_param_u64(kernel_params, 1)?;
     let dst = read_param_u64(kernel_params, 2)?;
@@ -8401,10 +8694,17 @@ unsafe fn execute_compute_batched_ptrs_fallback(
         return Some(Ok(()));
     }
 
-    let ptrs_src_host = pacc_resolve_device_addr(ptrs_src as *const ::core::ffi::c_void)
-        .unwrap_or(ptrs_src) as *mut u64;
-    let ptrs_dst_host = pacc_resolve_device_addr(ptrs_dst as *const ::core::ffi::c_void)
-        .unwrap_or(ptrs_dst) as *mut u64;
+    /*
+     * This fallback runs on the host and populates CUDA pointer tables that are
+     * themselves CUDA allocations.  In PACC shared-DDR mode those allocation
+     * pointers are mmap'ed host addresses backed by the shared window.  Do not
+     * translate the table address to a physical PACC address here: physical
+     * addresses are for jobd/kernel consumption and are not valid AP pointers.
+     * Keep the table entries as CUDA pointers too; cublas_shim resolves each
+     * per-batch A/B/C pointer when it submits the GEMM tile.
+     */
+    let ptrs_src_host = ptrs_src as *mut u64;
+    let ptrs_dst_host = ptrs_dst as *mut u64;
 
     if ptrs_src_host.is_null() || ptrs_dst_host.is_null() {
         eprintln!(
@@ -8522,6 +8822,255 @@ fn pacc_cuda_alloc_has_elems<T>(ptr: *const T, elems: usize) -> bool {
         .checked_mul(std::mem::size_of::<T>())
         .map(|bytes| pacc_cuda_alloc_has_bytes(ptr as u64, bytes))
         .unwrap_or(false)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_vectorized_gather_host_copy(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let out_addr = read_param_u64(kernel_params, 0)?;
+    let inp_addr = read_param_u64(kernel_params, 1)?;
+    let idx_addr = read_param_u64(kernel_params, 2)?;
+    let num_ind = read_param_i32(kernel_params, 3)?.max(0) as usize;
+    let slice_size = read_param_i64(kernel_params, 4)?.max(0) as usize;
+    let ind_dim_size = read_param_i64(kernel_params, 5)?.max(0);
+    let inp_stride = read_param_i64(kernel_params, 6)?;
+    let out_stride = read_param_i64(kernel_params, 7)?;
+    let allow_neg_indices = read_param_bool(kernel_params, 8).unwrap_or(false);
+
+    if num_ind == 0 || slice_size == 0 {
+        return Some(Ok(()));
+    }
+    if inp_stride < 0 || out_stride < 0 || ind_dim_size <= 0 {
+        eprintln!(
+            "[PACC Backend] vectorized_gather '{}' rejected invalid shape num_ind={} slice={} ind_dim={} inp_stride={} out_stride={}",
+            kernel_name, num_ind, slice_size, ind_dim_size, inp_stride, out_stride
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let index_is_i64 = !kernel_name.contains("ILi16EiE");
+    let idx_elem_size = if index_is_i64 {
+        std::mem::size_of::<i64>()
+    } else {
+        std::mem::size_of::<i32>()
+    };
+    let Some(idx_bytes) = num_ind.checked_mul(idx_elem_size) else {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let out_stride = out_stride as usize;
+    let inp_stride = inp_stride as usize;
+    let Some(out_last_off) = num_ind
+        .checked_sub(1)
+        .and_then(|last| last.checked_mul(out_stride))
+    else {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let Some(out_bytes) = out_last_off.checked_add(slice_size) else {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    if !pacc_host_or_cuda_alloc_has_bytes(idx_addr, idx_bytes, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(out_addr, out_bytes, true)
+    {
+        eprintln!(
+            "[PACC Backend] vectorized_gather '{}' rejected out/idx allocation out=0x{:x} out_bytes={} idx=0x{:x} idx_bytes={}",
+            kernel_name, out_addr, out_bytes, idx_addr, idx_bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let mut max_src_end = 0usize;
+    for i in 0..num_ind {
+        let mut ind = if index_is_i64 {
+            (idx_addr as *const i64).add(i).read_unaligned()
+        } else {
+            (idx_addr as *const i32).add(i).read_unaligned() as i64
+        };
+        if allow_neg_indices && ind < 0 {
+            ind += ind_dim_size;
+        }
+        if ind < 0 || ind >= ind_dim_size {
+            eprintln!(
+                "[PACC Backend] vectorized_gather '{}' index {} out of bounds at {} (dim={})",
+                kernel_name, ind, i, ind_dim_size
+            );
+            return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+        }
+        let Some(src_off) = (ind as usize).checked_mul(inp_stride) else {
+            return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+        };
+        let Some(src_end) = src_off.checked_add(slice_size) else {
+            return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+        };
+        max_src_end = max_src_end.max(src_end);
+    }
+
+    if !pacc_host_or_cuda_alloc_has_bytes(inp_addr, max_src_end, false) {
+        eprintln!(
+            "[PACC Backend] vectorized_gather '{}' rejected input allocation inp=0x{:x} bytes={}",
+            kernel_name, inp_addr, max_src_end
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let inp = inp_addr as *const u8;
+    let out = out_addr as *mut u8;
+    for i in 0..num_ind {
+        let mut ind = if index_is_i64 {
+            (idx_addr as *const i64).add(i).read_unaligned()
+        } else {
+            (idx_addr as *const i32).add(i).read_unaligned() as i64
+        };
+        if allow_neg_indices && ind < 0 {
+            ind += ind_dim_size;
+        }
+        let src_off = (ind as usize).saturating_mul(inp_stride);
+        let dst_off = i.saturating_mul(out_stride);
+        std::ptr::copy_nonoverlapping(inp.add(src_off), out.add(dst_off), slice_size);
+    }
+
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled vectorized_gather '{}' on host-copy path num_ind={} slice={} ind_dim={} idx={} ",
+            kernel_name,
+            num_ind,
+            slice_size,
+            ind_dim_size,
+            if index_is_i64 { "i64" } else { "i32" }
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn read_param_data_pair(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+) -> Option<(u64, u64)> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    let param = *kernel_params.add(index);
+    if param.is_null() || (param as usize) < 0x1_0000 {
+        return None;
+    }
+    let data = param as *const u64;
+    let out = data.read_unaligned();
+    let inp = data.add(1).read_unaligned();
+    if out < 0x1_0000 || inp < 0x1_0000 {
+        return None;
+    }
+    Some((out, inp))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_direct_copy_bool_host_cast(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    block_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or_else(|| {
+            (grid_dim_x as usize)
+                .saturating_mul(block_dim_x as usize)
+                .saturating_mul(4)
+        });
+    if n == 0 {
+        return Some(Ok(()));
+    }
+
+    let mut pair = None;
+    for index in 1..6 {
+        if let Some((out_addr, inp_addr)) = read_param_data_pair(kernel_params, index) {
+            if pacc_host_or_cuda_alloc_has_bytes(out_addr, n, true)
+                && pacc_host_or_cuda_alloc_has_bytes(inp_addr, n, false)
+            {
+                pair = Some((index, out_addr, inp_addr));
+                break;
+            }
+        }
+    }
+    let Some((pair_index, out_addr, inp_addr)) = pair else {
+        eprintln!(
+            "[PACC Backend] direct_copy '{}' could not locate TensorIterator data pair for n={}",
+            kernel_name, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    let inp_remaining = super::memory::pacc_allocation_remaining_addr(inp_addr as usize)
+        .or_else(|| {
+            if pacc_host_range_has_perms(inp_addr as usize, n.saturating_mul(8), false) {
+                Some(n.saturating_mul(8))
+            } else if pacc_host_range_has_perms(inp_addr as usize, n.saturating_mul(4), false) {
+                Some(n.saturating_mul(4))
+            } else if pacc_host_range_has_perms(inp_addr as usize, n.saturating_mul(2), false) {
+                Some(n.saturating_mul(2))
+            } else if pacc_host_range_has_perms(inp_addr as usize, n, false) {
+                Some(n)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(n);
+    let src_elem = if inp_remaining >= n.saturating_mul(8) {
+        8
+    } else if inp_remaining >= n.saturating_mul(4) {
+        4
+    } else if inp_remaining >= n.saturating_mul(2) {
+        2
+    } else {
+        1
+    };
+
+    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, n, true)
+        || !pacc_host_or_cuda_alloc_has_bytes(inp_addr, n.saturating_mul(src_elem), false)
+    {
+        eprintln!(
+            "[PACC Backend] direct_copy '{}' rejected allocation range out=0x{:x} inp=0x{:x} n={} src_elem={}",
+            kernel_name, out_addr, inp_addr, n, src_elem
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let out = out_addr as *mut u8;
+    let inp = inp_addr as *const u8;
+    for i in 0..n {
+        let nonzero = match src_elem {
+            8 => (inp.add(i * 8) as *const u64).read_unaligned() != 0,
+            4 => (inp.add(i * 4) as *const u32).read_unaligned() != 0,
+            2 => (inp.add(i * 2) as *const u16).read_unaligned() != 0,
+            _ => inp.add(i).read_unaligned() != 0,
+        };
+        out.add(i).write(if nonzero { 1 } else { 0 });
+    }
+
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled direct_copy '{}' on host bool-cast path n={} src_elem={} pair_param={}",
+            kernel_name, n, src_elem, pair_index
+        );
+    }
+    Some(Ok(()))
 }
 
 #[cfg(all(
@@ -8749,22 +9298,20 @@ unsafe fn execute_get_rows_float_fallback(
     not(feature = "tenstorrent")
 ))]
 fn current_pacc_device_id_or_zero() -> i32 {
-    let device_count = super::driver::global_state()
-        .map(|state| state.devices.len() as i32)
-        .unwrap_or(1);
+    let _ = super::driver::global_state();
     if let Some(forced) = std::env::var("HETGPU_PACC_FORCE_DEVICE")
         .ok()
         .or_else(|| std::env::var("HETGPU_PACC_DEVICE").ok())
         .and_then(|v| v.parse::<i32>().ok())
     {
-        if forced >= 0 && forced < device_count {
+        if (0..4).contains(&forced) {
             return forced;
         }
     }
     let device_id = super::context::get_current_pacc()
         .map(|ctx| ctx.device_id)
-        .unwrap_or(0);
-    if device_id >= 0 && device_id < device_count {
+        .unwrap_or_else(|_| super::driver::pacc_physical_device_for_logical(0));
+    if (0..4).contains(&device_id) {
         device_id
     } else {
         0
@@ -9178,6 +9725,33 @@ unsafe fn try_offload_named_pacc_kernel(
             );
             return pacc_named_assume_success("RMSNorm allocation range check failed", kernel_name);
         }
+        let rmsnorm_min_hidden =
+            pacc_parse_env_u64_default("HETGPU_PACC_RMSNORM_OFFLOAD_MIN_HIDDEN", 1024);
+        if hidden < rmsnorm_min_hidden
+            || !pacc_env_enabled_default("HETGPU_PACC_RMSNORM_OFFLOAD", true)
+        {
+            pacc_log_limited(
+                &PACC_NAMED_ERROR_LOG_COUNT,
+                "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+                64,
+                || {
+                    eprintln!(
+                        "[PACC Backend] RMSNorm '{}' hidden={} uses host path before PACC submit (min_hidden={})",
+                        kernel_name, hidden, rmsnorm_min_hidden
+                    );
+                },
+            );
+            if let Some(result) =
+                execute_rmsnorm_f32_host_fallback(kernel_name, x, weight, y, rows, hidden, eps)
+            {
+                return Some(result);
+            }
+            return if allow_normal_fallback {
+                None
+            } else {
+                Some(Err(CUerror::UNKNOWN))
+            };
+        }
         let dev_id = current_pacc_device_id_or_zero();
         let rc = pacc_runtime_sys::hetgpu_pacc_submit_rmsnorm_on(
             dev_id, x, weight, y, rows, hidden, eps, dtype,
@@ -9243,6 +9817,14 @@ unsafe fn try_offload_named_pacc_kernel(
         return execute_compute_batched_ptrs_fallback(kernel_name, kernel_params);
     }
 
+    if name_lower.contains("cpy_scalar") && allow_named_host_fallback {
+        return execute_cpy_scalar_host_fallback(kernel_name, kernel_params);
+    }
+
+    if name_lower.contains("convert_unary") && allow_named_host_fallback {
+        return execute_convert_unary_host_fallback(kernel_name, kernel_params);
+    }
+
     if name_lower.contains("k_bin_bcast")
         && (allow_named_host_fallback
             || std::env::var("HETGPU_PACC_BIN_BCAST_HOST_FALLBACK")
@@ -9277,6 +9859,23 @@ unsafe fn try_offload_named_pacc_kernel(
             grid_dim_x,
             grid_dim_y,
             grid_dim_z,
+        );
+    }
+
+    if name_lower.contains("vectorized_gather_kernel") {
+        return execute_vectorized_gather_host_copy(kernel_name, kernel_params);
+    }
+
+    if name_lower.contains("direct_copy_kernel_cuda")
+        || (name_lower.contains("unrolled_elementwise_kernel")
+            && name_lower.contains("loadwithcast")
+            && name_lower.contains("storewithcast"))
+    {
+        return execute_direct_copy_bool_host_cast(
+            kernel_name,
+            grid_dim_x,
+            1,
+            kernel_params,
         );
     }
 

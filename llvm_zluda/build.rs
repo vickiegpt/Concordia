@@ -249,6 +249,7 @@ fn compile_cxx_lib(cxxflags: String) {
 }
 
 fn compile_cxx_lib_with_include(cxxflags: String, include_path: String) {
+    let cxxflags = force_old_glibcxx_abi(cxxflags);
     println!(
         "cargo:warning=Compiling C++ library with CXXFLAGS: {}",
         cxxflags
@@ -311,6 +312,23 @@ fn compile_cxx_lib_with_include(cxxflags: String, include_path: String) {
 
     println!("cargo:rerun-if-changed=src/lib.cpp");
     println!("cargo:rerun-if-changed=src/lib.rs");
+}
+
+fn force_old_glibcxx_abi(cxxflags: String) -> String {
+    let mut saw_abi_flag = false;
+    let mut flags = Vec::new();
+    for flag in cxxflags.split_whitespace() {
+        if flag.starts_with("-D_GLIBCXX_USE_CXX11_ABI=") {
+            flags.push("-D_GLIBCXX_USE_CXX11_ABI=0".to_string());
+            saw_abi_flag = true;
+        } else {
+            flags.push(flag.to_string());
+        }
+    }
+    if !saw_abi_flag {
+        flags.push("-D_GLIBCXX_USE_CXX11_ABI=0".to_string());
+    }
+    flags.join(" ")
 }
 
 fn link_llvm_components(components: String) {
