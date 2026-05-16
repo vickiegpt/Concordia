@@ -177,7 +177,7 @@ extern int hetgpu_pacc_submit_gemm(
     const void *B, int Btype, int ldb, long long strideB,
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
-    int batchCount, int computeType);
+    int batchCount, int computeType) __attribute__((weak));
 extern int hetgpu_pacc_submit_gemm_staged(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
@@ -185,7 +185,7 @@ extern int hetgpu_pacc_submit_gemm_staged(
     const void *B, int Btype, int ldb, long long strideB,
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
-    int batchCount, int computeType);
+    int batchCount, int computeType) __attribute__((weak));
 extern int hetgpu_pacc_submit_gemm_staged_on(
     int dev_id, int slot_id,
     int transa, int transb, int m, int n, int k,
@@ -194,7 +194,7 @@ extern int hetgpu_pacc_submit_gemm_staged_on(
     const void *B, int Btype, int ldb, long long strideB,
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
-    int batchCount, int computeType);
+    int batchCount, int computeType) __attribute__((weak));
 extern int hetgpu_pacc_submit_gemm_staged_tiled(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
@@ -203,11 +203,27 @@ extern int hetgpu_pacc_submit_gemm_staged_tiled(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType,
-    int max_m, int max_n, int max_k);
-extern unsigned long long hetgpu_pacc_resolve_device_addr(const void *ptr);
-extern int hetgpu_pacc_is_device_ptr(const void *ptr);
-extern size_t hetgpu_pacc_allocation_remaining(const void *ptr);
+    int max_m, int max_n, int max_k) __attribute__((weak));
+extern unsigned long long hetgpu_pacc_resolve_device_addr(const void *ptr) __attribute__((weak));
+extern int hetgpu_pacc_is_device_ptr(const void *ptr) __attribute__((weak));
+extern size_t hetgpu_pacc_allocation_remaining(const void *ptr) __attribute__((weak));
 extern cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind kind);
+
+static int hetgpu_pacc_is_device_ptr_safe(const void *ptr) {
+    return hetgpu_pacc_is_device_ptr ? hetgpu_pacc_is_device_ptr(ptr) : 0;
+}
+
+static unsigned long long hetgpu_pacc_resolve_device_addr_safe(const void *ptr) {
+    return hetgpu_pacc_resolve_device_addr ? hetgpu_pacc_resolve_device_addr(ptr) : 0;
+}
+
+static size_t hetgpu_pacc_allocation_remaining_safe(const void *ptr) {
+    return hetgpu_pacc_allocation_remaining ? hetgpu_pacc_allocation_remaining(ptr) : SIZE_MAX;
+}
+
+#define hetgpu_pacc_is_device_ptr(ptr) hetgpu_pacc_is_device_ptr_safe(ptr)
+#define hetgpu_pacc_resolve_device_addr(ptr) hetgpu_pacc_resolve_device_addr_safe(ptr)
+#define hetgpu_pacc_allocation_remaining(ptr) hetgpu_pacc_allocation_remaining_safe(ptr)
 
 static int hetgpu_env_is_one(const char *name) {
     const char *value = getenv(name);
@@ -1033,6 +1049,32 @@ static cublasStatus_t submit_pacc_gemm(
         return CUBLAS_STATUS_NOT_SUPPORTED;
     }
 
+    int use_staged_submit = prefer_pacc_gemm_stage_shared_ddr();
+    if ((use_staged_submit && !hetgpu_pacc_submit_gemm_staged) ||
+        (!use_staged_submit && !hetgpu_pacc_submit_gemm)) {
+        if (hetgpu_allow_host_gemm_fallback()) {
+            DEBUG_LOG("%s PACC GEMM submit symbol unavailable; using host fallback", name);
+            cublasStatus_t fallback = host_gemm_fallback(
+                name, transa, transb, m, n, k,
+                alpha_arg, A, Atype, lda, strideA,
+                B, Btype, ldb, strideB,
+                beta_arg, C, Ctype, ldc, strideC,
+                batchCount, computeType);
+            if (fallback == CUBLAS_STATUS_SUCCESS || !hetgpu_cublas_fail_open_enabled()) {
+                return fallback;
+            }
+            DEBUG_LOG("%s missing PACC GEMM submit symbol and host fallback returned %d; CUBLAS_FAIL_OPEN treating GEMM as successful",
+                      name, (int)fallback);
+            return CUBLAS_STATUS_SUCCESS;
+        }
+        if (hetgpu_cublas_fail_open_enabled()) {
+            DEBUG_LOG("%s PACC GEMM submit symbol unavailable; CUBLAS_FAIL_OPEN treating GEMM as successful", name);
+            return CUBLAS_STATUS_SUCCESS;
+        }
+        DEBUG_LOG("%s requires PACC GEMM submit symbol; host GEMM fallback is not enabled", name);
+        return CUBLAS_STATUS_NOT_SUPPORTED;
+    }
+
     const void *pacc_A = (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(A);
     const void *pacc_B = (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(B);
     void *pacc_C = (void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(C);
@@ -1044,7 +1086,7 @@ static cublasStatus_t submit_pacc_gemm(
         : NULL;
 
     int rc = -1;
-    if (prefer_pacc_gemm_stage_shared_ddr()) {
+    if (use_staged_submit) {
         const char *max_m_env = getenv("HETGPU_PACC_GEMM_MAX_M");
         const char *max_n_env = getenv("HETGPU_PACC_GEMM_MAX_N");
         const char *max_k_env = getenv("HETGPU_PACC_GEMM_MAX_K");
@@ -1100,7 +1142,8 @@ static cublasStatus_t submit_pacc_gemm(
         if (parallel_workers > pacc_device_count) {
             parallel_workers = pacc_device_count;
         }
-        if (!g_pacc_gemm_coarse_stage_disabled_after_failure &&
+        if (hetgpu_pacc_submit_gemm_staged_tiled &&
+            !g_pacc_gemm_coarse_stage_disabled_after_failure &&
             prefer_pacc_gemm_coarse_stage()) {
             rc = hetgpu_pacc_submit_gemm_staged_tiled(
                 (int)transa, (int)transb, m, n, k,
@@ -1119,6 +1162,9 @@ static cublasStatus_t submit_pacc_gemm(
         }
         int row_tiles = (m + max_m - 1) / max_m;
         int col_tiles = (n + max_n - 1) / max_n;
+        if (!hetgpu_pacc_submit_gemm_staged_on && parallel_workers > 1) {
+            parallel_workers = 1;
+        }
         if (parallel_workers > 1 && row_tiles * col_tiles * batchCount > 1) {
             hetgpu_parallel_gemm_ctx_t ctx = {
                 name, transa, transb, m, n, k,

@@ -83,6 +83,98 @@ static PACC_GENERIC_FAST_SUCCESS_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
 ))]
 static PACC_NAMED_ERROR_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "intel")]
+fn tmatmul_default_cocotb_dir() -> String {
+    "/root/matmulfreellm/hardware/ternary_matmul/cocotb".to_string()
+}
+
+#[cfg(feature = "intel")]
+fn tmatmul_ptx_looks_valid(ptx: &str) -> bool {
+    let trimmed = ptx.trim_start();
+    if trimmed.len() < 50 {
+        return false;
+    }
+    if !(trimmed.starts_with(".version") || trimmed.starts_with("//")) {
+        return false;
+    }
+    if !(trimmed.contains(".target ") && trimmed.contains(".address_size")) {
+        return false;
+    }
+    if !trimmed.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with(".visible .entry ") || line.starts_with(".entry ")
+    }) {
+        return false;
+    }
+    !trimmed.bytes().any(|b| {
+        b == 0 || b == 0x7f || (b < 0x20 && !matches!(b, b'\n' | b'\r' | b'\t'))
+    })
+}
+
+#[cfg(feature = "intel")]
+fn load_tmatmul_reference_ptx(cocotb_dir: &str) -> Option<(String, String)> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("HETGPU_TMATMUL_REFERENCE_PTX") {
+        if !path.trim().is_empty() {
+            candidates.push(std::path::PathBuf::from(path));
+        }
+    }
+    if let Ok(dir) = std::env::var("HETGPU_TMATMUL_REFERENCE_COCOTB_DIR") {
+        if !dir.trim().is_empty() {
+            candidates.push(std::path::Path::new(&dir).join("run/kernel.ptx"));
+        }
+    }
+    candidates.push(std::path::Path::new(cocotb_dir).join("reference/kernel.ptx"));
+    candidates.push(std::path::PathBuf::from(
+        "/root/ternary_matmul/cocotb/run/kernel.ptx",
+    ));
+    candidates.push(std::path::PathBuf::from(
+        "/home/victoryang00/ternary_matmul/cocotb/run/kernel.ptx",
+    ));
+
+    for path in candidates {
+        if !path.is_file() {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(ptx) if tmatmul_ptx_looks_valid(&ptx) => {
+                return Some((ptx, path.display().to_string()));
+            }
+            Ok(ptx) => {
+                eprintln!(
+                    "[TMatmul Backend] Ignoring invalid reference PTX {} ({} bytes)",
+                    path.display(),
+                    ptx.len()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[TMatmul Backend] Failed to read reference PTX {}: {}",
+                    path.display(),
+                    e
+                );
+            }
+        }
+    }
+    None
+}
+
+#[cfg(feature = "intel")]
+fn select_tmatmul_ptx(runtime_ptx: Option<&str>, cocotb_dir: &str) -> Option<(String, String)> {
+    if let Some(ptx) = runtime_ptx {
+        if tmatmul_ptx_looks_valid(ptx) {
+            return Some((ptx.to_string(), "runtime module".to_string()));
+        }
+        eprintln!(
+            "[TMatmul Backend] Runtime PTX failed validation ({} bytes, starts with {:?})",
+            ptx.len(),
+            ptx.chars().take(40).collect::<String>()
+        );
+    }
+
+    load_tmatmul_reference_ptx(cocotb_dir)
+}
+
 #[cfg(all(
     feature = "tmatmul",
     not(feature = "amd"),
@@ -356,21 +448,22 @@ pub(crate) unsafe fn launch_kernel(
             eprintln!("[TMatmul Backend] WARNING: Zero grid dimension detected!");
         }
 
-        // NEW: Check if we have valid PTX source available for compilation
-        // Valid PTX should start with ".version" or "//" and be at least 50 bytes
-        let valid_ptx = f.ptx_source.as_ref().filter(|ptx| {
-            ptx.len() >= 50 && (ptx.starts_with(".version") || ptx.starts_with("//"))
-        });
+        let cocotb_dir = std::env::var("HETGPU_TMATMUL_COCOTB_DIR")
+            .unwrap_or_else(|_| tmatmul_default_cocotb_dir());
+        let selected_ptx = select_tmatmul_ptx(
+            f.ptx_source.as_deref().map(String::as_str),
+            &cocotb_dir,
+        );
+        let selected_ptx_ref = selected_ptx
+            .as_ref()
+            .map(|(ptx_source, _origin)| ptx_source.as_str());
 
-        if let Some(ref ptx_source) = valid_ptx {
+        if let Some((ref ptx_source, ref ptx_origin)) = selected_ptx {
             eprintln!(
-                "[TMatmul Backend] Valid PTX source available ({} bytes)",
+                "[TMatmul Backend] Using PTX from {} ({} bytes)",
+                ptx_origin,
                 ptx_source.len()
             );
-
-            // Get cocotb directory
-            let cocotb_dir = std::env::var("HETGPU_TMATMUL_COCOTB_DIR")
-                .unwrap_or_else(|_| "/mnt/ubuntu/ternary_matmul/cocotb".to_string());
 
             // Create run directory
             let _ = std::fs::create_dir_all(format!("{}/run", cocotb_dir));
@@ -415,14 +508,10 @@ pub(crate) unsafe fn launch_kernel(
                     }
                 }
             }
-        } else if let Some(ref ptx_source) = f.ptx_source {
-            eprintln!(
-                "[TMatmul Backend] Invalid PTX source ({} bytes, starts with {:?}) - kernel will be no-op",
-                ptx_source.len(),
-                ptx_source.chars().take(20).collect::<String>()
-            );
         } else {
-            eprintln!("[TMatmul Backend] No PTX source available - kernel will be no-op");
+            eprintln!(
+                "[TMatmul Backend] No valid PTX source or reference PTX available - kernel will be no-op"
+            );
         }
 
         // Minimal Phase 1–3: detect matmul, decode args heuristically, and either run cocotb or CPU fallback
@@ -551,10 +640,8 @@ pub(crate) unsafe fn launch_kernel(
             );
 
             // Compile PTX to TMatmul assembly if PTX source is available
-            if let Some(ref ptx_source) = f.ptx_source {
-                if ptx_source.len() >= 50
-                    && (ptx_source.starts_with(".version") || ptx_source.starts_with("//"))
-                {
+            if let Some(ptx_source) = selected_ptx_ref {
+                if tmatmul_ptx_looks_valid(ptx_source) {
                     // Dump PTX source for debugging
                     let ptx_dump_path = format!(
                         "/tmp/hetgpu_ptx_{}.ptx",
@@ -569,7 +656,7 @@ pub(crate) unsafe fn launch_kernel(
                     );
 
                     // Wrap PTX compilation in catch_unwind to prevent panics from crashing
-                    let ptx_str = ptx_source.clone();
+                    let ptx_str = ptx_source.to_string();
                     let compile_result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             ptx::pass::ptx_to_tmatmul_assembly(ptx_str.as_str())
@@ -735,9 +822,9 @@ pub(crate) unsafe fn launch_kernel(
             }
 
             // If dims not provided, compile PTX to tmatmul assembly for emulator
-            if let Some(ref ptx_source) = f.ptx_source {
+            if let Some(ptx_source) = selected_ptx_ref {
                 if ptx_source.len() >= 50 {
-                    match ptx::pass::ptx_to_tmatmul_assembly(ptx_source.as_str()) {
+                    match ptx::pass::ptx_to_tmatmul_assembly(ptx_source) {
                         Ok(asm) => {
                             let _ = std::fs::write("/tmp/tmatmul_kernel.S", &asm);
                             crate::r#impl::hetgpu_debug!(
@@ -763,10 +850,8 @@ pub(crate) unsafe fn launch_kernel(
 
         // Compile PTX to TMatmul assembly and run via emulator
         let mut ptx_compiled = false;
-        if let Some(ref ptx_source) = f.ptx_source {
-            if ptx_source.len() >= 50
-                && (ptx_source.starts_with(".version") || ptx_source.starts_with("//"))
-            {
+        if let Some(ptx_source) = selected_ptx_ref {
+            if tmatmul_ptx_looks_valid(ptx_source) {
                 // Dump PTX for debugging
                 let ptx_dump_path = format!(
                     "/tmp/hetgpu_ptx_{}.ptx",
@@ -780,7 +865,7 @@ pub(crate) unsafe fn launch_kernel(
                     ptx_source.len()
                 );
 
-                match ptx::pass::ptx_to_tmatmul_assembly(ptx_source.as_str()) {
+                match ptx::pass::ptx_to_tmatmul_assembly(ptx_source) {
                     Ok(asm) => {
                         let asm_path = format!(
                             "/tmp/hetgpu_asm_{}.S",
@@ -1339,6 +1424,10 @@ unsafe fn execute_kernel_name_fallback(
         execute_indexselect_kernel_fallback(kernel_name, kernel_params);
         return;
     }
+    if name_lower.contains("arange_cuda_out") || name_lower.contains("rangefactories") {
+        execute_arange_kernel_fallback(kernel_name, &name_lower, kernel_params);
+        return;
+    }
     if name_lower.contains("gemm") || name_lower.contains("matmul") || name_lower.contains("cublas")
     {
         execute_matmul_kernel_fallback(kernel_name, kernel_params);
@@ -1359,10 +1448,11 @@ unsafe fn execute_kernel_name_fallback(
     // kernel_params[0] = &N (int32)
     // kernel_params[1] = &functor
     // kernel_params[2] = &data_array (K sequential char* pointers)
-    if !name_lower.contains("vectorized_elementwise_kernel")
-        && !name_lower.contains("unrolled_elementwise_kernel")
-        && !name_lower.contains("elementwise_kernel")
-    {
+    let has_array_data_param = name_lower.contains("st5arrayipc");
+    let uses_array_elementwise_layout = name_lower.contains("vectorized_elementwise_kernel")
+        || name_lower.contains("unrolled_elementwise_kernel")
+        || (name_lower.contains("elementwise_kernel") && has_array_data_param);
+    if !uses_array_elementwise_layout {
         eprintln!(
             "[TMatmul Fallback] Unhandled kernel '{}' - no-op",
             kernel_name
@@ -1408,9 +1498,8 @@ unsafe fn execute_kernel_name_fallback(
     let mut data_ptrs: Vec<*mut u8> = Vec::new();
     for i in 0..num_ptrs {
         let ptr_val = (data_param as *const u64).add(i).read_unaligned();
-        // Verify this pointer is in our allocation map
-        if let Some(_size) = super::memory::get_alloc_size(ptr_val as usize) {
-            data_ptrs.push(ptr_val as *mut u8);
+        if let Some((resolved_ptr, _size)) = resolve_alloc_pointer_value(ptr_val) {
+            data_ptrs.push(resolved_ptr as *mut u8);
         } else {
             eprintln!(
                 "[TMatmul Fallback] data_ptrs[{}] = {:#x} not in alloc map",
@@ -1429,8 +1518,15 @@ unsafe fn execute_kernel_name_fallback(
         return;
     }
 
-    // Detect element size from kernel name (float16=2, float32/float=4, double=8)
-    let elem_size: usize = if name_lower.contains("float16")
+    let is_i64_kernel = name_lower.contains("addil")
+        || name_lower.contains("subil")
+        || name_lower.contains("mulil")
+        || name_lower.contains("divil");
+
+    // Detect element size from kernel name (float16=2, float32/float=4, double/int64=8)
+    let elem_size: usize = if is_i64_kernel {
+        8
+    } else if name_lower.contains("float16")
         || name_lower.contains("half")
         || name_lower.contains("f16")
         || name_lower.contains("bf16")
@@ -1454,6 +1550,16 @@ unsafe fn execute_kernel_name_fallback(
         (functor_param as *const f32).read_unaligned()
     } else {
         1.0f32
+    };
+    let functor_i64 = if !functor_param.is_null() {
+        let raw = (functor_param as *const i64).read_unaligned();
+        if (-1_000_000_000..=1_000_000_000).contains(&raw) {
+            raw
+        } else {
+            1
+        }
+    } else {
+        1
     };
 
     // Helper closures for reading/writing elements with dtype conversion
@@ -1491,14 +1597,22 @@ unsafe fn execute_kernel_name_fallback(
                 eprintln!("[TMatmul Fallback] add needs 3 valid pointers");
                 return;
             }
-            let alpha = functor_f32;
             let out = data_ptrs[0];
             let in1 = data_ptrs[1];
             let in2 = data_ptrs[2];
-            for i in 0..numel {
-                let a = read_elem(in1, i, elem_size);
-                let b = read_elem(in2, i, elem_size);
-                write_elem(out, i, elem_size, a + alpha * b);
+            if is_i64_kernel {
+                for i in 0..numel {
+                    let a = (in1.add(i * 8) as *const i64).read_unaligned();
+                    let b = (in2.add(i * 8) as *const i64).read_unaligned();
+                    (out.add(i * 8) as *mut i64).write_unaligned(a + b);
+                }
+            } else {
+                let alpha = functor_f32;
+                for i in 0..numel {
+                    let a = read_elem(in1, i, elem_size);
+                    let b = read_elem(in2, i, elem_size);
+                    write_elem(out, i, elem_size, a + alpha * b);
+                }
             }
         }
         "mul" | "div" => {
@@ -1535,12 +1649,19 @@ unsafe fn execute_kernel_name_fallback(
             }
         }
         "add_scalar" => {
-            let scalar = functor_f32;
             let out = data_ptrs[0];
             let inp = data_ptrs[1];
-            for i in 0..numel {
-                let x = read_elem(inp, i, elem_size);
-                write_elem(out, i, elem_size, x + scalar);
+            if is_i64_kernel {
+                for i in 0..numel {
+                    let x = (inp.add(i * 8) as *const i64).read_unaligned();
+                    (out.add(i * 8) as *mut i64).write_unaligned(x + functor_i64);
+                }
+            } else {
+                let scalar = functor_f32;
+                for i in 0..numel {
+                    let x = read_elem(inp, i, elem_size);
+                    write_elem(out, i, elem_size, x + scalar);
+                }
             }
         }
         "clamp" => {
@@ -1649,6 +1770,134 @@ unsafe fn execute_kernel_name_fallback(
     eprintln!(
         "[TMatmul Fallback] Kernel '{}' executed successfully ({} elements, {}B)",
         kernel_name, numel, elem_size
+    );
+}
+
+/// Execute PyTorch arange_cuda_out fallback.
+#[cfg(feature = "intel")]
+unsafe fn execute_arange_kernel_fallback(
+    kernel_name: &str,
+    name_lower: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) {
+    let numel_param = *kernel_params.add(0);
+    let mut numel = 0usize;
+    if !numel_param.is_null() {
+        let n_i32 = (numel_param as *const i32).read_unaligned();
+        if n_i32 > 0 {
+            numel = n_i32 as usize;
+        } else {
+            let n_u64 = (numel_param as *const u64).read_unaligned();
+            if n_u64 > 0 && n_u64 <= 64 * 1024 * 1024 {
+                numel = n_u64 as usize;
+            }
+        }
+    }
+
+    let mut all_ptrs: Vec<(usize, u64, usize)> = Vec::new();
+    let functor_param = *kernel_params.add(1);
+    if !functor_param.is_null() {
+        if let Some((ptr, size)) = read_alloc_pointer_from_param(functor_param) {
+            all_ptrs.push((1, ptr, size));
+        }
+        let inner = scan_for_alloc_pointers(functor_param as *const u8, 128);
+        all_ptrs.extend(
+            inner
+                .into_iter()
+                .map(|(off, ptr, sz)| (1000 + off, ptr, sz)),
+        );
+    }
+    let out_param = *kernel_params.add(2);
+    if !out_param.is_null() {
+        if let Some((ptr, size)) = read_alloc_pointer_from_param(out_param) {
+            all_ptrs.push((2, ptr, size));
+        }
+    }
+
+    all_ptrs.sort_by_key(|&(_, ptr, _)| ptr);
+    all_ptrs.dedup_by_key(|a| a.1);
+
+    if all_ptrs.is_empty() {
+        eprintln!(
+            "[TMatmul Fallback] arange: found no output pointer for '{}'",
+            kernel_name
+        );
+        return;
+    }
+
+    let selected = all_ptrs
+        .iter()
+        .copied()
+        .filter(|&(_, _, size)| {
+            numel == 0 || (size >= numel && size % numel == 0 && size / numel <= 8)
+        })
+        .max_by_key(|&(_, _, size)| size)
+        .unwrap_or_else(|| {
+            all_ptrs
+                .iter()
+                .copied()
+                .max_by_key(|&(_, _, size)| size)
+                .unwrap()
+        });
+
+    let (_, out_ptr, out_size) = selected;
+    if numel == 0 {
+        numel = if out_size % 8 == 0 {
+            out_size / 8
+        } else {
+            out_size / 4
+        };
+    }
+    if numel == 0 || numel > 64 * 1024 * 1024 {
+        eprintln!(
+            "[TMatmul Fallback] arange: invalid numel={} for '{}'",
+            numel, kernel_name
+        );
+        return;
+    }
+
+    let force_f32_arange = name_lower.contains("e5_clev")
+        || name_lower.contains("float32")
+        || name_lower.contains("float");
+    let elem_size = if force_f32_arange {
+        4
+    } else if out_size >= numel && out_size % numel == 0 {
+        match out_size / numel {
+            1 | 2 | 4 | 8 => out_size / numel,
+            n if n > 8 => 8,
+            _ => 4,
+        }
+    } else if out_size >= numel * 8 {
+        8
+    } else if out_size >= numel * 4 {
+        4
+    } else if out_size >= numel * 2 {
+        2
+    } else {
+        1
+    };
+
+    let out = out_ptr as *mut u8;
+    let is_float64 = name_lower.contains("double") || name_lower.contains("float64");
+    let is_float32 = elem_size == 4
+        && !name_lower.contains("int32")
+        && !name_lower.contains("uint32")
+        && !name_lower.contains("long");
+
+    for i in 0..numel {
+        match elem_size {
+            8 if is_float64 => (out.add(i * 8) as *mut f64).write_unaligned(i as f64),
+            8 => (out.add(i * 8) as *mut i64).write_unaligned(i as i64),
+            4 if is_float32 => (out.add(i * 4) as *mut f32).write_unaligned(i as f32),
+            4 => (out.add(i * 4) as *mut i32).write_unaligned(i as i32),
+            2 => (out.add(i * 2) as *mut u16).write_unaligned(f32_to_f16(i as f32)),
+            _ => out.add(i).write_unaligned(i as u8),
+        }
+    }
+
+    eprintln!(
+        "[TMatmul Fallback] arange executed ({} elements, {}B each) for '{}'",
+        numel, elem_size, kernel_name
     );
 }
 
@@ -1829,6 +2078,34 @@ unsafe fn scan_for_alloc_pointers(base: *const u8, scan_bytes: usize) -> Vec<(us
         }
     }
     found
+}
+
+#[cfg(feature = "intel")]
+unsafe fn resolve_alloc_pointer_value(ptr_val: u64) -> Option<(u64, usize)> {
+    if let Some(size) = super::memory::get_alloc_size(ptr_val as usize) {
+        return Some((ptr_val, size));
+    }
+
+    if ptr_val < 0x10000 || ptr_val > 0x7fff_ffff_ffff {
+        return None;
+    }
+    let ptr = ptr_val as *const u8;
+    if !is_memory_readable(ptr, 8) {
+        return None;
+    }
+    let nested = (ptr as *const u64).read_unaligned();
+    super::memory::get_alloc_size(nested as usize).map(|size| (nested, size))
+}
+
+#[cfg(feature = "intel")]
+unsafe fn read_alloc_pointer_from_param(
+    param: *mut ::core::ffi::c_void,
+) -> Option<(u64, usize)> {
+    if param.is_null() {
+        return None;
+    }
+    let ptr_val = (param as *const u64).read_unaligned();
+    resolve_alloc_pointer_value(ptr_val)
 }
 
 /// Execute a reduce_kernel fallback (sum, mean, max, var).

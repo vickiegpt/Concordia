@@ -189,7 +189,7 @@ pub(crate) fn get_export_table(
             *pp_export_table = std::ptr::null();
         }
     }
-    Ok(())
+    Err(CUerror::NOT_FOUND)
 }
 
 // Provide safe implementations for cuGetErrorString/cuGetErrorName to avoid NULL deref in callers
