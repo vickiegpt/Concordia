@@ -120,7 +120,6 @@ jobd_status_control_window = os.environ.get("PACC_JOBD_STATUS_CONTROL_WINDOW", "
 jobd_status_mmap_fallback = os.environ.get("PACC_JOBD_STATUS_MMAP_FALLBACK", "").strip()
 jobd_status_pwrite_present = "PACC_JOBD_STATUS_PWRITE" in os.environ
 jobd_status_pwrite = os.environ.get("PACC_JOBD_STATUS_PWRITE", "0").strip()
-jobd_completion_mirror_off = os.environ.get("PACC_JOBD_COMPLETION_MIRROR_OFF", "").strip()
 jobd_msync_present = "PACC_JOBD_MSYNC" in os.environ
 jobd_msync = os.environ.get("PACC_JOBD_MSYNC", "1").strip()
 jobd_status_msync = os.environ.get("PACC_JOBD_STATUS_MSYNC", "").strip()
@@ -128,27 +127,17 @@ jobd_rms_debug = os.environ.get("PACC_JOBD_RMS_DEBUG", "").strip()
 jobd_rms_local_copy = os.environ.get("PACC_JOBD_RMS_LOCAL_COPY", "").strip()
 jobd_rms_rvv = os.environ.get("PACC_JOBD_RMS_RVV", "").strip()
 jobd_rms_output_pwrite = os.environ.get("PACC_JOBD_RMS_OUTPUT_PWRITE", "").strip()
-jobd_rms_write_attempts = os.environ.get("PACC_JOBD_RMS_WRITE_ATTEMPTS", "").strip()
 jobd_rms_write_chunk_bytes = os.environ.get("PACC_JOBD_RMS_WRITE_CHUNK_BYTES", "").strip()
-jobd_repair_writeback = os.environ.get("PACC_JOBD_REPAIR_WRITEBACK", "").strip()
-jobd_repair_writeback_attempts = os.environ.get("PACC_JOBD_REPAIR_WRITEBACK_ATTEMPTS", "").strip()
-jobd_repair_writeback_chunk_bytes = os.environ.get("PACC_JOBD_REPAIR_WRITEBACK_CHUNK_BYTES", "").strip()
-jobd_sync_write_chunks = os.environ.get("PACC_JOBD_SYNC_WRITE_CHUNKS", "").strip()
 jobd_cbo_inval = os.environ.get("PACC_JOBD_CBO_INVAL", "0").strip() or "0"
 jobd_cbo_flush = os.environ.get("PACC_JOBD_CBO_FLUSH", "0").strip() or "0"
-jobd_cbo_block_bytes = os.environ.get("PACC_JOBD_CBO_BLOCK_BYTES", "").strip()
-jobd_cbo_op = os.environ.get("PACC_JOBD_CBO_OP", "").strip()
-jobd_evict_after_write = os.environ.get("PACC_JOBD_EVICT_AFTER_WRITE_BYTES", "").strip()
 jobd_notify_irq = os.environ.get("PACC_JOBD_NOTIFY_IRQ", "").strip()
 jobd_heartbeat = os.environ.get("PACC_JOBD_HEARTBEAT", "0").strip() or "0"
 jobd_boot_marker = os.environ.get("PACC_JOBD_BOOT_MARKER", "0").strip() or "0"
 jobd_early_devmem_marker_present = "PACC_JOBD_EARLY_DEVMEM_MARKER" in os.environ
 jobd_early_devmem_marker = os.environ.get("PACC_JOBD_EARLY_DEVMEM_MARKER", "0").strip() or "0"
 jobd_seed_current_jobs = os.environ.get("PACC_JOBD_SEED_CURRENT_JOBS", "").strip()
-jobd_shared_ddr_mmap_user_off = os.environ.get("PACC_JOBD_SHARED_DDR_MMAP_USER_OFF", "").strip()
 jobd_shared_ddr_user_off = os.environ.get("PACC_JOBD_SHARED_DDR_USER_OFF", "").strip()
 jobd_shared_ddr_fd_user_off = os.environ.get("PACC_JOBD_SHARED_DDR_FD_USER_OFF", "").strip()
-jobd_shared_ddr_dev = os.environ.get("PACC_JOBD_SHARED_DDR_DEV", "").strip()
 jobd_bin_bcast_local_max = os.environ.get("PACC_JOBD_BIN_BCAST_LOCAL_MAX_BYTES", "").strip()
 jobd_rope_local_max = os.environ.get("PACC_JOBD_ROPE_LOCAL_MAX_BYTES", "").strip()
 jobd_mmvf_local_x_max = os.environ.get("PACC_JOBD_MMVF_LOCAL_X_MAX_BYTES", "").strip()
@@ -163,8 +152,6 @@ jobd_kernel_slot_map_bytes = os.environ.get("PACC_JOBD_KERNEL_SLOT_MAP_BYTES", o
 jobd_kernel_slot_map_off = os.environ.get("PACC_JOBD_KERNEL_SLOT_MAP_OFF", os.environ.get("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP_OFF", "")).strip()
 jobd_helper_io_chunk_bytes = os.environ.get("PACC_JOBD_HELPER_IO_CHUNK_BYTES", os.environ.get("HETGPU_PACC_JOBD_HELPER_IO_CHUNK_BYTES", "")).strip()
 jobd_env_in_bashrc = os.environ.get("PACC_JOBD_ENV_IN_BASHRC", "0").strip() or "0"
-jobd_ddr_ko = os.environ.get("PACC_JOBD_DDR_KO", "").strip()
-jobd_ddr_ko_args = os.environ.get("PACC_JOBD_DDR_KO_ARGS", "").strip()
 
 rcs_lines = [
     "#!/bin/sh",
@@ -189,6 +176,7 @@ if jobd_beacon != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_BEACON={jobd_beacon}")
 if jobd_pacc_id:
     rcs_lines.append(f"export HETGPU_PACC_ID={jobd_pacc_id}")
+    rcs_lines.append(f"export PACC_JOBD_PACC_ID={jobd_pacc_id}")
 if jobd_mbox_poll_present or jobd_mbox_poll != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_MBOX_POLL={jobd_mbox_poll}")
 if jobd_initial_mbox_poll:
@@ -239,8 +227,6 @@ if jobd_status_mmap_fallback:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_STATUS_MMAP_FALLBACK={jobd_status_mmap_fallback}")
 if jobd_status_pwrite_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_STATUS_PWRITE={jobd_status_pwrite}")
-if jobd_completion_mirror_off:
-    rcs_lines.append(f"export HETGPU_PACC_JOBD_COMPLETION_MIRROR_OFF={jobd_completion_mirror_off}")
 if jobd_msync_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_MSYNC={jobd_msync}")
 if jobd_status_msync:
@@ -253,28 +239,12 @@ if jobd_rms_rvv:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_RMS_RVV={jobd_rms_rvv}")
 if jobd_rms_output_pwrite:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_RMS_OUTPUT_PWRITE={jobd_rms_output_pwrite}")
-if jobd_rms_write_attempts:
-    rcs_lines.append(f"export HETGPU_PACC_JOBD_RMS_WRITE_ATTEMPTS={jobd_rms_write_attempts}")
 if jobd_rms_write_chunk_bytes:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_RMS_WRITE_CHUNK_BYTES={jobd_rms_write_chunk_bytes}")
-if jobd_repair_writeback:
-    rcs_lines.append(f"export HETGPU_PACC_JOBD_REPAIR_WRITEBACK={jobd_repair_writeback}")
-if jobd_repair_writeback_attempts:
-    rcs_lines.append(f"export HETGPU_PACC_JOBD_REPAIR_WRITEBACK_ATTEMPTS={jobd_repair_writeback_attempts}")
-if jobd_repair_writeback_chunk_bytes:
-    rcs_lines.append(f"export HETGPU_PACC_JOBD_REPAIR_WRITEBACK_CHUNK_BYTES={jobd_repair_writeback_chunk_bytes}")
-if jobd_sync_write_chunks:
-    rcs_lines.append(f"export HETGPU_PACC_JOBD_SYNC_WRITE_CHUNKS={jobd_sync_write_chunks}")
 if jobd_cbo_inval != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_CBO_INVAL={jobd_cbo_inval}")
 if jobd_cbo_flush != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_CBO_FLUSH={jobd_cbo_flush}")
-if jobd_cbo_block_bytes:
-    rcs_lines.append(f"export HETGPU_PACC_JOBD_CBO_BLOCK_BYTES={jobd_cbo_block_bytes}")
-if jobd_cbo_op:
-    rcs_lines.append(f"export HETGPU_PACC_JOBD_CBO_OP={jobd_cbo_op}")
-if jobd_evict_after_write:
-    rcs_lines.append(f"export HETGPU_PACC_JOBD_EVICT_AFTER_WRITE_BYTES={jobd_evict_after_write}")
 if jobd_notify_irq:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_NOTIFY_IRQ={jobd_notify_irq}")
 if jobd_heartbeat != "0":
@@ -285,14 +255,10 @@ if jobd_early_devmem_marker_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_EARLY_DEVMEM_MARKER={jobd_early_devmem_marker}")
 if jobd_seed_current_jobs:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_SEED_CURRENT_JOBS={jobd_seed_current_jobs}")
-if jobd_shared_ddr_mmap_user_off:
-    rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_MMAP_USER_OFF={jobd_shared_ddr_mmap_user_off}")
 if jobd_shared_ddr_user_off:
     rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_USER_OFF={jobd_shared_ddr_user_off}")
 if jobd_shared_ddr_fd_user_off:
     rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_FD_USER_OFF={jobd_shared_ddr_fd_user_off}")
-if jobd_shared_ddr_dev:
-    rcs_lines.append(f"export HETGPU_PACC_JOBD_SHARED_DDR_DEV={jobd_shared_ddr_dev}")
 if jobd_bin_bcast_local_max:
     rcs_lines.append(f"export PACC_JOBD_BIN_BCAST_LOCAL_MAX_BYTES={jobd_bin_bcast_local_max}")
 if jobd_rope_local_max:
@@ -334,7 +300,6 @@ if jobd_env_in_bashrc != "0":
     env_payload = ("\n".join(exports) + "\n").encode()
     compact_rcs_lines = [
         rcs_lines[0],
-        *([f"insmod /home/root/ddr.ko {jobd_ddr_ko_args} || true"] if jobd_ddr_ko else []),
         "set -a;. /etc/skel/.bashrc;set +a",
         "exec /home/root/pacc_skl_test --mbox=/dev/mbox --config=/dev/null </dev/console >/dev/console 2>&1",
     ]
@@ -353,8 +318,6 @@ rmsnorm 0x20000a00 0x20000a40 0x20002a00 1 4 0.00001
 outer = parse_newc(image)
 patched = 0
 patched += patch_payload(outer, "outer", "home/root/pacc_skl_test", jobd_bytes, 0)
-if jobd_ddr_ko:
-    patched += patch_payload(outer, "outer", "home/root/ddr.ko", Path(jobd_ddr_ko).read_bytes(), 0)
 patched += patch_payload(outer, "outer", "etc/init.d/rcS", rcs, ord("\n"))
 patched += patch_payload(outer, "outer", "etc/skel/.bashrc", env_payload or conf_bytes or default_conf, ord("\n"))
 
@@ -363,8 +326,6 @@ if inner_name in outer:
     inner = outer[inner_name]
     inner_entries = parse_newc(image, inner["data"], inner["size"])
     patched += patch_payload(inner_entries, "inner", "home/root/pacc_skl_test", jobd_bytes, 0)
-    if jobd_ddr_ko:
-        patched += patch_payload(inner_entries, "inner", "home/root/ddr.ko", Path(jobd_ddr_ko).read_bytes(), 0)
     patched += patch_payload(inner_entries, "inner", "etc/init.d/rcS", rcs, ord("\n"))
     patched += patch_payload(inner_entries, "inner", "etc/skel/.bashrc", env_payload or conf_bytes or default_conf, ord("\n"))
 

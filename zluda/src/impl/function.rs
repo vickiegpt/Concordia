@@ -34,6 +34,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+use std::sync::{Mutex, OnceLock};
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 static PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE: AtomicBool = AtomicBool::new(false);
 #[cfg(all(
     feature = "pacc",
@@ -77,6 +84,27 @@ static PACC_GENERIC_FAST_SUCCESS_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
     not(feature = "tenstorrent")
 ))]
 static PACC_NAMED_ERROR_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[derive(Copy, Clone)]
+struct PaccCachedKernelHandles {
+    device: usize,
+    program: usize,
+    kernel: usize,
+}
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+static PACC_PYTORCH_SOFTMAX_ELF_KERNELS: std::sync::OnceLock<
+    std::sync::Mutex<[Option<PaccCachedKernelHandles>; 4]>,
+> = std::sync::OnceLock::new();
 
 #[cfg(feature = "amd")]
 pub(crate) fn get_attribute(
@@ -3112,6 +3140,60 @@ fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
     {
         return Some(6);
     }
+    if name.contains("bfloat16_copy_kernel_cuda") {
+        return Some(3);
+    }
+    if name.contains("arange_cuda_out") || name.contains("elementwise_kernel_with_index") {
+        return Some(4);
+    }
+    if name.contains("vectorized_elementwise_kernel")
+        && name.contains("cudafunctoronself_add")
+    {
+        return Some(3);
+    }
+    if name.contains("vectorized_elementwise_kernel") && name.contains("sigmoid_kernel_cuda") {
+        return Some(3);
+    }
+    if name.contains("vectorized_elementwise_kernel") && name.contains("silu_kernel") {
+        return Some(3);
+    }
+    if name.contains("distribution_elementwise_grid_stride_kernel")
+        && name.contains("uniform_kernel")
+    {
+        return Some(7);
+    }
+    if name.contains("vectorized_elementwise_kernel")
+        && (name.contains("exp_kernel_cuda")
+            || name.contains("log_kernel_cuda")
+            || name.contains("softplus_kernel_cuda")
+            || name.contains("softplus_kernel")
+            || name.contains("neg_kernel_cuda"))
+    {
+        return Some(3);
+    }
+    if name.contains("vectorized_elementwise_kernel")
+        && name.contains("aunaryfunctor")
+        && name.contains("mulfunctor")
+    {
+        return Some(6);
+    }
+    if name.contains("elementwise_kernel")
+        && (name.contains("cudafunctor_add")
+            || name.contains("cudafunctor_mul")
+            || name.contains("cudafunctor_div")
+            || name.contains("mulfunctor"))
+    {
+        return Some(3);
+    }
+    if name.contains("vectorized_elementwise_kernel") && name.contains("fillfunctor") {
+        return Some(3);
+    }
+    if name.contains("elementwise_kernel")
+        && name.contains("comparefunctor")
+        && name.contains("il")
+    {
+        return Some(4);
+    }
 
     None
 }
@@ -3232,17 +3314,33 @@ fn pacc_looks_like_host_param_addr(addr: usize) -> bool {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_host_range_has_perms(addr: usize, len: usize, need_write: bool) -> bool {
-    if len == 0 {
-        return true;
-    }
-    let Some(end_addr) = addr.checked_add(len) else {
-        return false;
-    };
-    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
-        return false;
-    };
+#[derive(Clone, Copy)]
+struct PaccHostMapRange {
+    start: usize,
+    end: usize,
+    read: bool,
+    write: bool,
+}
 
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+static PACC_HOST_MAPS_CACHE: OnceLock<Mutex<Vec<PaccHostMapRange>>> = OnceLock::new();
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn parse_pacc_host_maps() -> Vec<PaccHostMapRange> {
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return Vec::new();
+    };
+    let mut ranges = Vec::new();
     for line in maps.lines() {
         let mut parts = line.split_whitespace();
         let Some(range) = parts.next() else {
@@ -3251,12 +3349,6 @@ fn pacc_host_range_has_perms(addr: usize, len: usize, need_write: bool) -> bool 
         let Some(perms) = parts.next() else {
             continue;
         };
-        if !perms.starts_with('r') {
-            continue;
-        }
-        if need_write && perms.as_bytes().get(1).copied() != Some(b'w') {
-            continue;
-        }
         let Some((start_hex, end_hex)) = range.split_once('-') else {
             continue;
         };
@@ -3266,11 +3358,58 @@ fn pacc_host_range_has_perms(addr: usize, len: usize, need_write: bool) -> bool 
         let Ok(end) = usize::from_str_radix(end_hex, 16) else {
             continue;
         };
-        if addr >= start && end_addr <= end {
+        ranges.push(PaccHostMapRange {
+            start,
+            end,
+            read: perms.starts_with('r'),
+            write: perms.as_bytes().get(1).copied() == Some(b'w'),
+        });
+    }
+    ranges
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_host_maps_contains(
+    ranges: &[PaccHostMapRange],
+    addr: usize,
+    end_addr: usize,
+    need_write: bool,
+) -> bool {
+    ranges.iter().any(|range| {
+        range.read
+            && (!need_write || range.write)
+            && addr >= range.start
+            && end_addr <= range.end
+    })
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_host_range_has_perms(addr: usize, len: usize, need_write: bool) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let Some(end_addr) = addr.checked_add(len) else {
+        return false;
+    };
+    let cache = PACC_HOST_MAPS_CACHE.get_or_init(|| Mutex::new(parse_pacc_host_maps()));
+    if let Ok(mut ranges) = cache.lock() {
+        if ranges.is_empty() {
+            *ranges = parse_pacc_host_maps();
+        }
+        if pacc_host_maps_contains(&ranges, addr, end_addr, need_write) {
             return true;
         }
     }
-
     false
 }
 
@@ -4790,6 +4929,17 @@ unsafe fn pacc_write_elem_from_f32(base: *mut u8, elem_index: i64, elem_size: u6
 fn pacc_f32_to_bf16(value: f32) -> u16 {
     let bits = value.to_bits();
     ((bits.wrapping_add(0x7fff).wrapping_add((bits >> 16) & 1)) >> 16) as u16
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[inline]
+fn pacc_bf16_to_f32(value: u16) -> f32 {
+    f32::from_bits((value as u32) << 16)
 }
 
 #[cfg(all(
@@ -8135,6 +8285,373 @@ unsafe fn read_softmax_named_args(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn read_pytorch_softmax_warp_forward_args(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<(
+    *const ::core::ffi::c_void,
+    *mut ::core::ffi::c_void,
+    u64,
+    u64,
+    u64,
+    i32,
+)> {
+    if kernel_params.is_null() {
+        return None;
+    }
+
+    let dst = read_param_u64(kernel_params, 0)? as *mut ::core::ffi::c_void;
+    let src = read_param_u64(kernel_params, 1)? as *const ::core::ffi::c_void;
+    let batch_size = read_param_i32(kernel_params, 2)?.max(0) as u64;
+    let stride = read_param_i32(kernel_params, 3)?.max(0) as u64;
+    let element_count = read_param_i32(kernel_params, 4)?.max(0) as u64;
+    if src.is_null() || dst.is_null() || batch_size == 0 || element_count == 0 {
+        return None;
+    }
+    let stride = stride.max(element_count);
+
+    let rows = batch_size;
+    let cols = element_count;
+    let bytes = rows
+        .checked_mul(stride)?
+        .checked_mul(std::mem::size_of::<f32>() as u64)?;
+    let bytes = usize::try_from(bytes).ok()?;
+    if !pacc_host_or_cuda_alloc_has_bytes(src as u64, bytes, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(dst as u64, bytes, true)
+    {
+        eprintln!(
+            "[PACC Backend] PyTorch softmax_warp_forward rejected inaccessible range src=0x{:x} dst=0x{:x} rows={} cols={} stride={}",
+            src as u64, dst as u64, rows, cols, stride
+        );
+        return None;
+    }
+
+    Some((
+        src,
+        dst,
+        rows,
+        cols,
+        stride,
+        pacc_runtime_sys::PaccDataType::Float32 as i32,
+    ))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+const PACC_PYTORCH_SOFTMAX_ELF_SYMBOL: &str = "pacc_pytorch_softmax_warp_forward";
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+const PACC_PYTORCH_SOFTMAX_ELF_SOURCE: &str = r#"
+typedef unsigned long u64;
+typedef unsigned int u32;
+
+struct KernelParamCell {
+    u64 lo;
+    u64 hi;
+};
+
+static u64 pacc_cell_lo(u64 cell_addr) {
+    volatile const struct KernelParamCell *cell =
+        (volatile const struct KernelParamCell *)cell_addr;
+    return cell ? cell->lo : 0UL;
+}
+
+static float pacc_fast_expf(float x) {
+    if (x < -80.0f) return 0.0f;
+    if (x > 80.0f) x = 80.0f;
+    union {
+        u32 i;
+        float f;
+    } v;
+    float y = x * 1.4426950408889634f + 127.0f;
+    if (y < 0.0f) y = 0.0f;
+    if (y > 255.0f) y = 255.0f;
+    v.i = (u32)(y * 8388608.0f);
+    return v.f;
+}
+
+__attribute__((visibility("default")))
+void pacc_pytorch_softmax_warp_forward(u64 dst_cell,
+                                       u64 src_cell,
+                                       u64 rows_cell,
+                                       u64 cols_cell,
+                                       u64 stride_cell) {
+    float *dst = (float *)(pacc_cell_lo(dst_cell));
+    const float *src = (const float *)(pacc_cell_lo(src_cell));
+    u64 rows = pacc_cell_lo(rows_cell);
+    u64 cols = pacc_cell_lo(cols_cell);
+    u64 stride = pacc_cell_lo(stride_cell);
+    if (!dst || !src || rows == 0UL || cols == 0UL) return;
+    if (stride < cols) stride = cols;
+
+    for (u64 row = 0; row < rows; row++) {
+        u64 base = row * stride;
+        float max_v = src[base];
+        for (u64 col = 1; col < cols; col++) {
+            float v = src[base + col];
+            if (v > max_v) max_v = v;
+        }
+        float sum = 0.0f;
+        for (u64 col = 0; col < cols; col++) {
+            float e = pacc_fast_expf(src[base + col] - max_v);
+            dst[base + col] = e;
+            sum += e;
+        }
+        if (sum == 0.0f) sum = 1.0f;
+        float inv = 1.0f / sum;
+        for (u64 col = 0; col < cols; col++) {
+            dst[base + col] *= inv;
+        }
+    }
+}
+"#;
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn pacc_get_pytorch_softmax_elf_kernel(
+    dev_id: i32,
+) -> Option<*mut pacc_runtime_sys::pacc_Kernel> {
+    let dev_id = if (0..4).contains(&dev_id) {
+        dev_id as usize
+    } else {
+        0
+    };
+    let cache = PACC_PYTORCH_SOFTMAX_ELF_KERNELS
+        .get_or_init(|| std::sync::Mutex::new([None, None, None, None]));
+    let mut guard = cache.lock().ok()?;
+    if let Some(handles) = guard[dev_id] {
+        return Some(handles.kernel as *mut pacc_runtime_sys::pacc_Kernel);
+    }
+
+    let device = pacc_runtime_sys::pacc_CreateDevice(dev_id as u32);
+    if device.is_null() {
+        eprintln!(
+            "[PACC Backend] PyTorch softmax ELF failed to create pacc{} device",
+            dev_id
+        );
+        return None;
+    }
+    let program = pacc_runtime_sys::pacc_CreateProgram();
+    if program.is_null() {
+        eprintln!("[PACC Backend] PyTorch softmax ELF failed to create program");
+        return None;
+    }
+
+    let source = PACC_PYTORCH_SOFTMAX_ELF_SOURCE.as_bytes();
+    let workdir =
+        std::path::Path::new("/home/ubuntu/Documents/hetGPU_pacc/target/pacc_named_kernels");
+    if let Err(err) = std::fs::create_dir_all(workdir) {
+        eprintln!(
+            "[PACC Backend] PyTorch softmax ELF failed to create source dir {}: {}",
+            workdir.display(),
+            err
+        );
+        return None;
+    }
+    let source_path = workdir.join("pacc_pytorch_softmax_warp_forward.c");
+    if let Err(err) = std::fs::write(&source_path, source) {
+        eprintln!(
+            "[PACC Backend] PyTorch softmax ELF failed to write source {}: {}",
+            source_path.display(),
+            err
+        );
+        return None;
+    }
+    let source_name = match std::ffi::CString::new(source_path.to_string_lossy().as_bytes()) {
+        Ok(path) => path,
+        Err(_) => return None,
+    };
+    let workdir_c = match std::ffi::CString::new(workdir.to_string_lossy().as_bytes()) {
+        Ok(path) => path,
+        Err(_) => return None,
+    };
+    let rc = pacc_runtime_sys::pacc_LoadProgramSource(
+        program,
+        std::ptr::null(),
+        source_name.as_ptr(),
+        source.as_ptr(),
+        source.len() as u64,
+        workdir_c.as_ptr(),
+        std::ptr::null(),
+        0,
+        std::ptr::null(),
+        0,
+    );
+    if rc != pacc_runtime_sys::pacc_Result_Success {
+        let compile_error = program
+            .as_ref()
+            .and_then(|p| p.compile_error.as_deref())
+            .map(str::to_owned)
+            .unwrap_or_default();
+        eprintln!(
+            "[PACC Backend] PyTorch softmax ELF compile failed rc={} {}",
+            rc, compile_error
+        );
+        return None;
+    }
+
+    let kernel_name = std::ffi::CString::new(PACC_PYTORCH_SOFTMAX_ELF_SYMBOL).ok()?;
+    let kernel = pacc_runtime_sys::pacc_CreateKernelOnDevice(program, device, kernel_name.as_ptr());
+    if kernel.is_null() {
+        eprintln!("[PACC Backend] PyTorch softmax ELF failed to create kernel handle");
+        return None;
+    }
+    guard[dev_id] = Some(PaccCachedKernelHandles {
+        device: device as usize,
+        program: program as usize,
+        kernel: kernel as usize,
+    });
+    Some(kernel)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn pacc_push_softmax_elf_arg(
+    kernel: *mut pacc_runtime_sys::pacc_Kernel,
+    index: u32,
+    kind: u32,
+    value: u64,
+    binding: Option<(u64, u32)>,
+) -> bool {
+    let record = pacc_runtime_sys::PaccKernelArgRecord {
+        kind,
+        size: 8,
+        flags: 0,
+        reserved: 0,
+        value,
+        value_hi: 0,
+    };
+    if pacc_runtime_sys::pacc_KernelPushArgRecord(kernel, &record)
+        != pacc_runtime_sys::pacc_Result_Success
+    {
+        return false;
+    }
+    if let Some((size, flags)) = binding {
+        let (addr, flags) = if let Some(phys) = super::memory::pacc_shared_ddr_physical_addr(value)
+        {
+            (
+                phys,
+                flags | pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_DEVICE_PHYS,
+            )
+        } else {
+            (value, flags)
+        };
+        let binding = pacc_runtime_sys::PaccKernelBufferBinding {
+            arg_index: index,
+            flags,
+            addr,
+            size,
+        };
+        if pacc_runtime_sys::pacc_KernelAddBufferBinding(kernel, &binding)
+            != pacc_runtime_sys::pacc_Result_Success
+        {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn launch_pytorch_softmax_warp_forward_elf(
+    dev_id: i32,
+    src: *const ::core::ffi::c_void,
+    dst: *mut ::core::ffi::c_void,
+    rows: u64,
+    cols: u64,
+    stride: u64,
+) -> i32 {
+    let Some(kernel) = pacc_get_pytorch_softmax_elf_kernel(dev_id) else {
+        return -1;
+    };
+    let bytes = match rows
+        .checked_mul(stride.max(cols))
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>() as u64))
+    {
+        Some(bytes) => bytes,
+        None => return -1,
+    };
+    if pacc_runtime_sys::pacc_KernelClearLaunchState(kernel)
+        != pacc_runtime_sys::pacc_Result_Success
+    {
+        return -1;
+    }
+    if !pacc_push_softmax_elf_arg(
+        kernel,
+        0,
+        pacc_runtime_sys::PACC_KERNEL_ARG_KIND_POINTER,
+        dst as u64,
+        Some((bytes, pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT)),
+    ) || !pacc_push_softmax_elf_arg(
+        kernel,
+        1,
+        pacc_runtime_sys::PACC_KERNEL_ARG_KIND_POINTER,
+        src as u64,
+        Some((bytes, pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT)),
+    ) || !pacc_push_softmax_elf_arg(
+        kernel,
+        2,
+        pacc_runtime_sys::PACC_KERNEL_ARG_KIND_SCALAR,
+        rows,
+        None,
+    ) || !pacc_push_softmax_elf_arg(
+        kernel,
+        3,
+        pacc_runtime_sys::PACC_KERNEL_ARG_KIND_SCALAR,
+        cols,
+        None,
+    ) || !pacc_push_softmax_elf_arg(
+        kernel,
+        4,
+        pacc_runtime_sys::PACC_KERNEL_ARG_KIND_SCALAR,
+        stride,
+        None,
+    ) {
+        return -1;
+    }
+
+    let rc = pacc_runtime_sys::pacc_LaunchKernel(
+        kernel,
+        rows.min(u32::MAX as u64) as u32,
+        1,
+        1,
+        1,
+        1,
+        1,
+    );
+    if rc == pacc_runtime_sys::pacc_Result_Success {
+        0
+    } else {
+        rc
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn pacc_softmax_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
@@ -8874,6 +9391,9 @@ unsafe fn read_param_data_pair(
     if param.is_null() || (param as usize) < 0x1_0000 {
         return None;
     }
+    if !pacc_host_range_has_perms(param as usize, 2 * std::mem::size_of::<u64>(), false) {
+        return None;
+    }
     let data = param as *const u64;
     let out = data.read_unaligned();
     let inp = data.add(1).read_unaligned();
@@ -8881,6 +9401,423 @@ unsafe fn read_param_data_pair(
         return None;
     }
     Some((out, inp))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn read_param_data_single(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+) -> Option<u64> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    let param = *kernel_params.add(index);
+    if param.is_null() || (param as usize) < 0x1_0000 {
+        return None;
+    }
+    if !pacc_host_range_has_perms(param as usize, std::mem::size_of::<u64>(), false) {
+        return None;
+    }
+    let out = (param as *const u64).read_unaligned();
+    if out < 0x1_0000 {
+        return None;
+    }
+    Some(out)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn find_tensoriterator_data_pair(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    bytes: usize,
+) -> Option<(usize, usize, u64, u64)> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    for index in 1..6 {
+        if let Some((out_addr, inp_addr)) = read_param_data_pair(kernel_params, index) {
+            if pacc_cuda_alloc_has_bytes(out_addr, bytes)
+                && pacc_cuda_alloc_has_bytes(inp_addr, bytes)
+            {
+                return Some((index, 0, out_addr, inp_addr));
+            }
+        }
+
+        let param = *kernel_params.add(index);
+        if param.is_null() || (param as usize) < 0x1_0000 {
+            continue;
+        }
+        let base = param as usize;
+        for off in (0..4096usize).step_by(std::mem::size_of::<u64>()) {
+            if !pacc_host_range_has_perms(
+                base.saturating_add(off),
+                2 * std::mem::size_of::<u64>(),
+                false,
+            ) {
+                continue;
+            }
+            let data = (base + off) as *const u64;
+            let out_addr = data.read_unaligned();
+            let inp_addr = data.add(1).read_unaligned();
+            if out_addr < 0x1_0000 || inp_addr < 0x1_0000 {
+                continue;
+            }
+            if pacc_cuda_alloc_has_bytes(out_addr, bytes)
+                && pacc_cuda_alloc_has_bytes(inp_addr, bytes)
+            {
+                return Some((index, off, out_addr, inp_addr));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn find_tensoriterator_data_single(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    bytes: usize,
+) -> Option<(usize, usize, u64)> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    for index in 1..8 {
+        if let Some(out_addr) = read_param_data_single(kernel_params, index) {
+            if pacc_cuda_alloc_has_bytes(out_addr, bytes) {
+                return Some((index, 0, out_addr));
+            }
+        }
+
+        let param = *kernel_params.add(index);
+        if param.is_null() || (param as usize) < 0x1_0000 {
+            continue;
+        }
+        let base = param as usize;
+        for off in (0..4096usize).step_by(std::mem::size_of::<u64>()) {
+            if !pacc_host_range_has_perms(
+                base.saturating_add(off),
+                std::mem::size_of::<u64>(),
+                false,
+            ) {
+                continue;
+            }
+            let out_addr = ((base + off) as *const u64).read_unaligned();
+            if out_addr < 0x1_0000 {
+                continue;
+            }
+            if pacc_cuda_alloc_has_bytes(out_addr, bytes) {
+                return Some((index, off, out_addr));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn log_tensoriterator_triplet_scan_debug(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    kernel_name: &str,
+    n: usize,
+) {
+    if !pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") || kernel_params.is_null() {
+        return;
+    }
+    eprintln!(
+        "[PACC Backend] TensorIterator triplet scan debug '{}' n={}",
+        kernel_name, n
+    );
+    for index in 0..6 {
+        let param = *kernel_params.add(index);
+        eprintln!("[PACC Backend]   param[{}]={:p}", index, param);
+        if param.is_null() || (param as usize) < 0x1_0000 {
+            continue;
+        }
+        if !pacc_host_range_has_perms(param as usize, 8 * std::mem::size_of::<u64>(), false) {
+            continue;
+        }
+        let data = param as *const u64;
+        let mut words = [0u64; 8];
+        for i in 0..8 {
+            words[i] = data.add(i).read_unaligned();
+        }
+        eprintln!(
+            "[PACC Backend]   words[{}]= {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x}",
+            index,
+            words[0],
+            words[1],
+            words[2],
+            words[3],
+            words[4],
+            words[5],
+            words[6],
+            words[7]
+        );
+        for off in (0..1024usize).step_by(std::mem::size_of::<u64>()) {
+            if !pacc_host_range_has_perms(
+                (param as usize).saturating_add(off),
+                std::mem::size_of::<u64>(),
+                false,
+            ) {
+                continue;
+            }
+            let value = ((param as usize + off) as *const u64).read_unaligned();
+            if let Some(remaining) = super::memory::pacc_allocation_remaining_addr(value) {
+                eprintln!(
+                    "[PACC Backend]   alloc-candidate param={} off=0x{:x} value=0x{:x} remaining={}",
+                    index, off, value, remaining
+                );
+            }
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn find_tensoriterator_data_triplet(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    out_bytes: usize,
+) -> Option<(usize, usize, u64, u64, u64)> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    for index in 1..6 {
+        let param = *kernel_params.add(index);
+        if param.is_null() || (param as usize) < 0x1_0000 {
+            continue;
+        }
+        let base = param as usize;
+        for off in (0..4096usize).step_by(std::mem::size_of::<u64>()) {
+            let p0 = base.saturating_add(off);
+            let p1 = p0.saturating_add(std::mem::size_of::<u64>());
+            let p2 = p1.saturating_add(std::mem::size_of::<u64>());
+            if !pacc_host_range_has_perms(p0, std::mem::size_of::<u64>(), false)
+                || !pacc_host_range_has_perms(p1, std::mem::size_of::<u64>(), false)
+                || !pacc_host_range_has_perms(p2, std::mem::size_of::<u64>(), false)
+            {
+                continue;
+            }
+            let data = (base + off) as *const u64;
+            let out_addr = data.read_unaligned();
+            let lhs_addr = data.add(1).read_unaligned();
+            let rhs_addr = data.add(2).read_unaligned();
+            if out_addr < 0x1_0000 || lhs_addr < 0x1_0000 || rhs_addr < 0x1_0000 {
+                continue;
+            }
+            if pacc_cuda_alloc_has_bytes(out_addr, out_bytes)
+                && pacc_cuda_alloc_has_bytes(lhs_addr, std::mem::size_of::<f32>())
+                && pacc_cuda_alloc_has_bytes(rhs_addr, std::mem::size_of::<f32>())
+            {
+                return Some((index, off, out_addr, lhs_addr, rhs_addr));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn read_f32_tensor_prefix(addr: u64, elems: usize) -> Result<Vec<f32>, cuda_types::cuda::CUerror> {
+    let bytes = elems.saturating_mul(std::mem::size_of::<f32>());
+    let mut values = vec![0f32; elems];
+    if elems == 0 {
+        return Ok(values);
+    }
+    if pacc_host_range_has_perms(addr as usize, bytes, false) {
+        std::ptr::copy_nonoverlapping(
+            addr as *const u8,
+            values.as_mut_ptr().cast::<u8>(),
+            bytes,
+        );
+        return Ok(values);
+    }
+    super::memory::copy_dto_h_v2(
+        values.as_mut_ptr() as *mut ::core::ffi::c_void,
+        cuda_types::cuda::CUdeviceptr_v2(addr as *mut ::core::ffi::c_void),
+        bytes,
+    )?;
+    Ok(values)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn write_f32_tensor(addr: u64, values: &[f32]) -> Result<(), cuda_types::cuda::CUerror> {
+    let bytes = values.len().saturating_mul(std::mem::size_of::<f32>());
+    if values.is_empty() {
+        return Ok(());
+    }
+    if pacc_host_range_has_perms(addr as usize, bytes, true) {
+        std::ptr::copy_nonoverlapping(
+            values.as_ptr().cast::<u8>(),
+            addr as *mut u8,
+            bytes,
+        );
+        return Ok(());
+    }
+    super::memory::copy_hto_d_v2(
+        cuda_types::cuda::CUdeviceptr_v2(addr as *mut ::core::ffi::c_void),
+        values.as_ptr() as *const ::core::ffi::c_void,
+        bytes,
+    )
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn read_bf16_tensor_prefix(addr: u64, elems: usize) -> Result<Vec<u16>, cuda_types::cuda::CUerror> {
+    let bytes = elems.saturating_mul(std::mem::size_of::<u16>());
+    let mut values = vec![0u16; elems];
+    if elems == 0 {
+        return Ok(values);
+    }
+    if pacc_host_range_has_perms(addr as usize, bytes, false) {
+        std::ptr::copy_nonoverlapping(
+            addr as *const u8,
+            values.as_mut_ptr().cast::<u8>(),
+            bytes,
+        );
+        return Ok(values);
+    }
+    super::memory::copy_dto_h_v2(
+        values.as_mut_ptr() as *mut ::core::ffi::c_void,
+        cuda_types::cuda::CUdeviceptr_v2(addr as *mut ::core::ffi::c_void),
+        bytes,
+    )?;
+    Ok(values)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn write_bf16_tensor(addr: u64, values: &[u16]) -> Result<(), cuda_types::cuda::CUerror> {
+    let bytes = values.len().saturating_mul(std::mem::size_of::<u16>());
+    if values.is_empty() {
+        return Ok(());
+    }
+    if pacc_host_range_has_perms(addr as usize, bytes, true) {
+        std::ptr::copy_nonoverlapping(
+            values.as_ptr().cast::<u8>(),
+            addr as *mut u8,
+            bytes,
+        );
+        return Ok(());
+    }
+    super::memory::copy_hto_d_v2(
+        cuda_types::cuda::CUdeviceptr_v2(addr as *mut ::core::ffi::c_void),
+        values.as_ptr() as *const ::core::ffi::c_void,
+        bytes,
+    )
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_direct_copy_bf16_host(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    block_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or_else(|| {
+            (grid_dim_x as usize)
+                .saturating_mul(block_dim_x as usize)
+                .saturating_mul(4)
+        });
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let bytes = n.saturating_mul(std::mem::size_of::<u16>());
+    let Some((pair_index, pair_off, out_addr, inp_addr)) =
+        find_tensoriterator_data_pair(kernel_params, bytes)
+    else {
+        eprintln!(
+            "[PACC Backend] direct_copy bf16 '{}' could not locate TensorIterator data pair for n={} bytes={}",
+            kernel_name, n, bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    if pacc_host_range_has_perms(inp_addr as usize, bytes, false)
+        && pacc_host_range_has_perms(out_addr as usize, bytes, true)
+    {
+        std::ptr::copy(inp_addr as *const u8, out_addr as *mut u8, bytes);
+    } else {
+        let mut tmp = vec![0u8; bytes];
+        if pacc_host_range_has_perms(inp_addr as usize, bytes, false) {
+            std::ptr::copy_nonoverlapping(inp_addr as *const u8, tmp.as_mut_ptr(), bytes);
+        } else if let Err(err) = super::memory::copy_dto_h_v2(
+            tmp.as_mut_ptr() as *mut ::core::ffi::c_void,
+            cuda_types::cuda::CUdeviceptr_v2(inp_addr as *mut ::core::ffi::c_void),
+            bytes,
+        ) {
+            eprintln!(
+                "[PACC Backend] direct_copy bf16 '{}' failed to read input out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+                kernel_name, out_addr, inp_addr, bytes, err
+            );
+            return Some(Err(err));
+        }
+        if pacc_host_range_has_perms(out_addr as usize, bytes, true) {
+            std::ptr::copy_nonoverlapping(tmp.as_ptr(), out_addr as *mut u8, bytes);
+        } else if let Err(err) = super::memory::copy_hto_d_v2(
+            cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
+            tmp.as_ptr() as *const ::core::ffi::c_void,
+            bytes,
+        ) {
+            eprintln!(
+                "[PACC Backend] direct_copy bf16 '{}' failed to write output out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+                kernel_name, out_addr, inp_addr, bytes, err
+            );
+            return Some(Err(err));
+        }
+    }
+
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled direct_copy bf16 '{}' on host-copy path n={} bytes={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
+            kernel_name, n, bytes, out_addr, inp_addr, pair_index, pair_off
+        );
+    }
+    Some(Ok(()))
 }
 
 #[cfg(all(
@@ -8925,7 +9862,7 @@ unsafe fn execute_direct_copy_bool_host_cast(
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
 
-    let inp_remaining = super::memory::pacc_allocation_remaining_addr(inp_addr as usize)
+    let inp_remaining = super::memory::pacc_allocation_remaining_addr(inp_addr)
         .or_else(|| {
             if pacc_host_range_has_perms(inp_addr as usize, n.saturating_mul(8), false) {
                 Some(n.saturating_mul(8))
@@ -8960,16 +9897,45 @@ unsafe fn execute_direct_copy_bool_host_cast(
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     }
 
-    let out = out_addr as *mut u8;
-    let inp = inp_addr as *const u8;
+    let src_bytes = n.saturating_mul(src_elem);
+    let mut src = vec![0u8; src_bytes];
+    if pacc_host_range_has_perms(inp_addr as usize, src_bytes, false) {
+        std::ptr::copy_nonoverlapping(inp_addr as *const u8, src.as_mut_ptr(), src_bytes);
+    } else if let Err(err) = super::memory::copy_dto_h_v2(
+        src.as_mut_ptr() as *mut ::core::ffi::c_void,
+        cuda_types::cuda::CUdeviceptr_v2(inp_addr as *mut ::core::ffi::c_void),
+        src_bytes,
+    ) {
+        eprintln!(
+            "[PACC Backend] direct_copy '{}' failed to read input out=0x{:x} inp=0x{:x} n={} src_elem={} err={:?}",
+            kernel_name, out_addr, inp_addr, n, src_elem, err
+        );
+        return Some(Err(err));
+    }
+
+    let mut dst = vec![0u8; n];
     for i in 0..n {
         let nonzero = match src_elem {
-            8 => (inp.add(i * 8) as *const u64).read_unaligned() != 0,
-            4 => (inp.add(i * 4) as *const u32).read_unaligned() != 0,
-            2 => (inp.add(i * 2) as *const u16).read_unaligned() != 0,
-            _ => inp.add(i).read_unaligned() != 0,
+            8 => (src.as_ptr().add(i * 8) as *const u64).read_unaligned() != 0,
+            4 => (src.as_ptr().add(i * 4) as *const u32).read_unaligned() != 0,
+            2 => (src.as_ptr().add(i * 2) as *const u16).read_unaligned() != 0,
+            _ => src.as_ptr().add(i).read_unaligned() != 0,
         };
-        out.add(i).write(if nonzero { 1 } else { 0 });
+        dst[i] = if nonzero { 1 } else { 0 };
+    }
+
+    if pacc_host_range_has_perms(out_addr as usize, n, true) {
+        std::ptr::copy_nonoverlapping(dst.as_ptr(), out_addr as *mut u8, n);
+    } else if let Err(err) = super::memory::copy_hto_d_v2(
+        cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
+        dst.as_ptr() as *const ::core::ffi::c_void,
+        n,
+    ) {
+        eprintln!(
+            "[PACC Backend] direct_copy '{}' failed to write output out=0x{:x} inp=0x{:x} n={} src_elem={} err={:?}",
+            kernel_name, out_addr, inp_addr, n, src_elem, err
+        );
+        return Some(Err(err));
     }
 
     if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
@@ -8979,6 +9945,1176 @@ unsafe fn execute_direct_copy_bool_host_cast(
         );
     }
     Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn infer_linear_elem_size(addr: u64, n: usize, writable: bool) -> usize {
+    let remaining = super::memory::pacc_allocation_remaining_addr(addr).or_else(|| {
+        for elem in [4usize, 2, 1] {
+            if pacc_host_range_has_perms(addr as usize, n.saturating_mul(elem), writable) {
+                return Some(n.saturating_mul(elem));
+            }
+        }
+        None
+    });
+    let Some(bytes) = remaining else {
+        return 1;
+    };
+    if bytes >= n.saturating_mul(4) {
+        4
+    } else if bytes >= n.saturating_mul(2) {
+        2
+    } else {
+        1
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_direct_copy_cast_host(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    block_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or_else(|| {
+            (grid_dim_x as usize)
+                .saturating_mul(block_dim_x as usize)
+                .saturating_mul(4)
+        });
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let Some((pair_index, pair_off, out_addr, inp_addr)) =
+        find_tensoriterator_data_pair(kernel_params, n)
+    else {
+        eprintln!(
+            "[PACC Backend] direct_copy cast '{}' could not locate TensorIterator data pair for n={}",
+            kernel_name, n
+        );
+        return None;
+    };
+
+    let src_elem = infer_linear_elem_size(inp_addr, n, false);
+    let dst_elem = infer_linear_elem_size(out_addr, n, true);
+    if !pacc_host_or_cuda_alloc_has_bytes(inp_addr, n.saturating_mul(src_elem), false)
+        || !pacc_host_or_cuda_alloc_has_bytes(out_addr, n.saturating_mul(dst_elem), true)
+    {
+        eprintln!(
+            "[PACC Backend] direct_copy cast '{}' rejected ranges out=0x{:x}/{} inp=0x{:x}/{} n={}",
+            kernel_name, out_addr, dst_elem, inp_addr, src_elem, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    if src_elem == dst_elem && src_elem != 1 {
+        let bytes = n.saturating_mul(src_elem);
+        let mut tmp = vec![0u8; bytes];
+        if pacc_host_range_has_perms(inp_addr as usize, bytes, false) {
+            std::ptr::copy_nonoverlapping(inp_addr as *const u8, tmp.as_mut_ptr(), bytes);
+        } else if let Err(err) = super::memory::copy_dto_h_v2(
+            tmp.as_mut_ptr() as *mut ::core::ffi::c_void,
+            cuda_types::cuda::CUdeviceptr_v2(inp_addr as *mut ::core::ffi::c_void),
+            bytes,
+        ) {
+            return Some(Err(err));
+        }
+        if pacc_host_range_has_perms(out_addr as usize, bytes, true) {
+            std::ptr::copy_nonoverlapping(tmp.as_ptr(), out_addr as *mut u8, bytes);
+        } else if let Err(err) = super::memory::copy_hto_d_v2(
+            cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
+            tmp.as_ptr() as *const ::core::ffi::c_void,
+            bytes,
+        ) {
+            return Some(Err(err));
+        }
+    } else {
+        let mut values = vec![0f32; n];
+        match src_elem {
+            4 => {
+                values = match read_f32_tensor_prefix(inp_addr, n) {
+                    Ok(v) => v,
+                    Err(err) => return Some(Err(err)),
+                };
+            }
+            2 => {
+                let src = match read_bf16_tensor_prefix(inp_addr, n) {
+                    Ok(v) => v,
+                    Err(err) => return Some(Err(err)),
+                };
+                for i in 0..n {
+                    values[i] = pacc_bf16_to_f32(src[i]);
+                }
+            }
+            _ => {
+                let mut src = vec![0u8; n];
+                if pacc_host_range_has_perms(inp_addr as usize, n, false) {
+                    std::ptr::copy_nonoverlapping(inp_addr as *const u8, src.as_mut_ptr(), n);
+                } else if let Err(err) = super::memory::copy_dto_h_v2(
+                    src.as_mut_ptr() as *mut ::core::ffi::c_void,
+                    cuda_types::cuda::CUdeviceptr_v2(inp_addr as *mut ::core::ffi::c_void),
+                    n,
+                ) {
+                    return Some(Err(err));
+                }
+                for i in 0..n {
+                    values[i] = if src[i] != 0 { 1.0 } else { 0.0 };
+                }
+            }
+        }
+
+        match dst_elem {
+            4 => {
+                if let Err(err) = write_f32_tensor(out_addr, &values) {
+                    return Some(Err(err));
+                }
+            }
+            2 => {
+                let dst: Vec<u16> = values.iter().map(|&v| pacc_f32_to_bf16(v)).collect();
+                if let Err(err) = write_bf16_tensor(out_addr, &dst) {
+                    return Some(Err(err));
+                }
+            }
+            _ => {
+                let dst: Vec<u8> = values.iter().map(|&v| if v != 0.0 { 1 } else { 0 }).collect();
+                if pacc_host_range_has_perms(out_addr as usize, n, true) {
+                    std::ptr::copy_nonoverlapping(dst.as_ptr(), out_addr as *mut u8, n);
+                } else if let Err(err) = super::memory::copy_hto_d_v2(
+                    cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
+                    dst.as_ptr() as *const ::core::ffi::c_void,
+                    n,
+                ) {
+                    return Some(Err(err));
+                }
+            }
+        }
+    }
+
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled direct_copy cast '{}' n={} src_elem={} dst_elem={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
+            kernel_name, n, src_elem, dst_elem, out_addr, inp_addr, pair_index, pair_off
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_unary_bf16_host(
+    kernel_name: &str,
+    op: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    block_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or_else(|| {
+            (grid_dim_x as usize)
+                .saturating_mul(block_dim_x as usize)
+                .saturating_mul(4)
+        });
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let bytes = n.saturating_mul(std::mem::size_of::<u16>());
+    let Some((pair_index, pair_off, out_addr, inp_addr)) =
+        find_tensoriterator_data_pair(kernel_params, bytes)
+    else {
+        eprintln!(
+            "[PACC Backend] unary bf16 {} '{}' could not locate TensorIterator data pair for n={} bytes={}",
+            op, kernel_name, n, bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    let mut input = vec![0u16; n];
+    if pacc_host_range_has_perms(inp_addr as usize, bytes, false) {
+        std::ptr::copy_nonoverlapping(
+            inp_addr as *const u8,
+            input.as_mut_ptr().cast::<u8>(),
+            bytes,
+        );
+    } else if let Err(err) = super::memory::copy_dto_h_v2(
+        input.as_mut_ptr() as *mut ::core::ffi::c_void,
+        cuda_types::cuda::CUdeviceptr_v2(inp_addr as *mut ::core::ffi::c_void),
+        bytes,
+    ) {
+        eprintln!(
+            "[PACC Backend] unary bf16 {} '{}' failed to read input out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+            op, kernel_name, out_addr, inp_addr, bytes, err
+        );
+        return Some(Err(err));
+    }
+
+    let mut output = vec![0u16; n];
+    for i in 0..n {
+        let x = pacc_bf16_to_f32(input[i]);
+        let y = match op {
+            "log" => x.ln(),
+            "silu" => pacc_silu(x),
+            _ => {
+                if x >= 0.0 {
+                    let z = (-x).exp();
+                    1.0 / (1.0 + z)
+                } else {
+                    let z = x.exp();
+                    z / (1.0 + z)
+                }
+            }
+        };
+        output[i] = pacc_f32_to_bf16(y);
+    }
+
+    if pacc_host_range_has_perms(out_addr as usize, bytes, true) {
+        std::ptr::copy_nonoverlapping(
+            output.as_ptr().cast::<u8>(),
+            out_addr as *mut u8,
+            bytes,
+        );
+    } else if let Err(err) = super::memory::copy_hto_d_v2(
+        cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
+        output.as_ptr() as *const ::core::ffi::c_void,
+        bytes,
+    ) {
+        eprintln!(
+            "[PACC Backend] unary bf16 {} '{}' failed to write output out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+            op, kernel_name, out_addr, inp_addr, bytes, err
+        );
+        return Some(Err(err));
+    }
+
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled unary bf16 {} '{}' on host path n={} bytes={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
+            op, kernel_name, n, bytes, out_addr, inp_addr, pair_index, pair_off
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_uniform_bf16_host(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or_else(|| (grid_dim_x as usize).saturating_mul(4));
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let bytes = n.saturating_mul(std::mem::size_of::<u16>());
+    let Some((param_index, param_off, out_addr)) =
+        find_tensoriterator_data_single(kernel_params, bytes)
+    else {
+        eprintln!(
+            "[PACC Backend] uniform bf16 '{}' could not locate TensorIterator output for n={} bytes={}",
+            kernel_name, n, bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    let mut output = vec![0u16; n];
+    for i in 0..n {
+        let mut x = (i as u64)
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .wrapping_add(0xbf58_476d_1ce4_e5b9);
+        x ^= x >> 30;
+        x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x ^= x >> 27;
+        x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^= x >> 31;
+        let unit = ((x >> 40) as f32) * (1.0 / ((1u32 << 24) as f32));
+        output[i] = pacc_f32_to_bf16(unit * 16.0);
+    }
+    if let Err(err) = write_bf16_tensor(out_addr, &output) {
+        eprintln!(
+            "[PACC Backend] uniform bf16 '{}' failed to write output out=0x{:x} n={} err={:?}",
+            kernel_name, out_addr, n, err
+        );
+        return Some(Err(err));
+    }
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled uniform bf16 '{}' on host path n={} out=0x{:x} param={} off=0x{:x}",
+            kernel_name, n, out_addr, param_index, param_off
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_unary_f32_host(
+    kernel_name: &str,
+    op_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    block_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or_else(|| {
+            (grid_dim_x as usize)
+                .saturating_mul(block_dim_x as usize)
+                .saturating_mul(4)
+        });
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let bytes = n.saturating_mul(std::mem::size_of::<f32>());
+    let Some((pair_index, pair_off, out_addr, inp_addr)) =
+        find_tensoriterator_data_pair(kernel_params, bytes)
+    else {
+        eprintln!(
+            "[PACC Backend] unary f32 {} '{}' could not locate TensorIterator data pair for n={} bytes={}",
+            op_name, kernel_name, n, bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    let mut input = vec![0f32; n];
+    if pacc_host_range_has_perms(inp_addr as usize, bytes, false) {
+        std::ptr::copy_nonoverlapping(
+            inp_addr as *const u8,
+            input.as_mut_ptr().cast::<u8>(),
+            bytes,
+        );
+    } else if let Err(err) = super::memory::copy_dto_h_v2(
+        input.as_mut_ptr() as *mut ::core::ffi::c_void,
+        cuda_types::cuda::CUdeviceptr_v2(inp_addr as *mut ::core::ffi::c_void),
+        bytes,
+    ) {
+        eprintln!(
+            "[PACC Backend] unary f32 {} '{}' failed to read input out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+            op_name, kernel_name, out_addr, inp_addr, bytes, err
+        );
+        return Some(Err(err));
+    }
+
+    let mut output = vec![0f32; n];
+    for i in 0..n {
+        let x = input[i];
+        output[i] = match op_name {
+            "exp" => x.exp(),
+            "log" => x.ln(),
+            "softplus" => {
+                if x > 20.0 {
+                    x
+                } else if x < -20.0 {
+                    x.exp()
+                } else {
+                    (1.0 + x.exp()).ln()
+                }
+            }
+            "neg" => -x,
+            "sigmoid" => {
+                if x >= 0.0 {
+                    let z = (-x).exp();
+                    1.0 / (1.0 + z)
+                } else {
+                    let z = x.exp();
+                    z / (1.0 + z)
+                }
+            }
+            _ => x,
+        };
+    }
+
+    if pacc_host_range_has_perms(out_addr as usize, bytes, true) {
+        std::ptr::copy_nonoverlapping(
+            output.as_ptr().cast::<u8>(),
+            out_addr as *mut u8,
+            bytes,
+        );
+    } else if let Err(err) = super::memory::copy_hto_d_v2(
+        cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
+        output.as_ptr() as *const ::core::ffi::c_void,
+        bytes,
+    ) {
+        eprintln!(
+            "[PACC Backend] unary f32 {} '{}' failed to write output out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+            op_name, kernel_name, out_addr, inp_addr, bytes, err
+        );
+        return Some(Err(err));
+    }
+
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled unary f32 {} '{}' on host path n={} bytes={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
+            op_name, kernel_name, n, bytes, out_addr, inp_addr, pair_index, pair_off
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_binary_f32_host(
+    kernel_name: &str,
+    op_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    block_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or_else(|| {
+            (grid_dim_x as usize)
+                .saturating_mul(block_dim_x as usize)
+                .saturating_mul(4)
+        });
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let out_bytes = n.saturating_mul(std::mem::size_of::<f32>());
+    let Some((triplet_index, triplet_off, out_addr, lhs_addr, rhs_addr)) =
+        find_tensoriterator_data_triplet(kernel_params, out_bytes)
+    else {
+        log_tensoriterator_triplet_scan_debug(kernel_params, kernel_name, n);
+        eprintln!(
+            "[PACC Backend] binary f32 {} '{}' could not locate TensorIterator data triplet for n={} bytes={}",
+            op_name, kernel_name, n, out_bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    let lhs_elems = super::memory::pacc_allocation_remaining_addr(lhs_addr)
+        .map(|bytes| (bytes / std::mem::size_of::<f32>()).clamp(1, n))
+        .unwrap_or(n);
+    let rhs_elems = super::memory::pacc_allocation_remaining_addr(rhs_addr)
+        .map(|bytes| (bytes / std::mem::size_of::<f32>()).clamp(1, n))
+        .unwrap_or(n);
+    let lhs = match read_f32_tensor_prefix(lhs_addr, lhs_elems) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!(
+                "[PACC Backend] binary f32 {} '{}' failed to read lhs=0x{:x} elems={} err={:?}",
+                op_name, kernel_name, lhs_addr, lhs_elems, err
+            );
+            return Some(Err(err));
+        }
+    };
+    let rhs = match read_f32_tensor_prefix(rhs_addr, rhs_elems) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!(
+                "[PACC Backend] binary f32 {} '{}' failed to read rhs=0x{:x} elems={} err={:?}",
+                op_name, kernel_name, rhs_addr, rhs_elems, err
+            );
+            return Some(Err(err));
+        }
+    };
+
+    let mut out = vec![0f32; n];
+    for i in 0..n {
+        let a = lhs[i % lhs.len()];
+        let b = rhs[i % rhs.len()];
+        out[i] = match op_name {
+            "add" => a + b,
+            "mul" => a * b,
+            "div" => a / b,
+            _ => a,
+        };
+    }
+    if let Err(err) = write_f32_tensor(out_addr, &out) {
+        eprintln!(
+            "[PACC Backend] binary f32 {} '{}' failed to write out=0x{:x} bytes={} err={:?}",
+            op_name, kernel_name, out_addr, out_bytes, err
+        );
+        return Some(Err(err));
+    }
+
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled binary f32 {} '{}' on host path n={} lhs_elems={} rhs_elems={} out=0x{:x} lhs=0x{:x} rhs=0x{:x} triplet_param={} triplet_off=0x{:x}",
+            op_name, kernel_name, n, lhs_elems, rhs_elems, out_addr, lhs_addr, rhs_addr, triplet_index, triplet_off
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_binary_bf16_host(
+    kernel_name: &str,
+    op_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    block_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or_else(|| {
+            (grid_dim_x as usize)
+                .saturating_mul(block_dim_x as usize)
+                .saturating_mul(4)
+        });
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let out_bytes = n.saturating_mul(std::mem::size_of::<u16>());
+    let Some((triplet_index, triplet_off, out_addr, lhs_addr, rhs_addr)) =
+        find_tensoriterator_data_triplet(kernel_params, out_bytes)
+    else {
+        log_tensoriterator_triplet_scan_debug(kernel_params, kernel_name, n);
+        eprintln!(
+            "[PACC Backend] binary bf16 {} '{}' could not locate TensorIterator data triplet for n={} bytes={}",
+            op_name, kernel_name, n, out_bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    let lhs_elems = super::memory::pacc_allocation_remaining_addr(lhs_addr)
+        .map(|bytes| (bytes / std::mem::size_of::<u16>()).clamp(1, n))
+        .unwrap_or(n);
+    let rhs_elems = super::memory::pacc_allocation_remaining_addr(rhs_addr)
+        .map(|bytes| (bytes / std::mem::size_of::<u16>()).clamp(1, n))
+        .unwrap_or(n);
+    let lhs = match read_bf16_tensor_prefix(lhs_addr, lhs_elems) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!(
+                "[PACC Backend] binary bf16 {} '{}' failed to read lhs=0x{:x} elems={} err={:?}",
+                op_name, kernel_name, lhs_addr, lhs_elems, err
+            );
+            return Some(Err(err));
+        }
+    };
+    let rhs = match read_bf16_tensor_prefix(rhs_addr, rhs_elems) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!(
+                "[PACC Backend] binary bf16 {} '{}' failed to read rhs=0x{:x} elems={} err={:?}",
+                op_name, kernel_name, rhs_addr, rhs_elems, err
+            );
+            return Some(Err(err));
+        }
+    };
+
+    let mut out = vec![0u16; n];
+    for i in 0..n {
+        let a = pacc_bf16_to_f32(lhs[i % lhs.len()]);
+        let b = pacc_bf16_to_f32(rhs[i % rhs.len()]);
+        let y = match op_name {
+            "add" => a + b,
+            "mul" => a * b,
+            "div" => a / b,
+            _ => a,
+        };
+        out[i] = pacc_f32_to_bf16(y);
+    }
+    if let Err(err) = write_bf16_tensor(out_addr, &out) {
+        eprintln!(
+            "[PACC Backend] binary bf16 {} '{}' failed to write out=0x{:x} bytes={} err={:?}",
+            op_name, kernel_name, out_addr, out_bytes, err
+        );
+        return Some(Err(err));
+    }
+
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled binary bf16 {} '{}' on host path n={} lhs_elems={} rhs_elems={} out=0x{:x} lhs=0x{:x} rhs=0x{:x} triplet_param={} triplet_off=0x{:x}",
+            op_name, kernel_name, n, lhs_elems, rhs_elems, out_addr, lhs_addr, rhs_addr, triplet_index, triplet_off
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn read_aunary_f32_scalar(kernel_params: *mut *mut ::core::ffi::c_void) -> Option<f32> {
+    if kernel_params.is_null() {
+        return None;
+    }
+    for index in 0..3 {
+        let param = *kernel_params.add(index);
+        if param.is_null() || (param as usize) < 0x1_0000 {
+            continue;
+        }
+        let base = param as usize;
+        for off in (0..128usize).step_by(std::mem::size_of::<f32>()) {
+            if !pacc_host_range_has_perms(base.saturating_add(off), std::mem::size_of::<f32>(), false) {
+                continue;
+            }
+            let value = ((base + off) as *const f32).read_unaligned();
+            if value.is_finite() && value.abs() >= 1.0e-6 && value.abs() <= 1.0e6 {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_aunary_f32_host(
+    kernel_name: &str,
+    op_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    block_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or_else(|| {
+            (grid_dim_x as usize)
+                .saturating_mul(block_dim_x as usize)
+                .saturating_mul(4)
+        });
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let bytes = n.saturating_mul(std::mem::size_of::<f32>());
+    let Some((pair_index, pair_off, out_addr, inp_addr)) =
+        find_tensoriterator_data_pair(kernel_params, bytes)
+    else {
+        eprintln!(
+            "[PACC Backend] aunary f32 {} '{}' could not locate TensorIterator data pair for n={} bytes={}",
+            op_name, kernel_name, n, bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let Some(scalar) = read_aunary_f32_scalar(kernel_params) else {
+        eprintln!(
+            "[PACC Backend] aunary f32 {} '{}' could not locate scalar for n={}",
+            op_name, kernel_name, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let input = match read_f32_tensor_prefix(inp_addr, n) {
+        Ok(v) => v,
+        Err(err) => return Some(Err(err)),
+    };
+    let mut out = vec![0f32; n];
+    for i in 0..n {
+        out[i] = match op_name {
+            "mul" => input[i] * scalar,
+            "add" => input[i] + scalar,
+            _ => input[i],
+        };
+    }
+    if let Err(err) = write_f32_tensor(out_addr, &out) {
+        return Some(Err(err));
+    }
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled aunary f32 {} '{}' n={} scalar={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
+            op_name, kernel_name, n, scalar, out_addr, inp_addr, pair_index, pair_off
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_arange_host_fill(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or(grid_dim_x as usize);
+    if n == 0 {
+        return Some(Ok(()));
+    }
+
+    let mut out_addr = None;
+    for index in 1..4 {
+        let Some(candidate) = read_param_u64(kernel_params, index) else {
+            continue;
+        };
+        if candidate < 0x1_0000 {
+            continue;
+        }
+        if pacc_host_or_cuda_alloc_has_bytes(candidate, n, true) {
+            out_addr = Some((index, candidate));
+            break;
+        }
+    }
+    let Some((param_index, out_addr)) = out_addr else {
+        eprintln!(
+            "[PACC Backend] arange '{}' could not locate output allocation for n={}",
+            kernel_name, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    let remaining = super::memory::pacc_allocation_remaining_addr(out_addr).unwrap_or(n);
+    if remaining >= n.saturating_mul(8)
+        && pacc_host_or_cuda_alloc_has_bytes(out_addr, n.saturating_mul(8), true)
+    {
+        let out = out_addr as *mut i64;
+        for i in 0..n {
+            out.add(i).write(i as i64);
+        }
+        if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+            eprintln!(
+                "[PACC Backend] handled arange '{}' on host-fill path n={} dtype=i64 param={}",
+                kernel_name, n, param_index
+            );
+        }
+        return Some(Ok(()));
+    }
+    if remaining >= n.saturating_mul(4)
+        && pacc_host_or_cuda_alloc_has_bytes(out_addr, n.saturating_mul(4), true)
+    {
+        let out = out_addr as *mut i32;
+        for i in 0..n {
+            out.add(i).write(i as i32);
+        }
+        if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+            eprintln!(
+                "[PACC Backend] handled arange '{}' on host-fill path n={} dtype=i32 param={}",
+                kernel_name, n, param_index
+            );
+        }
+        return Some(Ok(()));
+    }
+
+    eprintln!(
+        "[PACC Backend] arange '{}' rejected output allocation out=0x{:x} n={} remaining={}",
+        kernel_name, out_addr, n, remaining
+    );
+    Some(Err(cuda_types::cuda::CUerror::UNKNOWN))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_vectorized_add_i64_host(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or(grid_dim_x as usize);
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let scalar = read_param_i64(kernel_params, 1).unwrap_or(0);
+    let Some((out_addr, inp_addr)) = read_param_data_pair(kernel_params, 2) else {
+        eprintln!(
+            "[PACC Backend] vectorized add '{}' missing data pair n={}",
+            kernel_name, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let bytes = n.saturating_mul(std::mem::size_of::<i64>());
+    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, bytes, true)
+        || !pacc_host_or_cuda_alloc_has_bytes(inp_addr, bytes, false)
+    {
+        eprintln!(
+            "[PACC Backend] vectorized add '{}' rejected allocation out=0x{:x} inp=0x{:x} bytes={}",
+            kernel_name, out_addr, inp_addr, bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let out = out_addr as *mut i64;
+    let inp = inp_addr as *const i64;
+    for i in 0..n {
+        out.add(i).write(inp.add(i).read_unaligned().wrapping_add(scalar));
+    }
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled vectorized add '{}' on host i64 path n={} scalar={}",
+            kernel_name, n, scalar
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_fill_bool_host(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or(grid_dim_x as usize);
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let value = read_param_bool(kernel_params, 1).unwrap_or(true);
+    let Some(out_addr) = read_param_data_single(kernel_params, 2) else {
+        eprintln!(
+            "[PACC Backend] fill bool '{}' missing output pointer n={}",
+            kernel_name, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, n, true) {
+        eprintln!(
+            "[PACC Backend] fill bool '{}' rejected output allocation out=0x{:x} n={}",
+            kernel_name, out_addr, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+    std::ptr::write_bytes(out_addr as *mut u8, if value { 1 } else { 0 }, n);
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled fill bool '{}' on host path n={} value={}",
+            kernel_name, n, value
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_fill_bf16_host(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or(grid_dim_x as usize);
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let value = if !kernel_params.is_null() {
+        let param = *kernel_params.add(1);
+        if !param.is_null()
+            && (param as usize) >= 0x1_0000
+            && pacc_host_range_has_perms(param as usize, std::mem::size_of::<u16>(), false)
+        {
+            (param as *const u16).read_unaligned()
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    let Some(out_addr) = read_param_data_single(kernel_params, 2) else {
+        eprintln!(
+            "[PACC Backend] fill bf16 '{}' missing output pointer n={}",
+            kernel_name, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let bytes = n.saturating_mul(std::mem::size_of::<u16>());
+    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, bytes, true) {
+        eprintln!(
+            "[PACC Backend] fill bf16 '{}' rejected output allocation out=0x{:x} bytes={}",
+            kernel_name, out_addr, bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+    let out = out_addr as *mut u16;
+    for i in 0..n {
+        out.add(i).write_unaligned(value);
+    }
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled fill bf16 '{}' on host path n={} value=0x{:04x}",
+            kernel_name, n, value
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_fill_f32_host(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or(grid_dim_x as usize);
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let value = read_param_f32(kernel_params, 1).unwrap_or(0.0);
+    let Some(out_addr) = read_param_data_single(kernel_params, 2) else {
+        eprintln!(
+            "[PACC Backend] fill f32 '{}' missing output pointer n={}",
+            kernel_name, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let bytes = n.saturating_mul(std::mem::size_of::<f32>());
+    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, bytes, true) {
+        eprintln!(
+            "[PACC Backend] fill f32 '{}' rejected output allocation out=0x{:x} bytes={}",
+            kernel_name, out_addr, bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+    let values = vec![value; n];
+    if let Err(err) = write_f32_tensor(out_addr, &values) {
+        eprintln!(
+            "[PACC Backend] fill f32 '{}' failed to write out=0x{:x} bytes={} err={:?}",
+            kernel_name, out_addr, bytes, err
+        );
+        return Some(Err(err));
+    }
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled fill f32 '{}' on host path n={} value={}",
+            kernel_name, n, value
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_fill_i64_host(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or(grid_dim_x as usize);
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let value = read_param_i64(kernel_params, 1).unwrap_or(0);
+    let Some(out_addr) = read_param_data_single(kernel_params, 2) else {
+        eprintln!(
+            "[PACC Backend] fill i64 '{}' missing output pointer n={}",
+            kernel_name, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let bytes = n.saturating_mul(std::mem::size_of::<i64>());
+    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, bytes, true) {
+        eprintln!(
+            "[PACC Backend] fill i64 '{}' rejected output allocation out=0x{:x} bytes={}",
+            kernel_name, out_addr, bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+    if value == 0 {
+        std::ptr::write_bytes(out_addr as *mut u8, 0, bytes);
+    } else {
+        let out = out_addr as *mut i64;
+        for i in 0..n {
+            out.add(i).write_unaligned(value);
+        }
+    }
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled fill i64 '{}' on host path n={} value={}",
+            kernel_name, n, value
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_fill_i32_host(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or(grid_dim_x as usize);
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let value = read_param_i32(kernel_params, 1).unwrap_or(0);
+    let Some(out_addr) = read_param_data_single(kernel_params, 2) else {
+        eprintln!(
+            "[PACC Backend] fill i32 '{}' missing output pointer n={}",
+            kernel_name, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let bytes = n.saturating_mul(std::mem::size_of::<i32>());
+    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, bytes, true) {
+        eprintln!(
+            "[PACC Backend] fill i32 '{}' rejected output allocation out=0x{:x} bytes={}",
+            kernel_name, out_addr, bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+    if value == 0 {
+        std::ptr::write_bytes(out_addr as *mut u8, 0, bytes);
+    } else {
+        let out = out_addr as *mut i32;
+        for i in 0..n {
+            out.add(i).write_unaligned(value);
+        }
+    }
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled fill i32 '{}' on host path n={} value={}",
+            kernel_name, n, value
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_compare_i64_host_debug(
+    kernel_name: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or(grid_dim_x as usize);
+    eprintln!(
+        "[PACC Backend] compare i64 '{}' debug n={} grid_x={}",
+        kernel_name, n, grid_dim_x
+    );
+    if kernel_params.is_null() {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+    for index in 0..2 {
+        let param = *kernel_params.add(index);
+        if param.is_null() {
+            eprintln!("[PACC Backend] compare param[{}]=NULL", index);
+            continue;
+        }
+        let addr = param as usize;
+        if !pacc_host_range_has_perms(addr, 64, false) {
+            eprintln!(
+                "[PACC Backend] compare param[{}]={:p} not readable64",
+                index, param
+            );
+            continue;
+        }
+        let mut rendered = String::new();
+        let mut words = [0u64; 8];
+        for word_index in 0..words.len() {
+            words[word_index] = (param as *const u8)
+                .add(word_index * std::mem::size_of::<u64>())
+                .cast::<u64>()
+                .read_unaligned();
+        }
+        for (word_index, value) in words.iter().copied().enumerate() {
+            let alloc = pacc_host_or_cuda_alloc_has_bytes(value, 1, word_index == 0);
+            let _ = std::fmt::Write::write_fmt(
+                &mut rendered,
+                format_args!(" w{}=0x{:x}{}", word_index, value, if alloc { "*" } else { "" }),
+            );
+        }
+        eprintln!(
+            "[PACC Backend] compare param[{}]={:p}{}",
+            index, param, rendered
+        );
+        if index == 0 {
+            continue;
+        }
+        for (word_index, value) in words.iter().copied().enumerate() {
+            let Ok(ptr) = usize::try_from(value) else {
+                continue;
+            };
+            if ptr < 0x1_0000 || !pacc_host_range_has_perms(ptr, 128, false) {
+                continue;
+            }
+            let mut nested_rendered = String::new();
+            for nested_index in 0..16 {
+                let nested_value = (ptr as *const u8)
+                    .add(nested_index * std::mem::size_of::<u64>())
+                    .cast::<u64>()
+                    .read_unaligned();
+                let alloc = pacc_host_or_cuda_alloc_has_bytes(nested_value, 1, nested_index == 0);
+                let _ = std::fmt::Write::write_fmt(
+                    &mut nested_rendered,
+                    format_args!(
+                        " n{}=0x{:x}{}",
+                        nested_index,
+                        nested_value,
+                        if alloc { "*" } else { "" }
+                    ),
+                );
+            }
+            eprintln!(
+                "[PACC Backend] compare param[{}].w{} -> 0x{:x}{}",
+                index, word_index, ptr, nested_rendered
+            );
+        }
+    }
+    Some(Err(cuda_types::cuda::CUerror::UNKNOWN))
 }
 
 #[cfg(all(
@@ -9441,6 +11577,35 @@ unsafe fn try_offload_named_pacc_kernel(
     {
         return pacc_named_assume_success("MMVQ named fail-open requested", kernel_name);
     }
+    if name_lower.contains("softmax_warp_forward") {
+        let (src, dst, rows, cols, stride, dtype) =
+            match read_pytorch_softmax_warp_forward_args(kernel_params) {
+                Some(args) => args,
+                None => return None,
+            };
+        let _ = dtype;
+        let dev_id = current_pacc_device_id_or_zero();
+        let rc = launch_pytorch_softmax_warp_forward_elf(
+            dev_id,
+            src,
+            dst,
+            rows,
+            cols,
+            stride,
+        );
+        if rc == 0 {
+            eprintln!(
+                "[PACC Backend] offloaded PyTorch softmax_warp_forward '{}' via PACC ELF dev={} rows={} cols={} stride={}",
+                kernel_name, dev_id, rows, cols, stride
+            );
+            return Some(Ok(()));
+        }
+        eprintln!(
+            "[PACC Backend] PyTorch softmax_warp_forward '{}' PACC ELF offload failed rc={} rows={} cols={} stride={}",
+            kernel_name, rc, rows, cols, stride
+        );
+        return Some(Err(CUerror::UNKNOWN));
+    }
     if name_lower.contains("softmax") || name_lower.contains("soft_max") {
         let (x, mask, sinks, dst, params) = match read_softmax_named_args(kernel_params) {
             Some(args) => args,
@@ -9779,12 +11944,149 @@ unsafe fn try_offload_named_pacc_kernel(
             && name_lower.contains("loadwithcast")
             && name_lower.contains("storewithcast"))
     {
+        if name_lower.contains("bfloat16") {
+            return execute_direct_copy_bf16_host(
+                kernel_name,
+                grid_dim_x,
+                1,
+                kernel_params,
+            );
+        }
+        if let Some(result) = execute_direct_copy_cast_host(kernel_name, grid_dim_x, 1, kernel_params) {
+            return Some(result);
+        }
         return execute_direct_copy_bool_host_cast(
             kernel_name,
             grid_dim_x,
             1,
             kernel_params,
         );
+    }
+
+    if name_lower.contains("bfloat16_copy_kernel_cuda") {
+        if let Some(result) = execute_direct_copy_cast_host(kernel_name, grid_dim_x, 1, kernel_params) {
+            return Some(result);
+        }
+        return execute_direct_copy_bool_host_cast(kernel_name, grid_dim_x, 1, kernel_params);
+    }
+
+    if name_lower.contains("arange_cuda_out") {
+        return execute_arange_host_fill(kernel_name, grid_dim_x, kernel_params);
+    }
+
+    if name_lower.contains("vectorized_elementwise_kernel")
+        && name_lower.contains("cudafunctoronself_add")
+        && name_lower.contains("il")
+    {
+        return execute_vectorized_add_i64_host(kernel_name, grid_dim_x, kernel_params);
+    }
+
+    if name_lower.contains("vectorized_elementwise_kernel")
+        && name_lower.contains("sigmoid_kernel_cuda")
+        && name_lower.contains("bfloat16")
+    {
+        return execute_unary_bf16_host(kernel_name, "sigmoid", grid_dim_x, 1, kernel_params);
+    }
+    if name_lower.contains("vectorized_elementwise_kernel")
+        && name_lower.contains("silu_kernel")
+        && name_lower.contains("bfloat16")
+    {
+        return execute_unary_bf16_host(kernel_name, "silu", grid_dim_x, 1, kernel_params);
+    }
+    if name_lower.contains("vectorized_elementwise_kernel")
+        && name_lower.contains("log_kernel_cuda")
+        && name_lower.contains("bfloat16")
+    {
+        return execute_unary_bf16_host(kernel_name, "log", grid_dim_x, 1, kernel_params);
+    }
+    if name_lower.contains("distribution_elementwise_grid_stride_kernel")
+        && name_lower.contains("uniform_kernel")
+        && name_lower.contains("bfloat16")
+    {
+        return execute_uniform_bf16_host(kernel_name, grid_dim_x, kernel_params);
+    }
+    if name_lower.contains("vectorized_elementwise_kernel") {
+        if name_lower.contains("aunaryfunctor") && name_lower.contains("mulfunctor") {
+            return execute_aunary_f32_host(kernel_name, "mul", grid_dim_x, 1, kernel_params);
+        }
+        if name_lower.contains("exp_kernel_cuda") {
+            return execute_unary_f32_host(kernel_name, "exp", grid_dim_x, 1, kernel_params);
+        }
+        if name_lower.contains("log_kernel_cuda") {
+            return execute_unary_f32_host(kernel_name, "log", grid_dim_x, 1, kernel_params);
+        }
+        if name_lower.contains("softplus_kernel_cuda") || name_lower.contains("softplus_kernel") {
+            return execute_unary_f32_host(kernel_name, "softplus", grid_dim_x, 1, kernel_params);
+        }
+        if name_lower.contains("neg_kernel_cuda") {
+            return execute_unary_f32_host(kernel_name, "neg", grid_dim_x, 1, kernel_params);
+        }
+        if name_lower.contains("sigmoid_kernel_cuda") && !name_lower.contains("bfloat16") {
+            return execute_unary_f32_host(kernel_name, "sigmoid", grid_dim_x, 1, kernel_params);
+        }
+    }
+
+    if name_lower.contains("elementwise_kernel") {
+        let binary_is_bf16 = name_lower.contains("bfloat16");
+        if binary_is_bf16 && name_lower.contains("cudafunctor_add") {
+            return execute_binary_bf16_host(kernel_name, "add", grid_dim_x, 1, kernel_params);
+        }
+        if binary_is_bf16 && name_lower.contains("mulfunctor") {
+            return execute_binary_bf16_host(kernel_name, "mul", grid_dim_x, 1, kernel_params);
+        }
+        if binary_is_bf16 && name_lower.contains("cudafunctor_div") {
+            return execute_binary_bf16_host(kernel_name, "div", grid_dim_x, 1, kernel_params);
+        }
+        if name_lower.contains("cudafunctor_add") {
+            return execute_binary_f32_host(kernel_name, "add", grid_dim_x, 1, kernel_params);
+        }
+        if name_lower.contains("cudafunctor_mul") {
+            return execute_binary_f32_host(kernel_name, "mul", grid_dim_x, 1, kernel_params);
+        }
+        if name_lower.contains("mulfunctor") {
+            return execute_binary_f32_host(kernel_name, "mul", grid_dim_x, 1, kernel_params);
+        }
+        if name_lower.contains("cudafunctor_div") {
+            return execute_binary_f32_host(kernel_name, "div", grid_dim_x, 1, kernel_params);
+        }
+    }
+
+    if name_lower.contains("vectorized_elementwise_kernel")
+        && name_lower.contains("fillfunctor")
+        && name_lower.contains("fillfunctoril")
+    {
+        return execute_fill_i64_host(kernel_name, grid_dim_x, kernel_params);
+    }
+    if name_lower.contains("vectorized_elementwise_kernel")
+        && name_lower.contains("fillfunctor")
+        && name_lower.contains("fillfunctorii")
+    {
+        return execute_fill_i32_host(kernel_name, grid_dim_x, kernel_params);
+    }
+    if name_lower.contains("vectorized_elementwise_kernel")
+        && name_lower.contains("fillfunctor")
+        && name_lower.contains("ib")
+    {
+        return execute_fill_bool_host(kernel_name, grid_dim_x, kernel_params);
+    }
+    if name_lower.contains("vectorized_elementwise_kernel")
+        && name_lower.contains("fillfunctor")
+        && name_lower.contains("bfloat16")
+    {
+        return execute_fill_bf16_host(kernel_name, grid_dim_x, kernel_params);
+    }
+    if name_lower.contains("vectorized_elementwise_kernel")
+        && name_lower.contains("fillfunctor")
+        && name_lower.contains("if")
+    {
+        return execute_fill_f32_host(kernel_name, grid_dim_x, kernel_params);
+    }
+
+    if name_lower.contains("elementwise_kernel")
+        && name_lower.contains("comparefunctor")
+        && name_lower.contains("il")
+    {
+        return execute_compare_i64_host_debug(kernel_name, grid_dim_x, kernel_params);
     }
 
     None

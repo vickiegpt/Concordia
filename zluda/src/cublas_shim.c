@@ -204,6 +204,14 @@ extern int hetgpu_pacc_submit_gemm_staged_tiled(
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType,
     int max_m, int max_n, int max_k);
+extern int hetgpu_pacc_submit_gemm_mmvf_small_n(
+    int transa, int transb, int m, int n, int k,
+    const void *alpha,
+    const void *A, int Atype, int lda, long long strideA,
+    const void *B, int Btype, int ldb, long long strideB,
+    const void *beta,
+    void *C, int Ctype, int ldc, long long strideC,
+    int batchCount, int computeType);
 extern unsigned long long hetgpu_pacc_resolve_device_addr(const void *ptr);
 extern int hetgpu_pacc_is_device_ptr(const void *ptr);
 extern size_t hetgpu_pacc_allocation_remaining(const void *ptr);
@@ -1082,6 +1090,26 @@ static cublasStatus_t submit_pacc_gemm(
                   name, (int)transa, (int)transb, m, n, k, max_m, max_n, max_k,
                   lda, ldb, ldc, batchCount, strideA, strideB, strideC);
         rc = 0;
+        int mmvf_max_n = (int)hetgpu_env_u64_default("HETGPU_PACC_GEMM_MMVF_ROUTE_MAX_N", 0ULL);
+        if (mmvf_max_n > 0 && n > 0 && n <= mmvf_max_n && (k % 2) == 0) {
+            int mmvf_rc = hetgpu_pacc_submit_gemm_mmvf_small_n(
+                (int)transa, (int)transb, m, n, k,
+                alpha_arg,
+                A, hetgpu_pacc_dtype(Atype), lda, strideA,
+                B, hetgpu_pacc_dtype(Btype), ldb, strideB,
+                beta_arg,
+                C, hetgpu_pacc_dtype(Ctype), ldc, strideC,
+                batchCount, (int)computeType);
+            if (mmvf_rc == 0) {
+                DEBUG_LOG("%s using PACC MMVF small-N GEMM route m=%d n=%d k=%d",
+                          name, m, n, k);
+                return CUBLAS_STATUS_SUCCESS;
+            }
+            if (mmvf_rc < 0) {
+                DEBUG_LOG("%s PACC MMVF small-N route failed rc=%d; falling back to staged GEMM",
+                          name, mmvf_rc);
+            }
+        }
         size_t a_size = host_dtype_size(Atype);
         size_t b_size = host_dtype_size(Btype);
         size_t c_size = host_dtype_size(Ctype);

@@ -795,7 +795,7 @@ static bool jobd_arg_slot_scan_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
-    if (getenv("HETGPU_PACC_ID")) {
+    if (getenv("HETGPU_PACC_ID") || getenv("PACC_JOBD_PACC_ID")) {
         return false;
     }
     return true;
@@ -1021,6 +1021,18 @@ static bool jobd_rms_local_copy_enabled(void) {
         return env_flag_true(value);
     }
     value = getenv("HETGPU_PACC_JOBD_RMS_LOCAL_COPY");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return true;
+}
+
+static bool jobd_softmax_local_copy_enabled(void) {
+    const char *value = getenv("PACC_JOBD_SOFTMAX_LOCAL_COPY");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    value = getenv("HETGPU_PACC_JOBD_SOFTMAX_LOCAL_COPY");
     if (value && *value) {
         return env_flag_true(value);
     }
@@ -1645,10 +1657,15 @@ static void read_shared_ddr_info_from_mbox(int mbox_fd) {
 
 static void read_pacc_id_from_mbox(int mbox_fd) {
     const char *env = getenv("HETGPU_PACC_ID");
+    const char *legacy_env = getenv("PACC_JOBD_PACC_ID");
     const char *ioctl_env = getenv("HETGPU_PACC_JOBD_PACC_ID_IOCTL");
     unsigned long pacc_id = 0;
     if (parse_u64_checked(env, &g_pacc_id)) {
         log_msg("pacc id %" PRIu64 " from env", g_pacc_id);
+        return;
+    }
+    if (parse_u64_checked(legacy_env, &g_pacc_id)) {
+        log_msg("pacc id %" PRIu64 " from PACC_JOBD_PACC_ID", g_pacc_id);
         return;
     }
     if (ioctl_env && *ioctl_env && !env_flag_true(ioctl_env)) {
@@ -3362,7 +3379,7 @@ static void select_pacc_id_from_arg_slot_candidate(uint32_t candidate,
     if (g_pacc_id == candidate) {
         return;
     }
-    if (getenv("HETGPU_PACC_ID")) {
+    if (getenv("HETGPU_PACC_ID") || getenv("PACC_JOBD_PACC_ID")) {
         trace_msg("ignoring arg-slot pacc id switch to %u while HETGPU_PACC_ID is fixed", candidate);
         return;
     }
@@ -4039,7 +4056,19 @@ static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
         if (status == 0) {
             int mapped_status = write_phys_copy(fd, job->c_addr, c_copy, c_bytes);
             if (mapped_status != 0) {
-                status = 0xffff1005;
+                size_t chunk = 4096;
+                size_t done = 0;
+                status = 0;
+                while (done < c_bytes) {
+                    size_t want = c_bytes - done;
+                    if (want > chunk) want = chunk;
+                    if (write_phys_copy_pwrite_only(fd, job->c_addr + done,
+                                                    c_copy + done, want) != 0) {
+                        status = 0xffff1005;
+                        break;
+                    }
+                    done += want;
+                }
             } else if (env_flag_true(getenv("HETGPU_PACC_JOBD_GEMM_LINE_PWRITE"))) {
                 size_t line = jobd_cbo_block_bytes();
                 if (line < 16) line = 16;
@@ -4096,15 +4125,59 @@ static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
     return 0;
 }
 
-static int run_softmax(int fd, const struct SoftmaxJob *job) {
+static int run_softmax(int fd, const struct SoftmaxJob *job, uint64_t seq) {
+    mirror_progress_status(fd, HETGPU_PACC_JOB_SOFTMAX, seq, 0x5220);
     if (!job->src_addr || !job->dst_addr || !job->rows || !job->cols) return 0xffff2001;
     size_t elem_size = dtype_size(job->dtype);
     if (!elem_size) return 0xffff2002;
     uint64_t stride = job->stride ? job->stride : job->cols;
     size_t elems = (size_t)(job->rows * stride);
+    size_t bytes = elems * elem_size;
+    if (jobd_softmax_local_copy_enabled()) {
+        uint8_t *src_copy = NULL;
+        uint8_t *dst_copy = NULL;
+        mirror_progress_status(fd, HETGPU_PACC_JOB_SOFTMAX, seq, 0x5221);
+        if (read_phys_copy(fd, job->src_addr, bytes, &src_copy) != 0 || !src_copy) {
+            free(src_copy);
+            return 0xffff2101;
+        }
+        mirror_progress_status(fd, HETGPU_PACC_JOB_SOFTMAX, seq, 0x5222);
+        dst_copy = calloc(1, bytes);
+        if (!dst_copy) {
+            free(src_copy);
+            return 0xffff2102;
+        }
+        for (uint64_t row = 0; row < job->rows; row++) {
+            uint64_t base = row * stride;
+            float max_v = load_typed(src_copy, base, job->dtype);
+            for (uint64_t col = 1; col < job->cols; col++) {
+                float v = load_typed(src_copy, base + col, job->dtype);
+                if (v > max_v) max_v = v;
+            }
+            float sum = 0.0f;
+            for (uint64_t col = 0; col < job->cols; col++) {
+                sum += expf_fast(load_typed(src_copy, base + col, job->dtype) - max_v);
+            }
+            float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
+            for (uint64_t col = 0; col < job->cols; col++) {
+                float e = expf_fast(load_typed(src_copy, base + col, job->dtype) - max_v);
+                store_typed(dst_copy, base + col, job->dtype, e * inv);
+            }
+        }
+        mirror_progress_status(fd, HETGPU_PACC_JOB_SOFTMAX, seq, 0x5223);
+        int ret = write_phys_copy(fd, job->dst_addr, dst_copy, bytes);
+        free(src_copy);
+        free(dst_copy);
+        if (ret != 0) {
+            return 0xffff2103;
+        }
+        mirror_progress_status(fd, HETGPU_PACC_JOB_SOFTMAX, seq, 0x5224);
+        return 0;
+    }
     struct Map ms = {0}, md = {0};
-    if (map_phys(fd, job->src_addr, elems * elem_size, &ms) ||
-        map_phys(fd, job->dst_addr, elems * elem_size, &md)) {
+    mirror_progress_status(fd, HETGPU_PACC_JOB_SOFTMAX, seq, 0x5228);
+    if (map_phys(fd, job->src_addr, bytes, &ms) ||
+        map_phys(fd, job->dst_addr, bytes, &md)) {
         unmap_phys(&ms); unmap_phys(&md);
         return 0xffff2003;
     }
@@ -10685,7 +10758,7 @@ static int dispatch_job(int fd, volatile struct Doorbell *ctl, const struct Prel
             trace_msg("dispatch SOFTMAX: seq=%" PRIu64 " rows=%" PRIu64 " cols=%" PRIu64 " stride=%" PRIu64 " dtype=%u",
                       seq, job->rows, job->cols, job->stride, job->dtype);
         }
-        return run_softmax(fd, job);
+        return run_softmax(fd, job, seq);
     }
     if (job_id == HETGPU_PACC_JOB_RMSNORM) {
         struct RmsNormJob copied;

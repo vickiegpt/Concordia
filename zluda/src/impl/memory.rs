@@ -1102,6 +1102,49 @@ fn pacc_alloc_trace(tag: &'static [u8]) {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+fn pacc_process_range_has_perms(addr: usize, len: usize, need_write: bool) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let Some(end_addr) = addr.checked_add(len) else {
+        return false;
+    };
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return false;
+    };
+    for line in maps.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(range) = parts.next() else {
+            continue;
+        };
+        let Some(perms) = parts.next() else {
+            continue;
+        };
+        if !perms.starts_with('r') || (need_write && perms.as_bytes().get(1).copied() != Some(b'w')) {
+            continue;
+        }
+        let Some((start_hex, end_hex)) = range.split_once('-') else {
+            continue;
+        };
+        let Ok(start) = usize::from_str_radix(start_hex, 16) else {
+            continue;
+        };
+        let Ok(end) = usize::from_str_radix(end_hex, 16) else {
+            continue;
+        };
+        if addr >= start && end_addr <= end {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 fn pacc_align_up(value: usize, align: usize) -> Option<usize> {
     if align == 0 {
         return Some(value);
@@ -1460,6 +1503,15 @@ pub(crate) fn copy_dto_h_v2(
                 }
                 return Ok(());
             }
+            if !pacc_process_range_has_perms(addr as usize, byte_count, false) {
+                if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "[PACC Backend] cuMemcpyDtoH refusing unmapped non-driver src=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
+                        addr, *base, offset, byte_count, alloc.size, map_entries
+                    );
+                }
+                return Err(CUerror::INVALID_VALUE);
+            }
             if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
                 eprintln!(
                     "[PACC Backend] cuMemcpyDtoH host-backed src=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
@@ -1528,6 +1580,15 @@ pub(crate) fn copy_hto_d_v2(
                 }
                 bo.flush().map_err(|_| CUerror::UNKNOWN)?;
                 return Ok(());
+            }
+            if !pacc_process_range_has_perms(addr as usize, byte_count, true) {
+                if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "[PACC Backend] cuMemcpyHtoD refusing unmapped non-driver dst=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
+                        addr, *base, offset, byte_count, alloc.size, map_entries
+                    );
+                }
+                return Err(CUerror::INVALID_VALUE);
             }
             if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
                 eprintln!(
