@@ -14,6 +14,77 @@ use nvidia_runtime_sys;
 use std::{ffi::c_void, ptr};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn get_attribute(
+    data: *mut c_void,
+    attribute: CUpointer_attribute,
+    ptr: CUdeviceptr,
+) -> CUresult {
+    if data.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    match attribute {
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_CONTEXT => {
+            unsafe {
+                *(data.cast::<CUcontext>()) =
+                    super::context::peek_current()
+                        .unwrap_or(CUcontext(::std::ptr::null_mut()));
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_MEMORY_TYPE => {
+            unsafe {
+                *(data.cast::<CUmemorytype>()) = CUmemorytype::CU_MEMORYTYPE_DEVICE;
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_DEVICE_POINTER => {
+            unsafe {
+                *(data.cast::<CUdeviceptr>()) = ptr;
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_HOST_POINTER => {
+            unsafe {
+                *(data.cast::<*mut c_void>()) = ::std::ptr::null_mut();
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_IS_MANAGED => {
+            unsafe {
+                *(data.cast::<i32>()) = 0;
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_MAPPED => {
+            unsafe {
+                *(data.cast::<i32>()) = 1;
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_BUFFER_ID => {
+            unsafe {
+                *(data.cast::<u64>()) = ptr.0 as u64;
+            }
+            Ok(())
+        }
+        CUpointer_attribute::CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL => {
+            unsafe {
+                *(data.cast::<i32>()) = 0;
+            }
+            Ok(())
+        }
+        _ => Err(CUerror::INVALID_VALUE),
+    }
+}
+
 #[cfg(feature = "amd")]
 pub(crate) unsafe fn get_attribute(
     data: *mut c_void,

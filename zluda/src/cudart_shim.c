@@ -322,7 +322,7 @@ static cudaError_t hetgpu_set_last_error(cudaError_t error) {
 
 extern CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void* srcHost, size_t ByteCount);
 extern CUresult cuMemcpyDtoH_v2(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount);
-extern int hetgpu_pacc_is_device_ptr(const void* ptr);
+extern int hetgpu_pacc_is_device_ptr(const void* ptr) __attribute__((weak));
 
 typedef int (*hetgpu_pacc_launch_named_kernel_fn)(
     const char* kernel_name,
@@ -372,7 +372,7 @@ static cudaError_t hetgpu_cuda_from_cu(CUresult result) {
 }
 
 static int hetgpu_likely_device_ptr(const void* ptr) {
-    if (hetgpu_pacc_is_device_ptr(ptr)) {
+    if (hetgpu_pacc_is_device_ptr && hetgpu_pacc_is_device_ptr(ptr)) {
         return 1;
     }
     uintptr_t value = (uintptr_t)ptr;
@@ -2873,6 +2873,72 @@ static CUmodule load_or_get_ptx_module_for_kernel(const char* so_path, const cha
     return module;
 }
 
+static int tmatmul_reference_ptx_looks_valid(const char* ptx_data, size_t ptx_size) {
+    if (!ptx_data || ptx_size <= 50) return 0;
+    if (!strstr(ptx_data, ".version") ||
+            !strstr(ptx_data, ".target ") ||
+            !strstr(ptx_data, ".address_size")) {
+        return 0;
+    }
+    if (!strstr(ptx_data, ".visible .entry ") && !strstr(ptx_data, "\n.entry ")) {
+        return 0;
+    }
+    for (size_t i = 0; i < ptx_size; i++) {
+        unsigned char c = (unsigned char)ptx_data[i];
+        if (c == '\n' || c == '\r' || c == '\t') continue;
+        if (c < 0x20 || c > 0x7e) return 0;
+    }
+    return 1;
+}
+
+static CUmodule load_or_get_tmatmul_reference_module(void) {
+    static CUmodule modules[4] = {NULL, NULL, NULL, NULL};
+    static int attempted[4] = {0, 0, 0, 0};
+
+    int device = hetgpu_current_device_index();
+    if (modules[device]) {
+        return modules[device];
+    }
+    if (attempted[device]) {
+        return NULL;
+    }
+    attempted[device] = 1;
+
+    const char* ptx_path = getenv("HETGPU_TMATMUL_REFERENCE_PTX");
+    if (!ptx_path || !ptx_path[0]) {
+        ptx_path = "/root/ternary_matmul/cocotb/run/kernel.ptx";
+    }
+
+    size_t ptx_size = 0;
+    char* ptx_data = load_ptx_file(ptx_path, &ptx_size);
+    if (!tmatmul_reference_ptx_looks_valid(ptx_data, ptx_size)) {
+        fprintf(stderr,
+                "[cudart_shim] TMatmul reference PTX is missing or invalid: %s\n",
+                ptx_path);
+        if (ptx_data) free(ptx_data);
+        return NULL;
+    }
+
+    CUmodule module = NULL;
+    hetgpu_cuModuleLoadData_fn p_cuModuleLoadData = resolve_cuModuleLoadData();
+    (void)cudaSetDevice(device);
+    CUresult result = p_cuModuleLoadData ? p_cuModuleLoadData(&module, ptx_data) : 1;
+    free(ptx_data);
+    if (result != 0 || !module) {
+        fprintf(stderr,
+                "[cudart_shim] TMatmul reference PTX module load failed for %s: %d\n",
+                ptx_path,
+                result);
+        return NULL;
+    }
+
+    modules[device] = module;
+    HETGPU_LOG("[cudart_shim] Loaded TMatmul reference PTX %s on cuda device %d\n",
+            ptx_path,
+            device);
+    return module;
+}
+
 static CUfunction lazy_load_registered_function_for_launch(const char* kernel_name, const void* launch_func) {
     RegisteredFunction* entry = find_registered_function_by_name(kernel_name);
     if (!entry) {
@@ -2895,7 +2961,10 @@ static CUfunction lazy_load_registered_function_for_launch(const char* kernel_na
 
     CUmodule module = load_or_get_ptx_module_for_kernel(info.dli_fname, kernel_name);
     if (!module) {
-        return NULL;
+        module = load_or_get_tmatmul_reference_module();
+        if (!module) {
+            return NULL;
+        }
     }
 
     CUfunction func = NULL;
@@ -3357,6 +3426,17 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
                              (payload_bytes[0] < 32 && payload_bytes[0] != '\n'));
 
             if (is_binary) {
+                if (!hetgpu_env_enabled_default("HETGPU_CUDART_EAGER_PTX", 0)) {
+                    // PyTorch loads many CUDA fatbins at import time. Eagerly
+                    // running cuobjdump over all of them can make a normal
+                    // LD_PRELOAD run look hung before the model starts. Keep a
+                    // placeholder module here and let the launch path resolve
+                    // PTX lazily only for kernels that actually run.
+                    defer_module_load = 1;
+                    payload = NULL;
+                    payload_size = 0;
+                } else {
+
                 HETGPU_LOG("[cudart_shim] Detected binary CUBIN, attempting PTX extraction from .so file...\n");
                 HETGPU_LOG("[cudart_shim] Payload first 16 bytes: ");
                 for (size_t i = 0; i < 16 && i < payload_size; i++) {
@@ -3421,6 +3501,7 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
                         fclose(f);
                         fprintf(stderr, "[cudart_shim] Wrote fatbin to %s for manual inspection\n", tmpfile_cubin);
                     }
+                }
                 }
             }
         }
@@ -3498,7 +3579,9 @@ void __cudaRegisterFunction(void** fatCubinHandle, const char* hostFun, char* de
     // Get the function from the module
     CUfunction func = NULL;
     hetgpu_cuModuleGetFunction_fn p_cuModuleGetFunction = resolve_cuModuleGetFunction();
-    CUresult result = p_cuModuleGetFunction ? p_cuModuleGetFunction(&func, module, deviceName) : 1;
+    CUresult result = (module && p_cuModuleGetFunction)
+        ? p_cuModuleGetFunction(&func, module, deviceName)
+        : 1;
 
     if (result != 0) {
         const char* lazy_register_ptx = getenv("HETGPU_CUDART_LAZY_REGISTER_PTX");

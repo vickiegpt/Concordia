@@ -656,6 +656,145 @@ pub(crate) fn get_primary_tmatmul(
     Ok(dev.primary_context())
 }
 
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn get_limit(pvalue: *mut usize, _limit: CUlimit) -> CUresult {
+    if pvalue.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    unsafe {
+        *pvalue = 0;
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn set_limit(_limit: CUlimit, _value: usize) -> CUresult {
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn synchronize() -> CUresult {
+    super::checkpoint::process_pending_checkpoint();
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn get_device(device_out: *mut CUdevice) -> CUresult {
+    if device_out.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    let device_id = if let Some(current) = peek_current() {
+        let ctx: &Context = FromCuda::from_cuda(&current)?;
+        ctx.device_id
+    } else {
+        let gs = driver::global_state()?;
+        let (ctx, raw_ctx) = gs
+            .devices
+            .get(0)
+            .ok_or(CUerror::INVALID_DEVICE)?
+            .primary_context();
+        push(raw_ctx, ctx.device_id);
+        ctx.device_id
+    };
+
+    unsafe {
+        *device_out = device_id;
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn create_v2(pctx: *mut CUcontext, _flags: u32, dev: CUdevice) -> CUresult {
+    if pctx.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    driver::global_state()?;
+    driver::device_tmatmul(dev)?;
+
+    let ctx = Context::new(dev);
+    let raw_ctx = ctx.wrap();
+    push(raw_ctx, dev);
+    unsafe {
+        *pctx = raw_ctx;
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn destroy_v2(ctx: CUcontext) -> CUresult {
+    if ctx.0.is_null() {
+        return Err(CUerror::INVALID_CONTEXT);
+    }
+    CONTEXT_STACK.with(|stack| {
+        stack.borrow_mut().retain(|(candidate, _)| candidate.0 != ctx.0);
+    });
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn push_current_v2(ctx: CUcontext) -> CUresult {
+    if ctx.0.is_null() {
+        return Err(CUerror::INVALID_CONTEXT);
+    }
+    let context: &Context = FromCuda::from_cuda(&ctx)?;
+    push(ctx, context.device_id);
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "tmatmul",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn pop_current_v2(pctx: *mut CUcontext) -> CUresult {
+    let popped = CONTEXT_STACK.with(|stack| stack.borrow_mut().pop());
+    if !pctx.is_null() {
+        unsafe {
+            *pctx = popped
+                .map(|(ctx, _)| ctx)
+                .unwrap_or(CUcontext(ptr::null_mut()));
+        }
+    }
+    Ok(())
+}
+
 // Common functions - implemented per backend
 
 // AMD functions
