@@ -203,7 +203,7 @@ extern int hetgpu_pacc_submit_gemm_staged_tiled(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType,
-    int max_m, int max_n, int max_k);
+    int max_m, int max_n, int max_k) __attribute__((weak));
 extern int hetgpu_pacc_submit_gemm_mmvf_small_n(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
@@ -211,10 +211,7 @@ extern int hetgpu_pacc_submit_gemm_mmvf_small_n(
     const void *B, int Btype, int ldb, long long strideB,
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
-    int batchCount, int computeType);
-extern unsigned long long hetgpu_pacc_resolve_device_addr(const void *ptr);
-extern int hetgpu_pacc_is_device_ptr(const void *ptr);
-extern size_t hetgpu_pacc_allocation_remaining(const void *ptr);
+    int batchCount, int computeType) __attribute__((weak));
 extern unsigned long long hetgpu_pacc_resolve_device_addr(const void *ptr) __attribute__((weak));
 extern int hetgpu_pacc_is_device_ptr(const void *ptr) __attribute__((weak));
 extern size_t hetgpu_pacc_allocation_remaining(const void *ptr) __attribute__((weak));
@@ -869,6 +866,14 @@ static int prefer_pacc_gemm_coarse_stage(void) {
     return coarse && strcmp(coarse, "force") == 0 && pacc_runtime_marked_ready();
 }
 
+static int pacc_gemm_no_f32_fallback(void) {
+    const char *value = getenv("HETGPU_PACC_GEMM_NO_F32_FALLBACK");
+    if (value && *value) {
+        return strcmp(value, "0") != 0;
+    }
+    return prefer_pacc_gemm_coarse_stage();
+}
+
 
 typedef struct {
     const char *name;
@@ -1187,6 +1192,11 @@ static cublasStatus_t submit_pacc_gemm(
                 max_m, max_n, max_k);
             if (rc == 0) {
                 return CUBLAS_STATUS_SUCCESS;
+            }
+            if (pacc_gemm_no_f32_fallback()) {
+                DEBUG_LOG("%s PACC BF16/SFMM coarse GEMM failed rc=%d; f32 staged fallback disabled",
+                          name, rc);
+                return CUBLAS_STATUS_EXECUTION_FAILED;
             }
             g_pacc_gemm_coarse_stage_disabled_after_failure = 1;
             DEBUG_LOG("%s disabling coarse staged GEMM after failure rc=%d", name, rc);

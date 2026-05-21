@@ -31,6 +31,16 @@
 #if defined(__riscv_vector) && __has_include(<riscv_vector.h>)
 #include <riscv_vector.h>
 #endif
+#if defined(__riscv_vector) && __has_include(<sifive_vector.h>)
+#include <sifive_vector.h>
+#define HETGPU_PACC_HAVE_SIFIVE_VECTOR 1
+#endif
+#endif
+
+#if defined(__riscv) && defined(__riscv_vector) && \
+    defined(__riscv_xsfvfwmaccqqq) && defined(__riscv_zvfbfmin) && \
+    defined(HETGPU_PACC_HAVE_SIFIVE_VECTOR)
+#define HETGPU_PACC_HAVE_XSFMM_BF16 1
 #endif
 
 #define HETGPU_PACC_JOB_MAGIC 0x4847505550414343ULL
@@ -1084,6 +1094,12 @@ static unsigned jobd_mmvf_worker_threads(uint64_t work_items) {
         requested = parse_env_u64_default("HETGPU_PACC_JOBD_MMVF_THREADS", 0);
     }
     if (requested == 0) {
+        requested = parse_env_u64_default("PACC_JOBD_KERNEL_THREADS", 0);
+    }
+    if (requested == 0) {
+        requested = parse_env_u64_default("HETGPU_PACC_JOBD_KERNEL_THREADS", 0);
+    }
+    if (requested == 0) {
         return 1;
     }
     if (requested > PACC_KERNEL_MAX_THREADS) {
@@ -1220,6 +1236,11 @@ static bool jobd_claim_pacc_id_enabled(void) {
     return env_flag_true(getenv("HETGPU_PACC_JOBD_CLAIM_ID"));
 }
 
+static bool jobd_xsfmm_smoke_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_XSFMM_SMOKE");
+    return value && *value && env_flag_true(value);
+}
+
 static void emit_msg(const char *fmt, va_list ap) {
     char buf[512];
     vsnprintf(buf, sizeof(buf), fmt, ap);
@@ -1286,6 +1307,14 @@ static void install_crash_handlers(void) {
     sigaction(SIGILL, &sa, NULL);
     sigaction(SIGABRT, &sa, NULL);
     sigaction(SIGFPE, &sa, NULL);
+}
+
+static bool jobd_fork_elf_enabled(void) {
+    return env_flag_true(getenv("HETGPU_PACC_JOBD_FORK_ELF"));
+}
+
+static uint64_t jobd_fork_elf_timeout_ms(void) {
+    return parse_env_u64_default("HETGPU_PACC_JOBD_FORK_ELF_TIMEOUT_MS", 5000ULL);
 }
 
 static int control_poll_timeout_ms(void) {
@@ -3514,6 +3543,94 @@ static uint16_t f32_to_bf16(float x) {
     uint32_t lsb = (v.u >> 16) & 1U;
     uint32_t rounding_bias = 0x7fffU + lsb;
     return (uint16_t)((v.u + rounding_bias) >> 16);
+}
+
+__attribute__((noinline))
+static int xsfmm_smoke_bf16_kernel(uint16_t *a_bf16,
+                                   uint16_t *b_bf16,
+                                   float *c_f32,
+                                   size_t vl) {
+#if defined(HETGPU_PACC_HAVE_XSFMM_BF16)
+    const __bf16 *a = (const __bf16 *)a_bf16;
+    const __bf16 *b = (const __bf16 *)b_bf16;
+    vfloat32m2_t acc = __riscv_vle32_v_f32m2(c_f32, vl);
+    vbfloat16m1_t va = __riscv_vle16_v_bf16m1(a, vl);
+    vbfloat16m1_t vb = __riscv_vle16_v_bf16m1(b, vl);
+    acc = __riscv_sf_vfwmacc_4x4x4_f32m2(acc, va, vb, vl);
+    __riscv_vse32_v_f32m2(c_f32, acc, vl);
+    return 0;
+#else
+    (void)a_bf16;
+    (void)b_bf16;
+    (void)c_f32;
+    (void)vl;
+    return 95;
+#endif
+}
+
+static int run_xsfmm_smoke_bf16_once(float *checksum_out) {
+    enum { N = 64 };
+    uint16_t a[N];
+    uint16_t b[N];
+    float c[N];
+    float checksum = 0.0f;
+    int ret;
+
+    for (size_t i = 0; i < N; i++) {
+        a[i] = f32_to_bf16((float)((i % 7) + 1));
+        b[i] = f32_to_bf16((float)((i % 5) - 2));
+        c[i] = 0.0f;
+    }
+
+    ret = xsfmm_smoke_bf16_kernel(a, b, c, N);
+    if (ret != 0) {
+        return ret;
+    }
+    for (size_t i = 0; i < N; i++) {
+        checksum += c[i];
+    }
+    if (checksum_out) {
+        *checksum_out = checksum;
+    }
+    return checksum == 0.0f ? 94 : 0;
+}
+
+static void run_xsfmm_smoke_if_requested(void) {
+    if (!jobd_xsfmm_smoke_enabled()) {
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        float checksum = 0.0f;
+        int ret = run_xsfmm_smoke_bf16_once(&checksum);
+        if (ret == 0) {
+            log_msg("xsfmm smoke child ok checksum=%g", checksum);
+        }
+        _exit(ret == 0 ? 0 : ret);
+    }
+    if (pid < 0) {
+        log_msg("xsfmm smoke fork failed: %s", strerror(errno));
+        return;
+    }
+
+    for (;;) {
+        int status = 0;
+        pid_t got = waitpid(pid, &status, WNOHANG);
+        if (got == pid) {
+            if (WIFEXITED(status)) {
+                log_msg("xsfmm smoke exit=%d", WEXITSTATUS(status));
+            } else if (WIFSIGNALED(status)) {
+                log_msg("xsfmm smoke signal=%d", WTERMSIG(status));
+            }
+            return;
+        }
+        if (got < 0) {
+            log_msg("xsfmm smoke wait failed: %s", strerror(errno));
+            return;
+        }
+        sleep_us(1000);
+    }
 }
 
 static uint16_t f32_to_f16(float x) {
@@ -6298,6 +6415,7 @@ enum PaccMmvfXType {
     PACC_MMVF_UNSUPPORTED = 0,
     PACC_MMVF_F32,
     PACC_MMVF_F16,
+    PACC_MMVF_BF16,
 };
 
 struct MmvfNativeCtx {
@@ -6397,6 +6515,13 @@ static float pacc_f16_to_f32(uint16_t h) {
 #endif
 }
 
+static float pacc_bf16_to_f32(uint16_t h) {
+    uint32_t bits = (uint32_t)h << 16;
+    float f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
 static enum PaccMmvfXType mmvf_type_from_symbol(const char *symbol) {
     if (!symbol || !strstr(symbol, "mul_mat_vec_f")) return PACC_MMVF_UNSUPPORTED;
     if (strstr(symbol, "mul_mat_vec_fI6__half")) return PACC_MMVF_F16;
@@ -6488,6 +6613,8 @@ static bool mmvf_parse_template(const char *symbol,
 static float mmvf_load_x(const struct MmvfNativeCtx *ctx, const void *base, int64_t index) {
     if (ctx->x_type == PACC_MMVF_F16) {
         return pacc_f16_to_f32(((const uint16_t *)base)[index]);
+    } else if (ctx->x_type == PACC_MMVF_BF16) {
+        return pacc_bf16_to_f32(((const uint16_t *)base)[index]);
     }
     return ((const float *)base)[index];
 }
@@ -6569,7 +6696,9 @@ static void *mmvf_native_worker_main(void *opaque) {
             ((int64_t)sample_x * ctx->stride_sample_x +
              (int64_t)channel_x * ctx->stride_channel_x +
              (int64_t)row * ctx->stride_row) *
-            (ctx->x_type == PACC_MMVF_F16 ? (int64_t)sizeof(uint16_t) : (int64_t)sizeof(float));
+            (ctx->x_type == PACC_MMVF_F16 || ctx->x_type == PACC_MMVF_BF16
+                 ? (int64_t)sizeof(uint16_t)
+                 : (int64_t)sizeof(float));
         const float *y_base = ctx->y +
             (int64_t)sample_y * ctx->stride_sample_y +
             (int64_t)channel_y * ctx->stride_channel_y;
@@ -6638,7 +6767,7 @@ static int invoke_kernel_mmvf_native(const char *symbol,
     if (ctx.x_type == PACC_MMVF_UNSUPPORTED) return 1;
     if (!mmvf_parse_template(symbol, &ctx.ncols_dst, &has_fusion, &is_multi_token_id)) return 1;
     if (has_fusion || is_multi_token_id) return 1;
-    if (ctx.ncols_dst == 0 || ctx.ncols_dst > 8) return 1;
+    if (ctx.ncols_dst == 0 || ctx.ncols_dst > 16) return 1;
     if (ctx.x_type == PACC_MMVF_F16) {
         pacc_prepare_f16_table();
     }
@@ -6769,17 +6898,18 @@ static int run_mmvf_ctx(struct MmvfNativeCtx *ctx,
 
     if (!ctx || !ctx->x || !ctx->y || !ctx->dst || ctx->ids) return 0xffff5001;
     if (ctx->ncols2 <= 0) return 0;
-    if (ctx->ncols_dst == 0 || ctx->ncols_dst > 8) return 0xffff5002;
+    if (ctx->ncols_dst == 0 || ctx->ncols_dst > 16) return 0xffff5002;
     if (ctx->x_type == PACC_MMVF_F16) {
         pacc_prepare_f16_table();
-    } else if (ctx->x_type != PACC_MMVF_F32) {
+    } else if (ctx->x_type != PACC_MMVF_F32 && ctx->x_type != PACC_MMVF_BF16) {
         return 0xffff5003;
     }
 
     uint64_t local_x_max = parse_env_u64_default("PACC_JOBD_MMVF_LOCAL_X_MAX_BYTES", 0);
     uint64_t local_y_max = parse_env_u64_default("PACC_JOBD_MMVF_LOCAL_Y_MAX_BYTES", 0);
 
-    if ((ctx->x_type == PACC_MMVF_F16 || ctx->x_type == PACC_MMVF_F32) &&
+    if ((ctx->x_type == PACC_MMVF_F16 || ctx->x_type == PACC_MMVF_F32 ||
+         ctx->x_type == PACC_MMVF_BF16) &&
         ctx->ncols_dst == 1 &&
         local_x_max != 0 && x_bytes > 0 && x_bytes <= local_x_max) {
         local_x = malloc((size_t)x_bytes);
@@ -9427,6 +9557,58 @@ static int invoke_kernel_symbol_grid(const char *symbol, void *fn,
     int bin_bcast_rows = invoke_kernel_bin_bcast_elf_rows(symbol, fn, args, job, argc, set_launch);
     if (bin_bcast_rows <= 0) {
         return bin_bcast_rows;
+    }
+
+    if (jobd_fork_elf_enabled() && total_threads == 1u) {
+        pid_t pid = fork();
+        if (pid < 0) {
+            log_msg("kernel fork dispatch %s failed: errno=%d",
+                    symbol ? symbol : "<unknown>", errno);
+            return -1;
+        }
+        if (pid == 0) {
+            if (set_launch) {
+                set_launch(0, 0, 0, bx, by, bz, 0, 0, 0, gx, gy, gz);
+            }
+            int child_status = invoke_kernel_symbol(symbol, fn, args, job, argc);
+            _exit(child_status == 0 ? 0 : 125);
+        }
+
+        uint64_t waited_ms = 0;
+        uint64_t timeout_ms = jobd_fork_elf_timeout_ms();
+        int wstatus = 0;
+        for (;;) {
+            pid_t got = waitpid(pid, &wstatus, WNOHANG);
+            if (got == pid) break;
+            if (got < 0) {
+                log_msg("kernel fork dispatch %s waitpid failed: errno=%d",
+                        symbol ? symbol : "<unknown>", errno);
+                return -1;
+            }
+            if (timeout_ms != 0 && waited_ms >= timeout_ms) {
+                kill(pid, SIGKILL);
+                waitpid(pid, &wstatus, 0);
+                log_msg("kernel fork dispatch %s timed out after %" PRIu64 " ms",
+                        symbol ? symbol : "<unknown>", timeout_ms);
+                return (int)0xffff51feu;
+            }
+            usleep(1000);
+            waited_ms++;
+        }
+        if (WIFEXITED(wstatus)) {
+            int code = WEXITSTATUS(wstatus);
+            if (code == 0) return 0;
+            log_msg("kernel fork dispatch %s exited code=%d",
+                    symbol ? symbol : "<unknown>", code);
+            return (int)(0xffff5100u | (uint32_t)(code & 0xff));
+        }
+        if (WIFSIGNALED(wstatus)) {
+            int sig = WTERMSIG(wstatus);
+            log_msg("kernel fork dispatch %s signaled sig=%d",
+                    symbol ? symbol : "<unknown>", sig);
+            return (int)(0xffff5100u | (uint32_t)(sig & 0xff));
+        }
+        return -1;
     }
 
     unsigned workers = kernel_worker_threads(total_threads);
@@ -12227,6 +12409,7 @@ int main(int argc, char **argv) {
     g_control_map_base = control_map.base;
     g_control_map_len = control_map.map_len;
     clear_stale_control_region(map_fd, &control_map);
+    run_xsfmm_smoke_if_requested();
     if (jobd_boot_marker_enabled()) {
         mirror_boot_marker_all_slots_mbox_mmap(mbox_fd, 0x6a020000u);
         if (!mirror_host_status_mbox_mmap(mbox_fd, PACC_KERNEL_JOB_ID, 0, 0x6a21)) {

@@ -34,6 +34,14 @@
 #define PACC_IOC_MAGIC 'p'
 #define PACC_IOC_ZLUDA_IRQ _IO(PACC_IOC_MAGIC, 5)
 #define PACC_IOC_ZLUDA_IRQ_LEGACY 0x40107005UL
+#define PACC_IOC_SHARED_DDR_SYNC _IOW(PACC_IOC_MAGIC, 8, struct pacc_shared_ddr_sync)
+
+struct pacc_shared_ddr_sync {
+	u64 off;
+	u64 len;
+	u32 dir; /* 0: for device, 1: for CPU */
+	u32 flags;
+};
 
 /* Allocated by the kernel helper and exported via debugfs for userspace. */
 static u64 shared_ddr_base;
@@ -383,14 +391,34 @@ static loff_t mbox_llseek(struct file *file, loff_t off, int whence)
 	return next;
 }
 
-#if !HETGPU_PACC_MBOX_SHARED_DDR_ONLY
 static long mbox_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	unsigned int minor = mbox_minor(file);
+	struct pacc_shared_ddr_sync sync;
 
-	(void)arg;
 	if (minor >= PACC_COUNT)
 		return -ENODEV;
+
+	if (cmd == PACC_IOC_SHARED_DDR_SYNC) {
+		if (copy_from_user(&sync, (void __user *)arg, sizeof(sync)))
+			return -EFAULT;
+		if (!g_shared_ddr_mem || sync.off >= shared_ddr_size)
+			return -EINVAL;
+		if (sync.len > shared_ddr_size - sync.off)
+			return -EINVAL;
+		if (!sync.len)
+			return 0;
+		mutex_lock(&g_lock);
+		if (sync.dir == 1)
+			shared_ddr_sync_for_cpu(sync.off, (size_t)sync.len);
+		else
+			shared_ddr_sync_for_device(sync.off, (size_t)sync.len);
+		mb();
+		mutex_unlock(&g_lock);
+		return 0;
+	}
+
+#if !HETGPU_PACC_MBOX_SHARED_DDR_ONLY
 	if (cmd != PACC_IOC_ZLUDA_IRQ && cmd != PACC_IOC_ZLUDA_IRQ_LEGACY)
 		return -ENOTTY;
 	if (!g_mbox_db[minor])
@@ -404,8 +432,10 @@ static long mbox_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	mb();
 	mutex_unlock(&g_lock);
 	return 0;
-}
+#else
+	return -ENOTTY;
 #endif
+}
 
 static int mbox_mmap(struct file *file, struct vm_area_struct *vma)
 {
@@ -446,11 +476,9 @@ static const struct file_operations mbox_fops = {
 	.write = mbox_write,
 	.llseek = mbox_llseek,
 	.mmap = mbox_mmap,
-#if !HETGPU_PACC_MBOX_SHARED_DDR_ONLY
 	.unlocked_ioctl = mbox_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = mbox_ioctl,
-#endif
 #endif
 };
 
