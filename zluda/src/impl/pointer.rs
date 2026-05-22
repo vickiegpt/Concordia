@@ -34,8 +34,7 @@ pub(crate) fn get_attribute(
         CUpointer_attribute::CU_POINTER_ATTRIBUTE_CONTEXT => {
             unsafe {
                 *(data.cast::<CUcontext>()) =
-                    super::context::peek_current()
-                        .unwrap_or(CUcontext(::std::ptr::null_mut()));
+                    super::context::peek_current().unwrap_or(CUcontext(::std::ptr::null_mut()));
             }
             Ok(())
         }

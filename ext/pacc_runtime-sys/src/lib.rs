@@ -31,7 +31,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn open_sync_rw(path: impl AsRef<Path>) -> std::io::Result<File> {
@@ -372,7 +372,7 @@ pub struct HetgpuPaccRmsNormJob {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct HetgpuPaccUint3 {
     pub x: u32,
     pub y: u32,
@@ -940,6 +940,7 @@ pub struct PaccDevice {
     pub fd: RawFd,
     file: Mutex<Option<File>>,
     is_mbox_helper: bool,
+    is_emulated: bool,
 }
 
 fn poll_fd_response(fd: RawFd, label: &str, timeout_ms: u64) -> std::io::Result<()> {
@@ -997,7 +998,33 @@ fn poll_fd_response(fd: RawFd, label: &str, timeout_ms: u64) -> std::io::Result<
 }
 
 impl PaccDevice {
+    fn open_jobd_emulator(id: usize, reason: &str) -> std::io::Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")?;
+        let fd = file.as_raw_fd();
+        ensure_pacc_jobd_emulator_started(id)?;
+        if zluda_irq_trace_enabled() {
+            eprintln!(
+                "PACC device {}: using in-process x86 jobd emulator with shared-DDR mock ({})",
+                id, reason
+            );
+        }
+        Ok(PaccDevice {
+            id,
+            fd,
+            file: Mutex::new(Some(file)),
+            is_mbox_helper: false,
+            is_emulated: true,
+        })
+    }
+
     pub fn open(id: usize) -> std::io::Result<Self> {
+        if pacc_jobd_emulator_enabled() {
+            return Self::open_jobd_emulator(id, "requested by environment or x86 auto fallback");
+        }
+
         let path = format!("/dev/pacc{}", id);
         let helper = helper_path_for_pacc(id);
         let prefer_helper = prefer_mailbox_helper();
@@ -1023,11 +1050,19 @@ impl PaccDevice {
                         (file, false)
                     }
                     Err(pacc_err) => {
+                        if pacc_err.kind() == ErrorKind::NotFound
+                            && pacc_jobd_emulator_auto_enabled()
+                        {
+                            return Self::open_jobd_emulator(
+                                id,
+                                "PACC device and helper are unavailable",
+                            );
+                        }
                         return Err(if pacc_err.kind() == ErrorKind::NotFound {
                             helper_err
                         } else {
                             pacc_err
-                        })
+                        });
                     }
                 },
             }
@@ -1045,6 +1080,12 @@ impl PaccDevice {
                             }
                             (file, true)
                         }
+                        Err(_) if pacc_jobd_emulator_auto_enabled() => {
+                            return Self::open_jobd_emulator(
+                                id,
+                                "PACC device and helper are unavailable",
+                            );
+                        }
                         Err(_) => return Err(pacc_err),
                     }
                 }
@@ -1057,6 +1098,7 @@ impl PaccDevice {
             fd,
             file: Mutex::new(Some(file)),
             is_mbox_helper,
+            is_emulated: false,
         };
         if std::env::var("HETGPU_PACC_BOOT_RUNTIME").ok().as_deref() == Some("1") {
             dev.boot_runtime_from_env()?;
@@ -1098,10 +1140,10 @@ impl PaccDevice {
 
     /// PACC_IOC_CREATE_BO — allocate a contiguous BO and return its physical base.
     pub fn mem_alloc(&self, size: u64) -> std::io::Result<u64> {
-        if self.is_mbox_helper {
+        if self.is_mbox_helper || self.is_emulated {
             return Err(Error::new(
                 ErrorKind::Unsupported,
-                "PACC BO allocation requires /dev/pacc; current device is shared-DDR helper",
+                "PACC BO allocation requires /dev/pacc; current device uses a shared-DDR control backend",
             ));
         }
         let mut request = self.bo_request(size as usize)?;
@@ -1124,6 +1166,15 @@ impl PaccDevice {
     }
 
     pub fn zluda_irq(&self, shared_ddr: HetgpuPaccSharedDdrInfo) -> std::io::Result<()> {
+        if self.is_emulated || pacc_jobd_emulator_enabled() {
+            if zluda_irq_trace_enabled() {
+                eprintln!(
+                    "PACC ZLUDA IRQ emulator: dev={} shared_ddr_base=0x{:x} shared_ddr_size=0x{:x}",
+                    self.id, shared_ddr.ddr_base, shared_ddr.ddr_size
+                );
+            }
+            return pacc_jobd_emulator_irq(self.id);
+        }
         if std::env::var("HETGPU_PACC_ZLUDA_IRQ_SKIP_IOCTL")
             .ok()
             .as_deref()
@@ -1232,7 +1283,7 @@ impl PaccDevice {
         }
         if ret < 0 {
             let with_ddr_err = std::io::Error::last_os_error();
-            if zluda_irq_mock_enabled() {
+            if direct_zluda_irq_mock_enabled() {
                 if zluda_irq_trace_enabled() {
                     eprintln!(
                         "PACC ZLUDA IRQ mock: shared-DDR ioctl 0x{:x} on /dev/pacc{} failed: {}; using CPU-side firmware mock",
@@ -1259,6 +1310,9 @@ impl PaccDevice {
     }
 
     pub fn poll_response(&self, timeout_ms: u64) -> std::io::Result<()> {
+        if self.is_emulated {
+            return Ok(());
+        }
         poll_fd_response(self.fd, &format!("/dev/pacc{}", self.id), timeout_ms)
     }
 
@@ -1295,10 +1349,10 @@ impl PaccDevice {
     }
 
     pub fn bo_alloc_map(&self, len: usize) -> std::io::Result<PaccBoMap> {
-        if self.is_mbox_helper {
+        if self.is_mbox_helper || self.is_emulated {
             return Err(Error::new(
                 ErrorKind::Unsupported,
-                "PACC BO mmap requires /dev/pacc; current device is shared-DDR helper",
+                "PACC BO mmap requires /dev/pacc; current device uses a shared-DDR control backend",
             ));
         }
         if len == 0 {
@@ -1461,7 +1515,7 @@ impl PaccDevice {
             seq,
         };
 
-        if use_shared_ddr_control_window() && !zluda_irq_mock_enabled() {
+        if use_shared_ddr_control_window() && !direct_zluda_irq_mock_enabled() {
             let mut shared_file = open_shared_ddr_window_file(self.id as usize);
             let mut mailbox_file = open_pacc_mailbox_file(self.id as usize);
             clear_pacc_kernel_status_cached(&mut shared_file, &mut mailbox_file, self.id as usize)?;
@@ -1516,7 +1570,7 @@ impl PaccDevice {
             seq,
         };
 
-        if use_shared_ddr_control_window() && !zluda_irq_mock_enabled() {
+        if use_shared_ddr_control_window() && !direct_zluda_irq_mock_enabled() {
             let mut shared_file = open_shared_ddr_window_file(self.id as usize);
             let mut mailbox_file = open_pacc_mailbox_file(self.id as usize);
             clear_pacc_kernel_status_cached(&mut shared_file, &mut mailbox_file, self.id as usize)?;
@@ -1542,7 +1596,7 @@ impl PaccDevice {
             return Ok(seq);
         }
 
-        if zluda_irq_mock_enabled() {
+        if direct_zluda_irq_mock_enabled() {
             nvtop_record_submit(self.id as usize, job_id, seq, None, 0);
             let result = mock_runtime_job(job_id, arg_bytes);
             nvtop_record_complete(self.id as usize, job_id, seq, &result);
@@ -1578,7 +1632,7 @@ impl PaccDevice {
         doorbell: &HetgpuPaccDoorbell,
         arg_bytes: &[u8],
     ) -> std::io::Result<()> {
-        if zluda_irq_mock_enabled() {
+        if direct_zluda_irq_mock_enabled() {
             nvtop_record_submit(self.id as usize, job_id, seq, None, 0);
             let result = self.submit_preloaded_job_zluda_irq_mock(job_id, arg_bytes);
             nvtop_record_complete(self.id as usize, job_id, seq, &result);
@@ -2126,6 +2180,7 @@ static PACC_NOOP_SUBMIT_CONTEXTS: OnceLock<Vec<Mutex<Option<PaccNoopSubmitContex
     OnceLock::new();
 static SHARED_DDR_BO_ARENA: OnceLock<Mutex<Option<PaccBoMap>>> = OnceLock::new();
 static SHARED_DDR_MOCK_ARENA: OnceLock<Mutex<BTreeMap<u64, Vec<u8>>>> = OnceLock::new();
+static PACC_JOBD_EMULATORS: OnceLock<Vec<Arc<PaccJobdEmulator>>> = OnceLock::new();
 static SHARED_DDR_FULL_MMAP: OnceLock<Result<SharedDdrFullMmap, String>> = OnceLock::new();
 static SHARED_DDR_FULL_MMAP_UNAVAILABLE: AtomicUsize = AtomicUsize::new(0);
 static SHARED_DDR_MMAP_UNAVAILABLE: AtomicUsize = AtomicUsize::new(0);
@@ -2145,6 +2200,17 @@ struct PaccNoopSubmitContext {
     dev: PaccDevice,
     shared_file: Option<File>,
     mailbox_file: Option<File>,
+}
+
+struct PaccJobdEmulator {
+    state: Mutex<PaccJobdEmulatorState>,
+    cv: Condvar,
+}
+
+#[derive(Default)]
+struct PaccJobdEmulatorState {
+    started: bool,
+    irq_count: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2503,10 +2569,13 @@ fn pacc_hex_bytes(bytes: &[u8]) -> String {
 
 fn ensure_pacc_jobd_bootstrapped(dev: &PaccDevice) -> std::io::Result<()> {
     if !pacc_jobd_bootstrap_enabled()
-        || zluda_irq_mock_enabled()
+        || direct_zluda_irq_mock_enabled()
         || !use_shared_ddr_control_window()
     {
         return Ok(());
+    }
+    if pacc_jobd_emulator_enabled() {
+        ensure_pacc_jobd_emulator_started(dev.id)?;
     }
 
     let mut booted = runtime_boot_state()
@@ -2670,6 +2739,388 @@ fn zluda_irq_mock_enabled() -> bool {
             .map(|v| v.trim().to_ascii_lowercase()),
         Some(v) if v == "1" || v == "true" || v == "yes" || v == "force"
     )
+}
+
+fn pacc_jobd_emulator_explicitly_enabled() -> bool {
+    env_flag_enabled("HETGPU_PACC_JOBD_EMULATOR")
+        || env_flag_enabled("HETGPU_PACC_EMULATE_JOBD")
+        || matches!(
+            std::env::var("HETGPU_PACC_ZLUDA_IRQ_MOCK")
+                .ok()
+                .map(|v| v.trim().to_ascii_lowercase()),
+            Some(v) if v == "jobd" || v == "emulator" || v == "emu"
+        )
+}
+
+fn pacc_jobd_emulator_auto_enabled() -> bool {
+    if env_flag_enabled("HETGPU_PACC_DISABLE_JOBD_EMULATOR_AUTO")
+        || env_flag_enabled("HETGPU_PACC_REAL_DEVICE_REQUIRED")
+    {
+        return false;
+    }
+    if !cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
+        return false;
+    }
+    if std::path::Path::new("/dev/pacc0").exists() {
+        return false;
+    }
+    let helper = helper_path_for_pacc(0);
+    !std::path::Path::new(&helper).exists()
+}
+
+fn pacc_jobd_emulator_enabled() -> bool {
+    pacc_jobd_emulator_explicitly_enabled() || pacc_jobd_emulator_auto_enabled()
+}
+
+fn direct_zluda_irq_mock_enabled() -> bool {
+    zluda_irq_mock_enabled() && !pacc_jobd_emulator_enabled()
+}
+
+fn pacc_jobd_emulators() -> &'static Vec<Arc<PaccJobdEmulator>> {
+    PACC_JOBD_EMULATORS.get_or_init(|| {
+        (0..PACC_CORE_NUM.max(1))
+            .map(|_| {
+                Arc::new(PaccJobdEmulator {
+                    state: Mutex::new(PaccJobdEmulatorState::default()),
+                    cv: Condvar::new(),
+                })
+            })
+            .collect()
+    })
+}
+
+fn pacc_jobd_emulator_for(pacc_id: usize) -> std::io::Result<Arc<PaccJobdEmulator>> {
+    pacc_jobd_emulators().get(pacc_id).cloned().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            format!("PACC jobd emulator id {} is out of range", pacc_id),
+        )
+    })
+}
+
+fn ensure_pacc_jobd_emulator_started(pacc_id: usize) -> std::io::Result<()> {
+    let emu = pacc_jobd_emulator_for(pacc_id)?;
+    {
+        let mut state = emu
+            .state
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Other, "PACC jobd emulator lock poisoned"))?;
+        if state.started {
+            return Ok(());
+        }
+        state.started = true;
+    }
+
+    let thread_emu = emu.clone();
+    std::thread::Builder::new()
+        .name(format!("pacc-jobd-emu-{pacc_id}"))
+        .spawn(move || pacc_jobd_emulator_thread(pacc_id, thread_emu))
+        .map(|_| ())
+        .map_err(|err| {
+            if let Ok(mut state) = emu.state.lock() {
+                state.started = false;
+            }
+            Error::new(
+                err.kind(),
+                format!("failed to start PACC jobd emulator for pacc{pacc_id}: {err}"),
+            )
+        })
+}
+
+fn pacc_jobd_emulator_thread(pacc_id: usize, emu: Arc<PaccJobdEmulator>) {
+    let mut seen_irq = 0u64;
+    loop {
+        let mut state = match emu.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                eprintln!("PACC jobd emulator pacc{pacc_id}: lock poisoned; stopping");
+                return;
+            }
+        };
+        while state.irq_count == seen_irq {
+            state = match emu.cv.wait(state) {
+                Ok(state) => state,
+                Err(_) => {
+                    eprintln!("PACC jobd emulator pacc{pacc_id}: condvar wait poisoned; stopping");
+                    return;
+                }
+            };
+        }
+        seen_irq = state.irq_count;
+        drop(state);
+
+        if let Err(err) = pacc_jobd_emulator_process_irq(pacc_id) {
+            eprintln!("PACC jobd emulator pacc{pacc_id}: {err}");
+        }
+    }
+}
+
+fn pacc_jobd_emulator_irq(pacc_id: usize) -> std::io::Result<()> {
+    ensure_pacc_jobd_emulator_started(pacc_id)?;
+    let emu = pacc_jobd_emulator_for(pacc_id)?;
+    let mut state = emu
+        .state
+        .lock()
+        .map_err(|_| Error::new(ErrorKind::Other, "PACC jobd emulator lock poisoned"))?;
+    state.irq_count = state.irq_count.wrapping_add(1);
+    emu.cv.notify_one();
+    Ok(())
+}
+
+fn pacc_jobd_emulator_error_status(_err: &std::io::Error) -> u32 {
+    0xdead_0001
+}
+
+fn pacc_jobd_emulator_write_completion_cached(
+    shared_file: &mut Option<File>,
+    pacc_id: usize,
+    job_id: u32,
+    seq: u64,
+    status: u32,
+) -> std::io::Result<()> {
+    let completion = HetgpuPaccDoorbell {
+        magic: HETGPU_PACC_JOB_MAGIC,
+        version: HETGPU_PACC_JOB_VERSION,
+        job_id,
+        flags: 0,
+        status,
+        seq,
+    };
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            (&completion as *const HetgpuPaccDoorbell).cast::<u8>(),
+            HETGPU_PACC_DOORBELL_BYTES,
+        )
+    };
+    write_shared_ddr_control_window_cached(
+        shared_file,
+        pacc_id,
+        HETGPU_PACC_COMPLETION_OFF,
+        bytes,
+    )?;
+    std::sync::atomic::fence(Ordering::SeqCst);
+    Ok(())
+}
+
+fn pacc_jobd_emulator_completion_done(
+    shared_file: &mut Option<File>,
+    pacc_id: usize,
+    job_id: u32,
+    seq: u64,
+) -> std::io::Result<bool> {
+    let mut buf = [0u8; HETGPU_PACC_DOORBELL_BYTES];
+    read_shared_ddr_control_window_cached(
+        shared_file,
+        pacc_id,
+        HETGPU_PACC_COMPLETION_OFF,
+        &mut buf,
+    )?;
+    let completion = decode_pacc_arg::<HetgpuPaccDoorbell>(&buf, "jobd completion")?;
+    Ok(completion.magic == HETGPU_PACC_JOB_MAGIC
+        && completion.version == HETGPU_PACC_JOB_VERSION
+        && completion.job_id == job_id
+        && completion.seq == seq
+        && completion.status != 1
+        && (completion.status & 0xff00) != 0x5100)
+}
+
+fn pacc_jobd_emulator_struct_bytes<T: Copy>(value: &T) -> Vec<u8> {
+    unsafe {
+        std::slice::from_raw_parts((value as *const T).cast::<u8>(), std::mem::size_of::<T>())
+            .to_vec()
+    }
+}
+
+fn pacc_jobd_emulator_read_arg_slot(
+    shared_file: &mut Option<File>,
+    pacc_id: usize,
+    job_id: u32,
+    seq: u64,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let Some(slot) = preloaded_arg_slot(job_id) else {
+        return Ok(None);
+    };
+    let slot_off = HETGPU_PACC_ARG_BASE_OFF + (slot * HETGPU_PACC_ARG_SLOT_BYTES) as u64;
+    let mut header_buf = [0u8; HETGPU_PACC_ARG_HEADER_BYTES];
+    read_shared_ddr_control_window_cached(shared_file, pacc_id, slot_off, &mut header_buf)?;
+    let header = decode_pacc_arg::<HetgpuPaccArgSlotHeader>(&header_buf, "arg slot header")?;
+    if header.magic != HETGPU_PACC_JOB_MAGIC
+        || header.version != HETGPU_PACC_JOB_VERSION
+        || header.job_id != job_id
+        || header.seq != seq
+    {
+        return Ok(None);
+    }
+    let arg_len = usize::try_from(header.arg_len)
+        .map_err(|_| Error::new(ErrorKind::InvalidInput, "PACC arg slot length overflow"))?;
+    let max_arg_len = HETGPU_PACC_ARG_SLOT_BYTES - HETGPU_PACC_ARG_HEADER_BYTES;
+    if arg_len > max_arg_len {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("PACC arg slot length {} exceeds {}", arg_len, max_arg_len),
+        ));
+    }
+    let mut arg = vec![0u8; arg_len];
+    if arg_len != 0 {
+        read_shared_ddr_control_window_cached(
+            shared_file,
+            pacc_id,
+            slot_off + HETGPU_PACC_ARG_HEADER_BYTES as u64,
+            &mut arg,
+        )?;
+    }
+    Ok(Some(arg))
+}
+
+fn pacc_jobd_emulator_read_runtime_table(
+    shared_file: &mut Option<File>,
+    pacc_id: usize,
+    job_id: u32,
+    seq: u64,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let mut table_buf = vec![0u8; std::mem::size_of::<HetgpuPaccRuntimeJobTable>()];
+    read_shared_ddr_control_window_cached(
+        shared_file,
+        pacc_id,
+        HETGPU_PACC_RUNTIME_TABLE_OFF,
+        &mut table_buf,
+    )?;
+    let table = decode_pacc_arg::<HetgpuPaccRuntimeJobTable>(&table_buf, "runtime table")?;
+    if table.magic != HETGPU_PACC_RUNTIME_TABLE_MAGIC
+        || table.version != HETGPU_PACC_RUNTIME_TABLE_VERSION
+        || table.seq != seq
+    {
+        return Ok(None);
+    }
+    let arg = match job_id {
+        hetgpu_pacc_job_id::GEMM if table.have_gemm != 0 => {
+            pacc_jobd_emulator_struct_bytes(&table.gemm)
+        }
+        hetgpu_pacc_job_id::SOFTMAX if table.have_softmax != 0 => {
+            pacc_jobd_emulator_struct_bytes(&table.softmax)
+        }
+        hetgpu_pacc_job_id::RMSNORM if table.have_rmsnorm != 0 => {
+            pacc_jobd_emulator_struct_bytes(&table.rmsnorm)
+        }
+        hetgpu_pacc_job_id::ALLREDUCE if table.have_allreduce != 0 => {
+            pacc_jobd_emulator_struct_bytes(&table.allreduce)
+        }
+        hetgpu_pacc_job_id::MMVF if table.have_mmvf != 0 => {
+            pacc_jobd_emulator_struct_bytes(&table.mmvf)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(arg))
+}
+
+fn pacc_jobd_emulator_read_arg_bytes(
+    shared_file: &mut Option<File>,
+    pacc_id: usize,
+    job_id: u32,
+    seq: u64,
+) -> std::io::Result<Vec<u8>> {
+    if let Some(arg) = pacc_jobd_emulator_read_arg_slot(shared_file, pacc_id, job_id, seq)? {
+        return Ok(arg);
+    }
+    if let Some(arg) = pacc_jobd_emulator_read_runtime_table(shared_file, pacc_id, job_id, seq)? {
+        return Ok(arg);
+    }
+    Err(Error::new(
+        ErrorKind::NotFound,
+        format!(
+            "PACC jobd emulator missing args for job_id {} seq {}",
+            job_id, seq
+        ),
+    ))
+}
+
+fn pacc_jobd_emulator_process_irq(pacc_id: usize) -> std::io::Result<()> {
+    let mut shared_file = open_shared_ddr_window_file(pacc_id);
+    let mut doorbell_buf = [0u8; HETGPU_PACC_DOORBELL_BYTES];
+    read_shared_ddr_control_window_cached(
+        &mut shared_file,
+        pacc_id,
+        HETGPU_PACC_DOORBELL_OFF,
+        &mut doorbell_buf,
+    )?;
+    let doorbell = decode_pacc_arg::<HetgpuPaccDoorbell>(&doorbell_buf, "doorbell")?;
+    if doorbell.magic != HETGPU_PACC_JOB_MAGIC
+        || doorbell.version != HETGPU_PACC_JOB_VERSION
+        || doorbell.seq == 0
+    {
+        let seq = next_runtime_job_seq();
+        pacc_jobd_emulator_write_completion_cached(
+            &mut shared_file,
+            pacc_id,
+            hetgpu_pacc_job_id::KERNEL,
+            seq,
+            0x6ab7,
+        )?;
+        if zluda_irq_trace_enabled() {
+            eprintln!(
+                "PACC jobd emulator: pacc{} bootstrap IRQ ready seq={}",
+                pacc_id, seq
+            );
+        }
+        return Ok(());
+    }
+
+    if pacc_jobd_emulator_completion_done(&mut shared_file, pacc_id, doorbell.job_id, doorbell.seq)?
+    {
+        return Ok(());
+    }
+
+    pacc_jobd_emulator_write_completion_cached(
+        &mut shared_file,
+        pacc_id,
+        doorbell.job_id,
+        doorbell.seq,
+        1,
+    )?;
+
+    let result = if doorbell.job_id == hetgpu_pacc_job_id::KERNEL {
+        Ok(())
+    } else {
+        pacc_jobd_emulator_read_arg_bytes(&mut shared_file, pacc_id, doorbell.job_id, doorbell.seq)
+            .and_then(|arg| mock_runtime_job(doorbell.job_id, &arg))
+    };
+
+    let status = match &result {
+        Ok(()) => 0,
+        Err(err) => pacc_jobd_emulator_error_status(err),
+    };
+    pacc_jobd_emulator_write_completion_cached(
+        &mut shared_file,
+        pacc_id,
+        doorbell.job_id,
+        doorbell.seq,
+        status,
+    )?;
+    if zluda_irq_trace_enabled() || result.is_err() {
+        match &result {
+            Ok(()) => eprintln!(
+                "PACC jobd emulator: pacc{} completed {} job_id={} seq={}",
+                pacc_id,
+                nvtop_job_name(doorbell.job_id),
+                doorbell.job_id,
+                doorbell.seq
+            ),
+            Err(err) => eprintln!(
+                "PACC jobd emulator: pacc{} failed {} job_id={} seq={} status=0x{:x}: {}",
+                pacc_id,
+                nvtop_job_name(doorbell.job_id),
+                doorbell.job_id,
+                doorbell.seq,
+                status,
+                err
+            ),
+        }
+    }
+    if result.is_err() {
+        Ok(())
+    } else {
+        result
+    }
 }
 
 fn zluda_irq_trace_enabled() -> bool {
@@ -3259,8 +3710,13 @@ fn shared_ddr_offset_from_phys(addr: u64, len: usize) -> std::io::Result<u64> {
     let base = shared_ddr_base();
     let bytes = shared_ddr_bytes() as u64;
     let len = len as u64;
+    if use_process_mock_shared_ddr_window()
+        && addr.checked_add(len).filter(|&end| end <= bytes).is_some()
+    {
+        return Ok(addr);
+    }
     if base == 0 || bytes == 0 {
-        if zluda_irq_mock_enabled() && bytes != 0 {
+        if use_process_mock_shared_ddr_window() && bytes != 0 {
             if addr.checked_add(len).filter(|&end| end <= bytes).is_some() {
                 return Ok(addr);
             }
@@ -3314,6 +3770,10 @@ fn mock_runtime_job(job_id: u32, arg_bytes: &[u8]) -> std::io::Result<()> {
         hetgpu_pacc_job_id::ALLREDUCE => {
             let job = decode_pacc_arg::<HetgpuPaccAllReduceJob>(arg_bytes, "allreduce")?;
             mock_run_allreduce(&job)
+        }
+        hetgpu_pacc_job_id::MMVF => {
+            let job = decode_pacc_arg::<HetgpuPaccMmvfJob>(arg_bytes, "MMVF")?;
+            mock_run_mmvf(&job)
         }
         _ => Err(Error::new(
             ErrorKind::Unsupported,
@@ -3598,12 +4058,9 @@ unsafe fn pacc_mmvf_weight_fingerprint(
         let linear = if sample_count <= 1 {
             0
         } else {
-            sample
-                .checked_mul(total - 1)
-                .ok_or_else(|| {
-                    Error::new(ErrorKind::InvalidInput, "MMVF fingerprint sample overflow")
-                })?
-                / (sample_count - 1)
+            sample.checked_mul(total - 1).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "MMVF fingerprint sample overflow")
+            })? / (sample_count - 1)
         };
         let row = linear / k;
         let kk = linear % k;
@@ -3895,6 +4352,19 @@ fn shared_ddr_base() -> u64 {
             let value = u64::from_le_bytes(buf);
             (value != 0).then_some(value)
         })
+        .or_else(|| {
+            if use_process_mock_shared_ddr_window() {
+                Some(
+                    std::env::var("HETGPU_PACC_EMULATED_SHARED_DDR_BASE")
+                        .ok()
+                        .and_then(|v| parse_u64_text(&v))
+                        .filter(|&base| base != 0)
+                        .unwrap_or(0x1000_0000),
+                )
+            } else {
+                None
+            }
+        })
         .unwrap_or(HETGPU_PACC_SHARED_DDR_BASE)
 }
 
@@ -3946,7 +4416,7 @@ fn use_shared_ddr_mmap() -> bool {
 }
 
 fn use_process_mock_shared_ddr_window() -> bool {
-    zluda_irq_mock_enabled() && !use_pacc_bo_shared_ddr()
+    (zluda_irq_mock_enabled() || pacc_jobd_emulator_enabled()) && !use_pacc_bo_shared_ddr()
 }
 
 fn shared_ddr_bo_pacc_id() -> usize {
@@ -3965,6 +4435,7 @@ fn open_pacc_device_no_boot(id: usize) -> std::io::Result<PaccDevice> {
         fd,
         file: Mutex::new(Some(file)),
         is_mbox_helper: false,
+        is_emulated: false,
     })
 }
 
@@ -5171,7 +5642,13 @@ fn submit_gemm_runtime_job_cached(
         };
         let slot_off = HETGPU_PACC_ARG_BASE_OFF + (slot * HETGPU_PACC_ARG_SLOT_BYTES) as u64;
         let empty_header = [0u8; HETGPU_PACC_ARG_HEADER_BYTES];
-        write_control_window_cached(&mut shared_file, mailbox_file, dev.id, slot_off, &empty_header)?;
+        write_control_window_cached(
+            &mut shared_file,
+            mailbox_file,
+            dev.id,
+            slot_off,
+            &empty_header,
+        )?;
         let arg_header = HetgpuPaccArgSlotHeader {
             magic: HETGPU_PACC_JOB_MAGIC,
             version: HETGPU_PACC_JOB_VERSION,
@@ -5293,7 +5770,13 @@ fn submit_rmsnorm_runtime_job_cached(
         };
         let slot_off = HETGPU_PACC_ARG_BASE_OFF + (slot * HETGPU_PACC_ARG_SLOT_BYTES) as u64;
         let empty_header = [0u8; HETGPU_PACC_ARG_HEADER_BYTES];
-        write_control_window_cached(&mut shared_file, mailbox_file, dev.id, slot_off, &empty_header)?;
+        write_control_window_cached(
+            &mut shared_file,
+            mailbox_file,
+            dev.id,
+            slot_off,
+            &empty_header,
+        )?;
         let arg_header = HetgpuPaccArgSlotHeader {
             magic: HETGPU_PACC_JOB_MAGIC,
             version: HETGPU_PACC_JOB_VERSION,
@@ -6188,6 +6671,20 @@ fn mock_slice_write_f32(
     }
 }
 
+fn mock_gemm_compact_rowmajor_job(job: &HetgpuPaccGemmJob) -> bool {
+    job.transa == 0
+        && job.transb == 0
+        && job.stride_a == 0
+        && job.stride_b == 0
+        && job.stride_c == 0
+        && job.lda > 0
+        && job.ldb > 0
+        && job.ldc > 0
+        && job.lda as u64 == job.k
+        && job.ldb as u64 == job.n
+        && job.ldc as u64 == job.n
+}
+
 fn mock_run_rmsnorm(job: &HetgpuPaccRmsNormJob) -> std::io::Result<()> {
     if job.x_addr == 0 || job.y_addr == 0 || job.rows == 0 || job.hidden == 0 {
         return Err(Error::new(ErrorKind::InvalidInput, "bad RMSNorm mock job"));
@@ -6321,6 +6818,133 @@ fn mock_run_allreduce(job: &HetgpuPaccAllReduceJob) -> std::io::Result<()> {
     Ok(())
 }
 
+fn mock_run_mmvf(job: &HetgpuPaccMmvfJob) -> std::io::Result<()> {
+    if job.x_addr == 0
+        || job.y_addr == 0
+        || job.dst_addr == 0
+        || job.grid_x == 0
+        || job.ncols_dst == 0
+        || job.ncols2 <= 0
+    {
+        return Err(Error::new(ErrorKind::InvalidInput, "bad MMVF mock job"));
+    }
+    if job.grid_y != 1
+        || job.grid_z != 1
+        || job.ids_addr != 0
+        || job.nchannels_y != (HetgpuPaccUint3 { x: 1, y: 1, z: 1 })
+        || job.channel_ratio != (HetgpuPaccUint3 { x: 1, y: 1, z: 1 })
+        || job.sample_ratio != (HetgpuPaccUint3 { x: 1, y: 1, z: 1 })
+    {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "MMVF mock only supports the row-major GEMM route shape",
+        ));
+    }
+    let m = usize::try_from(job.grid_x)
+        .map_err(|_| Error::new(ErrorKind::InvalidInput, "MMVF grid_x overflow"))?;
+    let n = usize::try_from(job.ncols_dst)
+        .map_err(|_| Error::new(ErrorKind::InvalidInput, "MMVF ncols_dst overflow"))?;
+    let ncols2 = usize::try_from(job.ncols2)
+        .map_err(|_| Error::new(ErrorKind::InvalidInput, "MMVF ncols2 overflow"))?;
+    let k = ncols2
+        .checked_mul(2)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "MMVF k overflow"))?;
+    let x_dtype = match job.x_type {
+        1 | 4 => PaccDataType::Float32 as i32,
+        2 => PaccDataType::Float16 as i32,
+        3 | 5 => PaccDataType::Bfloat16 as i32,
+        other => {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!("unsupported MMVF mock x_type {}", other),
+            ))
+        }
+    };
+    let x_elem_size = pacc_dtype_size(x_dtype)
+        .ok_or_else(|| Error::new(ErrorKind::Unsupported, "bad MMVF mock X dtype"))?;
+    let x_row_stride = if job.stride_row > 0 {
+        usize::try_from(job.stride_row)
+            .map_err(|_| Error::new(ErrorKind::InvalidInput, "MMVF stride_row overflow"))?
+    } else {
+        k
+    };
+    let y_col_stride = if job.stride_col_y2 > 0 {
+        usize::try_from(job.stride_col_y2)
+            .map_err(|_| Error::new(ErrorKind::InvalidInput, "MMVF stride_col_y2 overflow"))?
+            .checked_mul(2)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "MMVF Y stride overflow"))?
+    } else {
+        k
+    };
+    let dst_col_stride = if job.stride_col_dst > 0 {
+        usize::try_from(job.stride_col_dst)
+            .map_err(|_| Error::new(ErrorKind::InvalidInput, "MMVF stride_col_dst overflow"))?
+    } else {
+        m
+    };
+    let x_elems = x_row_stride
+        .checked_mul(m.saturating_sub(1))
+        .and_then(|v| v.checked_add(k))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "MMVF X span overflow"))?;
+    let y_elems = y_col_stride
+        .checked_mul(n.saturating_sub(1))
+        .and_then(|v| v.checked_add(k))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "MMVF Y span overflow"))?;
+    let dst_elems = dst_col_stride
+        .checked_mul(n.saturating_sub(1))
+        .and_then(|v| v.checked_add(m))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "MMVF dst span overflow"))?;
+    let x_bytes = x_elems
+        .checked_mul(x_elem_size)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "MMVF X bytes overflow"))?;
+    let y_bytes = y_elems
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "MMVF Y bytes overflow"))?;
+    let dst_bytes = dst_elems
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "MMVF dst bytes overflow"))?;
+    if job.x_bytes != 0 && x_bytes > job.x_bytes as usize {
+        return Err(Error::new(ErrorKind::InvalidInput, "short MMVF X buffer"));
+    }
+    if job.y_bytes != 0 && y_bytes > job.y_bytes as usize {
+        return Err(Error::new(ErrorKind::InvalidInput, "short MMVF Y buffer"));
+    }
+    if job.dst_bytes != 0 && dst_bytes > job.dst_bytes as usize {
+        return Err(Error::new(ErrorKind::InvalidInput, "short MMVF dst buffer"));
+    }
+
+    let mut x = vec![0u8; x_bytes];
+    let mut y = vec![0u8; y_bytes];
+    let mut dst = vec![0u8; dst_bytes];
+    read_shared_ddr_phys(job.x_addr, &mut x)?;
+    read_shared_ddr_phys(job.y_addr, &mut y)?;
+    for col in 0..n {
+        for row in 0..m {
+            let mut acc = 0.0f32;
+            for kk in 0..k {
+                let xv = mock_slice_read_f32(&x, x_dtype, row * x_row_stride + kk)?;
+                let yv =
+                    mock_slice_read_f32(&y, PaccDataType::Float32 as i32, col * y_col_stride + kk)?;
+                acc += xv * yv;
+            }
+            mock_slice_write_f32(
+                &mut dst,
+                PaccDataType::Float32 as i32,
+                col * dst_col_stride + row,
+                acc,
+            )?;
+        }
+    }
+    write_shared_ddr_phys(job.dst_addr, &dst)?;
+    if zluda_irq_trace_enabled() {
+        eprintln!(
+            "PACC ZLUDA IRQ mock: MMVF m={} n={} k={} x_type={} dst=0x{:x}",
+            m, n, k, job.x_type, job.dst_addr
+        );
+    }
+    Ok(())
+}
+
 fn mock_run_gemm(job: &HetgpuPaccGemmJob) -> std::io::Result<()> {
     if job.a_addr == 0
         || job.b_addr == 0
@@ -6342,20 +6966,44 @@ fn mock_run_gemm(job: &HetgpuPaccGemmJob) -> std::io::Result<()> {
     } else {
         job.batch_count
     };
-    let a_matrix_elems = if job.transa != 0 {
+    let compact_rowmajor = mock_gemm_compact_rowmajor_job(job);
+    let compact_a_elems = job
+        .m
+        .checked_mul(job.k)
+        .and_then(|v| usize::try_from(v).ok())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM mock compact A overflow"))?;
+    let compact_b_elems = job
+        .k
+        .checked_mul(job.n)
+        .and_then(|v| usize::try_from(v).ok())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM mock compact B overflow"))?;
+    let compact_c_elems = job
+        .m
+        .checked_mul(job.n)
+        .and_then(|v| usize::try_from(v).ok())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM mock compact C overflow"))?;
+    let a_matrix_elems = if compact_rowmajor {
+        Some(compact_a_elems)
+    } else if job.transa != 0 {
         gemm_span(job.k, job.m, job.lda)
     } else {
         gemm_span(job.m, job.k, job.lda)
     }
     .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM mock A span overflow"))?;
-    let b_matrix_elems = if job.transb != 0 {
+    let b_matrix_elems = if compact_rowmajor {
+        Some(compact_b_elems)
+    } else if job.transb != 0 {
         gemm_span(job.n, job.k, job.ldb)
     } else {
         gemm_span(job.k, job.n, job.ldb)
     }
     .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM mock B span overflow"))?;
-    let c_matrix_elems = gemm_span(job.m, job.n, job.ldc)
-        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM mock C span overflow"))?;
+    let c_matrix_elems = if compact_rowmajor {
+        Some(compact_c_elems)
+    } else {
+        gemm_span(job.m, job.n, job.ldc)
+    }
+    .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM mock C span overflow"))?;
     let a_batch_stride = if job.stride_a > 0 {
         job.stride_a as usize
     } else {
@@ -6423,25 +7071,31 @@ fn mock_run_gemm(job: &HetgpuPaccGemmJob) -> std::io::Result<()> {
         let c_batch = batch * c_batch_stride;
         for row in 0..m {
             for col in 0..n {
-                let a_base = if job.transa != 0 { row } else { row * lda };
-                let a_stride = if job.transa != 0 { lda } else { 1 };
-                let b_base = if job.transb != 0 { col * ldb } else { col };
-                let b_stride = if job.transb != 0 { 1 } else { ldb };
                 let mut acc = 0.0f32;
                 for kk in 0..k {
-                    let av = mock_slice_read_f32(
-                        &a,
-                        job.atype as i32,
-                        a_batch + a_base + kk * a_stride,
-                    )?;
-                    let bv = mock_slice_read_f32(
-                        &b,
-                        job.btype as i32,
-                        b_batch + b_base + kk * b_stride,
-                    )?;
+                    let a_idx = if compact_rowmajor {
+                        row * k + kk
+                    } else if job.transa != 0 {
+                        row + kk * lda
+                    } else {
+                        row * lda + kk
+                    };
+                    let b_idx = if compact_rowmajor {
+                        kk * n + col
+                    } else if job.transb != 0 {
+                        col * ldb + kk
+                    } else {
+                        col + kk * ldb
+                    };
+                    let av = mock_slice_read_f32(&a, job.atype as i32, a_batch + a_idx)?;
+                    let bv = mock_slice_read_f32(&b, job.btype as i32, b_batch + b_idx)?;
                     acc += av * bv;
                 }
-                let c_idx = c_batch + row + col * ldc;
+                let c_idx = if compact_rowmajor {
+                    c_batch + row * n + col
+                } else {
+                    c_batch + row + col * ldc
+                };
                 let old = if beta != 0.0 {
                     mock_slice_read_f32(&c, job.ctype as i32, c_idx)?
                 } else {
@@ -6454,8 +7108,19 @@ fn mock_run_gemm(job: &HetgpuPaccGemmJob) -> std::io::Result<()> {
     write_shared_ddr_phys(job.c_addr, &c)?;
     if zluda_irq_trace_enabled() {
         eprintln!(
-            "PACC ZLUDA IRQ mock: GEMM m={} n={} k={} dtype={}/{}/{} c=0x{:x}",
-            job.m, job.n, job.k, job.atype, job.btype, job.ctype, job.c_addr
+            "PACC ZLUDA IRQ mock: GEMM m={} n={} k={} dtype={}/{}/{} c=0x{:x} layout={}",
+            job.m,
+            job.n,
+            job.k,
+            job.atype,
+            job.btype,
+            job.ctype,
+            job.c_addr,
+            if compact_rowmajor {
+                "rowmajor-compact"
+            } else {
+                "column-major"
+            }
         );
     }
     Ok(())
@@ -7729,15 +8394,9 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
             .and_then(|v| v.checked_mul(pacc_a_dtype_size))
             .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "A chunk size overflow"))?;
         let (job_a_off, a_stage_source) = if use_weight_arena {
-            let fingerprint = pacc_mmvf_weight_fingerprint(
-                a_ptr,
-                atype,
-                0,
-                chunk_m,
-                chunk_k,
-                lda,
-                transa != 0,
-            )? ^ ((pacc_atype as u32 as u64) << 32);
+            let fingerprint =
+                pacc_mmvf_weight_fingerprint(a_ptr, atype, 0, chunk_m, chunk_k, lda, transa != 0)?
+                    ^ ((pacc_atype as u32 as u64) << 32);
             let weight_key = PaccMmvfWeightKey {
                 dev_id: dev.id,
                 a_addr: a_ptr as usize,
@@ -8002,11 +8661,12 @@ unsafe fn submit_gemm_staged_tiled_shared_ddr(
             for tile_idx in 0..tile_count {
                 let dev_id = gemm_devices[tile_idx % gemm_devices.len()];
                 let slot_id = tile_idx % slot_count;
-                let slot_rel_off = (slot_id as u64)
-                    .checked_mul(slot_bytes as u64)
-                    .ok_or_else(|| {
-                        Error::new(ErrorKind::InvalidInput, "shared DDR slot offset overflow")
-                    })?;
+                let slot_rel_off =
+                    (slot_id as u64)
+                        .checked_mul(slot_bytes as u64)
+                        .ok_or_else(|| {
+                            Error::new(ErrorKind::InvalidInput, "shared DDR slot offset overflow")
+                        })?;
                 let slot_off = payload_base.checked_add(slot_rel_off).ok_or_else(|| {
                     Error::new(ErrorKind::InvalidInput, "shared DDR slot offset overflow")
                 })?;
@@ -8648,15 +9308,7 @@ unsafe fn submit_gemm_mmvf_small_n_shared_ddr(
     let dev_id = next_gemm_device();
     let _slot_guard = lock_shared_ddr_stage(0, "hetgpu_pacc_submit_gemm_mmvf_small_n")?;
     let mut shared_file = open_shared_ddr_window_file(dev_id);
-    let fingerprint = pacc_mmvf_weight_fingerprint(
-        a,
-        atype,
-        0,
-        m,
-        k,
-        lda,
-        transa != 0,
-    )?;
+    let fingerprint = pacc_mmvf_weight_fingerprint(a, atype, 0, m, k, lda, transa != 0)?;
     let weight_key = PaccMmvfWeightKey {
         dev_id,
         a_addr: a as usize,
@@ -8692,8 +9344,8 @@ unsafe fn submit_gemm_mmvf_small_n_shared_ddr(
             Err(e) if e.kind() == ErrorKind::OutOfMemory => {
                 let a_stage = pack_gemm_a_block_rowmajor_typed_bytes(
                     a,
-                atype,
-                pacc_x_dtype,
+                    atype,
+                    pacc_x_dtype,
                     0,
                     m,
                     k,
@@ -8777,9 +9429,7 @@ unsafe fn submit_gemm_mmvf_small_n_shared_ddr(
             ));
         }
         if mmvf_post_submit_settle_us != 0 {
-            std::thread::sleep(std::time::Duration::from_micros(
-                mmvf_post_submit_settle_us,
-            ));
+            std::thread::sleep(std::time::Duration::from_micros(mmvf_post_submit_settle_us));
         }
         read_shared_ddr_window_cached(&mut shared_file, dst_off, &mut dst_stage)?;
         for col in 0..chunk_n {

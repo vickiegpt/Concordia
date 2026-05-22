@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-cuda_types = { path = "../../cuda_types" }
+cuda_types = { path = "../../cuda_types", default-features = false }
 libc = "0.2"
 lazy_static = "1.4"

@@ -134,9 +134,9 @@ fn tmatmul_ptx_looks_valid(ptx: &str) -> bool {
     }) {
         return false;
     }
-    !trimmed.bytes().any(|b| {
-        b == 0 || b == 0x7f || (b < 0x20 && !matches!(b, b'\n' | b'\r' | b'\t'))
-    })
+    !trimmed
+        .bytes()
+        .any(|b| b == 0 || b == 0x7f || (b < 0x20 && !matches!(b, b'\n' | b'\r' | b'\t')))
 }
 
 #[cfg(feature = "intel")]
@@ -478,10 +478,8 @@ pub(crate) unsafe fn launch_kernel(
 
         let cocotb_dir = std::env::var("HETGPU_TMATMUL_COCOTB_DIR")
             .unwrap_or_else(|_| tmatmul_default_cocotb_dir());
-        let selected_ptx = select_tmatmul_ptx(
-            f.ptx_source.as_deref().map(String::as_str),
-            &cocotb_dir,
-        );
+        let selected_ptx =
+            select_tmatmul_ptx(f.ptx_source.as_deref().map(String::as_str), &cocotb_dir);
         let selected_ptx_ref = selected_ptx
             .as_ref()
             .map(|(ptx_source, _origin)| ptx_source.as_str());
@@ -1009,7 +1007,7 @@ pub(crate) unsafe fn launch_kernel(
                 let value = *value_ptr;
 
                 if key_value == 1 { // CU_LAUNCH_PARAM_BUFFER_SHARED_MEMORY
-                    // shared memory is already set via the shared_mem_bytes parameter
+                     // shared memory is already set via the shared_mem_bytes parameter
                 }
 
                 i += 2;
@@ -2126,9 +2124,7 @@ unsafe fn resolve_alloc_pointer_value(ptr_val: u64) -> Option<(u64, usize)> {
 }
 
 #[cfg(feature = "intel")]
-unsafe fn read_alloc_pointer_from_param(
-    param: *mut ::core::ffi::c_void,
-) -> Option<(u64, usize)> {
+unsafe fn read_alloc_pointer_from_param(param: *mut ::core::ffi::c_void) -> Option<(u64, usize)> {
     if param.is_null() {
         return None;
     }
@@ -3248,9 +3244,7 @@ pub(crate) fn launch_kernel(
             .ok()
             .map(|value| value.trim().to_ascii_lowercase())
         {
-            Some(value)
-                if value == "0" || value == "false" || value == "no" || value == "off" =>
-            {
+            Some(value) if value == "0" || value == "false" || value == "no" || value == "off" => {
                 false
             }
             Some(_) => true,
@@ -3515,9 +3509,7 @@ fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
     if name.contains("arange_cuda_out") || name.contains("elementwise_kernel_with_index") {
         return Some(4);
     }
-    if name.contains("vectorized_elementwise_kernel")
-        && name.contains("cudafunctoronself_add")
-    {
+    if name.contains("vectorized_elementwise_kernel") && name.contains("cudafunctoronself_add") {
         return Some(3);
     }
     if name.contains("vectorized_elementwise_kernel") && name.contains("sigmoid_kernel_cuda") {
@@ -3557,9 +3549,7 @@ fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
     if name.contains("vectorized_elementwise_kernel") && name.contains("fillfunctor") {
         return Some(3);
     }
-    if name.contains("elementwise_kernel")
-        && name.contains("comparefunctor")
-        && name.contains("il")
+    if name.contains("elementwise_kernel") && name.contains("comparefunctor") && name.contains("il")
     {
         return Some(4);
     }
@@ -3750,10 +3740,7 @@ fn pacc_host_maps_contains(
     need_write: bool,
 ) -> bool {
     ranges.iter().any(|range| {
-        range.read
-            && (!need_write || range.write)
-            && addr >= range.start
-            && end_addr <= range.end
+        range.read && (!need_write || range.write) && addr >= range.start && end_addr <= range.end
     })
 }
 
@@ -4437,7 +4424,9 @@ unsafe fn pacc_deepep_layout_binding_metadata(
     let topk_bytes = std::mem::size_of::<i64>() as u64;
     let (bytes, flags) = match index {
         0 => (
-            num_tokens.saturating_mul(num_topk).saturating_mul(topk_bytes),
+            num_tokens
+                .saturating_mul(num_topk)
+                .saturating_mul(topk_bytes),
             pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
@@ -5551,15 +5540,15 @@ unsafe fn execute_cpy_scalar_host_fallback(
         .to_ascii_lowercase()
         .contains("cpy_scalar_contiguous");
     let (src_len, dst_len) = if contiguous {
-        (
-            ne.saturating_mul(src_elem),
-            ne.saturating_mul(dst_elem),
-        )
+        (ne.saturating_mul(src_elem), ne.saturating_mul(dst_elem))
     } else {
         let src_ne0 = read_param_u64(kernel_params, 3)?.max(1);
         let src_ne1 = read_param_u64(kernel_params, 4)?.max(1);
         let src_ne2 = read_param_u64(kernel_params, 5)?.max(1);
-        let src_ne012 = src_ne0.saturating_mul(src_ne1).saturating_mul(src_ne2).max(1);
+        let src_ne012 = src_ne0
+            .saturating_mul(src_ne1)
+            .saturating_mul(src_ne2)
+            .max(1);
         let src_dims = [
             src_ne0,
             src_ne1,
@@ -5576,7 +5565,10 @@ unsafe fn execute_cpy_scalar_host_fallback(
         let dst_ne0 = read_param_u64(kernel_params, 10)?.max(1);
         let dst_ne1 = read_param_u64(kernel_params, 11)?.max(1);
         let dst_ne2 = read_param_u64(kernel_params, 12)?.max(1);
-        let dst_ne012 = dst_ne0.saturating_mul(dst_ne1).saturating_mul(dst_ne2).max(1);
+        let dst_ne012 = dst_ne0
+            .saturating_mul(dst_ne1)
+            .saturating_mul(dst_ne2)
+            .max(1);
         let dst_dims = [
             dst_ne0,
             dst_ne1,
@@ -5628,7 +5620,10 @@ unsafe fn execute_cpy_scalar_host_fallback(
         let src_ne0 = read_param_u64(kernel_params, 3)?.max(1);
         let src_ne1 = read_param_u64(kernel_params, 4)?.max(1);
         let src_ne2 = read_param_u64(kernel_params, 5)?.max(1);
-        let src_ne012 = src_ne0.saturating_mul(src_ne1).saturating_mul(src_ne2).max(1);
+        let src_ne012 = src_ne0
+            .saturating_mul(src_ne1)
+            .saturating_mul(src_ne2)
+            .max(1);
         let src_ne03 = pacc_div_ceil_u64(ne, src_ne012).max(1);
         let src_strides = [
             read_param_u64(kernel_params, 6)? / src_elem,
@@ -5640,7 +5635,10 @@ unsafe fn execute_cpy_scalar_host_fallback(
         let dst_ne0 = read_param_u64(kernel_params, 10)?.max(1);
         let dst_ne1 = read_param_u64(kernel_params, 11)?.max(1);
         let dst_ne2 = read_param_u64(kernel_params, 12)?.max(1);
-        let dst_ne012 = dst_ne0.saturating_mul(dst_ne1).saturating_mul(dst_ne2).max(1);
+        let dst_ne012 = dst_ne0
+            .saturating_mul(dst_ne1)
+            .saturating_mul(dst_ne2)
+            .max(1);
         let dst_ne03 = pacc_div_ceil_u64(ne, dst_ne012).max(1);
         let dst_strides = [
             read_param_u64(kernel_params, 13)? / dst_elem,
@@ -5669,7 +5667,13 @@ unsafe fn execute_cpy_scalar_host_fallback(
                 .saturating_add(dst_i2.saturating_mul(dst_strides[2]))
                 .saturating_add(dst_i3.saturating_mul(dst_strides[3]));
             let value = pacc_read_elem_as_f32(src_base, src_index as i64, src_elem);
-            pacc_write_elem_from_f32_typed(dst_base, dst_index as i64, dst_elem, value, dst_is_bf16);
+            pacc_write_elem_from_f32_typed(
+                dst_base,
+                dst_index as i64,
+                dst_elem,
+                value,
+                dst_is_bf16,
+            );
         }
     }
 
@@ -6976,10 +6980,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     let x_type = match pacc_mmvf_x_type(kernel_name) {
         Some(value) => value,
         None => {
-            trace_mmvf!(
-                "[PACC Backend] MMVF '{}' x_type parse failed",
-                kernel_name
-            );
+            trace_mmvf!("[PACC Backend] MMVF '{}' x_type parse failed", kernel_name);
             return None;
         }
     };
@@ -7003,7 +7004,10 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
             kernel_name
         );
         if pacc_named_fail_open_enabled() {
-            return pacc_named_assume_success("MMVF offload disabled after prior failure", kernel_name);
+            return pacc_named_assume_success(
+                "MMVF offload disabled after prior failure",
+                kernel_name,
+            );
         }
         return Some(Err(CUerror::UNKNOWN));
     }
@@ -7011,20 +7015,14 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     let x_host = match read_param_u64(kernel_params, 0) {
         Some(value) => value,
         None => {
-            trace_mmvf!(
-                "[PACC Backend] MMVF '{}' missing x param[0]",
-                kernel_name
-            );
+            trace_mmvf!("[PACC Backend] MMVF '{}' missing x param[0]", kernel_name);
             return None;
         }
     };
     let y_host = match read_param_u64(kernel_params, 1) {
         Some(value) => value,
         None => {
-            trace_mmvf!(
-                "[PACC Backend] MMVF '{}' missing y param[1]",
-                kernel_name
-            );
+            trace_mmvf!("[PACC Backend] MMVF '{}' missing y param[1]", kernel_name);
             return None;
         }
     };
@@ -7032,10 +7030,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     let dst_host = match read_param_u64(kernel_params, 4) {
         Some(value) => value,
         None => {
-            trace_mmvf!(
-                "[PACC Backend] MMVF '{}' missing dst param[4]",
-                kernel_name
-            );
+            trace_mmvf!("[PACC Backend] MMVF '{}' missing dst param[4]", kernel_name);
             return None;
         }
     };
@@ -9505,7 +9500,10 @@ unsafe fn execute_compute_batched_ptrs_fallback(
             "[PACC Backend] compute_batched_ptrs '{}' could not resolve pointer tables",
             kernel_name
         );
-        return pacc_named_assume_success("compute_batched_ptrs pointer tables could not be resolved", kernel_name);
+        return pacc_named_assume_success(
+            "compute_batched_ptrs pointer tables could not be resolved",
+            kernel_name,
+        );
     }
 
     let table_count = ne12.checked_mul(ne13)?;
@@ -9524,7 +9522,10 @@ unsafe fn execute_compute_batched_ptrs_fallback(
             ne13,
             ne23
         );
-        return pacc_named_assume_success("compute_batched_ptrs pointer table range check failed", kernel_name);
+        return pacc_named_assume_success(
+            "compute_batched_ptrs pointer table range check failed",
+            kernel_name,
+        );
     }
 
     for i13 in 0..ne13 {
@@ -9929,15 +9930,7 @@ unsafe fn log_tensoriterator_triplet_scan_debug(
         }
         eprintln!(
             "[PACC Backend]   words[{}]= {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x}",
-            index,
-            words[0],
-            words[1],
-            words[2],
-            words[3],
-            words[4],
-            words[5],
-            words[6],
-            words[7]
+            index, words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7]
         );
         for off in (0..1024usize).step_by(std::mem::size_of::<u64>()) {
             if !pacc_host_range_has_perms(
@@ -10011,18 +10004,17 @@ unsafe fn find_tensoriterator_data_triplet(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn read_f32_tensor_prefix(addr: u64, elems: usize) -> Result<Vec<f32>, cuda_types::cuda::CUerror> {
+unsafe fn read_f32_tensor_prefix(
+    addr: u64,
+    elems: usize,
+) -> Result<Vec<f32>, cuda_types::cuda::CUerror> {
     let bytes = elems.saturating_mul(std::mem::size_of::<f32>());
     let mut values = vec![0f32; elems];
     if elems == 0 {
         return Ok(values);
     }
     if pacc_host_range_has_perms(addr as usize, bytes, false) {
-        std::ptr::copy_nonoverlapping(
-            addr as *const u8,
-            values.as_mut_ptr().cast::<u8>(),
-            bytes,
-        );
+        std::ptr::copy_nonoverlapping(addr as *const u8, values.as_mut_ptr().cast::<u8>(), bytes);
         return Ok(values);
     }
     super::memory::copy_dto_h_v2(
@@ -10045,11 +10037,7 @@ unsafe fn write_f32_tensor(addr: u64, values: &[f32]) -> Result<(), cuda_types::
         return Ok(());
     }
     if pacc_host_range_has_perms(addr as usize, bytes, true) {
-        std::ptr::copy_nonoverlapping(
-            values.as_ptr().cast::<u8>(),
-            addr as *mut u8,
-            bytes,
-        );
+        std::ptr::copy_nonoverlapping(values.as_ptr().cast::<u8>(), addr as *mut u8, bytes);
         return Ok(());
     }
     super::memory::copy_hto_d_v2(
@@ -10065,18 +10053,17 @@ unsafe fn write_f32_tensor(addr: u64, values: &[f32]) -> Result<(), cuda_types::
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn read_bf16_tensor_prefix(addr: u64, elems: usize) -> Result<Vec<u16>, cuda_types::cuda::CUerror> {
+unsafe fn read_bf16_tensor_prefix(
+    addr: u64,
+    elems: usize,
+) -> Result<Vec<u16>, cuda_types::cuda::CUerror> {
     let bytes = elems.saturating_mul(std::mem::size_of::<u16>());
     let mut values = vec![0u16; elems];
     if elems == 0 {
         return Ok(values);
     }
     if pacc_host_range_has_perms(addr as usize, bytes, false) {
-        std::ptr::copy_nonoverlapping(
-            addr as *const u8,
-            values.as_mut_ptr().cast::<u8>(),
-            bytes,
-        );
+        std::ptr::copy_nonoverlapping(addr as *const u8, values.as_mut_ptr().cast::<u8>(), bytes);
         return Ok(values);
     }
     super::memory::copy_dto_h_v2(
@@ -10099,11 +10086,7 @@ unsafe fn write_bf16_tensor(addr: u64, values: &[u16]) -> Result<(), cuda_types:
         return Ok(());
     }
     if pacc_host_range_has_perms(addr as usize, bytes, true) {
-        std::ptr::copy_nonoverlapping(
-            values.as_ptr().cast::<u8>(),
-            addr as *mut u8,
-            bytes,
-        );
+        std::ptr::copy_nonoverlapping(values.as_ptr().cast::<u8>(), addr as *mut u8, bytes);
         return Ok(());
     }
     super::memory::copy_hto_d_v2(
@@ -10456,7 +10439,10 @@ unsafe fn execute_direct_copy_cast_host(
                 }
             }
             _ => {
-                let dst: Vec<u8> = values.iter().map(|&v| if v != 0.0 { 1 } else { 0 }).collect();
+                let dst: Vec<u8> = values
+                    .iter()
+                    .map(|&v| if v != 0.0 { 1 } else { 0 })
+                    .collect();
                 if pacc_host_range_has_perms(out_addr as usize, n, true) {
                     std::ptr::copy_nonoverlapping(dst.as_ptr(), out_addr as *mut u8, n);
                 } else if let Err(err) = super::memory::copy_hto_d_v2(
@@ -10536,6 +10522,7 @@ unsafe fn execute_unary_bf16_host(
     for i in 0..n {
         let x = pacc_bf16_to_f32(input[i]);
         let y = match op {
+            "abs" => x.abs(),
             "log" => x.ln(),
             "silu" => pacc_silu(x),
             _ => {
@@ -10552,11 +10539,7 @@ unsafe fn execute_unary_bf16_host(
     }
 
     if pacc_host_range_has_perms(out_addr as usize, bytes, true) {
-        std::ptr::copy_nonoverlapping(
-            output.as_ptr().cast::<u8>(),
-            out_addr as *mut u8,
-            bytes,
-        );
+        std::ptr::copy_nonoverlapping(output.as_ptr().cast::<u8>(), out_addr as *mut u8, bytes);
     } else if let Err(err) = super::memory::copy_hto_d_v2(
         cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
         output.as_ptr() as *const ::core::ffi::c_void,
@@ -10641,6 +10624,88 @@ unsafe fn execute_uniform_bf16_host(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+fn pacc_deterministic_unit_f32(index: usize, salt: u64) -> f32 {
+    let mut x = (index as u64)
+        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        .wrapping_add(salt);
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^= x >> 31;
+    let mantissa = ((x >> 40) as u32).max(1);
+    mantissa as f32 * (1.0 / ((1u32 << 24) as f32))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_distribution_f32_host(
+    kernel_name: &str,
+    distribution: &str,
+    grid_dim_x: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let n = read_param_i32(kernel_params, 0)
+        .map(|v| v.max(0) as usize)
+        .unwrap_or_else(|| (grid_dim_x as usize).saturating_mul(4));
+    if n == 0 {
+        return Some(Ok(()));
+    }
+    let bytes = n.saturating_mul(std::mem::size_of::<f32>());
+    let Some((param_index, param_off, out_addr)) =
+        find_tensoriterator_data_single(kernel_params, bytes)
+    else {
+        eprintln!(
+            "[PACC Backend] distribution f32 '{}' could not locate TensorIterator output for n={} bytes={}",
+            kernel_name, n, bytes
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+
+    let mut output = vec![0f32; n];
+    if distribution == "normal" {
+        for i in (0..n).step_by(2) {
+            let u1 = pacc_deterministic_unit_f32(i, 0xbf58_476d_1ce4_e5b9).max(1.0e-7);
+            let u2 = pacc_deterministic_unit_f32(i, 0x94d0_49bb_1331_11eb);
+            let radius = (-2.0 * u1.ln()).sqrt();
+            let theta = 6.283_185_5_f32 * u2;
+            output[i] = radius * theta.cos();
+            if i + 1 < n {
+                output[i + 1] = radius * theta.sin();
+            }
+        }
+    } else {
+        for (i, value) in output.iter_mut().enumerate() {
+            *value = pacc_deterministic_unit_f32(i, 0xd6e8_feb8_6659_fd93);
+        }
+    }
+
+    if let Err(err) = write_f32_tensor(out_addr, &output) {
+        eprintln!(
+            "[PACC Backend] distribution f32 '{}' failed to write output out=0x{:x} n={} err={:?}",
+            kernel_name, out_addr, n, err
+        );
+        return Some(Err(err));
+    }
+    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        eprintln!(
+            "[PACC Backend] handled distribution f32 '{}' on host path kind={} n={} out=0x{:x} param={} off=0x{:x}",
+            kernel_name, distribution, n, out_addr, param_index, param_off
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn execute_unary_f32_host(
     kernel_name: &str,
     op_name: &str,
@@ -10692,6 +10757,7 @@ unsafe fn execute_unary_f32_host(
     for i in 0..n {
         let x = input[i];
         output[i] = match op_name {
+            "abs" => x.abs(),
             "exp" => x.exp(),
             "log" => x.ln(),
             "softplus" => {
@@ -10718,11 +10784,7 @@ unsafe fn execute_unary_f32_host(
     }
 
     if pacc_host_range_has_perms(out_addr as usize, bytes, true) {
-        std::ptr::copy_nonoverlapping(
-            output.as_ptr().cast::<u8>(),
-            out_addr as *mut u8,
-            bytes,
-        );
+        std::ptr::copy_nonoverlapping(output.as_ptr().cast::<u8>(), out_addr as *mut u8, bytes);
     } else if let Err(err) = super::memory::copy_hto_d_v2(
         cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
         output.as_ptr() as *const ::core::ffi::c_void,
@@ -10942,7 +11004,11 @@ unsafe fn read_aunary_f32_scalar(kernel_params: *mut *mut ::core::ffi::c_void) -
         }
         let base = param as usize;
         for off in (0..128usize).step_by(std::mem::size_of::<f32>()) {
-            if !pacc_host_range_has_perms(base.saturating_add(off), std::mem::size_of::<f32>(), false) {
+            if !pacc_host_range_has_perms(
+                base.saturating_add(off),
+                std::mem::size_of::<f32>(),
+                false,
+            ) {
                 continue;
             }
             let value = ((base + off) as *const f32).read_unaligned();
@@ -11135,7 +11201,8 @@ unsafe fn execute_vectorized_add_i64_host(
     let out = out_addr as *mut i64;
     let inp = inp_addr as *const i64;
     for i in 0..n {
-        out.add(i).write(inp.add(i).read_unaligned().wrapping_add(scalar));
+        out.add(i)
+            .write(inp.add(i).read_unaligned().wrapping_add(scalar));
     }
     if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
         eprintln!(
@@ -11443,7 +11510,12 @@ unsafe fn execute_compare_i64_host_debug(
             let alloc = pacc_host_or_cuda_alloc_has_bytes(value, 1, word_index == 0);
             let _ = std::fmt::Write::write_fmt(
                 &mut rendered,
-                format_args!(" w{}=0x{:x}{}", word_index, value, if alloc { "*" } else { "" }),
+                format_args!(
+                    " w{}=0x{:x}{}",
+                    word_index,
+                    value,
+                    if alloc { "*" } else { "" }
+                ),
             );
         }
         eprintln!(
@@ -11759,7 +11831,10 @@ fn pacc_parse_env_u64_default(name: &str, default_value: u64) -> u64 {
         .ok()
         .and_then(|value| {
             let trimmed = value.trim();
-            if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+            if let Some(hex) = trimmed
+                .strip_prefix("0x")
+                .or_else(|| trimmed.strip_prefix("0X"))
+            {
                 u64::from_str_radix(hex, 16).ok()
             } else {
                 trimmed.parse::<u64>().ok()
@@ -11884,7 +11959,10 @@ fn pacc_log_limited(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_named_assume_success(reason: &str, kernel_name: &str) -> Option<cuda_types::cuda::CUresult> {
+fn pacc_named_assume_success(
+    reason: &str,
+    kernel_name: &str,
+) -> Option<cuda_types::cuda::CUresult> {
     if pacc_named_fail_open_enabled() {
         pacc_log_limited(
             &PACC_NAMED_FAILOPEN_LOG_COUNT,
@@ -11941,9 +12019,7 @@ unsafe fn try_offload_named_pacc_kernel(
             return Some(result);
         }
     }
-    if name_lower.contains("mul_mat_vec_q")
-        && pacc_env_truthy("HETGPU_PACC_MMVQ_NAMED_FAIL_OPEN")
-    {
+    if name_lower.contains("mul_mat_vec_q") && pacc_env_truthy("HETGPU_PACC_MMVQ_NAMED_FAIL_OPEN") {
         return pacc_named_assume_success("MMVQ named fail-open requested", kernel_name);
     }
     if name_lower.contains("softmax_warp_forward") {
@@ -11954,14 +12030,7 @@ unsafe fn try_offload_named_pacc_kernel(
             };
         let _ = dtype;
         let dev_id = current_pacc_device_id_or_zero();
-        let rc = launch_pytorch_softmax_warp_forward_elf(
-            dev_id,
-            src,
-            dst,
-            rows,
-            cols,
-            stride,
-        );
+        let rc = launch_pytorch_softmax_warp_forward_elf(dev_id, src, dst, rows, cols, stride);
         if rc == 0 {
             eprintln!(
                 "[PACC Backend] offloaded PyTorch softmax_warp_forward '{}' via PACC ELF dev={} rows={} cols={} stride={}",
@@ -12035,7 +12104,10 @@ unsafe fn try_offload_named_pacc_kernel(
             == Some("1");
         if PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE.load(Ordering::Relaxed) {
             if pacc_named_fail_open_enabled() {
-                return pacc_named_assume_success("RMSNorm offload disabled after prior failure", kernel_name);
+                return pacc_named_assume_success(
+                    "RMSNorm offload disabled after prior failure",
+                    kernel_name,
+                );
             }
             if let Some((x, weight, y, rows, hidden, eps)) = read_rmsnorm_named_offload_args(
                 kernel_name,
@@ -12084,7 +12156,10 @@ unsafe fn try_offload_named_pacc_kernel(
                     );
                 }
                 if pacc_named_fail_open_enabled() {
-                    return pacc_named_assume_success("RMSNorm args could not be parsed", kernel_name);
+                    return pacc_named_assume_success(
+                        "RMSNorm args could not be parsed",
+                        kernel_name,
+                    );
                 }
                 if allow_normal_fallback {
                     return None;
@@ -12314,26 +12389,20 @@ unsafe fn try_offload_named_pacc_kernel(
             && name_lower.contains("storewithcast"))
     {
         if name_lower.contains("bfloat16") {
-            return execute_direct_copy_bf16_host(
-                kernel_name,
-                grid_dim_x,
-                1,
-                kernel_params,
-            );
+            return execute_direct_copy_bf16_host(kernel_name, grid_dim_x, 1, kernel_params);
         }
-        if let Some(result) = execute_direct_copy_cast_host(kernel_name, grid_dim_x, 1, kernel_params) {
+        if let Some(result) =
+            execute_direct_copy_cast_host(kernel_name, grid_dim_x, 1, kernel_params)
+        {
             return Some(result);
         }
-        return execute_direct_copy_bool_host_cast(
-            kernel_name,
-            grid_dim_x,
-            1,
-            kernel_params,
-        );
+        return execute_direct_copy_bool_host_cast(kernel_name, grid_dim_x, 1, kernel_params);
     }
 
     if name_lower.contains("bfloat16_copy_kernel_cuda") {
-        if let Some(result) = execute_direct_copy_cast_host(kernel_name, grid_dim_x, 1, kernel_params) {
+        if let Some(result) =
+            execute_direct_copy_cast_host(kernel_name, grid_dim_x, 1, kernel_params)
+        {
             return Some(result);
         }
         return execute_direct_copy_bool_host_cast(kernel_name, grid_dim_x, 1, kernel_params);
@@ -12368,15 +12437,38 @@ unsafe fn try_offload_named_pacc_kernel(
     {
         return execute_unary_bf16_host(kernel_name, "log", grid_dim_x, 1, kernel_params);
     }
+    if name_lower.contains("vectorized_elementwise_kernel")
+        && name_lower.contains("absfunctor")
+        && name_lower.contains("bfloat16")
+    {
+        return execute_unary_bf16_host(kernel_name, "abs", grid_dim_x, 1, kernel_params);
+    }
     if name_lower.contains("distribution_elementwise_grid_stride_kernel")
         && name_lower.contains("uniform_kernel")
         && name_lower.contains("bfloat16")
     {
         return execute_uniform_bf16_host(kernel_name, grid_dim_x, kernel_params);
     }
+    if name_lower.contains("distribution_elementwise_grid_stride_kernel")
+        && name_lower.contains("normal_kernel")
+        && !name_lower.contains("double")
+        && !name_lower.contains("bfloat16")
+    {
+        return execute_distribution_f32_host(kernel_name, "normal", grid_dim_x, kernel_params);
+    }
+    if name_lower.contains("distribution_elementwise_grid_stride_kernel")
+        && name_lower.contains("uniform_kernel")
+        && !name_lower.contains("double")
+        && !name_lower.contains("bfloat16")
+    {
+        return execute_distribution_f32_host(kernel_name, "uniform", grid_dim_x, kernel_params);
+    }
     if name_lower.contains("vectorized_elementwise_kernel") {
         if name_lower.contains("aunaryfunctor") && name_lower.contains("mulfunctor") {
             return execute_aunary_f32_host(kernel_name, "mul", grid_dim_x, 1, kernel_params);
+        }
+        if name_lower.contains("absfunctor") && !name_lower.contains("bfloat16") {
+            return execute_unary_f32_host(kernel_name, "abs", grid_dim_x, 1, kernel_params);
         }
         if name_lower.contains("exp_kernel_cuda") {
             return execute_unary_f32_host(kernel_name, "exp", grid_dim_x, 1, kernel_params);

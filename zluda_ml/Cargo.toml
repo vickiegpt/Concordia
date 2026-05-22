@@ -10,8 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 cuda_base = { path = "../cuda_base" }
-cuda_types = { path = "../cuda_types" }
-ze_runtime_sys = { path = "../ext/ze_runtime-sys" }
+cuda_types = { path = "../cuda_types", default-features = false }
 
 [features]
 default = ["intel"]

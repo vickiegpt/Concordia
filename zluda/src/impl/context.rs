@@ -757,7 +757,9 @@ pub(crate) fn destroy_v2(ctx: CUcontext) -> CUresult {
         return Err(CUerror::INVALID_CONTEXT);
     }
     CONTEXT_STACK.with(|stack| {
-        stack.borrow_mut().retain(|(candidate, _)| candidate.0 != ctx.0);
+        stack
+            .borrow_mut()
+            .retain(|(candidate, _)| candidate.0 != ctx.0);
     });
     Ok(())
 }

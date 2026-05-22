@@ -180,9 +180,10 @@ pub(crate) fn get_address_range_v2(
 ) -> CUresult {
     let addr = dptr.0 as usize;
     let map = TMATMUL_ALLOC_MAP.lock().unwrap();
-    let Some((&base, &size)) = map.iter().find(|(&base, &size)| {
-        addr >= base && addr < base.saturating_add(size)
-    }) else {
+    let Some((&base, &size)) = map
+        .iter()
+        .find(|(&base, &size)| addr >= base && addr < base.saturating_add(size))
+    else {
         return Err(CUerror::INVALID_VALUE);
     };
 
@@ -1222,7 +1223,9 @@ fn pacc_shared_ddr_bytes() -> Option<usize> {
         .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr/shared_ddr_size"))
         .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_full/shared_ddr_size"))
         .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_size"))
-        .or_else(|| pacc_read_u64("/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_size"))
+        .or_else(|| {
+            pacc_read_u64("/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_size")
+        })
         .or_else(|| pacc_read_u64("/sys/module/hetgpu_pacc_mbox_ddr/parameters/shared_ddr_size"))
         .or_else(|| {
             std::env::var("HETGPU_PACC_SHARED_DDR_BYTES")
@@ -1273,8 +1276,16 @@ fn pacc_alloc_trace(tag: &'static [u8]) {
     };
     if enabled {
         unsafe {
-            let _ = libc::write(libc::STDERR_FILENO, tag.as_ptr() as *const libc::c_void, tag.len());
-            let _ = libc::write(libc::STDERR_FILENO, b"\n".as_ptr() as *const libc::c_void, 1);
+            let _ = libc::write(
+                libc::STDERR_FILENO,
+                tag.as_ptr() as *const libc::c_void,
+                tag.len(),
+            );
+            let _ = libc::write(
+                libc::STDERR_FILENO,
+                b"\n".as_ptr() as *const libc::c_void,
+                1,
+            );
         }
     }
 }
@@ -1303,7 +1314,8 @@ fn pacc_process_range_has_perms(addr: usize, len: usize, need_write: bool) -> bo
         let Some(perms) = parts.next() else {
             continue;
         };
-        if !perms.starts_with('r') || (need_write && perms.as_bytes().get(1).copied() != Some(b'w')) {
+        if !perms.starts_with('r') || (need_write && perms.as_bytes().get(1).copied() != Some(b'w'))
+        {
             continue;
         }
         let Some((start_hex, end_hex)) = range.split_once('-') else {
@@ -1375,8 +1387,8 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
         pacc_alloc_trace(b"[pacc_alloc] shared base");
         let size = pacc_shared_ddr_bytes().ok_or(CUerror::OUT_OF_MEMORY)?;
         pacc_alloc_trace(b"[pacc_alloc] shared bytes");
-        let heap_offset = pacc_parse_env_usize("HETGPU_PACC_SHARED_DEVICE_MEM_HEAP_OFFSET")
-            .unwrap_or(0);
+        let heap_offset =
+            pacc_parse_env_usize("HETGPU_PACC_SHARED_DEVICE_MEM_HEAP_OFFSET").unwrap_or(0);
         if heap_offset >= size || heap_offset % 4096 != 0 {
             return Err(CUerror::OUT_OF_MEMORY);
         }
@@ -1429,7 +1441,11 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
             return Err(CUerror::OUT_OF_MEMORY);
         }
 
-        let control_reserved = if heap_offset == 0 { 4usize * 0x2000usize } else { 0 };
+        let control_reserved = if heap_offset == 0 {
+            4usize * 0x2000usize
+        } else {
+            0
+        };
         let kernel_reserved = pacc_shared_ddr_kernel_reserve(window_bytes);
         let heap_end = window_bytes.saturating_sub(kernel_reserved);
         pacc_alloc_trace(b"[pacc_alloc] shared reserve");
@@ -1702,7 +1718,11 @@ pub(crate) fn copy_dto_h_v2(
                 );
             }
             unsafe {
-                std::ptr::copy_nonoverlapping(src_device.0 as *const u8, dst_host as *mut u8, byte_count);
+                std::ptr::copy_nonoverlapping(
+                    src_device.0 as *const u8,
+                    dst_host as *mut u8,
+                    byte_count,
+                );
             }
             return Ok(());
         }
@@ -1780,7 +1800,11 @@ pub(crate) fn copy_hto_d_v2(
                 );
             }
             unsafe {
-                std::ptr::copy_nonoverlapping(src_host as *const u8, dst_device.0 as *mut u8, byte_count);
+                std::ptr::copy_nonoverlapping(
+                    src_host as *const u8,
+                    dst_device.0 as *mut u8,
+                    byte_count,
+                );
             }
             return Ok(());
         }
@@ -2203,9 +2227,7 @@ pub unsafe extern "C" fn hetgpu_pacc_ipc_open_mem_handle(
     not(feature = "tenstorrent")
 ))]
 #[no_mangle]
-pub unsafe extern "C" fn hetgpu_pacc_ipc_close_mem_handle(
-    ptr: *mut ::core::ffi::c_void,
-) -> i32 {
+pub unsafe extern "C" fn hetgpu_pacc_ipc_close_mem_handle(ptr: *mut ::core::ffi::c_void) -> i32 {
     if ptr.is_null() {
         return 0;
     }

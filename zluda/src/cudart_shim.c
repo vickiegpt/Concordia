@@ -218,6 +218,56 @@ static int hetgpu_env_enabled_default(const char *name, int default_value) {
     return 1;
 }
 
+static int hetgpu_env_matches_any(const char *name, const char *a, const char *b, const char *c) {
+    const char *value = getenv(name);
+    if (!value || !*value) {
+        return 0;
+    }
+    return strcasecmp(value, a) == 0 ||
+           (b && strcasecmp(value, b) == 0) ||
+           (c && strcasecmp(value, c) == 0);
+}
+
+static int hetgpu_pacc_jobd_emulator_mode(void) {
+    if (hetgpu_env_enabled_default("HETGPU_PACC_JOBD_EMULATOR", 0) ||
+        hetgpu_env_enabled_default("HETGPU_PACC_EMULATE_JOBD", 0) ||
+        hetgpu_env_matches_any("HETGPU_PACC_ZLUDA_IRQ_MOCK", "jobd", "emulator", "emu")) {
+        return 1;
+    }
+    if (hetgpu_env_enabled_default("HETGPU_PACC_DISABLE_JOBD_EMULATOR_AUTO", 0) ||
+        hetgpu_env_enabled_default("HETGPU_PACC_REAL_DEVICE_REQUIRED", 0)) {
+        return 0;
+    }
+#if defined(__x86_64__) || defined(__i386__)
+    if (access("/dev/pacc0", F_OK) == 0) {
+        return 0;
+    }
+    const char *explicit_mbox = getenv("HETGPU_PACC_MBOX_DEVICE");
+    if (explicit_mbox && explicit_mbox[0] && access(explicit_mbox, R_OK | W_OK) == 0) {
+        return 0;
+    }
+    const char *helpers[] = {
+        "/dev/hetgpu_pacc_mbox_ddr_coh0",
+        "/dev/hetgpu_pacc_mbox_ddr_coh",
+        "/dev/hetgpu_pacc_mbox_ddr0",
+        "/dev/hetgpu_pacc_mbox_ddr",
+        "/dev/hetgpu_pacc_mbox_full0",
+        "/dev/hetgpu_pacc_mbox_full",
+        "/dev/hetgpu_pacc_mbox0",
+        "/dev/hetgpu_pacc_mbox",
+        NULL
+    };
+    for (int i = 0; helpers[i]; ++i) {
+        if (access(helpers[i], R_OK | W_OK) == 0) {
+            return 0;
+        }
+    }
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 static int hetgpu_cudart_fail_open_enabled(void) {
     const char *value = getenv("HETGPU_CUDART_FAIL_OPEN");
     if (!value || !*value) {
@@ -236,7 +286,9 @@ static int hetgpu_cudart_fail_open_enabled(void) {
 }
 
 static int hetgpu_cudart_lazy_ptx_fail_open_enabled(void) {
-    return hetgpu_env_enabled_default("HETGPU_CUDART_LAZY_PTX_FAIL_OPEN", 0);
+    return hetgpu_env_enabled_default(
+        "HETGPU_CUDART_LAZY_PTX_FAIL_OPEN",
+        hetgpu_pacc_jobd_emulator_mode());
 }
 
 static unsigned long long hetgpu_parse_env_ull_default(const char *name, unsigned long long default_value);
@@ -2939,6 +2991,13 @@ static CUmodule load_or_get_tmatmul_reference_module(void) {
     return module;
 }
 
+static int kernel_may_use_tmatmul_reference(const char* kernel_name) {
+    if (!kernel_name) return 0;
+    return strstr(kernel_name, "tmatmul") != NULL ||
+           strstr(kernel_name, "ternary_matmul") != NULL ||
+           strstr(kernel_name, "TMatmul") != NULL;
+}
+
 static CUfunction lazy_load_registered_function_for_launch(const char* kernel_name, const void* launch_func) {
     RegisteredFunction* entry = find_registered_function_by_name(kernel_name);
     if (!entry) {
@@ -2960,11 +3019,13 @@ static CUfunction lazy_load_registered_function_for_launch(const char* kernel_na
     }
 
     CUmodule module = load_or_get_ptx_module_for_kernel(info.dli_fname, kernel_name);
-    if (!module) {
+    if (!module && kernel_may_use_tmatmul_reference(kernel_name)) {
         module = load_or_get_tmatmul_reference_module();
         if (!module) {
             return NULL;
         }
+    } else if (!module) {
+        return NULL;
     }
 
     CUfunction func = NULL;

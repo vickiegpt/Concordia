@@ -40,9 +40,8 @@ fn pacc_visible_physical_devices() -> Vec<i32> {
         .any(|c| c == ',' || c == ';' || c == ':' || c.is_ascii_whitespace())
     {
         let mut devices = Vec::new();
-        for part in raw.split(|c: char| {
-            c == ',' || c == ';' || c == ':' || c.is_ascii_whitespace()
-        }) {
+        for part in raw.split(|c: char| c == ',' || c == ';' || c == ':' || c.is_ascii_whitespace())
+        {
             if part.is_empty() {
                 continue;
             }
@@ -978,7 +977,8 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
 
             PACC_DEVICES.with(|map| {
                 let mut map = map.borrow_mut();
-                for (logical_id, physical_id) in visible_physical_devices.iter().copied().enumerate()
+                for (logical_id, physical_id) in
+                    visible_physical_devices.iter().copied().enumerate()
                 {
                     let device = Device {
                         _comgr_isa: comgr_isa.clone(),
