@@ -18,6 +18,35 @@ const PROJECT_SUFFIX: &[u8] = b" [ZLUDA]\0";
 pub const COMPUTE_CAPABILITY_MAJOR: i32 = 8;
 pub const COMPUTE_CAPABILITY_MINOR: i32 = 0;
 
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_virtual_total_mem_bytes() -> usize {
+    const DEFAULT_BYTES: usize = 4 * 1024 * 1024 * 1024;
+    let Ok(raw) = std::env::var("HETGPU_PACC_VRAM_BYTES") else {
+        return DEFAULT_BYTES;
+    };
+    let value = raw.trim();
+    if value.is_empty() {
+        return DEFAULT_BYTES;
+    }
+    let parsed = if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        value.parse::<u64>().ok()
+    };
+    parsed
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or(DEFAULT_BYTES)
+}
+
 #[cfg(feature = "amd")]
 pub(crate) fn compute_capability(major: &mut i32, minor: &mut i32, _dev: hipDevice_t) -> CUresult {
     *major = COMPUTE_CAPABILITY_MAJOR;
@@ -2283,7 +2312,7 @@ pub(crate) fn total_mem_v2(bytes: *mut usize, dev: i32) -> CUresult {
     if dev < 0 || dev >= devices.devices.len() as i32 {
         return Err(CUerror::INVALID_DEVICE);
     }
-    unsafe { *bytes = 4 * 1024 * 1024 * 1024 };
+    unsafe { *bytes = pacc_virtual_total_mem_bytes() };
     Ok(())
 }
 

@@ -14,6 +14,13 @@ use hip_runtime_sys::*;
 ))]
 use nvidia_runtime_sys;
 use std::ptr;
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
 
@@ -1095,6 +1102,192 @@ static PACC_ALLOC_MAP: std::sync::LazyLock<
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+static PACC_MEMORY_READ_BYTES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+static PACC_MEMORY_WRITE_BYTES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+const PACC_ALLOC_STATS_DEFAULT_DIR: &str = "/tmp/hetgpu_pacc_allocs";
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_alloc_stats_enabled() -> bool {
+    match std::env::var("HETGPU_PACC_ALLOC_STATS") {
+        Ok(value) => {
+            !(value == "0"
+                || value.eq_ignore_ascii_case("false")
+                || value.eq_ignore_ascii_case("no")
+                || value.eq_ignore_ascii_case("off"))
+        }
+        _ => true,
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_alloc_stats_dir() -> Option<String> {
+    if !pacc_alloc_stats_enabled() {
+        return None;
+    }
+    let dir = std::env::var("HETGPU_PACC_ALLOC_STATS_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| PACC_ALLOC_STATS_DEFAULT_DIR.to_string());
+    if std::fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+    Some(dir)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_atomic_saturating_add(counter: &AtomicU64, bytes: usize) {
+    let add = if bytes > u64::MAX as usize {
+        u64::MAX
+    } else {
+        bytes as u64
+    };
+    if add == 0 {
+        return;
+    }
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_add(add);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_write_memory_bandwidth_stats() {
+    let Some(dir) = pacc_alloc_stats_dir() else {
+        return;
+    };
+    let pid = std::process::id();
+    let path = format!("{}/{}.bw", dir, pid);
+    let tmp_path = format!("{}/{}.bw.tmp", dir, pid);
+    let read_bytes = PACC_MEMORY_READ_BYTES.load(Ordering::Relaxed);
+    let write_bytes = PACC_MEMORY_WRITE_BYTES.load(Ordering::Relaxed);
+    let body = format!(
+        "version=1\npid={}\nmemory_read_bytes={}\nmemory_write_bytes={}\n",
+        pid, read_bytes, write_bytes
+    );
+    if std::fs::write(&tmp_path, body.as_bytes()).is_ok() {
+        let _ = std::fs::rename(&tmp_path, &path);
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_record_memory_transfer(read_bytes: usize, write_bytes: usize) {
+    if read_bytes == 0 && write_bytes == 0 {
+        return;
+    }
+    pacc_atomic_saturating_add(&PACC_MEMORY_READ_BYTES, read_bytes);
+    pacc_atomic_saturating_add(&PACC_MEMORY_WRITE_BYTES, write_bytes);
+    pacc_write_memory_bandwidth_stats();
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_update_alloc_stats_locked(map: &std::collections::HashMap<u64, PaccAlloc>) {
+    if !pacc_alloc_stats_enabled() {
+        return;
+    }
+
+    let mut total = 0usize;
+    let mut host = 0usize;
+    let mut driver = 0usize;
+    let mut shared_ddr = 0usize;
+    let mut shared_ddr_ipc = 0usize;
+
+    for alloc in map.values() {
+        total = total.saturating_add(alloc.size);
+        match &alloc.kind {
+            PaccAllocKind::Host { .. } => host = host.saturating_add(alloc.size),
+            PaccAllocKind::Driver { .. } => driver = driver.saturating_add(alloc.size),
+            PaccAllocKind::SharedDdr => shared_ddr = shared_ddr.saturating_add(alloc.size),
+            PaccAllocKind::SharedDdrIpc { .. } => {
+                shared_ddr_ipc = shared_ddr_ipc.saturating_add(alloc.size)
+            }
+        }
+    }
+
+    let pid = std::process::id();
+    let Some(dir) = pacc_alloc_stats_dir() else {
+        return;
+    };
+    let device_memory = shared_ddr
+        .saturating_add(shared_ddr_ipc)
+        .saturating_add(driver);
+    let memory_read_bytes = PACC_MEMORY_READ_BYTES.load(Ordering::Relaxed);
+    let memory_write_bytes = PACC_MEMORY_WRITE_BYTES.load(Ordering::Relaxed);
+
+    let path = format!("{}/{}", dir, pid);
+    let tmp_path = format!("{}/{}.tmp", dir, pid);
+    let body = format!(
+        "version=1\npid={}\ntotal={}\ndevice_memory={}\nshared_ddr={}\nshared_ddr_ipc={}\ndriver={}\nhost={}\nallocations={}\nmemory_read_bytes={}\nmemory_write_bytes={}\n",
+        pid,
+        total,
+        device_memory,
+        shared_ddr,
+        shared_ddr_ipc,
+        driver,
+        host,
+        map.len(),
+        memory_read_bytes,
+        memory_write_bytes
+    );
+
+    if std::fs::write(&tmp_path, body.as_bytes()).is_ok() {
+        let _ = std::fs::rename(&tmp_path, &path);
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 const PACC_IPC_HANDLE_BYTES: usize = 64;
 
 #[cfg(all(
@@ -1613,7 +1806,11 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
     };
 
     pacc_alloc_trace(b"[pacc_alloc] alloc_v2 map before");
-    PACC_ALLOC_MAP.lock().unwrap().insert(addr, alloc);
+    {
+        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        map.insert(addr, alloc);
+        pacc_update_alloc_stats_locked(&map);
+    }
     pacc_alloc_trace(b"[pacc_alloc] alloc_v2 map after");
     unsafe {
         *dptr = CUdeviceptr_v2(addr as *mut _);
@@ -1633,7 +1830,12 @@ pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
     if addr == 0 {
         return Ok(());
     }
-    let alloc = PACC_ALLOC_MAP.lock().unwrap().remove(&addr);
+    let alloc = {
+        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let alloc = map.remove(&addr);
+        pacc_update_alloc_stats_locked(&map);
+        alloc
+    };
     if let Some(alloc) = alloc {
         match alloc.kind {
             PaccAllocKind::Host { align } => {
@@ -1700,6 +1902,7 @@ pub(crate) fn copy_dto_h_v2(
                 unsafe {
                     std::ptr::copy_nonoverlapping(src.as_ptr(), dst_host as *mut u8, byte_count);
                 }
+                pacc_record_memory_transfer(byte_count, 0);
                 return Ok(());
             }
             if !pacc_process_range_has_perms(addr as usize, byte_count, false) {
@@ -1724,6 +1927,7 @@ pub(crate) fn copy_dto_h_v2(
                     byte_count,
                 );
             }
+            pacc_record_memory_transfer(byte_count, 0);
             return Ok(());
         }
         if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
@@ -1739,6 +1943,7 @@ pub(crate) fn copy_dto_h_v2(
     unsafe {
         std::ptr::copy_nonoverlapping(src_device.0 as *const u8, dst_host as *mut u8, byte_count);
     }
+    pacc_record_memory_transfer(byte_count, 0);
     Ok(())
 }
 
@@ -1782,6 +1987,7 @@ pub(crate) fn copy_hto_d_v2(
                     );
                 }
                 bo.flush().map_err(|_| CUerror::UNKNOWN)?;
+                pacc_record_memory_transfer(0, byte_count);
                 return Ok(());
             }
             if !pacc_process_range_has_perms(addr as usize, byte_count, true) {
@@ -1806,6 +2012,7 @@ pub(crate) fn copy_hto_d_v2(
                     byte_count,
                 );
             }
+            pacc_record_memory_transfer(0, byte_count);
             return Ok(());
         }
         if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
@@ -1821,6 +2028,7 @@ pub(crate) fn copy_hto_d_v2(
     unsafe {
         std::ptr::copy_nonoverlapping(src_host as *const u8, dst_device.0 as *mut u8, byte_count);
     }
+    pacc_record_memory_transfer(0, byte_count);
     Ok(())
 }
 
@@ -1889,6 +2097,7 @@ pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) ->
                     chunk.copy_from_slice(&ui.to_ne_bytes());
                 }
                 bo.flush().map_err(|_| CUerror::UNKNOWN)?;
+                pacc_record_memory_transfer(0, byte_count);
                 return Ok(());
             }
         }
@@ -1904,6 +2113,7 @@ pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) ->
         let slice = unsafe { std::slice::from_raw_parts_mut(dst.0 as *mut u32, n) };
         slice.fill(ui);
     }
+    pacc_record_memory_transfer(0, byte_count);
     Ok(())
 }
 
@@ -1929,6 +2139,7 @@ pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize)
             if let PaccAllocKind::Driver { bo } = &mut alloc.kind {
                 bo.as_mut_slice()[offset..offset + n].fill(value);
                 bo.flush().map_err(|_| CUerror::UNKNOWN)?;
+                pacc_record_memory_transfer(0, n);
                 return Ok(());
             }
         }
@@ -1941,6 +2152,7 @@ pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize)
             std::ptr::write_bytes(dst.0 as *mut u8, value, n);
         }
     }
+    pacc_record_memory_transfer(0, n);
     Ok(())
 }
 
@@ -2199,17 +2411,21 @@ pub unsafe extern "C" fn hetgpu_pacc_ipc_open_mem_handle(
     }
 
     let addr = (map_ptr as usize).saturating_add(page_delta);
-    PACC_ALLOC_MAP.lock().unwrap().insert(
-        addr as u64,
-        PaccAlloc {
-            size,
-            phys,
-            kind: PaccAllocKind::SharedDdrIpc {
-                map_ptr: map_ptr as usize,
-                map_len,
+    {
+        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        map.insert(
+            addr as u64,
+            PaccAlloc {
+                size,
+                phys,
+                kind: PaccAllocKind::SharedDdrIpc {
+                    map_ptr: map_ptr as usize,
+                    map_len,
+                },
             },
-        },
-    );
+        );
+        pacc_update_alloc_stats_locked(&map);
+    }
     if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
         eprintln!(
             "[PACC Backend] cudaIpcOpenMemHandle shared-DDR {} phys=0x{:x} offset=0x{:x} size={} -> {:p}",
@@ -2232,24 +2448,29 @@ pub unsafe extern "C" fn hetgpu_pacc_ipc_close_mem_handle(ptr: *mut ::core::ffi:
         return 0;
     }
     let addr = ptr as u64;
-    let mut map = PACC_ALLOC_MAP.lock().unwrap();
-    let key = if map.contains_key(&addr) {
-        Some(addr)
-    } else {
-        map.iter().find_map(|(base, alloc)| {
-            let start = *base;
-            let end = start.saturating_add(alloc.size as u64);
-            if addr >= start && addr < end {
-                Some(*base)
-            } else {
-                None
-            }
-        })
+    let alloc = {
+        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let key = if map.contains_key(&addr) {
+            Some(addr)
+        } else {
+            map.iter().find_map(|(base, alloc)| {
+                let start = *base;
+                let end = start.saturating_add(alloc.size as u64);
+                if addr >= start && addr < end {
+                    Some(*base)
+                } else {
+                    None
+                }
+            })
+        };
+        let Some(key) = key else {
+            return 0;
+        };
+        let alloc = map.remove(&key);
+        pacc_update_alloc_stats_locked(&map);
+        alloc
     };
-    let Some(key) = key else {
-        return 0;
-    };
-    if let Some(alloc) = map.remove(&key) {
+    if let Some(alloc) = alloc {
         if let PaccAllocKind::SharedDdrIpc { map_ptr, map_len } = alloc.kind {
             if map_ptr != 0 && map_len != 0 {
                 libc::munmap(map_ptr as *mut libc::c_void, map_len);

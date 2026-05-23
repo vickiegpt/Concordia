@@ -1194,6 +1194,11 @@ static cublasStatus_t submit_pacc_gemm(
                 return CUBLAS_STATUS_SUCCESS;
             }
             if (pacc_gemm_no_f32_fallback()) {
+                if (hetgpu_cublas_fail_open_enabled()) {
+                    DEBUG_LOG("%s PACC BF16/SFMM coarse GEMM failed rc=%d; CUBLAS_FAIL_OPEN treating GEMM as successful without f32 fallback",
+                              name, rc);
+                    return CUBLAS_STATUS_SUCCESS;
+                }
                 DEBUG_LOG("%s PACC BF16/SFMM coarse GEMM failed rc=%d; f32 staged fallback disabled",
                           name, rc);
                 return CUBLAS_STATUS_EXECUTION_FAILED;

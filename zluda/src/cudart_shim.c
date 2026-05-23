@@ -2196,6 +2196,12 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                     return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
                 }
                 if (named_result == HETGPU_CUDA_ERROR_UNKNOWN) {
+                    if (hetgpu_cudart_fail_open_enabled()) {
+                        fprintf(stderr,
+                                "[cudart_shim] named launch for '%s' failed; fail-open success\n",
+                                funcName);
+                        return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+                    }
                     fprintf(stderr,
                             "[cudart_shim] named launch for '%s' failed; refusing to skip kernel\n",
                             funcName);

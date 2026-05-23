@@ -35,6 +35,12 @@ def parse_u64_env(name: str, default: int | None = None) -> int | None:
         return default
     return int(value, 0)
 
+def env_true(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return default
+    return value not in ("0", "false", "no", "off")
+
 def align4(x: int) -> int:
     return (x + 3) & ~3
 
@@ -113,6 +119,7 @@ jobd_gemm_noop = os.environ.get("PACC_JOBD_GEMM_NOOP", "0").strip() or "0"
 jobd_gemm_tiled = os.environ.get("PACC_JOBD_GEMM_TILED", "").strip()
 jobd_gemm_copy_io = os.environ.get("PACC_JOBD_GEMM_COPY_IO", "").strip()
 jobd_gemm_single_thread_ops = os.environ.get("PACC_JOBD_GEMM_SINGLE_THREAD_OPS", "").strip()
+jobd_shared_ddr_payload_pwrite = os.environ.get("PACC_JOBD_SHARED_DDR_PAYLOAD_PWRITE", "").strip()
 jobd_full_ddr_map_present = "PACC_JOBD_FULL_DDR_MAP" in os.environ
 jobd_full_ddr_map = os.environ.get("PACC_JOBD_FULL_DDR_MAP", "0").strip() or "0"
 jobd_full_ddr_map_bytes = os.environ.get("PACC_JOBD_FULL_DDR_MAP_BYTES", "").strip()
@@ -127,6 +134,7 @@ jobd_status_mmap_fallback = os.environ.get("PACC_JOBD_STATUS_MMAP_FALLBACK", "")
 jobd_status_pwrite_present = "PACC_JOBD_STATUS_PWRITE" in os.environ
 jobd_status_pwrite = os.environ.get("PACC_JOBD_STATUS_PWRITE", "0").strip()
 jobd_completion_mirror_off = os.environ.get("PACC_JOBD_COMPLETION_MIRROR_OFF", "").strip()
+jobd_dual_offset_write = os.environ.get("PACC_JOBD_DUAL_OFFSET_WRITE", "").strip()
 jobd_msync_present = "PACC_JOBD_MSYNC" in os.environ
 jobd_msync = os.environ.get("PACC_JOBD_MSYNC", "1").strip()
 jobd_status_msync = os.environ.get("PACC_JOBD_STATUS_MSYNC", "").strip()
@@ -138,6 +146,7 @@ jobd_rms_write_attempts = os.environ.get("PACC_JOBD_RMS_WRITE_ATTEMPTS", "").str
 jobd_rms_write_chunk_bytes = os.environ.get("PACC_JOBD_RMS_WRITE_CHUNK_BYTES", "").strip()
 jobd_repair_writeback = os.environ.get("PACC_JOBD_REPAIR_WRITEBACK", "").strip()
 jobd_repair_writeback_attempts = os.environ.get("PACC_JOBD_REPAIR_WRITEBACK_ATTEMPTS", "").strip()
+jobd_repair_writeback_sleep_us = os.environ.get("PACC_JOBD_REPAIR_WRITEBACK_SLEEP_US", "").strip()
 jobd_repair_writeback_chunk_bytes = os.environ.get("PACC_JOBD_REPAIR_WRITEBACK_CHUNK_BYTES", "").strip()
 jobd_sync_write_chunks = os.environ.get("PACC_JOBD_SYNC_WRITE_CHUNKS", "").strip()
 jobd_cbo_inval = os.environ.get("PACC_JOBD_CBO_INVAL", "0").strip() or "0"
@@ -171,9 +180,12 @@ jobd_kernel_slot_map_bytes = os.environ.get("PACC_JOBD_KERNEL_SLOT_MAP_BYTES", o
 jobd_kernel_slot_map_off = os.environ.get("PACC_JOBD_KERNEL_SLOT_MAP_OFF", os.environ.get("HETGPU_PACC_JOBD_KERNEL_SLOT_MAP_OFF", "")).strip()
 jobd_helper_io_chunk_bytes = os.environ.get("PACC_JOBD_HELPER_IO_CHUNK_BYTES", os.environ.get("HETGPU_PACC_JOBD_HELPER_IO_CHUNK_BYTES", "")).strip()
 jobd_xsfmm_smoke = os.environ.get("PACC_JOBD_XSFMM_SMOKE", os.environ.get("HETGPU_PACC_JOBD_XSFMM_SMOKE", "")).strip()
+jobd_xsfmm_gemm = os.environ.get("PACC_JOBD_XSFMM_GEMM", os.environ.get("HETGPU_PACC_JOBD_XSFMM_GEMM", "")).strip()
 jobd_env_in_bashrc = os.environ.get("PACC_JOBD_ENV_IN_BASHRC", "0").strip() or "0"
+jobd_minimal_rcs = env_true("PACC_JOBD_MINIMAL_RCS", False)
 jobd_ddr_ko = os.environ.get("PACC_JOBD_DDR_KO", "").strip()
 jobd_ddr_ko_args = os.environ.get("PACC_JOBD_DDR_KO_ARGS", "").strip()
+jobd_ddr_ioctl = os.environ.get("PACC_JOBD_DDR_IOCTL", os.environ.get("HETGPU_PACC_JOBD_DDR_IOCTL", "")).strip()
 
 rcs_lines = [
     "#!/bin/sh",
@@ -226,6 +238,8 @@ if jobd_gemm_copy_io:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_GEMM_COPY_IO={jobd_gemm_copy_io}")
 if jobd_gemm_single_thread_ops:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_GEMM_SINGLE_THREAD_OPS={jobd_gemm_single_thread_ops}")
+if jobd_shared_ddr_payload_pwrite:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_SHARED_DDR_PAYLOAD_PWRITE={jobd_shared_ddr_payload_pwrite}")
 if jobd_full_ddr_map_present or jobd_full_ddr_map != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FULL_DDR_MAP={jobd_full_ddr_map}")
 if jobd_full_ddr_map_bytes:
@@ -234,6 +248,8 @@ if jobd_claim_id != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_CLAIM_ID={jobd_claim_id}")
 if jobd_pacc_id_ioctl != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_PACC_ID_IOCTL={jobd_pacc_id_ioctl}")
+if jobd_ddr_ioctl:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_DDR_IOCTL={jobd_ddr_ioctl}")
 if jobd_force_pread != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FORCE_PREAD={jobd_force_pread}")
 if jobd_control_pread:
@@ -250,6 +266,8 @@ if jobd_status_pwrite_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_STATUS_PWRITE={jobd_status_pwrite}")
 if jobd_completion_mirror_off:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_COMPLETION_MIRROR_OFF={jobd_completion_mirror_off}")
+if jobd_dual_offset_write:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_DUAL_OFFSET_WRITE={jobd_dual_offset_write}")
 if jobd_msync_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_MSYNC={jobd_msync}")
 if jobd_status_msync:
@@ -270,6 +288,8 @@ if jobd_repair_writeback:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_REPAIR_WRITEBACK={jobd_repair_writeback}")
 if jobd_repair_writeback_attempts:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_REPAIR_WRITEBACK_ATTEMPTS={jobd_repair_writeback_attempts}")
+if jobd_repair_writeback_sleep_us:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_REPAIR_WRITEBACK_SLEEP_US={jobd_repair_writeback_sleep_us}")
 if jobd_repair_writeback_chunk_bytes:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_REPAIR_WRITEBACK_CHUNK_BYTES={jobd_repair_writeback_chunk_bytes}")
 if jobd_sync_write_chunks:
@@ -334,6 +354,8 @@ if jobd_helper_io_chunk_bytes:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_HELPER_IO_CHUNK_BYTES={jobd_helper_io_chunk_bytes}")
 if jobd_xsfmm_smoke:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_XSFMM_SMOKE={jobd_xsfmm_smoke}")
+if jobd_xsfmm_gemm:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_XSFMM_GEMM={jobd_xsfmm_gemm}")
 shared_ddr_base = os.environ.get("PACC_JOBD_SHARED_DDR_BASE", "").strip()
 shared_ddr_size = os.environ.get("PACC_JOBD_SHARED_DDR_SIZE", "").strip()
 if shared_ddr_base:
@@ -345,7 +367,14 @@ compact_rcs_lines = [rcs_lines[0]]
 exports = [line[len("export "):] for line in rcs_lines[1:] if line.startswith("export ")]
 rest = [line for line in rcs_lines[1:] if not line.startswith("export ")]
 env_payload = None
-if jobd_env_in_bashrc != "0":
+if jobd_minimal_rcs:
+    compact_rcs_lines = [
+        rcs_lines[0],
+        *([f"export {' '.join(exports)}"] if exports else []),
+        *([f"insmod /home/root/ddr.ko {jobd_ddr_ko_args} || true"] if jobd_ddr_ko else []),
+        "exec /home/root/pacc_skl_test --mbox=/dev/mbox </dev/console >/dev/console 2>&1",
+    ]
+elif jobd_env_in_bashrc != "0":
     env_payload = ("\n".join(exports) + "\n").encode()
     compact_rcs_lines = [
         rcs_lines[0],
@@ -355,7 +384,7 @@ if jobd_env_in_bashrc != "0":
     ]
 elif exports:
     compact_rcs_lines.append("export " + " ".join(exports))
-if jobd_env_in_bashrc == "0":
+if jobd_env_in_bashrc == "0" and not jobd_minimal_rcs:
     compact_rcs_lines.extend(rest)
 rcs_lines = compact_rcs_lines
 rcs = ("\n".join(rcs_lines) + "\n").encode()

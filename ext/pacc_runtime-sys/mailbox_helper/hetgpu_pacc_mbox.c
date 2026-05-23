@@ -59,7 +59,7 @@ MODULE_PARM_DESC(shared_ddr_dma_sync,
 static int shared_ddr_memremap_mode;
 module_param(shared_ddr_memremap_mode, int, 0444);
 MODULE_PARM_DESC(shared_ddr_memremap_mode,
-		 "Fixed shared DDR memremap mode: 0=auto, 1=WC, 2=WT, 3=WB");
+		 "Fixed shared DDR memremap mode: 0=auto, 1=WC, 2=WT, 3=WB, 4=windowed-WC");
 static bool local_doorbell_bit = true;
 module_param(local_doorbell_bit, bool, 0444);
 MODULE_PARM_DESC(local_doorbell_bit,
@@ -83,6 +83,7 @@ static dma_addr_t g_shared_ddr_dma;
 static void *g_shared_ddr_mem;
 static bool g_shared_ddr_allocated;
 static bool g_shared_ddr_iomem;
+static bool g_shared_ddr_windowed;
 
 static bool pos_in_range(u64 pos, u64 base, u64 size)
 {
@@ -135,6 +136,28 @@ static void *shared_ddr_memremap_fixed(phys_addr_t base, unsigned long size)
 	return memremap(base, size, MEMREMAP_WC);
 }
 
+static bool shared_ddr_windowed_mode(void)
+{
+	return shared_ddr_base_override && shared_ddr_memremap_mode == 4;
+}
+
+static void __iomem *shared_ddr_ioremap_window(u64 ddr_off, size_t len,
+					       size_t *page_off)
+{
+	phys_addr_t phys;
+	phys_addr_t map_phys;
+	size_t map_len;
+
+	if (!len || ddr_off >= shared_ddr_size ||
+	    len > shared_ddr_size - ddr_off)
+		return NULL;
+	phys = (phys_addr_t)g_shared_ddr_dma + ddr_off;
+	*page_off = offset_in_page(phys);
+	map_phys = phys & PAGE_MASK;
+	map_len = PAGE_ALIGN(*page_off + len);
+	return ioremap_wc(map_phys, map_len);
+}
+
 static int shared_ddr_base_show(struct seq_file *m, void *unused)
 {
 	seq_printf(m, "0x%llx\n", (unsigned long long)shared_ddr_base);
@@ -177,14 +200,38 @@ static ssize_t mbox_write(struct file *file, const char __user *buf, size_t len,
 
 	if (pos_in_range(pos, SHARED_DDR_USER_OFF, shared_ddr_size)) {
 		ddr_off = pos - SHARED_DDR_USER_OFF;
-		if (!g_shared_ddr_mem || ddr_off >= shared_ddr_size)
+		if ((!g_shared_ddr_mem && !g_shared_ddr_windowed) ||
+		    ddr_off >= shared_ddr_size)
 			return -EINVAL;
 		n = min_t(size_t, len, (size_t)(shared_ddr_size - ddr_off));
 		if (!n)
 			return 0;
 		if (!mutex_trylock(&g_lock))
 			return -EBUSY;
-		if (g_shared_ddr_iomem) {
+		if (g_shared_ddr_windowed) {
+			void __iomem *map;
+			size_t page_off = 0;
+			u8 tmp[256];
+			size_t done = 0;
+
+			map = shared_ddr_ioremap_window(ddr_off, n, &page_off);
+			if (!map) {
+				mutex_unlock(&g_lock);
+				return -ENOMEM;
+			}
+			while (done < n) {
+				size_t want = min_t(size_t, sizeof(tmp), n - done);
+
+				if (copy_from_user(tmp, buf + done, want)) {
+					iounmap(map);
+					mutex_unlock(&g_lock);
+					return -EFAULT;
+				}
+				memcpy_toio((u8 __iomem *)map + page_off + done, tmp, want);
+				done += want;
+			}
+			iounmap(map);
+		} else if (g_shared_ddr_iomem) {
 			u8 tmp[256];
 			size_t done = 0;
 
@@ -285,7 +332,8 @@ static ssize_t mbox_read(struct file *file, char __user *buf, size_t len, loff_t
 
 	if (pos_in_range(pos, SHARED_DDR_USER_OFF, shared_ddr_size)) {
 		ddr_off = pos - SHARED_DDR_USER_OFF;
-		if (!g_shared_ddr_mem || ddr_off >= shared_ddr_size)
+		if ((!g_shared_ddr_mem && !g_shared_ddr_windowed) ||
+		    ddr_off >= shared_ddr_size)
 			return 0;
 		n = min_t(size_t, len, (size_t)(shared_ddr_size - ddr_off));
 		if (!n)
@@ -293,7 +341,30 @@ static ssize_t mbox_read(struct file *file, char __user *buf, size_t len, loff_t
 		if (!mutex_trylock(&g_lock))
 			return -EBUSY;
 		shared_ddr_sync_for_cpu(ddr_off, n);
-		if (g_shared_ddr_iomem) {
+		if (g_shared_ddr_windowed) {
+			void __iomem *map;
+			size_t page_off = 0;
+			u8 tmp[256];
+			size_t done = 0;
+
+			map = shared_ddr_ioremap_window(ddr_off, n, &page_off);
+			if (!map) {
+				mutex_unlock(&g_lock);
+				return 0;
+			}
+			while (done < n) {
+				size_t want = min_t(size_t, sizeof(tmp), n - done);
+
+				memcpy_fromio(tmp, (u8 __iomem *)map + page_off + done, want);
+				if (copy_to_user(buf + done, tmp, want)) {
+					iounmap(map);
+					mutex_unlock(&g_lock);
+					return -EFAULT;
+				}
+				done += want;
+			}
+			iounmap(map);
+		} else if (g_shared_ddr_iomem) {
 			u8 tmp[256];
 			size_t done = 0;
 
@@ -402,7 +473,8 @@ static long mbox_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	if (cmd == PACC_IOC_SHARED_DDR_SYNC) {
 		if (copy_from_user(&sync, (void __user *)arg, sizeof(sync)))
 			return -EFAULT;
-		if (!g_shared_ddr_mem || sync.off >= shared_ddr_size)
+		if ((!g_shared_ddr_mem && !g_shared_ddr_windowed) ||
+		    sync.off >= shared_ddr_size)
 			return -EINVAL;
 		if (sync.len > shared_ddr_size - sync.off)
 			return -EINVAL;
@@ -456,10 +528,11 @@ static int mbox_mmap(struct file *file, struct vm_area_struct *vma)
 	if (map_off + map_size > shared_ddr_size)
 		return -ENXIO;
 
-	if (!g_shared_ddr_mem || (!g_pdev && !g_shared_ddr_iomem))
+	if ((!g_shared_ddr_mem && !g_shared_ddr_windowed) ||
+	    (!g_pdev && !g_shared_ddr_iomem))
 		return -ENXIO;
 
-	if (g_shared_ddr_iomem) {
+	if (g_shared_ddr_iomem || g_shared_ddr_windowed) {
 		phys = (phys_addr_t)g_shared_ddr_dma + map_off;
 		vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 		return remap_pfn_range(vma, vma->vm_start, phys >> PAGE_SHIFT,
@@ -512,17 +585,21 @@ static int __init hetgpu_pacc_mbox_init(void)
 	if (shared_ddr_size) {
 		if (shared_ddr_base_override) {
 			g_shared_ddr_dma = (dma_addr_t)shared_ddr_base_override;
-			g_shared_ddr_mem = shared_ddr_memremap_fixed(shared_ddr_base_override,
-								     shared_ddr_size);
-			if (!g_shared_ddr_mem && shared_ddr_memremap_mode == 0)
-				g_shared_ddr_mem = memremap(shared_ddr_base_override,
-							    shared_ddr_size, MEMREMAP_WT);
-			if (!g_shared_ddr_mem && shared_ddr_memremap_mode == 0)
-				g_shared_ddr_mem = memremap(shared_ddr_base_override,
-							    shared_ddr_size, MEMREMAP_WB);
-			if (!g_shared_ddr_mem) {
-				ret = -ENOMEM;
-				goto err_unmap_all;
+			if (shared_ddr_windowed_mode()) {
+				g_shared_ddr_windowed = true;
+			} else {
+				g_shared_ddr_mem = shared_ddr_memremap_fixed(shared_ddr_base_override,
+									     shared_ddr_size);
+				if (!g_shared_ddr_mem && shared_ddr_memremap_mode == 0)
+					g_shared_ddr_mem = memremap(shared_ddr_base_override,
+								    shared_ddr_size, MEMREMAP_WT);
+				if (!g_shared_ddr_mem && shared_ddr_memremap_mode == 0)
+					g_shared_ddr_mem = memremap(shared_ddr_base_override,
+								    shared_ddr_size, MEMREMAP_WB);
+				if (!g_shared_ddr_mem) {
+					ret = -ENOMEM;
+					goto err_unmap_all;
+				}
 			}
 			shared_ddr_base = shared_ddr_base_override;
 			g_shared_ddr_iomem = true;
@@ -604,7 +681,8 @@ err_unmap_all:
 		debugfs_remove_recursive(g_dentry);
 	}
 	if (g_shared_ddr_iomem) {
-		memunmap(g_shared_ddr_mem);
+		if (g_shared_ddr_mem)
+			memunmap(g_shared_ddr_mem);
 		debugfs_remove_recursive(g_dentry);
 	}
 	if (g_pdev) {
@@ -634,7 +712,8 @@ static void __exit hetgpu_pacc_mbox_exit(void)
 		debugfs_remove_recursive(g_dentry);
 	}
 	if (g_shared_ddr_iomem) {
-		memunmap(g_shared_ddr_mem);
+		if (g_shared_ddr_mem)
+			memunmap(g_shared_ddr_mem);
 		debugfs_remove_recursive(g_dentry);
 	}
 	if (g_pdev) {
