@@ -1412,7 +1412,50 @@ cublasStatus_t cublasDdot_v2(cublasHandle_t handle, int n,
     return CUBLAS_STATUS_SUCCESS;
 }
 
-// BLAS Level 2: Matrix-vector operations (stubs)
+static cublasStatus_t submit_pacc_gemv_as_gemm(
+    const char *name,
+    cublasOperation_t trans,
+    int m, int n,
+    const void *alpha,
+    const void *A, int lda,
+    const void *x, int incx,
+    const void *beta,
+    void *y, int incy,
+    cudaDataType dtype,
+    cublasComputeType_t computeType) {
+    if (!hetgpu_env_enabled_default("HETGPU_PACC_FUSE_GEMV_TO_GEMM", 1)) {
+        DEBUG_LOG("%s GEMV->GEMM fuse disabled by HETGPU_PACC_FUSE_GEMV_TO_GEMM=0", name);
+        return hetgpu_cublas_fail_open_enabled() ? CUBLAS_STATUS_SUCCESS : CUBLAS_STATUS_NOT_SUPPORTED;
+    }
+    if (trans != CUBLAS_OP_N && trans != CUBLAS_OP_T && trans != CUBLAS_OP_C) {
+        return CUBLAS_STATUS_INVALID_VALUE;
+    }
+    if (m < 0 || n < 0 || lda < (m > 1 ? m : 1) || incx == 0 || incy == 0) {
+        return CUBLAS_STATUS_INVALID_VALUE;
+    }
+    if (m == 0 || n == 0) {
+        return CUBLAS_STATUS_SUCCESS;
+    }
+    if (incx != 1 || incy != 1) {
+        DEBUG_LOG("%s GEMV->GEMM fuse supports only contiguous vectors for now incx=%d incy=%d",
+                  name, incx, incy);
+        return hetgpu_cublas_fail_open_enabled() ? CUBLAS_STATUS_SUCCESS : CUBLAS_STATUS_NOT_SUPPORTED;
+    }
+
+    int gemm_m = (trans == CUBLAS_OP_N) ? m : n;
+    int gemm_k = (trans == CUBLAS_OP_N) ? n : m;
+    int ldb = gemm_k > 0 ? gemm_k : 1;
+    int ldc = gemm_m > 0 ? gemm_m : 1;
+    DEBUG_LOG("%s fused through GEMM transa=%d transb=N m=%d n=1 k=%d lda=%d ldb=%d ldc=%d",
+              name, (int)trans, gemm_m, gemm_k, lda, ldb, ldc);
+    return submit_pacc_gemm(name, trans, CUBLAS_OP_N, gemm_m, 1, gemm_k,
+                            alpha, A, dtype, lda, 0,
+                            x, dtype, ldb, 0,
+                            beta, y, dtype, ldc, 0,
+                            1, computeType);
+}
+
+// BLAS Level 2: Matrix-vector operations
 cublasStatus_t cublasSgemv_v2(cublasHandle_t handle, cublasOperation_t trans,
                                int m, int n,
                                const float *alpha,
@@ -1420,15 +1463,11 @@ cublasStatus_t cublasSgemv_v2(cublasHandle_t handle, cublasOperation_t trans,
                                const float *x, int incx,
                                const float *beta,
                                float *y, int incy) {
-    DEBUG_LOG("cublasSgemv_v2 called: m=%d, n=%d", m, n);
-    // Zero output to prevent NaN/inf propagation
-    if (y) {
-        int len = (trans == CUBLAS_OP_N) ? m : n;
-        for (int i = 0; i < len; i++) {
-            y[i * incy] = 0.0f;
-        }
-    }
-    return CUBLAS_STATUS_SUCCESS;
+    DEBUG_LOG("cublasSgemv_v2 called: m=%d, n=%d trans=%d incx=%d incy=%d",
+              m, n, (int)trans, incx, incy);
+    return submit_pacc_gemv_as_gemm("cublasSgemv_v2", trans, m, n,
+                                    alpha, A, lda, x, incx, beta, y, incy,
+                                    CUDA_R_32F, CUBLAS_COMPUTE_32F);
 }
 
 cublasStatus_t cublasDgemv_v2(cublasHandle_t handle, cublasOperation_t trans,
@@ -1438,15 +1477,11 @@ cublasStatus_t cublasDgemv_v2(cublasHandle_t handle, cublasOperation_t trans,
                                const double *x, int incx,
                                const double *beta,
                                double *y, int incy) {
-    DEBUG_LOG("cublasDgemv_v2 called: m=%d, n=%d", m, n);
-    // Zero output to prevent NaN/inf propagation
-    if (y) {
-        int len = (trans == CUBLAS_OP_N) ? m : n;
-        for (int i = 0; i < len; i++) {
-            y[i * incy] = 0.0;
-        }
-    }
-    return CUBLAS_STATUS_SUCCESS;
+    DEBUG_LOG("cublasDgemv_v2 called: m=%d, n=%d trans=%d incx=%d incy=%d",
+              m, n, (int)trans, incx, incy);
+    return submit_pacc_gemv_as_gemm("cublasDgemv_v2", trans, m, n,
+                                    alpha, A, lda, x, incx, beta, y, incy,
+                                    CUDA_R_64F, CUBLAS_COMPUTE_64F);
 }
 
 // BLAS Level 3: Matrix-matrix operations (most important for ML)
