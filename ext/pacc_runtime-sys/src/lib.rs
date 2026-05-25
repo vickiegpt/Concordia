@@ -2472,7 +2472,7 @@ fn pacc_jobd_bootstrap_status_ready(
     if magic != HETGPU_PACC_JOB_MAGIC || version != HETGPU_PACC_JOB_VERSION {
         return false;
     }
-    if job_id == 0 && status == 0 && seq != 0 {
+    if seq != 0 {
         return true;
     }
     job_id == hetgpu_pacc_job_id::KERNEL
@@ -3598,12 +3598,9 @@ unsafe fn pacc_mmvf_weight_fingerprint(
         let linear = if sample_count <= 1 {
             0
         } else {
-            sample
-                .checked_mul(total - 1)
-                .ok_or_else(|| {
-                    Error::new(ErrorKind::InvalidInput, "MMVF fingerprint sample overflow")
-                })?
-                / (sample_count - 1)
+            sample.checked_mul(total - 1).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "MMVF fingerprint sample overflow")
+            })? / (sample_count - 1)
         };
         let row = linear / k;
         let kk = linear % k;
@@ -4618,7 +4615,10 @@ fn read_shared_ddr_window_for_pacc_fresh(
     offset: u64,
     bytes: &mut [u8],
 ) -> std::io::Result<()> {
-    if use_pacc_bo_shared_ddr() || use_process_mock_shared_ddr_window() || prefer_physmap_shared_ddr() {
+    if use_pacc_bo_shared_ddr()
+        || use_process_mock_shared_ddr_window()
+        || prefer_physmap_shared_ddr()
+    {
         return read_shared_ddr_window(offset, bytes);
     }
 
@@ -5229,6 +5229,16 @@ fn submit_gemm_runtime_job_cached(
     staged_bytes: u64,
     mailbox_file: &mut Option<File>,
 ) -> std::io::Result<()> {
+    let _control_guard = lock_pacc_control(dev.id, "PACC GEMM runtime job")?;
+    submit_gemm_runtime_job_cached_unlocked(dev, job, staged_bytes, mailbox_file)
+}
+
+fn submit_gemm_runtime_job_cached_unlocked(
+    dev: &PaccDevice,
+    job: &HetgpuPaccGemmJob,
+    staged_bytes: u64,
+    mailbox_file: &mut Option<File>,
+) -> std::io::Result<()> {
     if std::env::var("HETGPU_PACC_ENFORCE_RUNTIME_READY")
         .ok()
         .as_deref()
@@ -5236,7 +5246,6 @@ fn submit_gemm_runtime_job_cached(
     {
         require_runtime_ready()?;
     }
-    let _control_guard = lock_pacc_control(dev.id, "PACC GEMM runtime job")?;
     ensure_pacc_jobd_bootstrapped(dev)?;
     let seq = next_runtime_job_seq();
     let table = HetgpuPaccRuntimeJobTable {
@@ -5272,7 +5281,13 @@ fn submit_gemm_runtime_job_cached(
         };
         let slot_off = HETGPU_PACC_ARG_BASE_OFF + (slot * HETGPU_PACC_ARG_SLOT_BYTES) as u64;
         let empty_header = [0u8; HETGPU_PACC_ARG_HEADER_BYTES];
-        write_control_window_cached(&mut shared_file, mailbox_file, dev.id, slot_off, &empty_header)?;
+        write_control_window_cached(
+            &mut shared_file,
+            mailbox_file,
+            dev.id,
+            slot_off,
+            &empty_header,
+        )?;
         let arg_header = HetgpuPaccArgSlotHeader {
             magic: HETGPU_PACC_JOB_MAGIC,
             version: HETGPU_PACC_JOB_VERSION,
@@ -5395,7 +5410,13 @@ fn submit_rmsnorm_runtime_job_cached(
         };
         let slot_off = HETGPU_PACC_ARG_BASE_OFF + (slot * HETGPU_PACC_ARG_SLOT_BYTES) as u64;
         let empty_header = [0u8; HETGPU_PACC_ARG_HEADER_BYTES];
-        write_control_window_cached(&mut shared_file, mailbox_file, dev.id, slot_off, &empty_header)?;
+        write_control_window_cached(
+            &mut shared_file,
+            mailbox_file,
+            dev.id,
+            slot_off,
+            &empty_header,
+        )?;
         let arg_header = HetgpuPaccArgSlotHeader {
             magic: HETGPU_PACC_JOB_MAGIC,
             version: HETGPU_PACC_JOB_VERSION,
@@ -7255,14 +7276,16 @@ unsafe fn submit_gemm_staged_single_shared_ddr(
         && beta_value == 0.0
         && pacc_c_bytes != 0;
     let output_sentinel = parse_env_usize("HETGPU_PACC_GEMM_OUTPUT_SENTINEL", 0xa5) as u8;
-    write_shared_ddr_window(slot_off + a_off, a_payload)?;
-    write_shared_ddr_window(slot_off + b_off, b_payload)?;
+    let mut shared_file = open_shared_ddr_window_file(dev_id);
+    write_shared_ddr_window_cached(&mut shared_file, slot_off + a_off, a_payload)?;
+    write_shared_ddr_window_cached(&mut shared_file, slot_off + b_off, b_payload)?;
+    let mut sentinel_baseline: Option<Vec<u8>> = None;
     if gemm_wait_output {
         let sentinel = vec![output_sentinel; pacc_c_bytes];
-        write_shared_ddr_window(slot_off + c_off, &sentinel)?;
+        write_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, &sentinel)?;
         let mut sentinel_probe = vec![0u8; pacc_c_bytes];
         let mut sentinel_file = None;
-        output_wait_sentinel_visible(
+        match output_wait_sentinel_visible(
             &mut sentinel_file,
             slot_off + c_off,
             &mut sentinel_probe,
@@ -7272,15 +7295,37 @@ unsafe fn submit_gemm_staged_single_shared_ddr(
             "HETGPU_PACC_GEMM_OUTPUT_TIMEOUT_MS",
             dev_id,
             0,
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::TimedOut => {
+                eprintln!(
+                    "[PACC Backend] GEMM output sentinel was not visible before submit dev={} off=0x{:x} bytes={}; waiting for output to differ from baseline instead: {}",
+                    dev_id,
+                    slot_off + c_off,
+                    pacc_c_bytes,
+                    e
+                );
+                sentinel_baseline = Some(sentinel_probe);
+            }
+            Err(e) => return Err(e),
+        }
     } else if let Some(c_payload) = c_payload {
-        write_shared_ddr_window(slot_off + c_off, c_payload)?;
+        write_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, c_payload)?;
     } else if pacc_c_bytes != 0 {
         let zero = vec![0u8; pacc_c_bytes];
-        write_shared_ddr_window(slot_off + c_off, &zero)?;
+        write_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, &zero)?;
     }
-    write_shared_ddr_window(slot_off + alpha_off, &alpha_value.to_ne_bytes())?;
-    write_shared_ddr_window(slot_off + beta_off, &beta_value.to_ne_bytes())?;
+    write_shared_ddr_window_cached(
+        &mut shared_file,
+        slot_off + alpha_off,
+        &alpha_value.to_ne_bytes(),
+    )?;
+    write_shared_ddr_window_cached(
+        &mut shared_file,
+        slot_off + beta_off,
+        &beta_value.to_ne_bytes(),
+    )?;
+    sync_shared_ddr_window_for_device_cached(&mut shared_file, slot_off, total as usize)?;
 
     let job = HetgpuPaccGemmJob {
         transa: if compact_stage { 0 } else { transa as u32 },
@@ -7312,28 +7357,101 @@ unsafe fn submit_gemm_staged_single_shared_ddr(
             dev_id, slot_id, job.atype, job.btype, job.ctype, job.m, job.n, job.k
         );
     }
-    PaccDevice::open(dev_id)?.submit_runtime_job(hetgpu_pacc_job_id::GEMM, &job)?;
-
     let mut c_storage = vec![0u8; pacc_c_bytes];
-    if gemm_wait_output {
-        let mut output_file = None;
-        wait_shared_ddr_output_change(
-            &mut output_file,
-            slot_off + c_off,
-            &mut c_storage,
-            output_sentinel,
-            "hetgpu_pacc_submit_gemm_staged",
-            "GEMM output",
-            "HETGPU_PACC_GEMM_OUTPUT_TIMEOUT_MS",
-            dev_id,
-            0,
-        )?;
+    let max_output_retries = if gemm_wait_output {
+        parse_env_usize("HETGPU_PACC_GEMM_OUTPUT_RETRIES", 1).min(8)
     } else {
-        let output_settle_us = pacc_gemm_output_settle_us();
-        if output_settle_us != 0 {
-            std::thread::sleep(std::time::Duration::from_micros(output_settle_us));
+        0
+    };
+    for attempt in 0..=max_output_retries {
+        PaccDevice::open(dev_id)?.submit_runtime_job(hetgpu_pacc_job_id::GEMM, &job)?;
+
+        let wait_result = if gemm_wait_output {
+            let mut output_file = None;
+            if let Some(baseline) = sentinel_baseline.as_deref() {
+                wait_shared_ddr_output_change_from_baseline(
+                    &mut output_file,
+                    slot_off + c_off,
+                    &mut c_storage,
+                    baseline,
+                    output_sentinel,
+                    "hetgpu_pacc_submit_gemm_staged",
+                    "GEMM output",
+                    "HETGPU_PACC_GEMM_OUTPUT_TIMEOUT_MS",
+                    dev_id,
+                    0,
+                )
+            } else {
+                wait_shared_ddr_output_change(
+                    &mut output_file,
+                    slot_off + c_off,
+                    &mut c_storage,
+                    output_sentinel,
+                    "hetgpu_pacc_submit_gemm_staged",
+                    "GEMM output",
+                    "HETGPU_PACC_GEMM_OUTPUT_TIMEOUT_MS",
+                    dev_id,
+                    0,
+                )
+            }
+        } else {
+            let output_settle_us = pacc_gemm_output_settle_us();
+            if output_settle_us != 0 {
+                std::thread::sleep(std::time::Duration::from_micros(output_settle_us));
+            }
+            read_shared_ddr_window(slot_off + c_off, &mut c_storage)
+        };
+
+        match wait_result {
+            Ok(()) => break,
+            Err(e)
+                if gemm_wait_output
+                    && e.kind() == ErrorKind::TimedOut
+                    && attempt < max_output_retries =>
+            {
+                eprintln!(
+                    "[PACC Backend] GEMM output wait timed out on dev={} attempt={}/{}; resubmitting strict PACC GEMM: {}",
+                    dev_id,
+                    attempt + 1,
+                    max_output_retries + 1,
+                    e
+                );
+                let sentinel = vec![output_sentinel; pacc_c_bytes];
+                write_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, &sentinel)?;
+                sync_shared_ddr_window_for_device_cached(
+                    &mut shared_file,
+                    slot_off + c_off,
+                    pacc_c_bytes,
+                )?;
+                let mut sentinel_probe = vec![0u8; pacc_c_bytes];
+                let mut sentinel_file = None;
+                match output_wait_sentinel_visible(
+                    &mut sentinel_file,
+                    slot_off + c_off,
+                    &mut sentinel_probe,
+                    output_sentinel,
+                    "hetgpu_pacc_submit_gemm_staged",
+                    "GEMM output",
+                    "HETGPU_PACC_GEMM_OUTPUT_TIMEOUT_MS",
+                    dev_id,
+                    0,
+                ) {
+                    Ok(()) => sentinel_baseline = Some(sentinel_probe),
+                    Err(e) if e.kind() == ErrorKind::TimedOut => {
+                        eprintln!(
+                            "[PACC Backend] GEMM retry sentinel was not visible before resubmit dev={} off=0x{:x} bytes={}; using observed baseline: {}",
+                            dev_id,
+                            slot_off + c_off,
+                            pacc_c_bytes,
+                            e
+                        );
+                        sentinel_baseline = Some(sentinel_probe);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
         }
-        read_shared_ddr_window(slot_off + c_off, &mut c_storage)?;
     }
     if compact_stage {
         unpack_gemm_c_block_rowmajor_f32_bytes(
@@ -7752,9 +7870,8 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
         PaccDataType::Float32 as i32
     };
     let pacc_ctype = PaccDataType::Float32 as i32;
-    let pad_rows_for_xsfmm =
-        pacc_atype as u32 == PaccDataType::Bfloat16 as u32
-            && pacc_btype as u32 == PaccDataType::Bfloat16 as u32;
+    let pad_rows_for_xsfmm = pacc_atype as u32 == PaccDataType::Bfloat16 as u32
+        && pacc_btype as u32 == PaccDataType::Bfloat16 as u32;
     let pacc_chunk_m = if pad_rows_for_xsfmm {
         chunk_m
             .checked_add(3)
@@ -7878,18 +7995,11 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
         let a_stage_source = "slot-write";
         let (job_b_off, b_stage_source) = if use_weight_arena {
             let fingerprint = if pacc_gemm_weight_fingerprint_enabled() {
-                pacc_mmvf_weight_fingerprint(
-                    b_ptr,
-                    btype,
-                    0,
-                    chunk_k,
-                    chunk_n,
-                    ldb,
-                    transb != 0,
-                )?
+                pacc_mmvf_weight_fingerprint(b_ptr, btype, 0, chunk_k, chunk_n, ldb, transb != 0)?
             } else {
                 0
-            } ^ ((pacc_btype as u32 as u64) << 32) ^ 0x47454d4d5f425741u64;
+            } ^ ((pacc_btype as u32 as u64) << 32)
+                ^ 0x47454d4d5f425741u64;
             let weight_key = PaccMmvfWeightKey {
                 dev_id: dev.id,
                 a_addr: b_ptr as usize,
@@ -7982,7 +8092,7 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
                 dev.id, slot_off, a_stage_source, job_a_off, b_stage_source, job_b_off, job.atype, job.btype, job.ctype, row0, col0, kk, chunk_m, job.m, job.n, job.k
             );
         }
-        submit_gemm_runtime_job_cached(dev, &job, total, &mut mailbox_file).map_err(|e| {
+        submit_gemm_runtime_job_cached_unlocked(dev, &job, total, &mut mailbox_file).map_err(|e| {
             Error::new(
                 e.kind(),
                 format!(
@@ -8008,21 +8118,15 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
             if output_settle_us != 0 {
                 std::thread::sleep(std::time::Duration::from_micros(output_settle_us));
             }
-            sync_shared_ddr_window_for_cpu_cached(&mut shared_file, slot_off + c_off, c_stage_bytes)?;
+            sync_shared_ddr_window_for_cpu_cached(
+                &mut shared_file,
+                slot_off + c_off,
+                c_stage_bytes,
+            )?;
             read_shared_ddr_window_cached(&mut shared_file, slot_off + c_off, &mut c_partial)?;
         }
         if std::env::var("HETGPU_PACC_GEMM_DUMP_C").ok().as_deref() == Some("1") {
-            let sample_rows = [
-                0usize,
-                1,
-                15,
-                16,
-                31,
-                32,
-                63,
-                64,
-                chunk_m.saturating_sub(1),
-            ];
+            let sample_rows = [0usize, 1, 15, 16, 31, 32, 63, 64, chunk_m.saturating_sub(1)];
             eprintln!(
                 "hetgpu_pacc_submit_gemm_staged_tiled: dump C dev={} slot=0x{:x} c_off=0x{:x} rows={} n={} bytes={}",
                 dev.id, slot_off, c_off, chunk_m, chunk_n, c_stage_bytes
@@ -8204,11 +8308,12 @@ unsafe fn submit_gemm_staged_tiled_shared_ddr(
             for tile_idx in 0..tile_count {
                 let dev_id = gemm_devices[tile_idx % gemm_devices.len()];
                 let slot_id = tile_idx % slot_count;
-                let slot_rel_off = (slot_id as u64)
-                    .checked_mul(slot_bytes as u64)
-                    .ok_or_else(|| {
-                        Error::new(ErrorKind::InvalidInput, "shared DDR slot offset overflow")
-                    })?;
+                let slot_rel_off =
+                    (slot_id as u64)
+                        .checked_mul(slot_bytes as u64)
+                        .ok_or_else(|| {
+                            Error::new(ErrorKind::InvalidInput, "shared DDR slot offset overflow")
+                        })?;
                 let slot_off = payload_base.checked_add(slot_rel_off).ok_or_else(|| {
                     Error::new(ErrorKind::InvalidInput, "shared DDR slot offset overflow")
                 })?;
@@ -8850,15 +8955,7 @@ unsafe fn submit_gemm_mmvf_small_n_shared_ddr(
     let dev_id = next_gemm_device();
     let _slot_guard = lock_shared_ddr_stage(0, "hetgpu_pacc_submit_gemm_mmvf_small_n")?;
     let mut shared_file = open_shared_ddr_window_file(dev_id);
-    let fingerprint = pacc_mmvf_weight_fingerprint(
-        a,
-        atype,
-        0,
-        m,
-        k,
-        lda,
-        transa != 0,
-    )?;
+    let fingerprint = pacc_mmvf_weight_fingerprint(a, atype, 0, m, k, lda, transa != 0)?;
     let weight_key = PaccMmvfWeightKey {
         dev_id,
         a_addr: a as usize,
@@ -8894,8 +8991,8 @@ unsafe fn submit_gemm_mmvf_small_n_shared_ddr(
             Err(e) if e.kind() == ErrorKind::OutOfMemory => {
                 let a_stage = pack_gemm_a_block_rowmajor_typed_bytes(
                     a,
-                atype,
-                pacc_x_dtype,
+                    atype,
+                    pacc_x_dtype,
                     0,
                     m,
                     k,
@@ -8979,9 +9076,7 @@ unsafe fn submit_gemm_mmvf_small_n_shared_ddr(
             ));
         }
         if mmvf_post_submit_settle_us != 0 {
-            std::thread::sleep(std::time::Duration::from_micros(
-                mmvf_post_submit_settle_us,
-            ));
+            std::thread::sleep(std::time::Duration::from_micros(mmvf_post_submit_settle_us));
         }
         read_shared_ddr_window_cached(&mut shared_file, dst_off, &mut dst_stage)?;
         for col in 0..chunk_n {
@@ -9824,10 +9919,7 @@ fn output_wait_ready_max_sentinel_run(timeout_env: &str) -> usize {
         0
     };
     if timeout_env.is_empty() {
-        return parse_env_usize(
-            "HETGPU_PACC_OUTPUT_READY_MAX_SENTINEL_RUN",
-            default_run,
-        );
+        return parse_env_usize("HETGPU_PACC_OUTPUT_READY_MAX_SENTINEL_RUN", default_run);
     }
     let run_env = timeout_env.replace("TIMEOUT_MS", "READY_MAX_SENTINEL_RUN");
     parse_env_usize(
@@ -9863,6 +9955,47 @@ fn output_has_long_sentinel_run(bytes: &[u8], sentinel: u8, max_run: usize) -> b
     false
 }
 
+fn output_wait_sample_regions_ready<F>(len: usize, timeout_env: &str, mut region_ready: F) -> bool
+where
+    F: FnMut(usize, usize) -> bool,
+{
+    if len == 0 {
+        return false;
+    }
+    let sample = output_wait_sample_bytes(timeout_env, len);
+    let head_ready = region_ready(0, sample);
+    let tail_start = len.saturating_sub(sample);
+    let tail_ready = region_ready(tail_start, len);
+    if len <= sample * 2 {
+        head_ready && tail_ready
+    } else {
+        let mid = len / 2;
+        let mid_start = mid.saturating_sub(sample / 2);
+        let mid_end = mid_start.saturating_add(sample).min(len);
+        let mid_ready = region_ready(mid_start, mid_end);
+        head_ready && mid_ready && tail_ready
+    }
+}
+
+fn output_wait_bytes_ready_without_run_guard(
+    bytes: &[u8],
+    sentinel: u8,
+    timeout_env: &str,
+) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    match output_wait_ready_mode(timeout_env).as_str() {
+        "all" | "complete" => bytes.iter().all(|&b| b != sentinel),
+        "sample" | "samples" | "head_tail" | "head-tail" => {
+            output_wait_sample_regions_ready(bytes.len(), timeout_env, |start, end| {
+                bytes[start..end].iter().any(|&b| b != sentinel)
+            })
+        }
+        _ => bytes.iter().any(|&b| b != sentinel),
+    }
+}
+
 fn output_wait_bytes_ready(bytes: &[u8], sentinel: u8, timeout_env: &str) -> bool {
     if bytes.is_empty() {
         return false;
@@ -9871,24 +10004,35 @@ fn output_wait_bytes_ready(bytes: &[u8], sentinel: u8, timeout_env: &str) -> boo
     if max_sentinel_run != 0 && output_has_long_sentinel_run(bytes, sentinel, max_sentinel_run) {
         return false;
     }
+    output_wait_bytes_ready_without_run_guard(bytes, sentinel, timeout_env)
+}
+
+fn output_wait_bytes_changed_from_baseline(
+    bytes: &[u8],
+    baseline: &[u8],
+    sentinel: u8,
+    timeout_env: &str,
+) -> bool {
+    if bytes.len() != baseline.len() || bytes.is_empty() {
+        return false;
+    }
+    let max_sentinel_run = output_wait_ready_max_sentinel_run(timeout_env);
+    if max_sentinel_run != 0 && output_has_long_sentinel_run(bytes, sentinel, max_sentinel_run) {
+        return false;
+    }
+    if !output_wait_bytes_ready_without_run_guard(bytes, sentinel, timeout_env) {
+        return false;
+    }
     match output_wait_ready_mode(timeout_env).as_str() {
-        "all" | "complete" => bytes.iter().all(|&b| b != sentinel),
         "sample" | "samples" | "head_tail" | "head-tail" => {
-            let sample = output_wait_sample_bytes(timeout_env, bytes.len());
-            let head_ready = bytes[..sample].iter().any(|&b| b != sentinel);
-            let tail_start = bytes.len().saturating_sub(sample);
-            let tail_ready = bytes[tail_start..].iter().any(|&b| b != sentinel);
-            if bytes.len() <= sample * 2 {
-                head_ready && tail_ready
-            } else {
-                let mid = bytes.len() / 2;
-                let mid_start = mid.saturating_sub(sample / 2);
-                let mid_end = mid_start.saturating_add(sample).min(bytes.len());
-                let mid_ready = bytes[mid_start..mid_end].iter().any(|&b| b != sentinel);
-                head_ready && mid_ready && tail_ready
-            }
+            output_wait_sample_regions_ready(bytes.len(), timeout_env, |start, end| {
+                bytes[start..end]
+                    .iter()
+                    .zip(&baseline[start..end])
+                    .any(|(&new, &old)| new != old)
+            })
         }
-        _ => bytes.iter().any(|&b| b != sentinel),
+        _ => bytes.iter().zip(baseline).any(|(&new, &old)| new != old),
     }
 }
 
@@ -10053,6 +10197,78 @@ fn wait_shared_ddr_output_change(
                     bytes.len(),
                     pacc_hex_bytes(&bytes[..bytes.len().min(16)]),
                     pacc_hex_bytes(&bytes[bytes.len().saturating_sub(16)..])
+                ),
+            ));
+        }
+        if poll_us != 0 {
+            std::thread::sleep(std::time::Duration::from_micros(poll_us));
+        }
+    }
+}
+
+fn wait_shared_ddr_output_change_from_baseline(
+    shared_file: &mut Option<File>,
+    offset: u64,
+    bytes: &mut [u8],
+    baseline: &[u8],
+    sentinel: u8,
+    label: &str,
+    output_desc: &str,
+    timeout_env: &str,
+    dev_id: usize,
+    row0: usize,
+) -> std::io::Result<()> {
+    if baseline.len() != bytes.len() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "{}: {} baseline length mismatch baseline={} bytes={}",
+                label,
+                output_desc,
+                baseline.len(),
+                bytes.len()
+            ),
+        ));
+    }
+    let timeout_ms = output_wait_timeout_ms(timeout_env);
+    let poll_us = output_wait_poll_us(timeout_env);
+    let external_read = output_wait_external_read_enabled(timeout_env);
+    let start = std::time::Instant::now();
+    loop {
+        if external_read {
+            read_shared_ddr_window_external(dev_id, offset, bytes)?;
+        } else {
+            read_shared_ddr_window_for_pacc_fresh(dev_id, offset, bytes)?;
+        }
+        if output_wait_bytes_changed_from_baseline(bytes, baseline, sentinel, timeout_env) {
+            let settle_us = output_wait_settle_us(timeout_env);
+            if settle_us != 0 {
+                std::thread::sleep(std::time::Duration::from_micros(settle_us));
+                if external_read {
+                    read_shared_ddr_window_external(dev_id, offset, bytes)?;
+                } else {
+                    read_shared_ddr_window_for_pacc_fresh(dev_id, offset, bytes)?;
+                }
+            }
+            if output_wait_bytes_changed_from_baseline(bytes, baseline, sentinel, timeout_env) {
+                return Ok(());
+            }
+        }
+        if start.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                format!(
+                    "{}: timed out waiting for {} to differ from pre-submit baseline dev={} row0={} off=0x{:x} bytes={} first=[{}] last=[{}] baseline_first=[{}] baseline_last=[{}]",
+                    label,
+                    output_desc,
+                    dev_id,
+                    row0,
+                    offset,
+                    bytes.len(),
+                    pacc_hex_bytes(&bytes[..bytes.len().min(16)]),
+                    pacc_hex_bytes(&bytes[bytes.len().saturating_sub(16)..]),
+                    pacc_hex_bytes(&baseline[..baseline.len().min(16)]),
+                    pacc_hex_bytes(&baseline[baseline.len().saturating_sub(16)..])
                 ),
             ));
         }
@@ -10671,6 +10887,14 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_mmvf_on(
 ) -> i32 {
     if dev_id < 0 || job.is_null() {
         eprintln!("hetgpu_pacc_submit_mmvf_on: invalid argument");
+        return -1;
+    }
+    if std::env::var("HETGPU_PACC_MMVF_SUBMIT")
+        .ok()
+        .map(|value| value.trim() == "0")
+        .unwrap_or(false)
+    {
+        eprintln!("hetgpu_pacc_submit_mmvf_on: disabled by HETGPU_PACC_MMVF_SUBMIT=0");
         return -1;
     }
     let job = *job;
@@ -12497,6 +12721,271 @@ fn pacc_kernel_staging_payload_bytes(
     Ok(total)
 }
 
+#[derive(Debug, Clone)]
+struct PaccKernelGetRowsCompactPlan {
+    src_binding_idx: usize,
+    idx_binding_idx: usize,
+    dst_binding_idx: usize,
+    src_host_addr: u64,
+    idx_host_addr: u64,
+    dst_host_addr: u64,
+    unique_rows: Vec<(i32, u32)>,
+    remapped_indices: Vec<i32>,
+    row_bytes: usize,
+    row_stride: usize,
+    idx_bytes: usize,
+    output_bytes: usize,
+    payload_bytes: usize,
+}
+
+fn pacc_kernel_is_get_rows(kernel_name: &str) -> bool {
+    kernel_name.to_ascii_lowercase().contains("k_get_rows")
+}
+
+fn pacc_get_rows_dst_elem_size(kernel_name: &str) -> usize {
+    let name = kernel_name.to_ascii_lowercase();
+    if name.contains("half")
+        || name.contains("f16")
+        || name.contains("bf16")
+        || name.contains("bfloat16")
+    {
+        2
+    } else {
+        4
+    }
+}
+
+fn pacc_kernel_binding_for_arg<'a>(
+    launch_state: &'a PaccKernelLaunchState,
+    arg_index: u32,
+) -> Option<(usize, &'a PaccKernelBufferBinding)> {
+    launch_state
+        .bindings
+        .iter()
+        .enumerate()
+        .find(|(_, binding)| binding.arg_index == arg_index)
+}
+
+fn pacc_kernel_arg_value(
+    launch_state: &PaccKernelLaunchState,
+    index: usize,
+    kernel_name: &str,
+) -> std::io::Result<u64> {
+    launch_state
+        .arg_records
+        .get(index)
+        .map(|record| record.value)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                format!("PACC kernel '{}' missing arg {}", kernel_name, index),
+            )
+        })
+}
+
+fn checked_usize_from_u64(value: u64, what: &str) -> std::io::Result<usize> {
+    usize::try_from(value).map_err(|_| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            format!("{} does not fit usize", what),
+        )
+    })
+}
+
+fn plan_pacc_get_rows_compact_staging(
+    kernel_name: &str,
+    launch_state: &PaccKernelLaunchState,
+    grid_x: u32,
+) -> std::io::Result<Option<PaccKernelGetRowsCompactPlan>> {
+    if !pacc_kernel_is_get_rows(kernel_name)
+        || std::env::var("HETGPU_PACC_GET_ROWS_COMPACT_STAGING")
+            .ok()
+            .as_deref()
+            == Some("0")
+    {
+        return Ok(None);
+    }
+
+    let ne10 = u64::from(grid_x);
+    if ne10 == 0 {
+        return Ok(None);
+    }
+    let ne00 = pacc_kernel_arg_value(launch_state, 3, kernel_name)?;
+    let ne11 = pacc_kernel_arg_value(launch_state, 4, kernel_name)?;
+    let ne12 = pacc_kernel_arg_value(launch_state, 5, kernel_name)?;
+    let s1 = pacc_kernel_arg_value(launch_state, 6, kernel_name)?;
+    let _s2 = pacc_kernel_arg_value(launch_state, 7, kernel_name)?;
+    let _s3 = pacc_kernel_arg_value(launch_state, 8, kernel_name)?;
+    let nb01 = pacc_kernel_arg_value(launch_state, 9, kernel_name)?;
+    let _nb02 = pacc_kernel_arg_value(launch_state, 10, kernel_name)?;
+    let _nb03 = pacc_kernel_arg_value(launch_state, 11, kernel_name)?;
+    let s10 = pacc_kernel_arg_value(launch_state, 12, kernel_name)?;
+    let _s11 = pacc_kernel_arg_value(launch_state, 13, kernel_name)?;
+    let _s12 = pacc_kernel_arg_value(launch_state, 14, kernel_name)?;
+
+    if ne00 == 0 || nb01 == 0 {
+        return Ok(None);
+    }
+    if ne11 != 1 || ne12 != 1 {
+        if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            eprintln!(
+                "pacc_LaunchKernel: get_rows compact staging skipped for '{}' ne11={} ne12={}",
+                kernel_name, ne11, ne12
+            );
+        }
+        return Ok(None);
+    }
+
+    let (src_binding_idx, src_binding) = match pacc_kernel_binding_for_arg(launch_state, 0) {
+        Some(binding) => binding,
+        None => return Ok(None),
+    };
+    let (idx_binding_idx, idx_binding) = match pacc_kernel_binding_for_arg(launch_state, 1) {
+        Some(binding) => binding,
+        None => return Ok(None),
+    };
+    let (dst_binding_idx, dst_binding) = match pacc_kernel_binding_for_arg(launch_state, 2) {
+        Some(binding) => binding,
+        None => return Ok(None),
+    };
+    if src_binding.flags & PACC_KERNEL_ARG_FLAG_DEVICE_PHYS != 0
+        || idx_binding.flags & PACC_KERNEL_ARG_FLAG_DEVICE_PHYS != 0
+        || dst_binding.flags & PACC_KERNEL_ARG_FLAG_DEVICE_PHYS != 0
+    {
+        return Ok(None);
+    }
+    if src_binding.addr == 0 || idx_binding.addr == 0 || dst_binding.addr == 0 {
+        return Ok(None);
+    }
+
+    let ne10_usize = checked_usize_from_u64(ne10, "get_rows ne10")?;
+    let ne00_usize = checked_usize_from_u64(ne00, "get_rows ne00")?;
+    let s1_usize = checked_usize_from_u64(s1, "get_rows dst stride")?;
+    let s10_usize = checked_usize_from_u64(s10, "get_rows index stride")?;
+    let nb01_usize = checked_usize_from_u64(nb01, "get_rows row stride")?;
+    let idx_max_elem = ne10_usize
+        .saturating_sub(1)
+        .checked_mul(s10_usize)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows index span overflow"))?;
+    let idx_span_elems = idx_max_elem
+        .checked_add(1)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows index span overflow"))?;
+    let idx_bytes = idx_span_elems
+        .checked_mul(std::mem::size_of::<i32>())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows index bytes overflow"))?;
+    if idx_binding.size != 0 && idx_bytes as u64 > idx_binding.size {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "PACC kernel '{}' get_rows index span {} exceeds binding size {}",
+                kernel_name, idx_bytes, idx_binding.size
+            ),
+        ));
+    }
+
+    let output_elems = ne10_usize
+        .saturating_sub(1)
+        .checked_mul(s1_usize)
+        .and_then(|v| v.checked_add(ne00_usize))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows output size overflow"))?;
+    let output_bytes = output_elems
+        .checked_mul(pacc_get_rows_dst_elem_size(kernel_name))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows output bytes overflow"))?;
+    if dst_binding.size != 0 && output_bytes as u64 > dst_binding.size {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "PACC kernel '{}' get_rows output {} exceeds binding size {}",
+                kernel_name, output_bytes, dst_binding.size
+            ),
+        ));
+    }
+
+    let indices =
+        unsafe { std::slice::from_raw_parts(idx_binding.addr as *const i32, idx_span_elems) };
+    let mut row_to_compact = BTreeMap::<i32, u32>::new();
+    let mut remapped_indices = vec![0i32; idx_span_elems];
+    for i10 in 0..ne10_usize {
+        let idx_off = i10
+            .checked_mul(s10_usize)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows index offset overflow"))?;
+        let row = *indices.get(idx_off).ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                "get_rows index offset outside staged span",
+            )
+        })?;
+        if row < 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "PACC kernel '{}' get_rows negative row {}",
+                    kernel_name, row
+                ),
+            ));
+        }
+        let compact = if let Some(&compact) = row_to_compact.get(&row) {
+            compact
+        } else {
+            let compact = u32::try_from(row_to_compact.len()).map_err(|_| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    "get_rows compact row count overflow",
+                )
+            })?;
+            row_to_compact.insert(row, compact);
+            compact
+        };
+        remapped_indices[idx_off] = compact as i32;
+    }
+
+    let row_stride = align_up(nb01_usize, 64);
+    let src_stage_bytes = row_stride
+        .checked_mul(row_to_compact.len())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows source stage overflow"))?;
+    let payload_bytes = align_up(src_stage_bytes, 64)
+        .checked_add(align_up(idx_bytes, 64))
+        .and_then(|v| v.checked_add(align_up(output_bytes, 64)))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows compact payload overflow"))?;
+
+    if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "pacc_LaunchKernel: get_rows compact plan kernel='{}' rows={} ne10={} row_bytes={} idx_bytes={} output_bytes={} payload={}",
+            kernel_name,
+            row_to_compact.len(),
+            ne10_usize,
+            nb01_usize,
+            idx_bytes,
+            output_bytes,
+            payload_bytes
+        );
+    }
+
+    Ok(Some(PaccKernelGetRowsCompactPlan {
+        src_binding_idx,
+        idx_binding_idx,
+        dst_binding_idx,
+        src_host_addr: src_binding.addr,
+        idx_host_addr: idx_binding.addr,
+        dst_host_addr: dst_binding.addr,
+        unique_rows: row_to_compact.into_iter().collect(),
+        remapped_indices,
+        row_bytes: nb01_usize,
+        row_stride,
+        idx_bytes,
+        output_bytes,
+        payload_bytes,
+    }))
+}
+
 fn write_shared_ddr_zeroes_cached(
     file: &mut Option<File>,
     mut offset: u64,
@@ -12608,6 +13097,213 @@ unsafe fn prepare_pacc_kernel_shared_ddr_staging(
     Ok(PaccKernelSharedDdrStaging {
         launch_state: staged_state,
         staged,
+    })
+}
+
+unsafe fn prepare_pacc_get_rows_compact_staging(
+    kernel_name: &str,
+    shared_base: u64,
+    slot_off: u64,
+    slot_bytes: usize,
+    submit_len: usize,
+    launch_state: &PaccKernelLaunchState,
+    plan: &PaccKernelGetRowsCompactPlan,
+    shared_file: &mut Option<File>,
+) -> std::io::Result<PaccKernelSharedDdrStaging> {
+    let mut staged_state = launch_state.clone();
+    let mut cursor = align_up(submit_len, 64);
+    let log_launches = std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+        .ok()
+        .as_deref()
+        == Some("1");
+
+    let src_stage_bytes = plan
+        .row_stride
+        .checked_mul(plan.unique_rows.len())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows source stage overflow"))?;
+    let src_cursor = cursor;
+    cursor = align_up(
+        cursor.checked_add(src_stage_bytes).ok_or_else(|| {
+            Error::new(ErrorKind::InvalidInput, "get_rows source cursor overflow")
+        })?,
+        64,
+    );
+    let idx_cursor = cursor;
+    cursor = align_up(
+        cursor
+            .checked_add(plan.idx_bytes)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows index cursor overflow"))?,
+        64,
+    );
+    let dst_cursor = cursor;
+    cursor = align_up(
+        cursor.checked_add(plan.output_bytes).ok_or_else(|| {
+            Error::new(ErrorKind::InvalidInput, "get_rows output cursor overflow")
+        })?,
+        64,
+    );
+    if cursor > slot_bytes {
+        return Err(Error::new(
+            ErrorKind::OutOfMemory,
+            format!(
+                "PACC kernel '{}' compact get_rows staging needs {} bytes in helper slot, slot has {}",
+                kernel_name, cursor, slot_bytes
+            ),
+        ));
+    }
+
+    let src_stage_off = slot_off
+        .checked_add(src_cursor as u64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows source offset overflow"))?;
+    let idx_stage_off = slot_off
+        .checked_add(idx_cursor as u64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows index offset overflow"))?;
+    let dst_stage_off = slot_off
+        .checked_add(dst_cursor as u64)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows output offset overflow"))?;
+    let src_stage_addr = shared_base
+        .checked_add(src_stage_off)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows source phys overflow"))?;
+    let idx_stage_addr = shared_base
+        .checked_add(idx_stage_off)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows index phys overflow"))?;
+    let dst_stage_addr = shared_base
+        .checked_add(dst_stage_off)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows output phys overflow"))?;
+
+    if src_stage_bytes != 0 {
+        write_shared_ddr_zeroes_cached(shared_file, src_stage_off, src_stage_bytes)?;
+    }
+    for &(row, compact) in plan.unique_rows.iter() {
+        let row = usize::try_from(row).map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                "get_rows row id does not fit usize",
+            )
+        })?;
+        let src_off = row
+            .checked_mul(plan.row_bytes)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows source row overflow"))?;
+        let src_end = src_off
+            .checked_add(plan.row_bytes)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows source row overflow"))?;
+        let src_binding = launch_state
+            .bindings
+            .get(plan.src_binding_idx)
+            .ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "get_rows source binding missing")
+            })?;
+        if src_binding.size != 0 && src_end as u64 > src_binding.size {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "PACC kernel '{}' get_rows row {} byte range {}..{} exceeds binding size {}",
+                    kernel_name, row, src_off, src_end, src_binding.size
+                ),
+            ));
+        }
+        let src = std::slice::from_raw_parts(
+            plan.src_host_addr
+                .checked_add(src_off as u64)
+                .ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidInput, "get_rows source pointer overflow")
+                })? as *const u8,
+            plan.row_bytes,
+        );
+        let dst_off = src_stage_off
+            .checked_add(compact as u64 * plan.row_stride as u64)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "get_rows compact row overflow"))?;
+        write_shared_ddr_window_cached(shared_file, dst_off, src)?;
+    }
+
+    let idx_bytes =
+        std::slice::from_raw_parts(plan.remapped_indices.as_ptr().cast::<u8>(), plan.idx_bytes);
+    write_shared_ddr_window_cached(shared_file, idx_stage_off, idx_bytes)?;
+    write_shared_ddr_zeroes_cached(shared_file, dst_stage_off, plan.output_bytes)?;
+
+    let update_binding = |state: &mut PaccKernelLaunchState,
+                          binding_idx: usize,
+                          arg_idx: usize,
+                          addr: u64,
+                          size: usize,
+                          flags: u32| {
+        if let Some(binding) = state.bindings.get_mut(binding_idx) {
+            binding.addr = addr;
+            binding.size = size as u64;
+            binding.flags = flags;
+        }
+        if let Some(record) = state.arg_records.get_mut(arg_idx) {
+            record.kind = PACC_KERNEL_ARG_KIND_POINTER;
+            record.value = addr;
+            record.value_hi = 0;
+        }
+    };
+    update_binding(
+        &mut staged_state,
+        plan.src_binding_idx,
+        0,
+        src_stage_addr,
+        src_stage_bytes,
+        PACC_KERNEL_ARG_FLAG_BUFFER_INPUT | PACC_KERNEL_ARG_FLAG_DEVICE_PHYS,
+    );
+    update_binding(
+        &mut staged_state,
+        plan.idx_binding_idx,
+        1,
+        idx_stage_addr,
+        plan.idx_bytes,
+        PACC_KERNEL_ARG_FLAG_BUFFER_INPUT | PACC_KERNEL_ARG_FLAG_DEVICE_PHYS,
+    );
+    update_binding(
+        &mut staged_state,
+        plan.dst_binding_idx,
+        2,
+        dst_stage_addr,
+        plan.output_bytes,
+        PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT | PACC_KERNEL_ARG_FLAG_DEVICE_PHYS,
+    );
+    if let Some(record) = staged_state.arg_records.get_mut(9) {
+        record.value = plan.row_stride as u64;
+        record.value_hi = 0;
+    }
+
+    if log_launches {
+        eprintln!(
+            "pacc_LaunchKernel: compact-staged get_rows kernel='{}' src=0x{:x}->0x{:x} rows={} idx=0x{:x}->0x{:x} dst=0x{:x}->0x{:x} out_bytes={}",
+            kernel_name,
+            plan.src_host_addr,
+            src_stage_addr,
+            plan.unique_rows.len(),
+            plan.idx_host_addr,
+            idx_stage_addr,
+            plan.dst_host_addr,
+            dst_stage_addr,
+            plan.output_bytes
+        );
+    }
+
+    Ok(PaccKernelSharedDdrStaging {
+        launch_state: staged_state,
+        staged: vec![
+            PaccKernelStagedBuffer {
+                original_addr: plan.src_host_addr,
+                stage_off: src_stage_off,
+                size: src_stage_bytes,
+                flags: PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            },
+            PaccKernelStagedBuffer {
+                original_addr: plan.idx_host_addr,
+                stage_off: idx_stage_off,
+                size: plan.idx_bytes,
+                flags: PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            },
+            PaccKernelStagedBuffer {
+                original_addr: plan.dst_host_addr,
+                stage_off: dst_stage_off,
+                size: plan.output_bytes,
+                flags: PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            },
+        ],
     })
 }
 
@@ -12792,8 +13488,13 @@ fn submit_pacc_kernel_image_via_helper(
         block_y,
         block_z,
     )?;
-    let staging_bytes =
-        pacc_kernel_staging_payload_bytes(shared_base, shared_ddr_bytes(), launch_state)?;
+    let get_rows_compact_plan =
+        plan_pacc_get_rows_compact_staging(kernel_name, launch_state, grid_x)?;
+    let staging_bytes = if let Some(plan) = get_rows_compact_plan.as_ref() {
+        plan.payload_bytes
+    } else {
+        pacc_kernel_staging_payload_bytes(shared_base, shared_ddr_bytes(), launch_state)?
+    };
     let required_bytes = submit_len
         .checked_add(staging_bytes)
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "PACC helper submit size overflow"))?;
@@ -12836,16 +13537,29 @@ fn submit_pacc_kernel_image_via_helper(
     clear_pacc_kernel_status_cached(&mut shared_file, &mut mailbox_file, dev.id)?;
     clear_pacc_kernel_doorbell_cached(&mut shared_file, &mut mailbox_file, dev.id)?;
     let staging = unsafe {
-        prepare_pacc_kernel_shared_ddr_staging(
-            kernel_name,
-            shared_base,
-            shared_ddr_bytes(),
-            slot_off,
-            slot_bytes,
-            submit_len,
-            launch_state,
-            &mut shared_file,
-        )?
+        if let Some(plan) = get_rows_compact_plan.as_ref() {
+            prepare_pacc_get_rows_compact_staging(
+                kernel_name,
+                shared_base,
+                slot_off,
+                slot_bytes,
+                submit_len,
+                launch_state,
+                plan,
+                &mut shared_file,
+            )?
+        } else {
+            prepare_pacc_kernel_shared_ddr_staging(
+                kernel_name,
+                shared_base,
+                shared_ddr_bytes(),
+                slot_off,
+                slot_bytes,
+                submit_len,
+                launch_state,
+                &mut shared_file,
+            )?
+        }
     };
     if !staging.staged.is_empty() && !kernel_launch_wait_enabled() {
         return Err(Error::new(

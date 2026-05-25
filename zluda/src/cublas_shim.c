@@ -177,7 +177,7 @@ extern int hetgpu_pacc_submit_gemm(
     const void *B, int Btype, int ldb, long long strideB,
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
-    int batchCount, int computeType) __attribute__((weak));
+    int batchCount, int computeType);
 extern int hetgpu_pacc_submit_gemm_staged(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
@@ -185,7 +185,7 @@ extern int hetgpu_pacc_submit_gemm_staged(
     const void *B, int Btype, int ldb, long long strideB,
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
-    int batchCount, int computeType) __attribute__((weak));
+    int batchCount, int computeType);
 extern int hetgpu_pacc_submit_gemm_staged_on(
     int dev_id, int slot_id,
     int transa, int transb, int m, int n, int k,
@@ -194,7 +194,7 @@ extern int hetgpu_pacc_submit_gemm_staged_on(
     const void *B, int Btype, int ldb, long long strideB,
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
-    int batchCount, int computeType) __attribute__((weak));
+    int batchCount, int computeType);
 extern int hetgpu_pacc_submit_gemm_staged_tiled(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
@@ -203,35 +203,11 @@ extern int hetgpu_pacc_submit_gemm_staged_tiled(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType,
-    int max_m, int max_n, int max_k) __attribute__((weak));
-extern int hetgpu_pacc_submit_gemm_mmvf_small_n(
-    int transa, int transb, int m, int n, int k,
-    const void *alpha,
-    const void *A, int Atype, int lda, long long strideA,
-    const void *B, int Btype, int ldb, long long strideB,
-    const void *beta,
-    void *C, int Ctype, int ldc, long long strideC,
-    int batchCount, int computeType) __attribute__((weak));
-extern unsigned long long hetgpu_pacc_resolve_device_addr(const void *ptr) __attribute__((weak));
-extern int hetgpu_pacc_is_device_ptr(const void *ptr) __attribute__((weak));
-extern size_t hetgpu_pacc_allocation_remaining(const void *ptr) __attribute__((weak));
+    int max_m, int max_n, int max_k);
+extern unsigned long long hetgpu_pacc_resolve_device_addr(const void *ptr);
+extern int hetgpu_pacc_is_device_ptr(const void *ptr);
+extern size_t hetgpu_pacc_allocation_remaining(const void *ptr);
 extern cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind kind);
-
-static int hetgpu_pacc_is_device_ptr_safe(const void *ptr) {
-    return hetgpu_pacc_is_device_ptr ? hetgpu_pacc_is_device_ptr(ptr) : 0;
-}
-
-static unsigned long long hetgpu_pacc_resolve_device_addr_safe(const void *ptr) {
-    return hetgpu_pacc_resolve_device_addr ? hetgpu_pacc_resolve_device_addr(ptr) : 0;
-}
-
-static size_t hetgpu_pacc_allocation_remaining_safe(const void *ptr) {
-    return hetgpu_pacc_allocation_remaining ? hetgpu_pacc_allocation_remaining(ptr) : SIZE_MAX;
-}
-
-#define hetgpu_pacc_is_device_ptr(ptr) hetgpu_pacc_is_device_ptr_safe(ptr)
-#define hetgpu_pacc_resolve_device_addr(ptr) hetgpu_pacc_resolve_device_addr_safe(ptr)
-#define hetgpu_pacc_allocation_remaining(ptr) hetgpu_pacc_allocation_remaining_safe(ptr)
 
 static int hetgpu_env_is_one(const char *name) {
     const char *value = getenv(name);
@@ -866,14 +842,6 @@ static int prefer_pacc_gemm_coarse_stage(void) {
     return coarse && strcmp(coarse, "force") == 0 && pacc_runtime_marked_ready();
 }
 
-static int pacc_gemm_no_f32_fallback(void) {
-    const char *value = getenv("HETGPU_PACC_GEMM_NO_F32_FALLBACK");
-    if (value && *value) {
-        return strcmp(value, "0") != 0;
-    }
-    return prefer_pacc_gemm_coarse_stage();
-}
-
 
 typedef struct {
     const char *name;
@@ -1065,32 +1033,6 @@ static cublasStatus_t submit_pacc_gemm(
         return CUBLAS_STATUS_NOT_SUPPORTED;
     }
 
-    int use_staged_submit = prefer_pacc_gemm_stage_shared_ddr();
-    if ((use_staged_submit && !hetgpu_pacc_submit_gemm_staged) ||
-        (!use_staged_submit && !hetgpu_pacc_submit_gemm)) {
-        if (hetgpu_allow_host_gemm_fallback()) {
-            DEBUG_LOG("%s PACC GEMM submit symbol unavailable; using host fallback", name);
-            cublasStatus_t fallback = host_gemm_fallback(
-                name, transa, transb, m, n, k,
-                alpha_arg, A, Atype, lda, strideA,
-                B, Btype, ldb, strideB,
-                beta_arg, C, Ctype, ldc, strideC,
-                batchCount, computeType);
-            if (fallback == CUBLAS_STATUS_SUCCESS || !hetgpu_cublas_fail_open_enabled()) {
-                return fallback;
-            }
-            DEBUG_LOG("%s missing PACC GEMM submit symbol and host fallback returned %d; CUBLAS_FAIL_OPEN treating GEMM as successful",
-                      name, (int)fallback);
-            return CUBLAS_STATUS_SUCCESS;
-        }
-        if (hetgpu_cublas_fail_open_enabled()) {
-            DEBUG_LOG("%s PACC GEMM submit symbol unavailable; CUBLAS_FAIL_OPEN treating GEMM as successful", name);
-            return CUBLAS_STATUS_SUCCESS;
-        }
-        DEBUG_LOG("%s requires PACC GEMM submit symbol; host GEMM fallback is not enabled", name);
-        return CUBLAS_STATUS_NOT_SUPPORTED;
-    }
-
     const void *pacc_A = (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(A);
     const void *pacc_B = (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(B);
     void *pacc_C = (void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(C);
@@ -1102,7 +1044,7 @@ static cublasStatus_t submit_pacc_gemm(
         : NULL;
 
     int rc = -1;
-    if (use_staged_submit) {
+    if (prefer_pacc_gemm_stage_shared_ddr()) {
         const char *max_m_env = getenv("HETGPU_PACC_GEMM_MAX_M");
         const char *max_n_env = getenv("HETGPU_PACC_GEMM_MAX_N");
         const char *max_k_env = getenv("HETGPU_PACC_GEMM_MAX_K");
@@ -1140,26 +1082,6 @@ static cublasStatus_t submit_pacc_gemm(
                   name, (int)transa, (int)transb, m, n, k, max_m, max_n, max_k,
                   lda, ldb, ldc, batchCount, strideA, strideB, strideC);
         rc = 0;
-        int mmvf_max_n = (int)hetgpu_env_u64_default("HETGPU_PACC_GEMM_MMVF_ROUTE_MAX_N", 0ULL);
-        if (mmvf_max_n > 0 && n > 0 && n <= mmvf_max_n && (k % 2) == 0) {
-            int mmvf_rc = hetgpu_pacc_submit_gemm_mmvf_small_n(
-                (int)transa, (int)transb, m, n, k,
-                alpha_arg,
-                A, hetgpu_pacc_dtype(Atype), lda, strideA,
-                B, hetgpu_pacc_dtype(Btype), ldb, strideB,
-                beta_arg,
-                C, hetgpu_pacc_dtype(Ctype), ldc, strideC,
-                batchCount, (int)computeType);
-            if (mmvf_rc == 0) {
-                DEBUG_LOG("%s using PACC MMVF small-N GEMM route m=%d n=%d k=%d",
-                          name, m, n, k);
-                return CUBLAS_STATUS_SUCCESS;
-            }
-            if (mmvf_rc < 0) {
-                DEBUG_LOG("%s PACC MMVF small-N route failed rc=%d; falling back to staged GEMM",
-                          name, mmvf_rc);
-            }
-        }
         size_t a_size = host_dtype_size(Atype);
         size_t b_size = host_dtype_size(Btype);
         size_t c_size = host_dtype_size(Ctype);
@@ -1178,8 +1100,7 @@ static cublasStatus_t submit_pacc_gemm(
         if (parallel_workers > pacc_device_count) {
             parallel_workers = pacc_device_count;
         }
-        if (hetgpu_pacc_submit_gemm_staged_tiled &&
-            !g_pacc_gemm_coarse_stage_disabled_after_failure &&
+        if (!g_pacc_gemm_coarse_stage_disabled_after_failure &&
             prefer_pacc_gemm_coarse_stage()) {
             rc = hetgpu_pacc_submit_gemm_staged_tiled(
                 (int)transa, (int)transb, m, n, k,
@@ -1193,24 +1114,11 @@ static cublasStatus_t submit_pacc_gemm(
             if (rc == 0) {
                 return CUBLAS_STATUS_SUCCESS;
             }
-            if (pacc_gemm_no_f32_fallback()) {
-                if (hetgpu_cublas_fail_open_enabled()) {
-                    DEBUG_LOG("%s PACC BF16/SFMM coarse GEMM failed rc=%d; CUBLAS_FAIL_OPEN treating GEMM as successful without f32 fallback",
-                              name, rc);
-                    return CUBLAS_STATUS_SUCCESS;
-                }
-                DEBUG_LOG("%s PACC BF16/SFMM coarse GEMM failed rc=%d; f32 staged fallback disabled",
-                          name, rc);
-                return CUBLAS_STATUS_EXECUTION_FAILED;
-            }
             g_pacc_gemm_coarse_stage_disabled_after_failure = 1;
             DEBUG_LOG("%s disabling coarse staged GEMM after failure rc=%d", name, rc);
         }
         int row_tiles = (m + max_m - 1) / max_m;
         int col_tiles = (n + max_n - 1) / max_n;
-        if (!hetgpu_pacc_submit_gemm_staged_on && parallel_workers > 1) {
-            parallel_workers = 1;
-        }
         if (parallel_workers > 1 && row_tiles * col_tiles * batchCount > 1) {
             hetgpu_parallel_gemm_ctx_t ctx = {
                 name, transa, transb, m, n, k,
@@ -1412,7 +1320,50 @@ cublasStatus_t cublasDdot_v2(cublasHandle_t handle, int n,
     return CUBLAS_STATUS_SUCCESS;
 }
 
-// BLAS Level 2: Matrix-vector operations (stubs)
+static cublasStatus_t submit_pacc_gemv_as_gemm(
+    const char *name,
+    cublasOperation_t trans,
+    int m, int n,
+    const void *alpha,
+    const void *A, int lda,
+    const void *x, int incx,
+    const void *beta,
+    void *y, int incy,
+    cudaDataType dtype,
+    cublasComputeType_t computeType) {
+    if (!hetgpu_env_enabled_default("HETGPU_PACC_FUSE_GEMV_TO_GEMM", 1)) {
+        DEBUG_LOG("%s GEMV->GEMM fuse disabled by HETGPU_PACC_FUSE_GEMV_TO_GEMM=0", name);
+        return hetgpu_cublas_fail_open_enabled() ? CUBLAS_STATUS_SUCCESS : CUBLAS_STATUS_NOT_SUPPORTED;
+    }
+    if (trans != CUBLAS_OP_N && trans != CUBLAS_OP_T && trans != CUBLAS_OP_C) {
+        return CUBLAS_STATUS_INVALID_VALUE;
+    }
+    if (m < 0 || n < 0 || lda < (m > 1 ? m : 1) || incx == 0 || incy == 0) {
+        return CUBLAS_STATUS_INVALID_VALUE;
+    }
+    if (m == 0 || n == 0) {
+        return CUBLAS_STATUS_SUCCESS;
+    }
+    if (incx != 1 || incy != 1) {
+        DEBUG_LOG("%s GEMV->GEMM fuse supports only contiguous vectors for now incx=%d incy=%d",
+                  name, incx, incy);
+        return hetgpu_cublas_fail_open_enabled() ? CUBLAS_STATUS_SUCCESS : CUBLAS_STATUS_NOT_SUPPORTED;
+    }
+
+    int gemm_m = (trans == CUBLAS_OP_N) ? m : n;
+    int gemm_k = (trans == CUBLAS_OP_N) ? n : m;
+    int ldb = gemm_k > 0 ? gemm_k : 1;
+    int ldc = gemm_m > 0 ? gemm_m : 1;
+    DEBUG_LOG("%s fused through GEMM transa=%d transb=N m=%d n=1 k=%d lda=%d ldb=%d ldc=%d",
+              name, (int)trans, gemm_m, gemm_k, lda, ldb, ldc);
+    return submit_pacc_gemm(name, trans, CUBLAS_OP_N, gemm_m, 1, gemm_k,
+                            alpha, A, dtype, lda, 0,
+                            x, dtype, ldb, 0,
+                            beta, y, dtype, ldc, 0,
+                            1, computeType);
+}
+
+// BLAS Level 2: Matrix-vector operations
 cublasStatus_t cublasSgemv_v2(cublasHandle_t handle, cublasOperation_t trans,
                                int m, int n,
                                const float *alpha,
@@ -1420,15 +1371,11 @@ cublasStatus_t cublasSgemv_v2(cublasHandle_t handle, cublasOperation_t trans,
                                const float *x, int incx,
                                const float *beta,
                                float *y, int incy) {
-    DEBUG_LOG("cublasSgemv_v2 called: m=%d, n=%d", m, n);
-    // Zero output to prevent NaN/inf propagation
-    if (y) {
-        int len = (trans == CUBLAS_OP_N) ? m : n;
-        for (int i = 0; i < len; i++) {
-            y[i * incy] = 0.0f;
-        }
-    }
-    return CUBLAS_STATUS_SUCCESS;
+    DEBUG_LOG("cublasSgemv_v2 called: m=%d, n=%d trans=%d incx=%d incy=%d",
+              m, n, (int)trans, incx, incy);
+    return submit_pacc_gemv_as_gemm("cublasSgemv_v2", trans, m, n,
+                                    alpha, A, lda, x, incx, beta, y, incy,
+                                    CUDA_R_32F, CUBLAS_COMPUTE_32F);
 }
 
 cublasStatus_t cublasDgemv_v2(cublasHandle_t handle, cublasOperation_t trans,
@@ -1438,15 +1385,11 @@ cublasStatus_t cublasDgemv_v2(cublasHandle_t handle, cublasOperation_t trans,
                                const double *x, int incx,
                                const double *beta,
                                double *y, int incy) {
-    DEBUG_LOG("cublasDgemv_v2 called: m=%d, n=%d", m, n);
-    // Zero output to prevent NaN/inf propagation
-    if (y) {
-        int len = (trans == CUBLAS_OP_N) ? m : n;
-        for (int i = 0; i < len; i++) {
-            y[i * incy] = 0.0;
-        }
-    }
-    return CUBLAS_STATUS_SUCCESS;
+    DEBUG_LOG("cublasDgemv_v2 called: m=%d, n=%d trans=%d incx=%d incy=%d",
+              m, n, (int)trans, incx, incy);
+    return submit_pacc_gemv_as_gemm("cublasDgemv_v2", trans, m, n,
+                                    alpha, A, lda, x, incx, beta, y, incy,
+                                    CUDA_R_64F, CUBLAS_COMPUTE_64F);
 }
 
 // BLAS Level 3: Matrix-matrix operations (most important for ML)

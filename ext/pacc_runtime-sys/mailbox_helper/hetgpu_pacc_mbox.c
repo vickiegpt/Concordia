@@ -498,9 +498,12 @@ static long mbox_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	if (!mutex_trylock(&g_lock))
 		return -EBUSY;
+	iowrite32(0xffffffff, g_mbox_db[minor] + 0x4);
+	iowrite32(0xffffffff, g_mbox_db[minor] + 0x8);
 	iowrite32(0xffffffff, g_mbox_db[minor] + 0x10);
 	wmb();
 	iowrite32(local_doorbell_bit ? 1U : (1U << minor), g_mbox_db[minor] + 0x0);
+	(void)ioread32(g_mbox_db[minor] + 0x0);
 	mb();
 	mutex_unlock(&g_lock);
 	return 0;
