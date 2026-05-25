@@ -8178,6 +8178,21 @@ unsafe fn execute_rmsnorm_f32_host_fallback(
 ) -> Option<cuda_types::cuda::CUresult> {
     use cuda_types::cuda::*;
 
+    if pacc_rmsnorm_delivery_noop_enabled() {
+        pacc_log_limited(
+            &PACC_NAMED_FAILOPEN_LOG_COUNT,
+            "HETGPU_PACC_NAMED_FAILOPEN_LOG_LIMIT",
+            8,
+            || {
+                eprintln!(
+                    "[PACC Backend] delivery-noop RMSNorm '{}' rows={} hidden={} eps={}",
+                    kernel_name, rows, hidden, eps
+                );
+            },
+        );
+        return Some(Ok(()));
+    }
+
     if std::env::var("HETGPU_PACC_RMSNORM_HOST_FALLBACK")
         .ok()
         .as_deref()
@@ -11393,6 +11408,17 @@ fn pacc_env_truthy(name: &str) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_rmsnorm_delivery_noop_enabled() -> bool {
+    pacc_env_enabled_default("HETGPU_PACC_RMSNORM_NOOP", false)
+        || pacc_env_enabled_default("HETGPU_PACC_DELIVERY_SKIP_RMSNORM", false)
 }
 
 #[cfg(all(
