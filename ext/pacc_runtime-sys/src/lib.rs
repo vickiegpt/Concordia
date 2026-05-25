@@ -2442,11 +2442,11 @@ fn runtime_boot_state() -> &'static Mutex<[bool; 4]> {
 }
 
 fn pacc_jobd_bootstrap_enabled() -> bool {
-    !matches!(
+    matches!(
         std::env::var("HETGPU_PACC_JOBD_BOOTSTRAP")
             .ok()
             .map(|v| v.trim().to_ascii_lowercase()),
-        Some(v) if v == "0" || v == "false" || v == "no" || v == "off"
+        Some(v) if v == "1" || v == "true" || v == "yes" || v == "on"
     )
 }
 
@@ -8324,7 +8324,6 @@ unsafe fn submit_gemm_staged_tiled_shared_ddr(
                     ));
                 }
                 let worker_slot_bytes = slot_bytes.min(shared_bytes - slot_off as usize);
-                let _dev_guard = lock_pacc_control(dev_id, "PACC tiled GEMM device in-flight")?;
                 let dev = PaccDevice::open(dev_id)?;
                 let _slot_guard =
                     lock_shared_ddr_stage(slot_id, "hetgpu_pacc_submit_gemm_staged_tiled")?;
@@ -8399,8 +8398,6 @@ unsafe fn submit_gemm_staged_tiled_shared_ddr(
                     for tile_idx in (worker..tile_count).step_by(parallel_workers) {
                         let dev_id =
                             gemm_devices_for_worker[tile_idx % gemm_devices_for_worker.len()];
-                        let _dev_guard =
-                            lock_pacc_control(dev_id, "PACC tiled GEMM device in-flight")?;
                         let dev = PaccDevice::open(dev_id)?;
                         let _slot_guard =
                             lock_shared_ddr_stage(slot_id, "hetgpu_pacc_submit_gemm_staged_tiled")?;

@@ -468,6 +468,7 @@ static struct pacc_zluda_ddr_info g_ddr_info;
 static uint64_t g_pacc_id;
 static int g_mbox_fd = -1;
 static int g_shared_ddr_data_fd = -1;
+static uint64_t g_shared_ddr_pacc_base;
 static bool g_map_uses_shared_ddr_offsets;
 static uint64_t g_shared_ddr_mmap_user_off;
 static uint64_t g_shared_ddr_fd_user_off;
@@ -495,6 +496,7 @@ static bool g_kernel_completion_beacon_sticky;
 static uint64_t g_kernel_completion_beacon_seq;
 
 static bool phys_is_shared_ddr(uint64_t phys, size_t len);
+static uint64_t shared_ddr_pacc_phys(uint64_t phys, size_t len);
 static uint32_t g_kernel_completion_beacon_status;
 static bool g_preloaded_completion_sticky;
 static uint32_t g_preloaded_completion_job_id;
@@ -541,7 +543,23 @@ static bool jobd_trace_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
-    return true;
+    return false;
+}
+
+static bool jobd_dispatch_trace_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_DISPATCH_TRACE");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return false;
+}
+
+static bool jobd_post_irq_trace_enabled(void) {
+    const char *value = getenv("HETGPU_PACC_JOBD_POST_IRQ_TRACE");
+    if (value && *value) {
+        return env_flag_true(value);
+    }
+    return false;
 }
 
 static bool jobd_kmsg_enabled(void) {
@@ -549,7 +567,7 @@ static bool jobd_kmsg_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
-    return true;
+    return false;
 }
 
 static bool jobd_log_enabled(void) {
@@ -557,7 +575,7 @@ static bool jobd_log_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
-    return true;
+    return false;
 }
 
 static bool jobd_mbox_poll_enabled(void) {
@@ -838,7 +856,7 @@ static bool jobd_redispatch_seen_arg_slot_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
-    return true;
+    return false;
 }
 
 static bool jobd_runtime_table_refresh_enabled(void) {
@@ -1636,16 +1654,57 @@ static void wait_for_initial_control(int mbox_fd) {
 }
 
 static void read_shared_ddr_info_from_mbox(int mbox_fd) {
+    struct pacc_zluda_ddr_info info;
     struct pacc_zluda_ddr_info fallback_info;
     bool have_fallback;
-    (void)mbox_fd;
+    int ret;
+    memset(&info, 0, sizeof(info));
     memset(&fallback_info, 0, sizeof(fallback_info));
+    if (jobd_ddr_ioctl_enabled()) {
+        ret = ioctl(mbox_fd, PACC_IOC_ZLUDA_GET_DDR_BASE, &info);
+        if (ret == 0 &&
+            info.ddr_base &&
+            info.ddr_size >= HETGPU_PACC_CONTROL_BYTES) {
+            g_ddr_info = info;
+            g_shared_ddr_pacc_base =
+                parse_env_u64_default("HETGPU_PACC_SHARED_DDR_PACC_BASE",
+                    parse_env_u64_default("PACC_JOBD_SHARED_DDR_PACC_BASE", 0));
+            if (!g_shared_ddr_pacc_base) {
+                uint64_t delta =
+                    parse_env_u64_default("HETGPU_PACC_SHARED_DDR_PACC_DELTA",
+                        parse_env_u64_default("PACC_JOBD_SHARED_DDR_PACC_DELTA", 0));
+                if (delta && g_ddr_info.ddr_base <= UINT64_MAX - delta) {
+                    g_shared_ddr_pacc_base = g_ddr_info.ddr_base + delta;
+                }
+            }
+            log_msg("shared ddr base 0x%" PRIx64 " size 0x%" PRIx64
+                    " pacc_base 0x%" PRIx64 " from /dev/mbox ioctl",
+                    g_ddr_info.ddr_base, g_ddr_info.ddr_size,
+                    g_shared_ddr_pacc_base);
+            return;
+        }
+        log_msg("shared DDR ioctl failed or invalid ret=%d errno=%d base=0x%" PRIx64
+                " size=0x%" PRIx64 "; falling back to env/debugfs/default",
+                ret, errno, info.ddr_base, info.ddr_size);
+    }
     have_fallback = read_shared_ddr_info_from_env_or_debugfs(&fallback_info);
     if (have_fallback) {
         g_ddr_info = fallback_info;
+        g_shared_ddr_pacc_base =
+            parse_env_u64_default("HETGPU_PACC_SHARED_DDR_PACC_BASE",
+                parse_env_u64_default("PACC_JOBD_SHARED_DDR_PACC_BASE", 0));
+        if (!g_shared_ddr_pacc_base) {
+            uint64_t delta =
+                parse_env_u64_default("HETGPU_PACC_SHARED_DDR_PACC_DELTA",
+                    parse_env_u64_default("PACC_JOBD_SHARED_DDR_PACC_DELTA", 0));
+            if (delta && g_ddr_info.ddr_base <= UINT64_MAX - delta) {
+                g_shared_ddr_pacc_base = g_ddr_info.ddr_base + delta;
+            }
+        }
         log_msg("shared ddr base 0x%" PRIx64 " size 0x%" PRIx64
+                " pacc_base 0x%" PRIx64
                 " from env/debugfs/default; /dev/mbox is IRQ-only",
-                g_ddr_info.ddr_base, g_ddr_info.ddr_size);
+                g_ddr_info.ddr_base, g_ddr_info.ddr_size, g_shared_ddr_pacc_base);
         return;
     }
 
@@ -1656,7 +1715,7 @@ static void read_shared_ddr_info_from_mbox(int mbox_fd) {
 static void read_pacc_id_from_mbox(int mbox_fd) {
     const char *env = getenv("HETGPU_PACC_ID");
     const char *legacy_env = getenv("PACC_JOBD_PACC_ID");
-    (void)mbox_fd;
+    unsigned long pacc_id = 0;
     if (parse_u64_checked(env, &g_pacc_id)) {
         log_msg("pacc id %" PRIu64 " from env", g_pacc_id);
         return;
@@ -1664,6 +1723,14 @@ static void read_pacc_id_from_mbox(int mbox_fd) {
     if (parse_u64_checked(legacy_env, &g_pacc_id)) {
         log_msg("pacc id %" PRIu64 " from PACC_JOBD_PACC_ID", g_pacc_id);
         return;
+    }
+    if (env_flag_true(getenv("HETGPU_PACC_JOBD_PACC_ID_IOCTL"))) {
+        if (ioctl(mbox_fd, PACC_IOC_GET_PACC_ID, &pacc_id) == 0) {
+            g_pacc_id = (uint64_t)pacc_id;
+            log_msg("pacc id %" PRIu64 " from /dev/mbox ioctl", g_pacc_id);
+            return;
+        }
+        log_msg("pacc id ioctl failed errno=%d; defaulting to pacc0", errno);
     }
     g_pacc_id = 0;
     log_msg("pacc id defaulting to pacc0; /dev/mbox is IRQ-only");
@@ -1893,7 +1960,7 @@ static int map_phys(int fd, uint64_t phys, size_t len, struct Map *out) {
         }
     }
 
-    mmap_addr = phys;
+    mmap_addr = shared_ddr_pacc_phys(phys, len);
     uint64_t base = mmap_addr & ~(page - 1);
     size_t off = (size_t)(mmap_addr - base);
     size_t map_len = ((off + len + page - 1) / page) * page;
@@ -1961,6 +2028,16 @@ static bool phys_is_shared_ddr(uint64_t phys, size_t len) {
     uint64_t ddr_off = phys - g_ddr_info.ddr_base;
     return (uint64_t)len <= g_ddr_info.ddr_size &&
            ddr_off <= g_ddr_info.ddr_size - (uint64_t)len;
+}
+
+static uint64_t shared_ddr_pacc_phys(uint64_t phys, size_t len) {
+    if (g_shared_ddr_pacc_base && phys_is_shared_ddr(phys, len)) {
+        uint64_t ddr_off = phys - g_ddr_info.ddr_base;
+        if (ddr_off <= UINT64_MAX - g_shared_ddr_pacc_base) {
+            return g_shared_ddr_pacc_base + ddr_off;
+        }
+    }
+    return phys;
 }
 
 static bool phys_is_shared_ddr_control(uint64_t phys, size_t len) {
@@ -2036,7 +2113,7 @@ static int read_phys_copy_pread_only(int fd, uint64_t phys, size_t len, uint8_t 
         return (int)0xffff5e08u;
     }
     if (force_devmem_shared) {
-        fd_off = phys;
+        fd_off = shared_ddr_pacc_phys(phys, len);
     } else if (!phys_to_fd_offset(phys, len, &fd_off)) {
         return (int)0xffff5e08u;
     }
@@ -2178,7 +2255,7 @@ static int read_phys_copy(int fd, uint64_t phys, size_t len, uint8_t **out) {
 
 pread_fallback:
     if (force_devmem_shared) {
-        fd_off = phys;
+        fd_off = shared_ddr_pacc_phys(phys, len);
     } else if (!phys_to_fd_offset(phys, len, &fd_off)) {
         return -1;
     }
@@ -2433,7 +2510,7 @@ static int write_phys_copy_pwrite_only(int fd, uint64_t phys, const void *src, s
         return -1;
     }
     if (force_devmem_shared) {
-        fd_off = phys;
+        fd_off = shared_ddr_pacc_phys(phys, len);
     } else if (!phys_to_fd_offset(phys, len, &fd_off)) {
         return -1;
     }
@@ -2583,7 +2660,7 @@ static int write_phys_copy(int fd, uint64_t phys, const void *src, size_t len) {
 
 pwrite_fallback:
     if (force_devmem_shared) {
-        fd_off = phys;
+        fd_off = shared_ddr_pacc_phys(phys, len);
     } else if (!phys_to_fd_offset(phys, len, &fd_off)) {
         return -1;
     }
@@ -11767,9 +11844,6 @@ static enum DispatchPollResult maybe_dispatch_arg_slot_job(
     ctl->seq = header.seq;
     jobd_io_fence();
 
-    log_msg("arg-slot dispatch recovery: job_id=%u/%s seq=%" PRIu64
-            " arg_len=%" PRIu64,
-            header.job_id, job_name(header.job_id), header.seq, header.arg_len);
     trace_msg("arg-slot dispatch recovery: job_id=%u/%s seq=%" PRIu64
               " arg_len=%" PRIu64,
               header.job_id, job_name(header.job_id), header.seq, header.arg_len);
@@ -11780,8 +11854,6 @@ static enum DispatchPollResult maybe_dispatch_arg_slot_job(
 
     status = dispatch_job(fd, ctl, jobs, strict);
     if (status == -EAGAIN) {
-        log_msg("arg-slot dispatch pending args: job_id=%u/%s seq=%" PRIu64,
-                header.job_id, job_name(header.job_id), header.seq);
         trace_msg("arg-slot dispatch pending args: job_id=%u/%s seq=%" PRIu64,
                   header.job_id, job_name(header.job_id), header.seq);
         return DISPATCH_IDLE;
@@ -11807,8 +11879,6 @@ static enum DispatchPollResult maybe_dispatch_arg_slot_job(
         g_preloaded_completion_seq = header.seq;
         g_preloaded_completion_status = (uint32_t)status;
         g_response_irq_pending = true;
-        log_msg("arg-slot dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
-                header.job_id, job_name(header.job_id), header.seq, (uint32_t)status);
         trace_msg("arg-slot dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
                   header.job_id, job_name(header.job_id), header.seq, (uint32_t)status);
         return DISPATCH_HANDLED;
@@ -11831,12 +11901,14 @@ static enum DispatchPollResult dispatch_any_job(
     enum DispatchPollResult result;
 
     result = maybe_dispatch_preloaded_job(fd, ctl, jobs, strict, last_seq, last_table_seq);
-    log_msg("dispatch_any_job preloaded result=%d last_seq=%" PRIu64
-            " last_table_seq=%" PRIu64 " last_kernel_seq=%" PRIu64,
-            result,
-            last_seq ? *last_seq : 0,
-            last_table_seq ? *last_table_seq : 0,
-            last_kernel_seq ? *last_kernel_seq : 0);
+    if (jobd_dispatch_trace_enabled()) {
+        trace_msg("dispatch_any_job preloaded result=%d last_seq=%" PRIu64
+                  " last_table_seq=%" PRIu64 " last_kernel_seq=%" PRIu64,
+                  result,
+                  last_seq ? *last_seq : 0,
+                  last_table_seq ? *last_table_seq : 0,
+                  last_kernel_seq ? *last_kernel_seq : 0);
+    }
     if (result == DISPATCH_HANDLED) {
         return result;
     }
@@ -11846,12 +11918,14 @@ static enum DispatchPollResult dispatch_any_job(
     }
 
     result = maybe_dispatch_kernel_job(fd, ctl, last_kernel_seq);
-    log_msg("dispatch_any_job kernel result=%d last_seq=%" PRIu64
-            " last_table_seq=%" PRIu64 " last_kernel_seq=%" PRIu64,
-            result,
-            last_seq ? *last_seq : 0,
-            last_table_seq ? *last_table_seq : 0,
-            last_kernel_seq ? *last_kernel_seq : 0);
+    if (jobd_dispatch_trace_enabled()) {
+        trace_msg("dispatch_any_job kernel result=%d last_seq=%" PRIu64
+                  " last_table_seq=%" PRIu64 " last_kernel_seq=%" PRIu64,
+                  result,
+                  last_seq ? *last_seq : 0,
+                  last_table_seq ? *last_table_seq : 0,
+                  last_kernel_seq ? *last_kernel_seq : 0);
+    }
     if (result == DISPATCH_HANDLED) {
         return result;
     }
@@ -11861,12 +11935,14 @@ static enum DispatchPollResult dispatch_any_job(
     }
 
     result = maybe_dispatch_arg_slot_job(fd, jobs, strict, last_seq, last_table_seq);
-    log_msg("dispatch_any_job arg_slot result=%d last_seq=%" PRIu64
-            " last_table_seq=%" PRIu64 " last_kernel_seq=%" PRIu64,
-            result,
-            last_seq ? *last_seq : 0,
-            last_table_seq ? *last_table_seq : 0,
-            last_kernel_seq ? *last_kernel_seq : 0);
+    if (jobd_dispatch_trace_enabled()) {
+        trace_msg("dispatch_any_job arg_slot result=%d last_seq=%" PRIu64
+                  " last_table_seq=%" PRIu64 " last_kernel_seq=%" PRIu64,
+                  result,
+                  last_seq ? *last_seq : 0,
+                  last_table_seq ? *last_table_seq : 0,
+                  last_kernel_seq ? *last_kernel_seq : 0);
+    }
     return result == DISPATCH_HANDLED ? result : DISPATCH_INVALID;
 }
 
@@ -12271,9 +12347,10 @@ static bool write_shared_ddr_devmem_direct(uint64_t phys, const void *src, size_
     if (!src || len == 0 || !phys_is_shared_ddr(phys, len)) {
         return false;
     }
+    uint64_t pacc_phys = shared_ddr_pacc_phys(phys, len);
     page = g_page_size > 0 ? (uint64_t)g_page_size : 4096ULL;
-    map_base = phys & ~(page - 1u);
-    map_off = (size_t)(phys - map_base);
+    map_base = pacc_phys & ~(page - 1u);
+    map_off = (size_t)(pacc_phys - map_base);
     map_len = ((map_off + len + page - 1u) / page) * page;
     fd = open("/dev/mem", O_RDWR | O_SYNC | O_CLOEXEC);
     if (fd < 0) {
@@ -12463,7 +12540,9 @@ static void early_devmem_diag_marker(const char *devmem, uint32_t status, uint64
         return;
     }
 
-    ddr_base = parse_env_u64_default("HETGPU_PACC_SHARED_DDR_BASE", 0x20100600000ULL);
+    ddr_base = parse_env_u64_default("HETGPU_PACC_SHARED_DDR_PACC_BASE",
+        parse_env_u64_default("PACC_JOBD_SHARED_DDR_PACC_BASE",
+            parse_env_u64_default("HETGPU_PACC_SHARED_DDR_BASE", 0x20100600000ULL)));
     if (!ddr_base) {
         return;
     }
@@ -12873,12 +12952,13 @@ after_response_irq:
                                                          &dispatch_ctl);
                 scans++;
             }
-            if ((snapshot_detail & 0x3u) == 0 && scans != 0) {
+            if (jobd_post_irq_trace_enabled() &&
+                (snapshot_detail & 0x3u) == 0 && scans != 0) {
                 trace_msg("post-IRQ scan found no new job after %" PRIu64
                           " scans detail=0x%x last_seq=%" PRIu64
                           " last_kernel_seq=%" PRIu64,
                           scans, snapshot_detail, last_seq, last_kernel_seq);
-            } else if (scans != 0) {
+            } else if (jobd_post_irq_trace_enabled() && scans != 0) {
                 trace_msg("post-IRQ scan matched new job after %" PRIu64
                           " scans detail=0x%x",
                           scans, snapshot_detail);

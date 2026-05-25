@@ -204,9 +204,67 @@ extern int hetgpu_pacc_submit_gemm_staged_tiled(
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType,
     int max_m, int max_n, int max_k);
-extern unsigned long long hetgpu_pacc_resolve_device_addr(const void *ptr);
-extern int hetgpu_pacc_is_device_ptr(const void *ptr);
-extern size_t hetgpu_pacc_allocation_remaining(const void *ptr);
+typedef unsigned long long (*hetgpu_pacc_resolve_device_addr_fn)(const void *ptr);
+typedef int (*hetgpu_pacc_is_device_ptr_fn)(const void *ptr);
+typedef size_t (*hetgpu_pacc_allocation_remaining_fn)(const void *ptr);
+
+static void *hetgpu_resolve_runtime_symbol(const char *name) {
+    dlerror();
+    void *sym = dlsym(RTLD_DEFAULT, name);
+    return sym;
+}
+
+static hetgpu_pacc_resolve_device_addr_fn hetgpu_resolve_device_addr_fn(void) {
+    static hetgpu_pacc_resolve_device_addr_fn fn = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        attempted = 1;
+        fn = (hetgpu_pacc_resolve_device_addr_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_pacc_resolve_device_addr");
+    }
+    return fn;
+}
+
+static hetgpu_pacc_is_device_ptr_fn hetgpu_is_device_ptr_fn(void) {
+    static hetgpu_pacc_is_device_ptr_fn fn = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        attempted = 1;
+        fn = (hetgpu_pacc_is_device_ptr_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_pacc_is_device_ptr");
+    }
+    return fn;
+}
+
+static hetgpu_pacc_allocation_remaining_fn hetgpu_allocation_remaining_fn(void) {
+    static hetgpu_pacc_allocation_remaining_fn fn = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        attempted = 1;
+        fn = (hetgpu_pacc_allocation_remaining_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_pacc_allocation_remaining");
+    }
+    return fn;
+}
+
+static unsigned long long hetgpu_pacc_resolve_device_addr_checked(const void *ptr) {
+    hetgpu_pacc_resolve_device_addr_fn fn = hetgpu_resolve_device_addr_fn();
+    return fn ? fn(ptr) : (unsigned long long)(uintptr_t)ptr;
+}
+
+static int hetgpu_pacc_is_device_ptr_checked(const void *ptr) {
+    hetgpu_pacc_is_device_ptr_fn fn = hetgpu_is_device_ptr_fn();
+    return fn ? fn(ptr) : 0;
+}
+
+static size_t hetgpu_pacc_allocation_remaining_checked(const void *ptr) {
+    hetgpu_pacc_allocation_remaining_fn fn = hetgpu_allocation_remaining_fn();
+    return fn ? fn(ptr) : SIZE_MAX;
+}
+
+#define hetgpu_pacc_resolve_device_addr hetgpu_pacc_resolve_device_addr_checked
+#define hetgpu_pacc_is_device_ptr hetgpu_pacc_is_device_ptr_checked
+#define hetgpu_pacc_allocation_remaining hetgpu_pacc_allocation_remaining_checked
 extern cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind kind);
 
 static int hetgpu_env_is_one(const char *name) {
