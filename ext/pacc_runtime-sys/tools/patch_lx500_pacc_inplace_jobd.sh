@@ -123,12 +123,17 @@ jobd_shared_ddr_payload_pwrite = os.environ.get("PACC_JOBD_SHARED_DDR_PAYLOAD_PW
 jobd_full_ddr_map_present = "PACC_JOBD_FULL_DDR_MAP" in os.environ
 jobd_full_ddr_map = os.environ.get("PACC_JOBD_FULL_DDR_MAP", "0").strip() or "0"
 jobd_full_ddr_map_bytes = os.environ.get("PACC_JOBD_FULL_DDR_MAP_BYTES", "").strip()
+jobd_claim_id_present = "PACC_JOBD_CLAIM_ID" in os.environ
 jobd_claim_id = os.environ.get("PACC_JOBD_CLAIM_ID", "0").strip() or "0"
 jobd_pacc_id_ioctl = os.environ.get("PACC_JOBD_PACC_ID_IOCTL", "0").strip() or "0"
 jobd_force_pread = os.environ.get("PACC_JOBD_FORCE_PREAD", "0").strip() or "0"
 jobd_control_pread = os.environ.get("PACC_JOBD_CONTROL_PREAD", "").strip()
 jobd_control_window_read = os.environ.get("PACC_JOBD_CONTROL_WINDOW_READ", "").strip()
 jobd_force_devmem = os.environ.get("PACC_JOBD_FORCE_DEVMEM", "0").strip() or "0"
+jobd_devmem_direct = os.environ.get("PACC_JOBD_DEVMEM_DIRECT", os.environ.get("HETGPU_PACC_JOBD_DEVMEM_DIRECT", "")).strip()
+jobd_devmem_direct_status = os.environ.get("PACC_JOBD_DEVMEM_DIRECT_STATUS", os.environ.get("HETGPU_PACC_JOBD_DEVMEM_DIRECT_STATUS", "")).strip()
+jobd_mbox_status_mmap = os.environ.get("PACC_JOBD_MBOX_STATUS_MMAP", os.environ.get("HETGPU_PACC_JOBD_MBOX_STATUS_MMAP", "")).strip()
+jobd_shared_ddr_payload_sync = os.environ.get("PACC_JOBD_SHARED_DDR_PAYLOAD_SYNC", os.environ.get("HETGPU_PACC_JOBD_SHARED_DDR_PAYLOAD_SYNC", "")).strip()
 jobd_status_control_window = os.environ.get("PACC_JOBD_STATUS_CONTROL_WINDOW", "").strip()
 jobd_status_mmap_fallback = os.environ.get("PACC_JOBD_STATUS_MMAP_FALLBACK", "").strip()
 jobd_status_pwrite_present = "PACC_JOBD_STATUS_PWRITE" in os.environ
@@ -136,7 +141,7 @@ jobd_status_pwrite = os.environ.get("PACC_JOBD_STATUS_PWRITE", "0").strip()
 jobd_completion_mirror_off = os.environ.get("PACC_JOBD_COMPLETION_MIRROR_OFF", "").strip()
 jobd_dual_offset_write = os.environ.get("PACC_JOBD_DUAL_OFFSET_WRITE", "").strip()
 jobd_msync_present = "PACC_JOBD_MSYNC" in os.environ
-jobd_msync = os.environ.get("PACC_JOBD_MSYNC", "1").strip()
+jobd_msync = os.environ.get("PACC_JOBD_MSYNC", "0").strip()
 jobd_status_msync = os.environ.get("PACC_JOBD_STATUS_MSYNC", "").strip()
 jobd_rms_debug = os.environ.get("PACC_JOBD_RMS_DEBUG", "").strip()
 jobd_rms_local_copy = os.environ.get("PACC_JOBD_RMS_LOCAL_COPY", "").strip()
@@ -171,7 +176,6 @@ jobd_mmvf_local_y_max = os.environ.get("PACC_JOBD_MMVF_LOCAL_Y_MAX_BYTES", "").s
 jobd_mmvf_copy_io = os.environ.get("PACC_JOBD_MMVF_COPY_IO", "").strip()
 jobd_mmvf_compute = os.environ.get("PACC_JOBD_MMVF_COMPUTE", "").strip()
 jobd_arg_slot_scan = os.environ.get("PACC_JOBD_ARG_SLOT_SCAN", os.environ.get("HETGPU_PACC_JOBD_ARG_SLOT_SCAN", "")).strip()
-jobd_arg_slot_scan_all = os.environ.get("PACC_JOBD_ARG_SLOT_SCAN_ALL", os.environ.get("HETGPU_PACC_JOBD_ARG_SLOT_SCAN_ALL", "")).strip()
 jobd_redispatch_seen_arg_slot = os.environ.get("PACC_JOBD_REDISPATCH_SEEN_ARG_SLOT", os.environ.get("HETGPU_PACC_JOBD_REDISPATCH_SEEN_ARG_SLOT", "")).strip()
 jobd_kernel_metadata_first = os.environ.get("PACC_JOBD_KERNEL_METADATA_FIRST", os.environ.get("HETGPU_PACC_JOBD_KERNEL_METADATA_FIRST", "")).strip()
 jobd_fork_elf = os.environ.get("PACC_JOBD_FORK_ELF", os.environ.get("HETGPU_PACC_JOBD_FORK_ELF", "")).strip()
@@ -190,8 +194,6 @@ jobd_ddr_ioctl = os.environ.get("PACC_JOBD_DDR_IOCTL", os.environ.get("HETGPU_PA
 
 rcs_lines = [
     "#!/bin/sh",
-    "dmesg -n 1 2>/dev/null || true",
-    "echo '1 4 1 7' > /proc/sys/kernel/printk 2>/dev/null || true",
 ]
 if jobd_threads_present or jobd_threads != "4":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_KERNEL_THREADS={jobd_threads}")
@@ -247,7 +249,7 @@ if jobd_full_ddr_map_present or jobd_full_ddr_map != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FULL_DDR_MAP={jobd_full_ddr_map}")
 if jobd_full_ddr_map_bytes:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FULL_DDR_MAP_BYTES={jobd_full_ddr_map_bytes}")
-if jobd_claim_id != "0":
+if jobd_claim_id_present or jobd_claim_id != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_CLAIM_ID={jobd_claim_id}")
 if jobd_pacc_id_ioctl != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_PACC_ID_IOCTL={jobd_pacc_id_ioctl}")
@@ -261,6 +263,14 @@ if jobd_control_window_read:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_CONTROL_WINDOW_READ={jobd_control_window_read}")
 if jobd_force_devmem != "0":
     rcs_lines.append(f"export HETGPU_PACC_JOBD_FORCE_DEVMEM={jobd_force_devmem}")
+if jobd_devmem_direct:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_DEVMEM_DIRECT={jobd_devmem_direct}")
+if jobd_devmem_direct_status:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_DEVMEM_DIRECT_STATUS={jobd_devmem_direct_status}")
+if jobd_mbox_status_mmap:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_MBOX_STATUS_MMAP={jobd_mbox_status_mmap}")
+if jobd_shared_ddr_payload_sync:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_SHARED_DDR_PAYLOAD_SYNC={jobd_shared_ddr_payload_sync}")
 if jobd_status_control_window:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_STATUS_CONTROL_WINDOW={jobd_status_control_window}")
 if jobd_status_mmap_fallback:
@@ -339,8 +349,6 @@ if jobd_mmvf_compute:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_MMVF_COMPUTE={jobd_mmvf_compute}")
 if jobd_arg_slot_scan:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_ARG_SLOT_SCAN={jobd_arg_slot_scan}")
-if jobd_arg_slot_scan_all:
-    rcs_lines.append(f"export HETGPU_PACC_JOBD_ARG_SLOT_SCAN_ALL={jobd_arg_slot_scan_all}")
 if jobd_redispatch_seen_arg_slot:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_REDISPATCH_SEEN_ARG_SLOT={jobd_redispatch_seen_arg_slot}")
 if jobd_kernel_metadata_first:
@@ -361,27 +369,16 @@ if jobd_xsfmm_smoke:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_XSFMM_SMOKE={jobd_xsfmm_smoke}")
 if jobd_xsfmm_gemm:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_XSFMM_GEMM={jobd_xsfmm_gemm}")
-shared_ddr_base = os.environ.get(
-    "PACC_JOBD_SHARED_DDR_BASE",
-    os.environ.get("HETGPU_PACC_SHARED_DDR_BASE", ""),
-).strip()
-shared_ddr_size = os.environ.get(
-    "PACC_JOBD_SHARED_DDR_SIZE",
-    os.environ.get("HETGPU_PACC_SHARED_DDR_BYTES",
-                   os.environ.get("HETGPU_PACC_SHARED_DDR_SIZE", "")),
-).strip()
-shared_ddr_pacc_base = os.environ.get(
-    "PACC_JOBD_SHARED_DDR_PACC_BASE",
-    os.environ.get("HETGPU_PACC_SHARED_DDR_PACC_BASE", ""),
-).strip()
+shared_ddr_base = os.environ.get("PACC_JOBD_SHARED_DDR_BASE", "").strip()
+shared_ddr_size = os.environ.get("PACC_JOBD_SHARED_DDR_SIZE", "").strip()
+shared_ddr_pacc_base = os.environ.get("PACC_JOBD_SHARED_DDR_PACC_BASE", os.environ.get("HETGPU_PACC_SHARED_DDR_PACC_BASE", "")).strip()
 if shared_ddr_base:
     rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_BASE={shared_ddr_base}")
 if shared_ddr_size:
     rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_BYTES={shared_ddr_size}")
-if shared_ddr_pacc_base and shared_ddr_pacc_base != "0":
+if shared_ddr_pacc_base:
     rcs_lines.append(f"export HETGPU_PACC_SHARED_DDR_PACC_BASE={shared_ddr_pacc_base}")
-rcs_lines.append("mount -t devtmpfs devtmpfs /dev 2>/dev/null||true")
-rcs_lines.append("exec /home/root/pacc_skl_test --mbox=/dev/mbox </dev/console >/dev/console 2>&1")
+rcs_lines.append("exec /home/root/pacc_skl_test --mbox=/dev/mbox")
 compact_rcs_lines = [rcs_lines[0]]
 exports = [line[len("export "):] for line in rcs_lines[1:] if line.startswith("export ")]
 rest = [line for line in rcs_lines[1:] if not line.startswith("export ")]
@@ -391,7 +388,7 @@ if jobd_minimal_rcs:
         rcs_lines[0],
         *([f"export {' '.join(exports)}"] if exports else []),
         *([f"insmod /home/root/ddr.ko {jobd_ddr_ko_args} || true"] if jobd_ddr_ko else []),
-        "exec /home/root/pacc_skl_test --mbox=/dev/mbox </dev/console >/dev/console 2>&1",
+        "exec /home/root/pacc_skl_test --mbox=/dev/mbox",
     ]
 elif jobd_env_in_bashrc != "0":
     env_payload = ("\n".join(exports) + "\n").encode()
@@ -399,7 +396,7 @@ elif jobd_env_in_bashrc != "0":
         rcs_lines[0],
         *([f"insmod /home/root/ddr.ko {jobd_ddr_ko_args} || true"] if jobd_ddr_ko else []),
         "set -a;. /etc/skel/.bashrc;set +a",
-        "exec /home/root/pacc_skl_test --mbox=/dev/mbox --config=/dev/null </dev/console >/dev/console 2>&1",
+        "exec /home/root/pacc_skl_test --mbox=/dev/mbox --config=/dev/null",
     ]
 elif exports:
     compact_rcs_lines.append("export " + " ".join(exports))

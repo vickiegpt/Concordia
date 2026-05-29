@@ -13,6 +13,7 @@ src="${PACC_LINUX_JOBD_SRC:-${repo_root}/pacc_linux_jobd/hetgpu_pacc_jobd.c}"
 out="${1:-${repo_root}/target/hetgpu_pacc_jobd}"
 extra_cflags=()
 extra_ldflags=()
+linux_march="${PACC_LINUX_MARCH:-rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvfwmaccqqq}"
 
 if [[ -n "${PACC_LINUX_CFLAGS_EXTRA:-}" ]]; then
   read -r -a extra_cflags <<< "${PACC_LINUX_CFLAGS_EXTRA}"
@@ -25,11 +26,11 @@ mkdir -p "$(dirname "${out}")"
 cc_base="$(basename "${cc}")"
 if [[ "${cc_base}" == clang* ]]; then
   common_flags=(-O3 -Wall -Wextra -funroll-loops -menable-experimental-extensions
-    -march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b
+    -march="${linux_march}"
     -mabi=lp64d -pthread)
 else
   common_flags=(-O2 -Wall -Wextra -fno-tree-vectorize
-    -march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b
+    -march="${linux_march}"
     -mabi=lp64d -pthread)
 fi
 common_flags+=("${extra_cflags[@]}")

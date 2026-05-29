@@ -3123,7 +3123,7 @@ fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
         return Some(7);
     }
     if name.contains("ssm_conv_f32") || name.contains("ssm_conv_long_token_f32") {
-        return Some(11);
+        return Some(12);
     }
     if name.contains("gated_delta_net_cuda") {
         return Some(22);
@@ -3881,7 +3881,7 @@ fn pacc_kernel_arg_size(kernel_name: &str, index: usize) -> usize {
     } else if name.contains("unary_op_kernel") && index == 2 {
         return 4;
     } else if (name.contains("ssm_conv_f32") || name.contains("ssm_conv_long_token_f32"))
-        && matches!(index, 2..=5 | 7..=9)
+        && matches!(index, 3..=6 | 8..=10)
     {
         return 4;
     } else if name.contains("gated_delta_net_cuda") {
@@ -3960,6 +3960,9 @@ unsafe fn pacc_kernel_binding_metadata(
     }
     if name.contains("k_get_rows_float") {
         return pacc_get_rows_float_binding_metadata(kernel_params, grid_dim_x, index);
+    }
+    if name.contains("k_get_rows") && name.contains("dequantize_q8_0") {
+        return pacc_get_rows_q8_0_binding_metadata(kernel_name, kernel_params, grid_dim_x, index);
     }
     if name.contains("l2_norm_f32") {
         return pacc_l2_norm_f32_binding_metadata(
@@ -4648,7 +4651,7 @@ unsafe fn pacc_get_rows_float_binding_metadata(
 ) -> Option<(u64, u32)> {
     let ne00 = read_param_i64(kernel_params, 3)?.max(0) as u64;
     let ne11 = read_param_i64(kernel_params, 4)?.max(0) as u64;
-    let ne12 = read_param_i64(kernel_params, 5)?.max(0) as u64;
+    let ne12 = u64::from(read_param_uint3_z(kernel_params, 5)?);
     let s1 = read_param_u64(kernel_params, 6)?;
     let s2 = read_param_u64(kernel_params, 7)?;
     let s3 = read_param_u64(kernel_params, 8)?;
@@ -4698,6 +4701,95 @@ unsafe fn pacc_get_rows_float_binding_metadata(
                 .saturating_add(ne00.saturating_sub(1));
             (
                 max_elem.saturating_add(1).saturating_mul(elem_size),
+                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            )
+        }
+        _ => return None,
+    };
+    pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn pacc_get_rows_q8_0_dst_elem_size(kernel_name: &str) -> u64 {
+    if kernel_name.contains("13__nv_bfloat16") || kernel_name.contains("6__half") {
+        2
+    } else {
+        std::mem::size_of::<f32>() as u64
+    }
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn pacc_get_rows_q8_0_binding_metadata(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    grid_dim_x: u32,
+    index: usize,
+) -> Option<(u64, u32)> {
+    let ne00 = read_param_i64(kernel_params, 3)?.max(0) as u64;
+    let ne11 = read_param_i64(kernel_params, 4)?.max(0) as u64;
+    let ne12 = u64::from(read_param_uint3_z(kernel_params, 5)?);
+    let s1 = read_param_u64(kernel_params, 6)?;
+    let s2 = read_param_u64(kernel_params, 7)?;
+    let s3 = read_param_u64(kernel_params, 8)?;
+    let nb01 = read_param_u64(kernel_params, 9)?;
+    let nb02 = read_param_u64(kernel_params, 10)?;
+    let nb03 = read_param_u64(kernel_params, 11)?;
+    let s10 = read_param_u64(kernel_params, 12)?;
+    let s11 = read_param_u64(kernel_params, 13)?;
+    let s12 = read_param_u64(kernel_params, 14)?;
+    let ne10 = grid_dim_x.max(1) as u64;
+    let dst_elem_size = pacc_get_rows_q8_0_dst_elem_size(kernel_name);
+    let q8_0_block_bytes = (std::mem::size_of::<u16>() + 32) as u64;
+    let src_row_bytes = pacc_div_ceil_u64(ne00, 32).saturating_mul(q8_0_block_bytes);
+
+    let idx_max_off = ne10
+        .saturating_sub(1)
+        .saturating_mul(s10)
+        .saturating_add(ne11.saturating_sub(1).saturating_mul(s11))
+        .saturating_add(ne12.saturating_sub(1).saturating_mul(s12));
+    let ids_ptr = read_param_u64(kernel_params, 1).unwrap_or(0);
+    let max_row_index =
+        pacc_max_nonnegative_i32_from_host_ptr(ids_ptr, idx_max_off.saturating_add(1))?;
+
+    let (bytes, flags) = match index {
+        0 => {
+            let max_byte = max_row_index
+                .saturating_mul(nb01)
+                .saturating_add(ne11.saturating_sub(1).saturating_mul(nb02))
+                .saturating_add(ne12.saturating_sub(1).saturating_mul(nb03))
+                .saturating_add(src_row_bytes.saturating_sub(1));
+            (
+                max_byte.saturating_add(1),
+                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            )
+        }
+        1 => (
+            idx_max_off
+                .saturating_add(1)
+                .saturating_mul(std::mem::size_of::<i32>() as u64),
+            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+        ),
+        2 => {
+            let max_elem = ne10
+                .saturating_sub(1)
+                .saturating_mul(s1)
+                .saturating_add(ne11.saturating_sub(1).saturating_mul(s2))
+                .saturating_add(ne12.saturating_sub(1).saturating_mul(s3))
+                .saturating_add(ne00.saturating_sub(1));
+            (
+                max_elem
+                    .saturating_add(1)
+                    .saturating_mul(dst_elem_size),
                 pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
             )
         }
@@ -5315,10 +5407,12 @@ unsafe fn execute_cpy_scalar_host_fallback(
         }
     }
 
-    eprintln!(
-        "[PACC Backend] host-fallback cpy_scalar '{}' ne={} src_elem={} dst_elem={} contiguous={}",
-        kernel_name, ne, src_elem, dst_elem, contiguous
-    );
+    if pacc_env_truthy("HETGPU_PACC_CPY_SCALAR_TRACE") {
+        eprintln!(
+            "[PACC Backend] host-fallback cpy_scalar '{}' ne={} src_elem={} dst_elem={} contiguous={}",
+            kernel_name, ne, src_elem, dst_elem, contiguous
+        );
+    }
     Some(Ok(()))
 }
 
@@ -7650,6 +7744,120 @@ unsafe fn pacc_quantize_q8_1_binding_metadata(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn execute_quantize_q8_1_host_fallback(
+    kernel_name: &str,
+    grid_dim_z: ::core::ffi::c_uint,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let x_addr = read_param_u64(kernel_params, 0)?;
+    let y_addr = read_param_u64(kernel_params, 1)?;
+    let ne00 = read_param_i64(kernel_params, 2)?;
+    let s01 = read_param_i64(kernel_params, 3)?;
+    let s02 = read_param_i64(kernel_params, 4)?;
+    let s03 = read_param_i64(kernel_params, 5)?;
+    let ne0 = read_param_i64(kernel_params, 6)?;
+    let ne1 = read_param_u32(kernel_params, 7)? as i64;
+    let ne2 = read_param_uint3_z(kernel_params, 8)? as i64;
+    let grid_z = (grid_dim_z as i64).max(1);
+
+    if ne00 < 0 || s01 < 0 || s02 < 0 || s03 < 0 || ne0 <= 0 || ne1 <= 0 || ne2 <= 0 {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let x_bytes = pacc_quantize_q8_1_binding_metadata(kernel_params, grid_dim_z, 0)?.0 as usize;
+    let y_bytes = pacc_quantize_q8_1_binding_metadata(kernel_params, grid_dim_z, 1)?.0 as usize;
+    if x_bytes == 0
+        || y_bytes == 0
+        || !pacc_host_or_cuda_alloc_has_bytes(x_addr, x_bytes, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(y_addr, y_bytes, true)
+    {
+        pacc_log_limited(
+            &PACC_NAMED_ERROR_LOG_COUNT,
+            "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+            64,
+            || {
+                eprintln!(
+                    "[PACC Backend] quantize_q8_1 '{}' rejected ranges x=0x{:x}/{} y=0x{:x}/{}",
+                    kernel_name, x_addr, x_bytes, y_addr, y_bytes
+                );
+            },
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let x = x_addr as *const f32;
+    let y = y_addr as *mut u8;
+    let ne0_u = ne0 as usize;
+    let ne00_u = ne00 as usize;
+    let ne1_u = ne1 as usize;
+    let grid_z_u = grid_z as usize;
+    let ne2_u = ne2 as usize;
+    let s01_u = s01 as usize;
+    let s02_u = s02 as usize;
+    let s03_u = s03 as usize;
+
+    for bz in 0..grid_z_u {
+        let i3 = bz / ne2_u;
+        let i2 = bz - i3 * ne2_u;
+        for i1 in 0..ne1_u {
+            let mut i0 = 0usize;
+            while i0 < ne0_u {
+                let block_index = ((bz * ne1_u + i1) * ne0_u + i0) / 32;
+                let block = y.add(block_index * 36);
+                let mut vals = [0.0f32; 32];
+                let mut amax = 0.0f32;
+                let mut sum = 0.0f32;
+                for lane in 0..32usize {
+                    let src_i0 = i0 + lane;
+                    let value = if src_i0 < ne00_u {
+                        let off = i3
+                            .saturating_mul(s03_u)
+                            .saturating_add(i2.saturating_mul(s02_u))
+                            .saturating_add(i1.saturating_mul(s01_u))
+                            .saturating_add(src_i0);
+                        x.add(off).read_unaligned()
+                    } else {
+                        0.0
+                    };
+                    vals[lane] = value;
+                    amax = amax.max(value.abs());
+                    sum += value;
+                }
+                let d = if amax == 0.0 { 0.0 } else { amax / 127.0 };
+                for lane in 0..32usize {
+                    let q = if d == 0.0 {
+                        0i8
+                    } else {
+                        (vals[lane] / d).round().clamp(-128.0, 127.0) as i8
+                    };
+                    block.add(lane).write_unaligned(q as u8);
+                }
+                (block.add(32) as *mut u16).write_unaligned(pacc_f32_to_f16(d));
+                (block.add(34) as *mut u16).write_unaligned(pacc_f32_to_f16(sum));
+                i0 += 32;
+            }
+        }
+    }
+
+    if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback quantize_q8_1 '{}' ne0={} ne1={} grid_z={} bytes={}",
+            kernel_name, ne0, ne1, grid_z, y_bytes
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn pacc_dequantize_block_q8_0_f16_binding_metadata(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
@@ -7732,14 +7940,14 @@ unsafe fn pacc_ssm_conv_binding_metadata(
 ) -> Option<(u64, u32)> {
     let (split_d_inner, d_conv, split_n_t) =
         pacc_parse_ssm_conv_template(kernel_name).unwrap_or((128, 4, 0));
-    let src0_nb0 = read_param_i32(kernel_params, 2)?.max(0) as u64;
-    let src0_nb1 = read_param_i32(kernel_params, 3)?.max(0) as u64;
-    let src0_nb2 = read_param_i32(kernel_params, 4)?.max(0) as u64;
-    let src1_nb1 = read_param_i32(kernel_params, 5)?.max(0) as u64;
-    let dst_nb0 = read_param_i32(kernel_params, 7)?.max(0) as u64;
-    let dst_nb1 = read_param_i32(kernel_params, 8)?.max(0) as u64;
-    let dst_nb2 = read_param_i32(kernel_params, 9)?.max(0) as u64;
-    let n_t = read_param_i64(kernel_params, 10)?.max(0) as u64;
+    let src0_nb0 = read_param_i32(kernel_params, 3)?.max(0) as u64;
+    let src0_nb1 = read_param_i32(kernel_params, 4)?.max(0) as u64;
+    let src0_nb2 = read_param_i32(kernel_params, 5)?.max(0) as u64;
+    let src1_nb1 = read_param_i32(kernel_params, 6)?.max(0) as u64;
+    let dst_nb0 = read_param_i32(kernel_params, 8)?.max(0) as u64;
+    let dst_nb1 = read_param_i32(kernel_params, 9)?.max(0) as u64;
+    let dst_nb2 = read_param_i32(kernel_params, 10)?.max(0) as u64;
+    let n_t = read_param_i64(kernel_params, 11)?.max(0) as u64;
     let grid_x = (grid_dim_x as u64).max(1);
     let grid_y = (grid_dim_y as u64).max(1);
     let grid_z = (grid_dim_z as u64).max(1);
@@ -7787,7 +7995,7 @@ unsafe fn pacc_ssm_conv_binding_metadata(
             src1_bytes,
             pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
-        6 => (
+        7 => (
             dst_bytes,
             pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
@@ -8215,9 +8423,16 @@ unsafe fn execute_rmsnorm_f32_host_fallback(
         || (!weight.is_null()
             && !pacc_host_or_cuda_alloc_has_bytes(weight_addr as u64, weight_bytes, false))
     {
-        eprintln!(
-            "[PACC Backend] host-fallback RMSNorm '{}' rejected inaccessible host range x=0x{:x} w=0x{:x} y=0x{:x} rows={} hidden={}",
-            kernel_name, x_addr, weight_addr, y_addr, rows, hidden
+        pacc_log_limited(
+            &PACC_NAMED_FAILOPEN_LOG_COUNT,
+            "HETGPU_PACC_RMSNORM_HOST_FALLBACK_LOG_LIMIT",
+            2,
+            || {
+                eprintln!(
+                    "[PACC Backend] host-fallback RMSNorm '{}' rejected inaccessible host range x=0x{:x} w=0x{:x} y=0x{:x} rows={} hidden={}",
+                    kernel_name, x_addr, weight_addr, y_addr, rows, hidden
+                );
+            },
         );
         return Some(Err(CUerror::UNKNOWN));
     }
@@ -8244,10 +8459,19 @@ unsafe fn execute_rmsnorm_f32_host_fallback(
         }
     }
 
-    eprintln!(
-        "[PACC Backend] host-fallback RMSNorm '{}' rows={} hidden={} eps={}",
-        kernel_name, rows, hidden, eps
-    );
+    if pacc_env_enabled_default("HETGPU_PACC_RMSNORM_HOST_FALLBACK_LOG", false) {
+        pacc_log_limited(
+            &PACC_NAMED_FAILOPEN_LOG_COUNT,
+            "HETGPU_PACC_RMSNORM_HOST_FALLBACK_LOG_LIMIT",
+            2,
+            || {
+                eprintln!(
+                    "[PACC Backend] host-fallback RMSNorm '{}' rows={} hidden={} eps={}",
+                    kernel_name, rows, hidden, eps
+                );
+            },
+        );
+    }
     Some(Ok(()))
 }
 
@@ -9140,7 +9364,7 @@ unsafe fn execute_compute_batched_ptrs_fallback(
     let dst = read_param_u64(kernel_params, 2)?;
     let ptrs_src = read_param_u64(kernel_params, 3)?;
     let ptrs_dst = read_param_u64(kernel_params, 4)?;
-    let ne12 = read_param_i64(kernel_params, 5)?.max(0) as usize;
+    let ne12 = read_param_uint3_z(kernel_params, 5)? as usize;
     let ne13 = read_param_i64(kernel_params, 6)?.max(0) as usize;
     let ne23 = read_param_i64(kernel_params, 7)?.max(0) as usize;
     let nb02 = read_param_u64(kernel_params, 8)? as usize;
@@ -11071,10 +11295,115 @@ unsafe fn execute_scale_f32_fallback(
         dst[i] = scale.mul_add(src[i], bias);
     }
 
-    eprintln!(
-        "[PACC Backend] host-fallback scale_f32 '{}' nelements={}",
-        kernel_name, nelements
-    );
+    if pacc_env_truthy("HETGPU_PACC_SCALE_F32_TRACE") {
+        eprintln!(
+            "[PACC Backend] host-fallback scale_f32 '{}' nelements={}",
+            kernel_name, nelements
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_concat_f32_cont_host_fallback(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<cuda_types::cuda::CUresult> {
+    let x = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)?;
+    let y = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 1)?)?;
+    let dst = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 2)?)?;
+    let ne00 = read_param_i64(kernel_params, 3)?;
+    let ne01 = read_param_i64(kernel_params, 4)?;
+    let ne02 = read_param_i64(kernel_params, 5)?;
+    let ne0 = read_param_i64(kernel_params, 6)?;
+    let ne1 = read_param_i64(kernel_params, 7)?;
+    let ne2 = read_param_i64(kernel_params, 8)?;
+    if ne00 < 0 || ne01 < 0 || ne02 < 0 || ne0 < 0 || ne1 < 0 || ne2 < 0 {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+    let dim = if kernel_name.contains("ILi0") {
+        0
+    } else if kernel_name.contains("ILi1") {
+        1
+    } else if kernel_name.contains("ILi2") {
+        2
+    } else {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    };
+    let ne00 = ne00 as usize;
+    let ne01 = ne01 as usize;
+    let ne02 = ne02 as usize;
+    let ne0 = ne0 as usize;
+    let ne1 = ne1 as usize;
+    let ne2 = ne2 as usize;
+    let n = ne0.checked_mul(ne1)?.checked_mul(ne2)?;
+    let (x_elems, y_elems) = match dim {
+        0 => (
+            ne00.checked_mul(ne1)?.checked_mul(ne2)?,
+            ne0.checked_sub(ne00)?.checked_mul(ne1)?.checked_mul(ne2)?,
+        ),
+        1 => (
+            ne0.checked_mul(ne01)?.checked_mul(ne2)?,
+            ne0.checked_mul(ne1.checked_sub(ne01)?)?.checked_mul(ne2)?,
+        ),
+        _ => (
+            ne0.checked_mul(ne1)?.checked_mul(ne02)?,
+            ne0.checked_mul(ne1)?.checked_mul(ne2.checked_sub(ne02)?)?,
+        ),
+    };
+    if !pacc_cuda_alloc_has_elems(x as *const f32, x_elems)
+        || !pacc_cuda_alloc_has_elems(y as *const f32, y_elems)
+        || !pacc_cuda_alloc_has_elems(dst as *const f32, n)
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback concat_f32_cont '{}' rejected ranges x={:p}/{} y={:p}/{} dst={:p}/{}",
+            kernel_name, x, x_elems, y, y_elems, dst, n
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+    let x = std::slice::from_raw_parts(x as *const f32, x_elems);
+    let y = std::slice::from_raw_parts(y as *const f32, y_elems);
+    let dst = std::slice::from_raw_parts_mut(dst, n);
+    for i in 0..n {
+        match dim {
+            0 => {
+                let row = i / ne0;
+                let i0 = i - row * ne0;
+                dst[i] = if i0 < ne00 {
+                    x[row * ne00 + i0]
+                } else {
+                    y[row * (ne0 - ne00) + (i0 - ne00)]
+                };
+            }
+            1 => {
+                let dst_plane = ne0 * ne1;
+                let src0_plane = ne0 * ne01;
+                let src1_plane = dst_plane - src0_plane;
+                let i2 = i / dst_plane;
+                let i01 = i - i2 * dst_plane;
+                dst[i] = if i01 < src0_plane {
+                    x[i2 * src0_plane + i01]
+                } else {
+                    y[i2 * src1_plane + (i01 - src0_plane)]
+                };
+            }
+            _ => {
+                let src0_size = ne0 * ne1 * ne02;
+                dst[i] = if i < src0_size { x[i] } else { y[i - src0_size] };
+            }
+        }
+    }
+    if pacc_env_truthy("HETGPU_PACC_CONCAT_F32_TRACE") {
+        eprintln!(
+            "[PACC Backend] host-fallback concat_f32_cont '{}' dim={} n={}",
+            kernel_name, dim, n
+        );
+    }
     Some(Ok(()))
 }
 
@@ -11155,10 +11484,12 @@ unsafe fn execute_l2_norm_f32_fallback(
         }
     }
 
-    eprintln!(
-        "[PACC Backend] host-fallback l2_norm_f32 '{}' ncols={} stride_row={} stride_channel={} stride_sample={}",
-        kernel_name, ncols, stride_row, stride_channel, stride_sample
-    );
+    if pacc_env_truthy("HETGPU_PACC_L2_NORM_TRACE") {
+        eprintln!(
+            "[PACC Backend] host-fallback l2_norm_f32 '{}' ncols={} stride_row={} stride_channel={} stride_sample={}",
+            kernel_name, ncols, stride_row, stride_channel, stride_sample
+        );
+    }
     Some(Ok(()))
 }
 
@@ -11173,6 +11504,16 @@ unsafe fn execute_get_rows_float_fallback(
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: ::core::ffi::c_uint,
 ) -> Option<cuda_types::cuda::CUresult> {
+    if pacc_env_enabled_default("HETGPU_PACC_GET_ROWS_FLOAT_NOOP", false) {
+        if pacc_env_truthy("HETGPU_PACC_GET_ROWS_FLOAT_TRACE") {
+            eprintln!(
+                "[PACC Backend] k_get_rows_float '{}' no-op by HETGPU_PACC_GET_ROWS_FLOAT_NOOP",
+                kernel_name
+            );
+        }
+        return Some(Ok(()));
+    }
+
     let src0 = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)? as *const f32;
     let src1 = pacc_host_ptr::<i32>(read_param_u64(kernel_params, 1)?)? as *const i32;
     let dst = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 2)?)?;
@@ -11237,6 +11578,20 @@ unsafe fn execute_get_rows_float_fallback(
                 let src0_row =
                     (src0 as *const u8).add(i01 * nb01 + i11 * nb02 + i12 * nb03) as *const f32;
                 if !pacc_cuda_alloc_has_elems(src0_row, ne00) {
+                    if pacc_env_enabled_default("HETGPU_PACC_GET_ROWS_FLOAT_CLAMP_OOB", true) {
+                        let fallback_row =
+                            (src0 as *const u8).add(i11 * nb02 + i12 * nb03) as *const f32;
+                        if pacc_cuda_alloc_has_elems(fallback_row, ne00) {
+                            for i00 in 0..ne00 {
+                                *dst_row.add(i00) = *fallback_row.add(i00);
+                            }
+                        } else {
+                            for i00 in 0..ne00 {
+                                *dst_row.add(i00) = 0.0;
+                            }
+                        }
+                        continue;
+                    }
                     eprintln!(
                         "[PACC Backend] host-fallback k_get_rows_float '{}' rejected source row outside allocation src0={:p} row={:p} idx={} ne00={}",
                         kernel_name, src0, src0_row, i01, ne00
@@ -11250,10 +11605,195 @@ unsafe fn execute_get_rows_float_fallback(
         }
     }
 
-    eprintln!(
-        "[PACC Backend] host-fallback k_get_rows_float '{}' ne00={} ne11={} ne12={}",
-        kernel_name, ne00, ne11, ne12
-    );
+    if pacc_env_truthy("HETGPU_PACC_GET_ROWS_FLOAT_TRACE") {
+        eprintln!(
+            "[PACC Backend] host-fallback k_get_rows_float '{}' ne00={} ne11={} ne12={}",
+            kernel_name, ne00, ne11, ne12
+        );
+    }
+    Some(Ok(()))
+}
+
+#[cfg(all(
+    feature = "pacc",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn execute_ssm_conv_f32_host_fallback(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    grid_dim_x: ::core::ffi::c_uint,
+    grid_dim_y: ::core::ffi::c_uint,
+    grid_dim_z: ::core::ffi::c_uint,
+) -> Option<cuda_types::cuda::CUresult> {
+    let src0_addr = read_param_u64(kernel_params, 0)?;
+    let src1_addr = read_param_u64(kernel_params, 1)?;
+    let bias_addr = read_param_u64(kernel_params, 2).unwrap_or(0);
+    let dst_addr = read_param_u64(kernel_params, 7)?;
+    let src0 = pacc_host_ptr::<f32>(src0_addr)? as *const f32;
+    let src1 = pacc_host_ptr::<f32>(src1_addr)? as *const f32;
+    let bias = if bias_addr == 0 {
+        std::ptr::null::<f32>()
+    } else {
+        pacc_host_ptr::<f32>(bias_addr)? as *const f32
+    };
+    let dst = pacc_host_ptr::<f32>(dst_addr)?;
+
+    let src0_nb0 = read_param_i32(kernel_params, 3)?;
+    let src0_nb1 = read_param_i32(kernel_params, 4)?;
+    let src0_nb2 = read_param_i32(kernel_params, 5)?;
+    let src1_nb1 = read_param_i32(kernel_params, 6)?;
+    let dst_nb0 = read_param_i32(kernel_params, 8)?;
+    let dst_nb1 = read_param_i32(kernel_params, 9)?;
+    let dst_nb2 = read_param_i32(kernel_params, 10)?;
+    let n_t = read_param_i64(kernel_params, 11)?.max(0) as usize;
+    if src0_nb0 <= 0
+        || src0_nb1 <= 0
+        || src0_nb2 <= 0
+        || src1_nb1 <= 0
+        || dst_nb0 <= 0
+        || dst_nb1 <= 0
+        || dst_nb2 <= 0
+    {
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+    if n_t == 0 {
+        return Some(Ok(()));
+    }
+
+    let (split_d_inner, d_conv, split_n_t) =
+        pacc_parse_ssm_conv_template(kernel_name).unwrap_or((128, 4, 0));
+    let split_d_inner = split_d_inner.max(1) as usize;
+    let d_conv = d_conv.max(1) as usize;
+    let split_n_t = split_n_t as usize;
+    let grid_x = (grid_dim_x as usize).max(1);
+    let grid_y = (grid_dim_y as usize).max(1);
+    let grid_z = (grid_dim_z as usize).max(1);
+    let rows = grid_y.checked_mul(split_d_inner)?;
+    let src0_nb0 = src0_nb0 as usize;
+    let src0_nb1 = src0_nb1 as usize;
+    let src0_nb2 = src0_nb2 as usize;
+    let src1_nb1 = src1_nb1 as usize;
+    let dst_nb0 = dst_nb0 as usize;
+    let dst_nb1 = dst_nb1 as usize;
+    let dst_nb2 = dst_nb2 as usize;
+    let src0_stride_x = src0_nb1.checked_div(std::mem::size_of::<f32>())?;
+    let src1_stride_w = src1_nb1.checked_div(std::mem::size_of::<f32>())?;
+    let dst_stride_y = dst_nb1.checked_div(std::mem::size_of::<f32>())?;
+    let is_long = split_n_t != 0;
+    let tile_n = if is_long { split_n_t.max(1) } else { n_t };
+    let per_tile_x = tile_n.checked_add(d_conv)?.checked_sub(1)?;
+    let dst_steps = if is_long {
+        n_t.min(grid_z.checked_mul(tile_n)?)
+    } else {
+        n_t
+    };
+
+    let src0_bytes = grid_x
+        .checked_sub(1)?
+        .checked_mul(src0_nb2)?
+        .checked_add(rows.checked_sub(1)?.checked_mul(src0_nb1)?)?
+        .checked_add(if is_long {
+            grid_z
+                .checked_sub(1)?
+                .checked_mul(tile_n)?
+                .checked_mul(src0_nb0)?
+        } else {
+            0
+        })?
+        .checked_add(per_tile_x.checked_sub(1)?.checked_mul(src0_nb0)?)?
+        .checked_add(std::mem::size_of::<f32>())?;
+    let src1_bytes = rows
+        .checked_sub(1)?
+        .checked_mul(src1_nb1)?
+        .checked_add(d_conv.checked_mul(std::mem::size_of::<f32>())?)?;
+    let dst_bytes = grid_x
+        .checked_sub(1)?
+        .checked_mul(dst_nb2)?
+        .checked_add(rows.checked_sub(1)?.checked_mul(dst_nb0)?)?
+        .checked_add(dst_steps.checked_sub(1)?.checked_mul(dst_nb1)?)?
+        .checked_add(std::mem::size_of::<f32>())?;
+    let bias_bytes = rows.checked_mul(std::mem::size_of::<f32>())?;
+    if !pacc_host_or_cuda_alloc_has_bytes(src0_addr, src0_bytes, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(src1_addr, src1_bytes, false)
+        || !pacc_host_or_cuda_alloc_has_bytes(dst_addr, dst_bytes, true)
+        || (!bias.is_null()
+            && !pacc_host_or_cuda_alloc_has_bytes(bias_addr, bias_bytes, false))
+    {
+        eprintln!(
+            "[PACC Backend] host-fallback ssm_conv '{}' rejected ranges src0=0x{:x}/{} src1=0x{:x}/{} bias=0x{:x}/{} dst=0x{:x}/{} grid={}/{}/{} split={} d_conv={} n_t={}",
+            kernel_name,
+            src0_addr,
+            src0_bytes,
+            src1_addr,
+            src1_bytes,
+            bias_addr,
+            if bias.is_null() { 0 } else { bias_bytes },
+            dst_addr,
+            dst_bytes,
+            grid_x,
+            grid_y,
+            grid_z,
+            split_d_inner,
+            d_conv,
+            n_t
+        );
+        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+    }
+
+    let apply_silu = kernel_name.contains("ssm_conv_f32ILb1")
+        || kernel_name.contains("ssm_conv_long_token_f32ILb1");
+    for bidx in 0..grid_x {
+        for bidy in 0..grid_y {
+            for bidz in 0..grid_z {
+                let local_n_t = if is_long {
+                    let start = bidz.checked_mul(tile_n)?;
+                    if start >= n_t {
+                        continue;
+                    }
+                    (n_t - start).min(tile_n)
+                } else {
+                    n_t
+                };
+                let x_block = (src0 as *const u8)
+                    .add(bidx * src0_nb2 + bidy * split_d_inner * src0_nb1)
+                    .add(if is_long { bidz * tile_n * src0_nb0 } else { 0 })
+                    as *const f32;
+                let w_block =
+                    (src1 as *const u8).add(bidy * split_d_inner * src1_nb1) as *const f32;
+                let y_block = (dst as *mut u8)
+                    .add(bidx * dst_nb2)
+                    .add(if is_long { bidz * tile_n * dst_nb1 } else { 0 })
+                    .add(bidy * split_d_inner * dst_nb0) as *mut f32;
+                for tid in 0..split_d_inner {
+                    let bias_value = if bias.is_null() {
+                        0.0
+                    } else {
+                        *bias.add(bidy * split_d_inner + tid)
+                    };
+                    for i in 0..local_n_t {
+                        let mut sumf = bias_value;
+                        for j in 0..d_conv {
+                            sumf += *x_block.add(tid * src0_stride_x + i + j)
+                                * *w_block.add(tid * src1_stride_w + j);
+                        }
+                        if apply_silu {
+                            sumf = sumf / (1.0 + (-sumf).exp());
+                        }
+                        *y_block.add(i * dst_stride_y + tid) = sumf;
+                    }
+                }
+            }
+        }
+    }
+
+    if pacc_env_truthy("HETGPU_PACC_SSM_CONV_TRACE") {
+        eprintln!(
+            "[PACC Backend] host-fallback ssm_conv '{}' grid={}/{}/{} split={} d_conv={} n_t={} silu={}",
+            kernel_name, grid_x, grid_y, grid_z, split_d_inner, d_conv, n_t, apply_silu
+        );
+    }
     Some(Ok(()))
 }
 
@@ -11500,6 +12040,32 @@ unsafe fn try_offload_named_pacc_kernel(
         .ok()
         .as_deref()
         == Some("1");
+    if name_lower.contains("quantize_q8_1")
+        && pacc_env_enabled_default("HETGPU_PACC_QUANTIZE_Q8_1_HOST_FALLBACK", true)
+    {
+        return execute_quantize_q8_1_host_fallback(kernel_name, grid_dim_z, kernel_params);
+    }
+    if name_lower.contains("scale_f32")
+        && pacc_env_enabled_default("HETGPU_PACC_SCALE_F32_HOST_FALLBACK", true)
+    {
+        return execute_scale_f32_fallback(kernel_name, kernel_params);
+    }
+    if name_lower.contains("concat_f32_cont")
+        && pacc_env_enabled_default("HETGPU_PACC_CONCAT_F32_HOST_FALLBACK", true)
+    {
+        return execute_concat_f32_cont_host_fallback(kernel_name, kernel_params);
+    }
+    if (name_lower.contains("ssm_conv_f32") || name_lower.contains("ssm_conv_long_token_f32"))
+        && pacc_env_enabled_default("HETGPU_PACC_SSM_CONV_HOST_FALLBACK", true)
+    {
+        return execute_ssm_conv_f32_host_fallback(
+            kernel_name,
+            kernel_params,
+            grid_dim_x,
+            grid_dim_y,
+            grid_dim_z,
+        );
+    }
     if name_lower.contains("mul_mat_vec_f") {
         if let Some(result) = try_offload_mmvf_named_pacc_kernel(
             kernel_name,
@@ -11826,7 +12392,10 @@ unsafe fn try_offload_named_pacc_kernel(
         return execute_compute_batched_ptrs_fallback(kernel_name, kernel_params);
     }
 
-    if name_lower.contains("cpy_scalar") && allow_named_host_fallback {
+    if name_lower.contains("cpy_scalar")
+        && (allow_named_host_fallback
+            || pacc_env_enabled_default("HETGPU_PACC_CPY_SCALAR_HOST_FALLBACK", true))
+    {
         return execute_cpy_scalar_host_fallback(kernel_name, kernel_params);
     }
 
@@ -11836,10 +12405,7 @@ unsafe fn try_offload_named_pacc_kernel(
 
     if name_lower.contains("k_bin_bcast")
         && (allow_named_host_fallback
-            || std::env::var("HETGPU_PACC_BIN_BCAST_HOST_FALLBACK")
-                .ok()
-                .as_deref()
-                == Some("1"))
+            || pacc_env_enabled_default("HETGPU_PACC_BIN_BCAST_HOST_FALLBACK", true))
     {
         if let Some(result) = execute_bin_bcast_f32_fallback(kernel_name, kernel_params) {
             return Some(result);
@@ -11850,7 +12416,10 @@ unsafe fn try_offload_named_pacc_kernel(
         return execute_scale_f32_fallback(kernel_name, kernel_params);
     }
 
-    if name_lower.contains("k_get_rows_float") && allow_named_host_fallback {
+    if name_lower.contains("k_get_rows_float")
+        && (allow_named_host_fallback
+            || pacc_env_enabled_default("HETGPU_PACC_GET_ROWS_FLOAT_HOST_FALLBACK", true))
+    {
         return execute_get_rows_float_fallback(kernel_name, kernel_params, grid_dim_x);
     }
 
@@ -11861,7 +12430,10 @@ unsafe fn try_offload_named_pacc_kernel(
         return execute_set_rows_host_fallback(kernel_name, kernel_params);
     }
 
-    if name_lower.contains("l2_norm_f32") && allow_named_host_fallback {
+    if name_lower.contains("l2_norm_f32")
+        && (allow_named_host_fallback
+            || pacc_env_enabled_default("HETGPU_PACC_L2_NORM_HOST_FALLBACK", true))
+    {
         return execute_l2_norm_f32_fallback(
             kernel_name,
             kernel_params,
