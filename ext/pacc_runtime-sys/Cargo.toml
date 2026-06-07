@@ -7,7 +7,7 @@ description = "Rust bindings for PACC Runtime (SiFive Intelligence XM / RISC-V I
 license = "MIT"
 
 [lib]
-crate-type = ["rlib", "staticlib", "cdylib"]
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 tempfile = "3.8.0"

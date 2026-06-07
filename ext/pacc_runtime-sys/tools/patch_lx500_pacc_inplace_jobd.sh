@@ -139,6 +139,7 @@ jobd_status_mmap_fallback = os.environ.get("PACC_JOBD_STATUS_MMAP_FALLBACK", "")
 jobd_status_pwrite_present = "PACC_JOBD_STATUS_PWRITE" in os.environ
 jobd_status_pwrite = os.environ.get("PACC_JOBD_STATUS_PWRITE", "0").strip()
 jobd_completion_mirror_off = os.environ.get("PACC_JOBD_COMPLETION_MIRROR_OFF", "").strip()
+jobd_aligned_completion_record = os.environ.get("PACC_JOBD_ALIGNED_COMPLETION_RECORD", "").strip()
 jobd_dual_offset_write = os.environ.get("PACC_JOBD_DUAL_OFFSET_WRITE", "").strip()
 jobd_msync_present = "PACC_JOBD_MSYNC" in os.environ
 jobd_msync = os.environ.get("PACC_JOBD_MSYNC", "0").strip()
@@ -279,6 +280,8 @@ if jobd_status_pwrite_present:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_STATUS_PWRITE={jobd_status_pwrite}")
 if jobd_completion_mirror_off:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_COMPLETION_MIRROR_OFF={jobd_completion_mirror_off}")
+if jobd_aligned_completion_record:
+    rcs_lines.append(f"export HETGPU_PACC_JOBD_ALIGNED_COMPLETION_RECORD={jobd_aligned_completion_record}")
 if jobd_dual_offset_write:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_DUAL_OFFSET_WRITE={jobd_dual_offset_write}")
 if jobd_msync_present:

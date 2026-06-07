@@ -279,7 +279,10 @@ fn compile_cxx_lib_with_include(cxxflags: String, include_path: String) {
             false
         };
 
-        let compiler = if gpp_available && !gpp_accepts_msvc_flags {
+        let env_cxx = std::env::var("CXX").ok().filter(|s| !s.trim().is_empty());
+        let compiler = if let Some(ref cxx) = env_cxx {
+            cxx.as_str()
+        } else if gpp_available && !gpp_accepts_msvc_flags {
             "g++"
         } else if gpp_accepts_msvc_flags && Path::new("/usr/bin/c++.bak").exists() {
             "/usr/bin/c++.bak"

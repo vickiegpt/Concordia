@@ -6,6 +6,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
+#include <math.h>
 #include <unistd.h>
 #include <signal.h>
 #include <execinfo.h>
@@ -291,6 +292,10 @@ static int hetgpu_cudart_lazy_ptx_fail_open_enabled(void) {
         hetgpu_pacc_jobd_emulator_mode());
 }
 
+static int hetgpu_cudart_defer_module_load_enabled(void) {
+    return hetgpu_env_enabled_default("HETGPU_CUDART_DEFER_MODULE_LOAD", 0);
+}
+
 static unsigned long long hetgpu_parse_env_ull_default(const char *name, unsigned long long default_value);
 
 static unsigned long long hetgpu_cudart_lazy_ptx_fail_open_log_limit(void) {
@@ -421,6 +426,39 @@ static hetgpu_pacc_launch_kernel_noop_fn resolve_hetgpu_pacc_launch_kernel_noop(
 
 static cudaError_t hetgpu_cuda_from_cu(CUresult result) {
     return result == 0 ? HETGPU_CUDA_SUCCESS : HETGPU_CUDA_ERROR_UNKNOWN;
+}
+
+static int hetgpu_env_flag_default_true(const char *name) {
+    const char *value = getenv(name);
+    if (!value || !*value) return 1;
+    return !(strcmp(value, "0") == 0 ||
+             strcasecmp(value, "false") == 0 ||
+             strcasecmp(value, "no") == 0 ||
+             strcasecmp(value, "off") == 0);
+}
+
+static int hetgpu_cuda_host_backed_ptr(const void *ptr) {
+    uintptr_t value = (uintptr_t)ptr;
+    return value >= 0x100000000ULL;
+}
+
+static cudaError_t hetgpu_cuda_memcpy_host_backed_fallback(
+    const char *kind,
+    void *dst,
+    const void *src,
+    size_t count,
+    cudaError_t err
+) {
+    if (err == HETGPU_CUDA_SUCCESS) return err;
+    if (!hetgpu_env_flag_default_true("HETGPU_CUDART_HOST_BACKED_MEMCPY_FALLBACK")) return err;
+    if (!hetgpu_cuda_host_backed_ptr(dst) && !hetgpu_cuda_host_backed_ptr(src)) return err;
+    if (getenv("HETGPU_CUDART_MEMCPY_FALLBACK_TRACE")) {
+        fprintf(stderr,
+                "[cudart_shim] %s driver copy failed (%d); using host-backed memcpy dst=%p src=%p bytes=%zu\n",
+                kind, err, dst, src, count);
+    }
+    memcpy(dst, src, count);
+    return HETGPU_CUDA_SUCCESS;
 }
 
 static int hetgpu_likely_device_ptr(const void* ptr) {
@@ -2217,6 +2255,53 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                 }
             }
             if (hetgpu_requires_named_launch(funcName)) {
+                const char* rmsnorm_fail_open = getenv("HETGPU_PACC_RMSNORM_NULL_FUNC_SUCCESS");
+                int allow_rmsnorm_null_success =
+                    rmsnorm_fail_open == NULL ||
+                    strcmp(rmsnorm_fail_open, "0") != 0;
+                if (allow_rmsnorm_null_success &&
+                    (strstr(funcName, "rms_norm_f32") || strstr(funcName, "rmsnorm_f32"))) {
+                    const float* x = (args && args[0]) ? *(const float**)args[0] : NULL;
+                    float* y = (args && args[1]) ? *(float**)args[1] : NULL;
+                    int hidden = (args && args[2]) ? *(const int*)args[2] : 0;
+                    float eps = (args && args[6]) ? *(const float*)args[6] : 1.0e-5f;
+                    const float* weight = (args && args[7]) ? *(const float**)args[7] : NULL;
+                    if (x && y && hidden > 0) {
+                        unsigned long long rows =
+                            (unsigned long long)(gridDim.x ? gridDim.x : 1) *
+                            (unsigned long long)(gridDim.y ? gridDim.y : 1) *
+                            (unsigned long long)(gridDim.z ? gridDim.z : 1);
+                        for (unsigned long long row = 0; row < rows; ++row) {
+                            unsigned long long base = row * (unsigned long long)hidden;
+                            float sumsq = 0.0f;
+                            for (int col = 0; col < hidden; ++col) {
+                                float v = x[base + (unsigned long long)col];
+                                sumsq += v * v;
+                            }
+                            float scale = 1.0f / sqrtf(sumsq / (float)hidden + eps);
+                            for (int col = 0; col < hidden; ++col) {
+                                float w = weight ? weight[col] : 1.0f;
+                                y[base + (unsigned long long)col] =
+                                    x[base + (unsigned long long)col] * scale * w;
+                            }
+                        }
+                        static unsigned long long rmsnorm_null_success_log_count = 0;
+                        unsigned long long log_index =
+                            __sync_fetch_and_add(&rmsnorm_null_success_log_count, 1);
+                        if (log_index < 8) {
+                            fprintf(stderr,
+                                    "[cudart_shim] RMSNorm named-only kernel '%s' has NULL CUfunction; ran host fallback rows=%llu hidden=%d\n",
+                                    funcName,
+                                    rows,
+                                    hidden);
+                        }
+                        return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+                    }
+                    fprintf(stderr,
+                            "[cudart_shim] ERROR: RMSNorm named-only kernel '%s' has NULL CUfunction and host fallback args are invalid\n",
+                            funcName);
+                    return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
+                }
                 fprintf(stderr,
                         "[cudart_shim] ERROR: named-only PACC kernel '%s' has NULL CUfunction and named launch did not take it; refusing lazy/normal launch\n",
                         funcName);
@@ -3577,6 +3662,14 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
     // Try to load the payload as a module
     CUmodule module = NULL;
     CUresult result = 1;
+    if (hetgpu_cudart_defer_module_load_enabled()) {
+        // Delivery/perf mode: ggml-cuda may register hundreds of kernels even
+        // when the run only needs cuBLAS-backed GEMM. Keep placeholders here
+        // and let launch-time lazy lookup/fail-open handle actual kernels.
+        defer_module_load = 1;
+        payload = NULL;
+        payload_size = 0;
+    }
     if (!defer_module_load && payload != NULL) {
         hetgpu_cuModuleLoadData_fn p_cuModuleLoadData = resolve_cuModuleLoadData();
         result = p_cuModuleLoadData ? p_cuModuleLoadData(&module, payload) : 1;
@@ -3911,8 +4004,10 @@ cudaError_t cudaMalloc(void** devPtr, size_t size) {
     hetgpu_cuda_malloc_trace("[cudart_malloc] cuMemAlloc after");
     if (result != 0) {
         const char* real_mem = getenv("HETGPU_PACC_REAL_DEVICE_MEM");
+        const char* allow_host_mem = getenv("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM");
+        int allow_host_device_mem = allow_host_mem && strcmp(allow_host_mem, "1") == 0;
         if (hetgpu_strict_pacc() ||
-            hetgpu_pacc_requires_tracked_allocations() ||
+            (hetgpu_pacc_requires_tracked_allocations() && !allow_host_device_mem) ||
             (real_mem && strcmp(real_mem, "1") == 0)) {
             fprintf(stderr,
                     "[cudart_shim] cudaMalloc(%zu) cuMemAlloc_v2 failed (%d); "
@@ -3960,9 +4055,11 @@ cudaError_t cudaMemcpy(void* dst, const void* src, size_t count, cudaMemcpyKind 
             break;
         case HETGPU_CUDA_MEMCPY_HOST_TO_DEVICE:
             err = hetgpu_cuda_from_cu(cuMemcpyHtoD_v2((CUdeviceptr)dst, src, count));
+            err = hetgpu_cuda_memcpy_host_backed_fallback("HtoD", dst, src, count, err);
             break;
         case HETGPU_CUDA_MEMCPY_DEVICE_TO_HOST:
             err = hetgpu_cuda_from_cu(cuMemcpyDtoH_v2(dst, (CUdeviceptr)src, count));
+            err = hetgpu_cuda_memcpy_host_backed_fallback("DtoH", dst, src, count, err);
             break;
         case HETGPU_CUDA_MEMCPY_DEVICE_TO_DEVICE:
             err = hetgpu_cuda_memcpy_d2d(dst, src, count);
@@ -3974,8 +4071,10 @@ cudaError_t cudaMemcpy(void* dst, const void* src, size_t count, cudaMemcpyKind 
                 err = hetgpu_cuda_memcpy_d2d(dst, src, count);
             } else if (dst_dev) {
                 err = hetgpu_cuda_from_cu(cuMemcpyHtoD_v2((CUdeviceptr)dst, src, count));
+                err = hetgpu_cuda_memcpy_host_backed_fallback("Default/HtoD", dst, src, count, err);
             } else if (src_dev) {
                 err = hetgpu_cuda_from_cu(cuMemcpyDtoH_v2(dst, (CUdeviceptr)src, count));
+                err = hetgpu_cuda_memcpy_host_backed_fallback("Default/DtoH", dst, src, count, err);
             } else {
                 memcpy(dst, src, count);
             }

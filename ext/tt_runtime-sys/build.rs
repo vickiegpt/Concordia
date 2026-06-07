@@ -11,8 +11,18 @@ fn main() -> Result<(), VarError> {
     let obj_file = format!("{}/tt_metal_wrapper.o", out_dir);
     let lib_file = format!("{}/libtt_metal_wrapper.a", out_dir);
 
+    if std::env::var("HETGPU_SKIP_TT_WRAPPER").ok().as_deref() == Some("1") {
+        let ar_status = std::process::Command::new("ar")
+            .args(&["rcs", &lib_file])
+            .status()
+            .expect("Failed to run ar");
+        if !ar_status.success() {
+            panic!("Static library creation failed");
+        }
+    } else {
     // Compile the C++ file
-    let compile_status = std::process::Command::new("g++")
+    let cxx = std::env::var("CXX").unwrap_or_else(|_| "g++".to_string());
+    let compile_status = std::process::Command::new(cxx)
         .args(&[
             "-std=c++20",
             "-c",
@@ -35,6 +45,7 @@ fn main() -> Result<(), VarError> {
 
     if !ar_status.success() {
         panic!("Static library creation failed");
+    }
     }
 
     println!("cargo:warning=C++ compilation completed successfully");
