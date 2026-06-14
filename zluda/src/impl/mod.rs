@@ -57,6 +57,9 @@ pub mod ze_device;
 #[cfg(feature = "intel")]
 pub mod ze_module;
 
+#[cfg(feature = "intel")]
+pub(crate) mod cxl_tmatmul;
+
 // TMatmul assembly interpreter (virtual backend execution engine)
 #[cfg(feature = "intel")]
 pub(crate) mod tmatmul_interpreter;

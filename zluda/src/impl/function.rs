@@ -84,6 +84,99 @@ static PACC_GENERIC_FAST_SUCCESS_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
     not(feature = "tenstorrent")
 ))]
 static PACC_NAMED_ERROR_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "intel")]
+fn tmatmul_default_cocotb_dir() -> String {
+    "/root/matmulfreellm/hardware/ternary_matmul/cocotb".to_string()
+}
+
+#[cfg(feature = "intel")]
+fn tmatmul_ptx_looks_valid(ptx: &str) -> bool {
+    let trimmed = ptx.trim_start();
+    if trimmed.len() < 50 {
+        return false;
+    }
+    if !(trimmed.starts_with(".version") || trimmed.starts_with("//")) {
+        return false;
+    }
+    if !(trimmed.contains(".target ") && trimmed.contains(".address_size")) {
+        return false;
+    }
+    if !trimmed.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with(".visible .entry ") || line.starts_with(".entry ")
+    }) {
+        return false;
+    }
+    !trimmed.bytes().any(|b| {
+        b == 0 || b == 0x7f || (b < 0x20 && !matches!(b, b'\n' | b'\r' | b'\t'))
+    })
+}
+
+#[cfg(feature = "intel")]
+fn load_tmatmul_reference_ptx(cocotb_dir: &str) -> Option<(String, String)> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("HETGPU_TMATMUL_REFERENCE_PTX") {
+        if !path.trim().is_empty() {
+            candidates.push(std::path::PathBuf::from(path));
+        }
+    }
+    if let Ok(dir) = std::env::var("HETGPU_TMATMUL_REFERENCE_COCOTB_DIR") {
+        if !dir.trim().is_empty() {
+            candidates.push(std::path::Path::new(&dir).join("run/kernel.ptx"));
+        }
+    }
+    candidates.push(std::path::Path::new(cocotb_dir).join("reference/kernel.ptx"));
+    candidates.push(std::path::PathBuf::from(
+        "/root/ternary_matmul/cocotb/run/kernel.ptx",
+    ));
+    candidates.push(std::path::PathBuf::from(
+        "/home/victoryang00/ternary_matmul/cocotb/run/kernel.ptx",
+    ));
+
+    for path in candidates {
+        if !path.is_file() {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(ptx) if tmatmul_ptx_looks_valid(&ptx) => {
+                return Some((ptx, path.display().to_string()));
+            }
+            Ok(ptx) => {
+                eprintln!(
+                    "[TMatmul Backend] Ignoring invalid reference PTX {} ({} bytes)",
+                    path.display(),
+                    ptx.len()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[TMatmul Backend] Failed to read reference PTX {}: {}",
+                    path.display(),
+                    e
+                );
+            }
+        }
+    }
+    None
+}
+
+#[cfg(feature = "intel")]
+fn select_tmatmul_ptx(runtime_ptx: Option<&str>, cocotb_dir: &str) -> Option<(String, String)> {
+    if let Some(ptx) = runtime_ptx {
+        if tmatmul_ptx_looks_valid(ptx) {
+            return Some((ptx.to_string(), "runtime module".to_string()));
+        }
+        eprintln!(
+            "[TMatmul Backend] Runtime PTX failed validation ({} bytes, starts with {:?})",
+            ptx.len(),
+            ptx.chars().take(40).collect::<String>()
+        );
+    }
+
+    load_tmatmul_reference_ptx(cocotb_dir)
+}
+
 #[cfg(all(
     feature = "pacc",
     not(feature = "amd"),
@@ -292,11 +385,15 @@ pub(crate) unsafe fn launch_kernel(
             eprintln!("[TMatmul Backend] WARNING: Zero grid dimension detected!");
         }
 
-        // NEW: Check if we have valid PTX source available for compilation
-        // Valid PTX should start with ".version" or "//" and be at least 50 bytes
-        let valid_ptx = f.ptx_source.as_ref().filter(|ptx| {
-            ptx.len() >= 50 && (ptx.starts_with(".version") || ptx.starts_with("//"))
-        });
+        let cocotb_dir = std::env::var("HETGPU_TMATMUL_COCOTB_DIR")
+            .unwrap_or_else(|_| tmatmul_default_cocotb_dir());
+        let selected_ptx = select_tmatmul_ptx(
+            f.ptx_source.as_deref().map(String::as_str),
+            &cocotb_dir,
+        );
+        let selected_ptx_ref = selected_ptx
+            .as_ref()
+            .map(|(ptx_source, _origin)| ptx_source.as_str());
 
         if let Some(ref ptx_source) = valid_ptx {
             eprintln!(
@@ -367,7 +464,7 @@ pub(crate) unsafe fn launch_kernel(
             .unwrap_or(false);
         let is_matmul_name = {
             let n = f.name.to_lowercase();
-            n.contains("gemm") || n.contains("matmul") || n.contains("mm_") || n.contains("dot")
+            tmatmul_is_matmul_kernel_name(&n)
         };
 
         // Extract kernel parameters if available AND we need them (matmul kernels only)
@@ -1173,14 +1270,17 @@ unsafe fn invoke_emulator_bridge(
 
     // Invoke the Python bridge
     let bridge_script = std::env::var("HETGPU_TMATMUL_BRIDGE")
-        .unwrap_or_else(|_| "/mnt/ubuntu/ternary_matmul/sw_utils/lib/hetgpu_bridge.py".to_string());
+        .unwrap_or_else(|_| "/root/ternary_matmul/sw_utils/lib/hetgpu_bridge.py".to_string());
 
     let python = std::env::var("HETGPU_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let bridge_pythonpath = std::env::var("HETGPU_TMATMUL_PYTHONPATH")
+        .or_else(|_| std::env::var("PYTHONPATH"))
+        .unwrap_or_else(|_| "/root/ternary_matmul/sw_utils".to_string());
 
     match std::process::Command::new(&python)
         .arg(&bridge_script)
         .arg(config_path)
-        .env("PYTHONPATH", "/mnt/ubuntu/ternary_matmul/sw_utils")
+        .env("PYTHONPATH", bridge_pythonpath)
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .output()
@@ -1252,6 +1352,10 @@ unsafe fn execute_kernel_name_fallback(
     _block_dim_y: u32,
     _block_dim_z: u32,
 ) {
+    if !tmatmul_named_fallback_enabled() && !tmatmul_hardware_matmul_enabled() {
+        return;
+    }
+
     if kernel_params.is_null() {
         eprintln!(
             "[TMatmul Fallback] Kernel '{}' - null kernel_params, skipping",
@@ -1261,6 +1365,15 @@ unsafe fn execute_kernel_name_fallback(
     }
 
     let name_lower = kernel_name.to_lowercase();
+
+    if tmatmul_hardware_matmul_enabled() && tmatmul_is_matmul_kernel_name(&name_lower) {
+        execute_tmatmul_hardware_matmul_fallback(kernel_name, &name_lower, kernel_params);
+        return;
+    }
+
+    if !tmatmul_named_fallback_enabled() {
+        return;
+    }
 
     // Handle different kernel types
     if name_lower.contains("reduce_kernel") {
@@ -1588,6 +1701,134 @@ unsafe fn execute_kernel_name_fallback(
     );
 }
 
+/// Execute PyTorch arange_cuda_out fallback.
+#[cfg(feature = "intel")]
+unsafe fn execute_arange_kernel_fallback(
+    kernel_name: &str,
+    name_lower: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) {
+    let numel_param = *kernel_params.add(0);
+    let mut numel = 0usize;
+    if !numel_param.is_null() {
+        let n_i32 = (numel_param as *const i32).read_unaligned();
+        if n_i32 > 0 {
+            numel = n_i32 as usize;
+        } else {
+            let n_u64 = (numel_param as *const u64).read_unaligned();
+            if n_u64 > 0 && n_u64 <= 64 * 1024 * 1024 {
+                numel = n_u64 as usize;
+            }
+        }
+    }
+
+    let mut all_ptrs: Vec<(usize, u64, usize)> = Vec::new();
+    let functor_param = *kernel_params.add(1);
+    if !functor_param.is_null() {
+        if let Some((ptr, size)) = read_alloc_pointer_from_param(functor_param) {
+            all_ptrs.push((1, ptr, size));
+        }
+        let inner = scan_for_alloc_pointers(functor_param as *const u8, 128);
+        all_ptrs.extend(
+            inner
+                .into_iter()
+                .map(|(off, ptr, sz)| (1000 + off, ptr, sz)),
+        );
+    }
+    let out_param = *kernel_params.add(2);
+    if !out_param.is_null() {
+        if let Some((ptr, size)) = read_alloc_pointer_from_param(out_param) {
+            all_ptrs.push((2, ptr, size));
+        }
+    }
+
+    all_ptrs.sort_by_key(|&(_, ptr, _)| ptr);
+    all_ptrs.dedup_by_key(|a| a.1);
+
+    if all_ptrs.is_empty() {
+        eprintln!(
+            "[TMatmul Fallback] arange: found no output pointer for '{}'",
+            kernel_name
+        );
+        return;
+    }
+
+    let selected = all_ptrs
+        .iter()
+        .copied()
+        .filter(|&(_, _, size)| {
+            numel == 0 || (size >= numel && size % numel == 0 && size / numel <= 8)
+        })
+        .max_by_key(|&(_, _, size)| size)
+        .unwrap_or_else(|| {
+            all_ptrs
+                .iter()
+                .copied()
+                .max_by_key(|&(_, _, size)| size)
+                .unwrap()
+        });
+
+    let (_, out_ptr, out_size) = selected;
+    if numel == 0 {
+        numel = if out_size % 8 == 0 {
+            out_size / 8
+        } else {
+            out_size / 4
+        };
+    }
+    if numel == 0 || numel > 64 * 1024 * 1024 {
+        eprintln!(
+            "[TMatmul Fallback] arange: invalid numel={} for '{}'",
+            numel, kernel_name
+        );
+        return;
+    }
+
+    let force_f32_arange = name_lower.contains("e5_clev")
+        || name_lower.contains("float32")
+        || name_lower.contains("float");
+    let elem_size = if force_f32_arange {
+        4
+    } else if out_size >= numel && out_size % numel == 0 {
+        match out_size / numel {
+            1 | 2 | 4 | 8 => out_size / numel,
+            n if n > 8 => 8,
+            _ => 4,
+        }
+    } else if out_size >= numel * 8 {
+        8
+    } else if out_size >= numel * 4 {
+        4
+    } else if out_size >= numel * 2 {
+        2
+    } else {
+        1
+    };
+
+    let out = out_ptr as *mut u8;
+    let is_float64 = name_lower.contains("double") || name_lower.contains("float64");
+    let is_float32 = elem_size == 4
+        && !name_lower.contains("int32")
+        && !name_lower.contains("uint32")
+        && !name_lower.contains("long");
+
+    for i in 0..numel {
+        match elem_size {
+            8 if is_float64 => (out.add(i * 8) as *mut f64).write_unaligned(i as f64),
+            8 => (out.add(i * 8) as *mut i64).write_unaligned(i as i64),
+            4 if is_float32 => (out.add(i * 4) as *mut f32).write_unaligned(i as f32),
+            4 => (out.add(i * 4) as *mut i32).write_unaligned(i as i32),
+            2 => (out.add(i * 2) as *mut u16).write_unaligned(f32_to_f16(i as f32)),
+            _ => out.add(i).write_unaligned(i as u8),
+        }
+    }
+
+    eprintln!(
+        "[TMatmul Fallback] arange executed ({} elements, {}B each) for '{}'",
+        numel, elem_size, kernel_name
+    );
+}
+
 // IEEE 754 half-precision (f16) <-> f32 conversion
 #[cfg(feature = "intel")]
 #[inline]
@@ -1765,6 +2006,34 @@ unsafe fn scan_for_alloc_pointers(base: *const u8, scan_bytes: usize) -> Vec<(us
         }
     }
     found
+}
+
+#[cfg(feature = "intel")]
+unsafe fn resolve_alloc_pointer_value(ptr_val: u64) -> Option<(u64, usize)> {
+    if let Some(size) = super::memory::get_alloc_size(ptr_val as usize) {
+        return Some((ptr_val, size));
+    }
+
+    if ptr_val < 0x10000 || ptr_val > 0x7fff_ffff_ffff {
+        return None;
+    }
+    let ptr = ptr_val as *const u8;
+    if !is_memory_readable(ptr, 8) {
+        return None;
+    }
+    let nested = (ptr as *const u64).read_unaligned();
+    super::memory::get_alloc_size(nested as usize).map(|size| (nested, size))
+}
+
+#[cfg(feature = "intel")]
+unsafe fn read_alloc_pointer_from_param(
+    param: *mut ::core::ffi::c_void,
+) -> Option<(u64, usize)> {
+    if param.is_null() {
+        return None;
+    }
+    let ptr_val = (param as *const u64).read_unaligned();
+    resolve_alloc_pointer_value(ptr_val)
 }
 
 /// Execute a reduce_kernel fallback (sum, mean, max, var).
@@ -13319,131 +13588,12 @@ unsafe fn try_offload_named_pacc_kernel(
             && name_lower.contains("loadwithcast")
             && name_lower.contains("storewithcast"))
     {
-        if name_lower.contains("bfloat16") {
-            return execute_direct_copy_bf16_host(kernel_name, grid_dim_x, 1, kernel_params);
-        }
-        if let Some(result) =
-            execute_direct_copy_cast_host(kernel_name, grid_dim_x, 1, kernel_params)
-        {
-            return Some(result);
-        }
-        return execute_direct_copy_bool_host_cast(kernel_name, grid_dim_x, 1, kernel_params);
-    }
-
-    if name_lower.contains("bfloat16_copy_kernel_cuda") {
-        if let Some(result) =
-            execute_direct_copy_cast_host(kernel_name, grid_dim_x, 1, kernel_params)
-        {
-            return Some(result);
-        }
-        return execute_direct_copy_bool_host_cast(kernel_name, grid_dim_x, 1, kernel_params);
-    }
-
-    if name_lower.contains("arange_cuda_out") {
-        return execute_arange_host_fill(kernel_name, grid_dim_x, kernel_params);
-    }
-
-    if name_lower.contains("vectorized_elementwise_kernel")
-        && name_lower.contains("cudafunctoronself_add")
-        && name_lower.contains("il")
-    {
-        return execute_vectorized_add_i64_host(kernel_name, grid_dim_x, kernel_params);
-    }
-
-    if name_lower.contains("vectorized_elementwise_kernel")
-        && name_lower.contains("sigmoid_kernel_cuda")
-        && name_lower.contains("bfloat16")
-    {
-        return execute_unary_bf16_host(kernel_name, "sigmoid", grid_dim_x, 1, kernel_params);
-    }
-    if name_lower.contains("vectorized_elementwise_kernel")
-        && name_lower.contains("silu_kernel")
-        && name_lower.contains("bfloat16")
-    {
-        return execute_unary_bf16_host(kernel_name, "silu", grid_dim_x, 1, kernel_params);
-    }
-    if name_lower.contains("vectorized_elementwise_kernel")
-        && name_lower.contains("log_kernel_cuda")
-        && name_lower.contains("bfloat16")
-    {
-        return execute_unary_bf16_host(kernel_name, "log", grid_dim_x, 1, kernel_params);
-    }
-    if name_lower.contains("distribution_elementwise_grid_stride_kernel")
-        && name_lower.contains("uniform_kernel")
-        && name_lower.contains("bfloat16")
-    {
-        return execute_uniform_bf16_host(kernel_name, grid_dim_x, kernel_params);
-    }
-    if name_lower.contains("vectorized_elementwise_kernel") {
-        if name_lower.contains("aunaryfunctor") && name_lower.contains("mulfunctor") {
-            return execute_aunary_f32_host(kernel_name, "mul", grid_dim_x, 1, kernel_params);
-        }
-        if name_lower.contains("exp_kernel_cuda") {
-            return execute_unary_f32_host(kernel_name, "exp", grid_dim_x, 1, kernel_params);
-        }
-        if name_lower.contains("log_kernel_cuda") {
-            return execute_unary_f32_host(kernel_name, "log", grid_dim_x, 1, kernel_params);
-        }
-        if name_lower.contains("softplus_kernel_cuda") || name_lower.contains("softplus_kernel") {
-            return execute_unary_f32_host(kernel_name, "softplus", grid_dim_x, 1, kernel_params);
-        }
-        if name_lower.contains("neg_kernel_cuda") {
-            return execute_unary_f32_host(kernel_name, "neg", grid_dim_x, 1, kernel_params);
-        }
-        if name_lower.contains("sigmoid_kernel_cuda") && !name_lower.contains("bfloat16") {
-            return execute_unary_f32_host(kernel_name, "sigmoid", grid_dim_x, 1, kernel_params);
-        }
-    }
-
-    if name_lower.contains("elementwise_kernel") {
-        let binary_is_bf16 = name_lower.contains("bfloat16");
-        if binary_is_bf16 && name_lower.contains("cudafunctor_add") {
-            return execute_binary_bf16_host(kernel_name, "add", grid_dim_x, 1, kernel_params);
-        }
-        if binary_is_bf16 && name_lower.contains("mulfunctor") {
-            return execute_binary_bf16_host(kernel_name, "mul", grid_dim_x, 1, kernel_params);
-        }
-        if binary_is_bf16 && name_lower.contains("cudafunctor_div") {
-            return execute_binary_bf16_host(kernel_name, "div", grid_dim_x, 1, kernel_params);
-        }
-        if name_lower.contains("cudafunctor_add") {
-            return execute_binary_f32_host(kernel_name, "add", grid_dim_x, 1, kernel_params);
-        }
-        if name_lower.contains("cudafunctor_mul") {
-            return execute_binary_f32_host(kernel_name, "mul", grid_dim_x, 1, kernel_params);
-        }
-        if name_lower.contains("mulfunctor") {
-            return execute_binary_f32_host(kernel_name, "mul", grid_dim_x, 1, kernel_params);
-        }
-        if name_lower.contains("cudafunctor_div") {
-            return execute_binary_f32_host(kernel_name, "div", grid_dim_x, 1, kernel_params);
-        }
-    }
-
-    if name_lower.contains("vectorized_elementwise_kernel")
-        && name_lower.contains("fillfunctor")
-        && name_lower.contains("ib")
-    {
-        return execute_fill_bool_host(kernel_name, grid_dim_x, kernel_params);
-    }
-    if name_lower.contains("vectorized_elementwise_kernel")
-        && name_lower.contains("fillfunctor")
-        && name_lower.contains("bfloat16")
-    {
-        return execute_fill_bf16_host(kernel_name, grid_dim_x, kernel_params);
-    }
-    if name_lower.contains("vectorized_elementwise_kernel")
-        && name_lower.contains("fillfunctor")
-        && name_lower.contains("if")
-    {
-        return execute_fill_f32_host(kernel_name, grid_dim_x, kernel_params);
-    }
-
-    if name_lower.contains("elementwise_kernel")
-        && name_lower.contains("comparefunctor")
-        && name_lower.contains("il")
-    {
-        return execute_compare_i64_host_debug(kernel_name, grid_dim_x, kernel_params);
+        return execute_direct_copy_bool_host_cast(
+            kernel_name,
+            grid_dim_x,
+            1,
+            kernel_params,
+        );
     }
 
     None
