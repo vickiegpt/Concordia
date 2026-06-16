@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use super::{
-    CubinParser, EnhancedSassInstruction, SassDataType, SassDisassembler, SassMemorySpace,
-    SassOpcodeClass, SassOperand, SassRegister, TextDisassemblyParser,
+    CubinKernel, CubinParser, EnhancedSassInstruction, ParsedCubin, SassDataType, SassDisassembler,
+    SassMemorySpace, SassOpcodeClass, SassOperand, SassRegister, TextDisassemblyParser,
 };
 
 #[derive(Debug, Clone)]
@@ -58,12 +58,9 @@ pub fn lift_sass_text_to_ptx(
         return Err("No SASS instructions parsed from text input".to_string());
     }
 
-    if options.kernel_name.is_empty() {
-        options.kernel_name = instructions
-            .first()
-            .and_then(|inst| inst.function_name.clone())
-            .unwrap_or_else(|| "kernel".to_string());
-    }
+    let (kernel_name, instructions) =
+        select_sass_text_instructions(&instructions, &options.kernel_name)?;
+    options.kernel_name = kernel_name;
 
     Ok(lift_instructions_to_ptx(&instructions, &options))
 }
@@ -75,14 +72,9 @@ pub fn lift_cubin_to_ptx(
     let parsed = CubinParser::new(cubin_data.to_vec())
         .parse()
         .map_err(|e| format!("Failed to parse CUBIN: {}", e))?;
-    let kernel = parsed
-        .kernels
-        .first()
-        .ok_or_else(|| "No kernels found in CUBIN".to_string())?;
+    let kernel = select_cubin_kernel(&parsed, &options.kernel_name)?;
 
-    if options.kernel_name.is_empty() || options.kernel_name == "kernel" {
-        options.kernel_name = kernel.name.clone();
-    }
+    options.kernel_name = kernel.name.clone();
     if options.sm_version == 0 {
         options.sm_version = kernel.sm_version;
     }
@@ -100,6 +92,69 @@ pub fn lift_cubin_to_ptx(
     }
 
     Ok(lift_instructions_to_ptx(&instructions, &options))
+}
+
+fn select_sass_text_instructions(
+    instructions: &[EnhancedSassInstruction],
+    requested_kernel_name: &str,
+) -> Result<(String, Vec<EnhancedSassInstruction>), String> {
+    if !is_default_kernel_name(requested_kernel_name) {
+        let selected: Vec<_> = instructions
+            .iter()
+            .filter(|inst| inst.function_name.as_deref() == Some(requested_kernel_name))
+            .cloned()
+            .collect();
+        if selected.is_empty() {
+            return Err(format!(
+                "No SASS instructions parsed for kernel '{}'",
+                requested_kernel_name
+            ));
+        }
+        return Ok((requested_kernel_name.to_string(), selected));
+    }
+
+    let function_names: HashSet<&str> = instructions
+        .iter()
+        .filter_map(|inst| inst.function_name.as_deref())
+        .collect();
+
+    match function_names.len() {
+        0 => Ok(("kernel".to_string(), instructions.to_vec())),
+        1 => {
+            let function_name = function_names.iter().next().copied().unwrap();
+            let selected = instructions
+                .iter()
+                .filter(|inst| inst.function_name.as_deref() == Some(function_name))
+                .cloned()
+                .collect();
+            Ok((function_name.to_string(), selected))
+        }
+        _ => Err("Multiple SASS functions parsed; set kernel_name to select one".to_string()),
+    }
+}
+
+/// CUBIN parsing already provides kernel boundaries, so selection is a simple
+/// metadata lookup before disassembling the chosen kernel's code bytes.
+fn select_cubin_kernel<'a>(
+    parsed: &'a ParsedCubin,
+    requested_kernel_name: &str,
+) -> Result<&'a CubinKernel, String> {
+    if is_default_kernel_name(requested_kernel_name) {
+        return parsed
+            .kernels
+            .first()
+            .ok_or_else(|| "No kernels found in CUBIN".to_string());
+    }
+
+    parsed
+        .kernels
+        .iter()
+        .find(|kernel| kernel.name == requested_kernel_name)
+        .ok_or_else(|| format!("No kernel named '{}' found in CUBIN", requested_kernel_name))
+}
+
+fn is_default_kernel_name(kernel_name: &str) -> bool {
+    kernel_name.is_empty() || kernel_name == "kernel"
 }
 
 struct LiftContext<'a> {
@@ -749,9 +804,10 @@ fn label_for_address(address: u64) -> String {
 mod tests {
     use super::*;
     use crate::sass::{
-        EnhancedSassInstruction, SassDataType, SassMemorySpace, SassOpcodeClass, SassOperand,
-        SassRegister,
+        CubinKernel, EnhancedSassInstruction, ParsedCubin, SassDataType, SassMemorySpace,
+        SassOpcodeClass, SassOperand, SassRegister,
     };
+    use std::collections::HashMap;
 
     fn reg(n: u32) -> SassOperand {
         SassOperand::Register(SassRegister::new("R", n))
@@ -808,11 +864,102 @@ mod tests {
     }
 
     #[test]
+    fn sass_lifter_text_frontend_rejects_ambiguous_multi_function_input() {
+        let text = r#"Function : first
+        /*0000*/                   S2R R0, SR_TID.X ;
+        /*0010*/                   EXIT ;
+Function : second
+        /*0020*/                   IADD R4, R5, 7 ;
+        /*0030*/                   EXIT ;
+"#;
+
+        for kernel_name in ["", "kernel"] {
+            let err = lift_sass_text_to_ptx(
+                text,
+                SassLiftOptions {
+                    kernel_name: kernel_name.to_string(),
+                    ..SassLiftOptions::default()
+                },
+            )
+            .expect_err("ambiguous multi-function text should require a selector");
+
+            assert!(err.contains("Multiple SASS functions parsed"), "{err}");
+        }
+    }
+
+    #[test]
+    fn sass_lifter_text_frontend_selects_requested_function_only() {
+        let text = r#"Function : first
+        /*0000*/                   S2R R0, SR_TID.X ;
+        /*0010*/                   EXIT ;
+Function : second
+        /*0020*/                   IADD R4, R5, 7 ;
+        /*0030*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(
+            text,
+            SassLiftOptions {
+                kernel_name: "second".to_string(),
+                include_sass_comments: false,
+                ..SassLiftOptions::default()
+            },
+        )
+        .expect("explicit selector should lift only the requested function");
+
+        assert!(result.ptx.contains(".visible .entry second()"));
+        assert!(result.ptx.contains("add.s32 %r4, %r5, 7;"));
+        assert!(result.ptx.contains("L_0020:"));
+        assert!(!result.ptx.contains("mov.u32 %r0, %tid.x;"));
+        assert!(!result.ptx.contains("L_0000:"));
+    }
+
+    #[test]
+    fn sass_lifter_cubin_selection_uses_requested_kernel_name() {
+        let parsed = ParsedCubin {
+            sm_version: 120,
+            ptx_version: None,
+            kernels: vec![
+                test_cubin_kernel("first", 0x100),
+                test_cubin_kernel("second", 0x200),
+            ],
+            constants: Vec::new(),
+            debug_lines: HashMap::new(),
+            symbols: Vec::new(),
+            sections: HashMap::new(),
+        };
+
+        let selected =
+            select_cubin_kernel(&parsed, "second").expect("requested kernel should be selected");
+        assert_eq!(selected.name, "second");
+        assert_eq!(selected.address, 0x200);
+
+        let err = select_cubin_kernel(&parsed, "missing")
+            .expect_err("missing requested kernel should fail");
+        assert_eq!(err, "No kernel named 'missing' found in CUBIN");
+    }
+
+    #[test]
     fn sass_lifter_cubin_frontend_rejects_malformed_input() {
         let err = lift_cubin_to_ptx(b"not an elf", SassLiftOptions::default())
             .expect_err("malformed CUBIN should fail");
 
         assert!(err.contains("Failed to parse CUBIN"), "{err}");
+    }
+
+    fn test_cubin_kernel(name: &str, address: u64) -> CubinKernel {
+        CubinKernel {
+            name: name.to_string(),
+            address,
+            size: 0,
+            code: Vec::new(),
+            num_registers: 0,
+            shared_mem_size: 0,
+            const_mem_size: 0,
+            local_mem_size: 0,
+            max_threads_per_block: 0,
+            sm_version: 120,
+        }
     }
 
     #[test]
