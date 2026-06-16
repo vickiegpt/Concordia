@@ -1710,7 +1710,7 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
 fn pacc_alloc_host(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
     use std::alloc::{alloc_zeroed, Layout};
 
-    let align = 128;
+    let align = 64;
     let alloc_size = bytesize.max(1);
     let layout = Layout::from_size_align(alloc_size, align).map_err(|_| CUerror::OUT_OF_MEMORY)?;
     let ptr = unsafe { alloc_zeroed(layout) };
