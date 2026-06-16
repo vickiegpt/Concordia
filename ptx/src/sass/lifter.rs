@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
 use super::{
-    EnhancedSassInstruction, SassOpcodeClass, SassOperand, SassRegister,
+    EnhancedSassInstruction, SassDataType, SassMemorySpace, SassOpcodeClass, SassOperand,
+    SassRegister,
 };
 
 #[derive(Debug, Clone)]
@@ -132,8 +133,81 @@ impl<'a> LiftContext<'a> {
                     .map(format_operand)
                     .unwrap_or_else(|| "%tid.x".to_string())
             )),
-            "FADD" => Some(binary_op(inst, &pred, "add", "f32")),
+            "MOV" | "MOV32I" => Some(unary_op(
+                inst,
+                &pred,
+                "mov",
+                &data_type_suffix(inst, SassDataType::U32),
+            )),
+            "IADD" | "IADD3" => Some(binary_op(
+                inst,
+                &pred,
+                "add",
+                &data_type_suffix(inst, SassDataType::S32),
+            )),
+            "IMUL" => Some(binary_op(
+                inst,
+                &pred,
+                "mul.lo",
+                &data_type_suffix(inst, SassDataType::S32),
+            )),
+            "IMAD" => Some(ternary_op(
+                inst,
+                &pred,
+                "mad.lo",
+                &data_type_suffix(inst, SassDataType::S32),
+            )),
+            "SHL" => Some(binary_op(inst, &pred, "shl", "b32")),
+            "SHR" => Some(binary_op(
+                inst,
+                &pred,
+                "shr",
+                &data_type_suffix(inst, SassDataType::U32),
+            )),
+            "LOP" | "LOP3" => Some(binary_op(inst, &pred, "and", "b32")),
+            "POPC" => Some(unary_op(inst, &pred, "popc", "b32")),
+            "FADD" => Some(binary_op(
+                inst,
+                &pred,
+                "add",
+                &data_type_suffix(inst, SassDataType::F32),
+            )),
+            "FMUL" => Some(binary_op(
+                inst,
+                &pred,
+                "mul",
+                &data_type_suffix(inst, SassDataType::F32),
+            )),
+            "FFMA" => Some(ternary_op(
+                inst,
+                &pred,
+                "fma",
+                &data_type_suffix(inst, SassDataType::F32),
+            )),
+            "FABS" => Some(unary_op(
+                inst,
+                &pred,
+                "abs",
+                &data_type_suffix(inst, SassDataType::F32),
+            )),
+            "FNEG" => Some(unary_op(
+                inst,
+                &pred,
+                "neg",
+                &data_type_suffix(inst, SassDataType::F32),
+            )),
+            "LDG" | "LDS" | "LDL" | "LDC" => Some(load_op(inst, &pred)),
+            "STG" | "STS" | "STL" => Some(store_op(inst, &pred)),
+            "ISETP" | "FSETP" | "PSETP" => Some(setp_op(inst, &pred)),
+            "BRA" | "BRX" | "JMP" => Some(branch_op(inst, &pred)),
+            "BAR" => Some(format!("{}bar.sync 0;", pred)),
+            "DEPBAR" => Some("// depbar preserved from SASS;".to_string()),
+            "MEMBAR" => Some(format!("{}membar.gl;", pred)),
             "EXIT" | "RET" => Some(format!("{}ret;", pred)),
+            "HMMA" | "IMMA" | "BMMA" | "DMMA" => {
+                self.unsupported(inst, "tensor instruction lifting is not implemented")
+            }
+            "MUFU" => self.unsupported(inst, "MUFU sub-operation lifting is not implemented"),
             _ => self.unsupported(inst, "instruction lifting is not implemented"),
         }
     }
@@ -203,6 +277,16 @@ fn collect_register(reg: &SassRegister, decls: &mut RegisterDecls) {
     }
 }
 
+fn unary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    format!("{}{}.{} {}, {};", pred, op, ty, dst, src)
+}
+
 fn binary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
     let src0 = inst
@@ -216,6 +300,223 @@ fn binary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> 
         .map(format_operand)
         .unwrap_or_else(|| "0".to_string());
     format!("{}{}.{} {}, {}, {};", pred, op, ty, dst, src0, src1)
+}
+
+fn ternary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src2 = inst
+        .src_operands
+        .get(2)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    format!(
+        "{}{}.{} {}, {}, {}, {};",
+        pred, op, ty, dst, src0, src1, src2
+    )
+}
+
+fn load_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let addr = inst
+        .src_operands
+        .first()
+        .map(format_address_operand)
+        .unwrap_or_else(|| "[0]".to_string());
+    format!(
+        "{}ld.{}.{} {}, {};",
+        pred,
+        memory_space_suffix(inst),
+        data_type_suffix(inst, SassDataType::U32),
+        dst,
+        addr
+    )
+}
+
+fn store_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let addr = inst
+        .dest_operands
+        .first()
+        .map(format_address_operand)
+        .unwrap_or_else(|| "[0]".to_string());
+    let src = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    format!(
+        "{}st.{}.{} {}, {};",
+        pred,
+        memory_space_suffix(inst),
+        data_type_suffix(inst, SassDataType::U32),
+        addr,
+        src
+    )
+}
+
+fn setp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%p0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let default_ty = match inst.opcode.as_str() {
+        "FSETP" => SassDataType::F32,
+        "PSETP" => SassDataType::Pred,
+        _ => SassDataType::S32,
+    };
+    format!(
+        "{}setp.{}.{} {}, {}, {};",
+        pred,
+        comparison_suffix(inst),
+        data_type_suffix(inst, default_ty),
+        dst,
+        src0,
+        src1
+    )
+}
+
+fn branch_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let target = branch_target(inst)
+        .map(label_for_address)
+        .or_else(|| {
+            inst.dest_operands
+                .iter()
+                .chain(inst.src_operands.iter())
+                .next()
+                .map(format_operand)
+        })
+        .unwrap_or_else(|| "L_0000".to_string());
+    format!("{}bra {};", pred, target)
+}
+
+fn data_type_suffix(inst: &EnhancedSassInstruction, default: SassDataType) -> String {
+    match inst.data_type.unwrap_or(default) {
+        SassDataType::U8 => "u8",
+        SassDataType::U16 => "u16",
+        SassDataType::U32 => "u32",
+        SassDataType::U64 => "u64",
+        SassDataType::U128 => "u128",
+        SassDataType::S8 => "s8",
+        SassDataType::S16 => "s16",
+        SassDataType::S32 => "s32",
+        SassDataType::S64 => "s64",
+        SassDataType::F16 => "f16",
+        SassDataType::F32 => "f32",
+        SassDataType::F64 => "f64",
+        SassDataType::BF16 => "bf16",
+        SassDataType::TF32 => "tf32",
+        SassDataType::FP8E4M3 => "e4m3",
+        SassDataType::FP8E5M2 => "e5m2",
+        SassDataType::B8 => "b8",
+        SassDataType::B16 => "b16",
+        SassDataType::B32 => "b32",
+        SassDataType::B64 => "b64",
+        SassDataType::B128 => "b128",
+        SassDataType::Pred => "pred",
+        SassDataType::Unknown => "b32",
+    }
+    .to_string()
+}
+
+fn memory_space_suffix(inst: &EnhancedSassInstruction) -> String {
+    let space = inst.memory_space.or(match inst.opcode.as_str() {
+        "LDG" | "STG" => Some(SassMemorySpace::Global),
+        "LDS" | "STS" => Some(SassMemorySpace::Shared),
+        "LDL" | "STL" => Some(SassMemorySpace::Local),
+        "LDC" => Some(SassMemorySpace::Constant),
+        _ => None,
+    });
+    match space.unwrap_or(SassMemorySpace::Global) {
+        SassMemorySpace::Global => "global",
+        SassMemorySpace::Shared => "shared",
+        SassMemorySpace::Local => "local",
+        SassMemorySpace::Constant => "const",
+        SassMemorySpace::Texture => "tex",
+        SassMemorySpace::Surface => "surf",
+        SassMemorySpace::Generic => "generic",
+    }
+    .to_string()
+}
+
+fn comparison_suffix(inst: &EnhancedSassInstruction) -> String {
+    inst.modifiers
+        .iter()
+        .find_map(|modifier| {
+            let normalized = modifier.trim_start_matches('.').to_ascii_uppercase();
+            match normalized.as_str() {
+                "EQ" => Some("eq"),
+                "NE" | "NEU" => Some("ne"),
+                "LT" | "LO" => Some("lt"),
+                "LE" | "LS" => Some("le"),
+                "GT" | "HI" => Some("gt"),
+                "GE" | "HS" => Some("ge"),
+                _ => None,
+            }
+        })
+        .unwrap_or("eq")
+        .to_string()
+}
+
+fn format_address_operand(operand: &SassOperand) -> String {
+    match operand {
+        SassOperand::ConstantBank { bank, offset } => {
+            format!("[c[0x{:x}][0x{:x}]]", bank, offset)
+        }
+        SassOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => {
+            let mut expr = base
+                .as_ref()
+                .map(format_register)
+                .unwrap_or_else(|| "0".to_string());
+            if let Some(index) = index {
+                if expr != "0" {
+                    expr.push('+');
+                } else {
+                    expr.clear();
+                }
+                expr.push_str(&format_register(index));
+                if *scale != 1 {
+                    expr.push_str(&format!("*{}", scale));
+                }
+            }
+            if *offset > 0 {
+                if expr.is_empty() {
+                    expr.push_str(&offset.to_string());
+                } else {
+                    expr.push_str(&format!("+{}", offset));
+                }
+            } else if *offset < 0 {
+                expr.push_str(&offset.to_string());
+            }
+            if expr.is_empty() {
+                expr.push('0');
+            }
+            format!("[{}]", expr)
+        }
+        SassOperand::Address(address) => format!("[{}]", label_for_address(*address)),
+        SassOperand::Label(label) => format!("[{}]", label),
+        _ => format!("[{}]", format_operand(operand)),
+    }
 }
 
 fn dest_operand(inst: &EnhancedSassInstruction) -> Option<String> {
@@ -338,11 +639,28 @@ fn label_for_address(address: u64) -> String {
 mod tests {
     use super::*;
     use crate::sass::{
-        EnhancedSassInstruction, SassDataType, SassOpcodeClass, SassOperand, SassRegister,
+        EnhancedSassInstruction, SassDataType, SassMemorySpace, SassOpcodeClass, SassOperand,
+        SassRegister,
     };
 
     fn reg(n: u32) -> SassOperand {
         SassOperand::Register(SassRegister::new("R", n))
+    }
+
+    fn pred(n: u32) -> SassOperand {
+        SassOperand::Predicate {
+            register: SassRegister::new("P", n),
+            negated: false,
+        }
+    }
+
+    fn mem(base: u32, offset: i64) -> SassOperand {
+        SassOperand::Memory {
+            base: Some(SassRegister::new("R", base)),
+            offset,
+            index: None,
+            scale: 1,
+        }
     }
 
     #[test]
@@ -383,5 +701,89 @@ mod tests {
         assert!(result.ptx.contains("mov.u32 %r0, %tid.x;"));
         assert!(result.ptx.contains("add.f32 %r1, %r2, %r3;"));
         assert!(result.ptx.contains("ret;"));
+    }
+
+    #[test]
+    fn sass_lifter_normalizes_load_store_and_constant_memory() {
+        let mut ldg = EnhancedSassInstruction::new("LDG".to_string(), 0x0);
+        ldg.opcode_class = SassOpcodeClass::GlobalLoad;
+        ldg.memory_space = Some(SassMemorySpace::Global);
+        ldg.data_type = Some(SassDataType::U32);
+        ldg.dest_operands.push(reg(0));
+        ldg.src_operands.push(mem(2, 16));
+
+        let mut stg = EnhancedSassInstruction::new("STG".to_string(), 0x10);
+        stg.opcode_class = SassOpcodeClass::GlobalStore;
+        stg.memory_space = Some(SassMemorySpace::Global);
+        stg.data_type = Some(SassDataType::F32);
+        stg.dest_operands.push(mem(4, 0));
+        stg.src_operands.push(reg(1));
+
+        let mut ldc = EnhancedSassInstruction::new("LDC".to_string(), 0x20);
+        ldc.opcode_class = SassOpcodeClass::ConstantLoad;
+        ldc.memory_space = Some(SassMemorySpace::Constant);
+        ldc.data_type = Some(SassDataType::U64);
+        ldc.dest_operands.push(reg(6));
+        ldc.src_operands.push(SassOperand::ConstantBank {
+            bank: 0,
+            offset: 0x160,
+        });
+
+        let result = lift_instructions_to_ptx(&[ldg, stg, ldc], &SassLiftOptions::default());
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("ld.global.u32 %r0, [%r2+16];"));
+        assert!(result.ptx.contains("st.global.f32 [%r4], %r1;"));
+        assert!(result.ptx.contains("ld.const.u64 %r6, [c[0x0][0x160]];"));
+    }
+
+    #[test]
+    fn sass_lifter_preserves_predicates_and_branch_targets() {
+        let mut isetp = EnhancedSassInstruction::new("ISETP".to_string(), 0x0);
+        isetp.opcode_class = SassOpcodeClass::IntegerComparison;
+        isetp.data_type = Some(SassDataType::S32);
+        isetp.modifiers.push("LT".to_string());
+        isetp.dest_operands.push(pred(0));
+        isetp.src_operands.push(reg(1));
+        isetp.src_operands.push(reg(2));
+
+        let mut bra = EnhancedSassInstruction::new("BRA".to_string(), 0x10);
+        bra.opcode_class = SassOpcodeClass::Branch;
+        bra.predicate = Some(pred(0));
+        bra.src_operands.push(SassOperand::Immediate(0x40));
+
+        let mut iadd = EnhancedSassInstruction::new("IADD".to_string(), 0x20);
+        iadd.opcode_class = SassOpcodeClass::IntegerArithmetic;
+        iadd.data_type = Some(SassDataType::S32);
+        iadd.dest_operands.push(reg(3));
+        iadd.src_operands.push(reg(3));
+        iadd.src_operands.push(SassOperand::Immediate(1));
+
+        let mut ret = EnhancedSassInstruction::new("RET".to_string(), 0x40);
+        ret.opcode_class = SassOpcodeClass::Exit;
+
+        let result =
+            lift_instructions_to_ptx(&[isetp, bra, iadd, ret], &SassLiftOptions::default());
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("setp.lt.s32 %p0, %r1, %r2;"));
+        assert!(result.ptx.contains("@%p0 bra L_0040;"));
+        assert!(result.ptx.contains("add.s32 %r3, %r3, 1;"));
+        assert!(result.ptx.contains("L_0040:"));
+    }
+
+    #[test]
+    fn sass_lifter_reports_unsupported_tensor_instruction() {
+        let hmma = EnhancedSassInstruction::new("HMMA".to_string(), 0x120);
+
+        let result = lift_instructions_to_ptx(&[hmma], &SassLiftOptions::default());
+
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].opcode, "HMMA");
+        assert_eq!(
+            result.diagnostics[0].message,
+            "tensor instruction lifting is not implemented"
+        );
+        assert!(result.ptx.contains("unsupported SASS HMMA at 0x0120"));
     }
 }
