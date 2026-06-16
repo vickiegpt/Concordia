@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use super::{
-    EnhancedSassInstruction, SassDataType, SassMemorySpace, SassOpcodeClass, SassOperand,
-    SassRegister,
+    CubinParser, EnhancedSassInstruction, SassDataType, SassDisassembler, SassMemorySpace,
+    SassOpcodeClass, SassOperand, SassRegister, TextDisassemblyParser,
 };
 
 #[derive(Debug, Clone)]
@@ -47,6 +47,59 @@ pub fn lift_instructions_to_ptx(
         ptx: ctx.output,
         diagnostics: ctx.diagnostics,
     }
+}
+
+pub fn lift_sass_text_to_ptx(
+    text: &str,
+    mut options: SassLiftOptions,
+) -> Result<SassLiftResult, String> {
+    let instructions = TextDisassemblyParser::parse_cuobjdump_output(text);
+    if instructions.is_empty() {
+        return Err("No SASS instructions parsed from text input".to_string());
+    }
+
+    if options.kernel_name.is_empty() {
+        options.kernel_name = instructions
+            .first()
+            .and_then(|inst| inst.function_name.clone())
+            .unwrap_or_else(|| "kernel".to_string());
+    }
+
+    Ok(lift_instructions_to_ptx(&instructions, &options))
+}
+
+pub fn lift_cubin_to_ptx(
+    cubin_data: &[u8],
+    mut options: SassLiftOptions,
+) -> Result<SassLiftResult, String> {
+    let parsed = CubinParser::new(cubin_data.to_vec())
+        .parse()
+        .map_err(|e| format!("Failed to parse CUBIN: {}", e))?;
+    let kernel = parsed
+        .kernels
+        .first()
+        .ok_or_else(|| "No kernels found in CUBIN".to_string())?;
+
+    if options.kernel_name.is_empty() || options.kernel_name == "kernel" {
+        options.kernel_name = kernel.name.clone();
+    }
+    if options.sm_version == 0 {
+        options.sm_version = kernel.sm_version;
+    }
+
+    let disassembler = SassDisassembler::new(kernel.sm_version)
+        .map_err(|e| format!("Failed to create SASS disassembler: {}", e))?;
+    let mut instructions = disassembler.disassemble(&kernel.code, kernel.address);
+    for inst in &mut instructions {
+        inst.function_name = Some(kernel.name.clone());
+        if let Some(debug_info) = parsed.debug_lines.get(&inst.address) {
+            inst.ptx_file = Some(debug_info.file.clone());
+            inst.ptx_line = Some(debug_info.line);
+            inst.ptx_column = Some(debug_info.column);
+        }
+    }
+
+    Ok(lift_instructions_to_ptx(&instructions, &options))
 }
 
 struct LiftContext<'a> {
@@ -718,6 +771,48 @@ mod tests {
             index: None,
             scale: 1,
         }
+    }
+
+    #[test]
+    fn sass_lifter_text_frontend_uses_function_name_and_sm120() {
+        let text = r#"Function : vector_add
+        /*0000*/                   S2R R0, SR_TID.X ;
+        /*0010*/                   LDG.E.U32 R1, [R2] ;
+        /*0020*/                   STG.E.U32 [R3], R1 ;
+        /*0030*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(
+            text,
+            SassLiftOptions {
+                sm_version: 120,
+                kernel_name: String::new(),
+                include_sass_comments: true,
+                emit_unsupported_comments: true,
+            },
+        )
+        .expect("text frontend should lift cuobjdump text");
+
+        assert!(result.ptx.contains(".visible .entry vector_add()"));
+        assert!(result.ptx.contains(".target sm_120"));
+        assert!(result.ptx.contains("ld.global.u32 %r1, [%r2];"));
+        assert!(result.ptx.contains("st.global.u32 [%r3], %r1;"));
+    }
+
+    #[test]
+    fn sass_lifter_text_frontend_rejects_empty_input() {
+        let err = lift_sass_text_to_ptx("", SassLiftOptions::default())
+            .expect_err("empty text should not lift");
+
+        assert!(err.contains("No SASS instructions parsed"), "{err}");
+    }
+
+    #[test]
+    fn sass_lifter_cubin_frontend_rejects_malformed_input() {
+        let err = lift_cubin_to_ptx(b"not an elf", SassLiftOptions::default())
+            .expect_err("malformed CUBIN should fail");
+
+        assert!(err.contains("Failed to parse CUBIN"), "{err}");
     }
 
     #[test]
