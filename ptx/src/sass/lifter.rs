@@ -17,7 +17,7 @@ impl Default for SassLiftOptions {
     fn default() -> Self {
         Self {
             sm_version: 120,
-            kernel_name: "kernel".to_string(),
+            kernel_name: String::new(),
             include_sass_comments: true,
             emit_unsupported_comments: true,
         }
@@ -98,7 +98,7 @@ fn select_sass_text_instructions(
     instructions: &[EnhancedSassInstruction],
     requested_kernel_name: &str,
 ) -> Result<(String, Vec<EnhancedSassInstruction>), String> {
-    if !is_default_kernel_name(requested_kernel_name) {
+    if !is_unspecified_kernel_name(requested_kernel_name) {
         let selected: Vec<_> = instructions
             .iter()
             .filter(|inst| inst.function_name.as_deref() == Some(requested_kernel_name))
@@ -139,7 +139,7 @@ fn select_cubin_kernel<'a>(
     parsed: &'a ParsedCubin,
     requested_kernel_name: &str,
 ) -> Result<&'a CubinKernel, String> {
-    if is_default_kernel_name(requested_kernel_name) {
+    if is_unspecified_kernel_name(requested_kernel_name) {
         return parsed
             .kernels
             .first()
@@ -153,8 +153,8 @@ fn select_cubin_kernel<'a>(
         .ok_or_else(|| format!("No kernel named '{}' found in CUBIN", requested_kernel_name))
 }
 
-fn is_default_kernel_name(kernel_name: &str) -> bool {
-    kernel_name.is_empty() || kernel_name == "kernel"
+fn is_unspecified_kernel_name(kernel_name: &str) -> bool {
+    kernel_name.is_empty()
 }
 
 struct LiftContext<'a> {
@@ -856,6 +856,19 @@ mod tests {
     }
 
     #[test]
+    fn sass_lifter_text_frontend_default_options_infer_single_function_name() {
+        let text = r#"Function : vector_add
+        /*0000*/                   S2R R0, SR_TID.X ;
+        /*0010*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("default text frontend should infer an unambiguous function name");
+
+        assert!(result.ptx.contains(".visible .entry vector_add()"));
+    }
+
+    #[test]
     fn sass_lifter_text_frontend_rejects_empty_input() {
         let err = lift_sass_text_to_ptx("", SassLiftOptions::default())
             .expect_err("empty text should not lift");
@@ -873,18 +886,20 @@ Function : second
         /*0030*/                   EXIT ;
 "#;
 
-        for kernel_name in ["", "kernel"] {
-            let err = lift_sass_text_to_ptx(
-                text,
-                SassLiftOptions {
-                    kernel_name: kernel_name.to_string(),
-                    ..SassLiftOptions::default()
-                },
-            )
-            .expect_err("ambiguous multi-function text should require a selector");
+        let err = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect_err("default multi-function text should require a selector");
+        assert!(err.contains("Multiple SASS functions parsed"), "{err}");
 
-            assert!(err.contains("Multiple SASS functions parsed"), "{err}");
-        }
+        let err = lift_sass_text_to_ptx(
+            text,
+            SassLiftOptions {
+                kernel_name: String::new(),
+                ..SassLiftOptions::default()
+            },
+        )
+        .expect_err("empty kernel_name should require a selector for multi-function text");
+
+        assert!(err.contains("Multiple SASS functions parsed"), "{err}");
     }
 
     #[test]
@@ -915,12 +930,40 @@ Function : second
     }
 
     #[test]
+    fn sass_lifter_text_frontend_selects_literal_kernel_function_name() {
+        let text = r#"Function : first
+        /*0000*/                   S2R R0, SR_TID.X ;
+        /*0010*/                   EXIT ;
+Function : kernel
+        /*0020*/                   IADD R4, R5, 7 ;
+        /*0030*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(
+            text,
+            SassLiftOptions {
+                kernel_name: "kernel".to_string(),
+                include_sass_comments: false,
+                ..SassLiftOptions::default()
+            },
+        )
+        .expect("literal kernel selector should select Function : kernel");
+
+        assert!(result.ptx.contains(".visible .entry kernel()"));
+        assert!(result.ptx.contains("add.s32 %r4, %r5, 7;"));
+        assert!(result.ptx.contains("L_0020:"));
+        assert!(!result.ptx.contains("mov.u32 %r0, %tid.x;"));
+        assert!(!result.ptx.contains("L_0000:"));
+    }
+
+    #[test]
     fn sass_lifter_cubin_selection_uses_requested_kernel_name() {
         let parsed = ParsedCubin {
             sm_version: 120,
             ptx_version: None,
             kernels: vec![
                 test_cubin_kernel("first", 0x100),
+                test_cubin_kernel("kernel", 0x180),
                 test_cubin_kernel("second", 0x200),
             ],
             constants: Vec::new(),
@@ -933,6 +976,16 @@ Function : second
             select_cubin_kernel(&parsed, "second").expect("requested kernel should be selected");
         assert_eq!(selected.name, "second");
         assert_eq!(selected.address, 0x200);
+
+        let selected =
+            select_cubin_kernel(&parsed, "").expect("empty selector should use the first kernel");
+        assert_eq!(selected.name, "first");
+        assert_eq!(selected.address, 0x100);
+
+        let selected = select_cubin_kernel(&parsed, "kernel")
+            .expect("literal kernel selector should select the kernel named kernel");
+        assert_eq!(selected.name, "kernel");
+        assert_eq!(selected.address, 0x180);
 
         let err = select_cubin_kernel(&parsed, "missing")
             .expect_err("missing requested kernel should fail");
