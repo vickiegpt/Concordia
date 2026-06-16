@@ -54,6 +54,7 @@ struct LiftContext<'a> {
     output: String,
     diagnostics: Vec<SassLiftDiagnostic>,
     branch_targets: HashSet<u64>,
+    scratch_gpr: Option<String>,
 }
 
 impl<'a> LiftContext<'a> {
@@ -63,12 +64,17 @@ impl<'a> LiftContext<'a> {
             output: String::new(),
             diagnostics: Vec::new(),
             branch_targets: HashSet::new(),
+            scratch_gpr: None,
         }
     }
 
     fn emit_module(&mut self, instructions: &[EnhancedSassInstruction]) {
         self.collect_branch_targets(instructions);
-        let regs = RegisterDecls::from_instructions(instructions);
+        let mut regs = RegisterDecls::from_instructions(instructions);
+        if needs_iadd3_scratch(instructions) {
+            self.scratch_gpr = Some(format!("%r{}", regs.max_gpr));
+            regs.max_gpr += 1;
+        }
 
         self.output.push_str(".version 8.5\n");
         self.output
@@ -139,12 +145,25 @@ impl<'a> LiftContext<'a> {
                 "mov",
                 &data_type_suffix(inst, SassDataType::U32),
             )),
-            "IADD" | "IADD3" => Some(binary_op(
+            "IADD" => Some(binary_op(
                 inst,
                 &pred,
                 "add",
                 &data_type_suffix(inst, SassDataType::S32),
             )),
+            "IADD3" if inst.src_operands.len() == 3 => Some(iadd3_op(
+                inst,
+                &pred,
+                &data_type_suffix(inst, SassDataType::S32),
+                self.scratch_gpr.as_deref(),
+            )),
+            "IADD3" if inst.src_operands.len() < 3 => Some(binary_op(
+                inst,
+                &pred,
+                "add",
+                &data_type_suffix(inst, SassDataType::S32),
+            )),
+            "IADD3" => self.unsupported(inst, "IADD3 extended operand lifting is not implemented"),
             "IMUL" => Some(binary_op(
                 inst,
                 &pred,
@@ -164,7 +183,9 @@ impl<'a> LiftContext<'a> {
                 "shr",
                 &data_type_suffix(inst, SassDataType::U32),
             )),
-            "LOP" | "LOP3" => Some(binary_op(inst, &pred, "and", "b32")),
+            "LOP" if inst.src_operands.len() == 2 => Some(binary_op(inst, &pred, "and", "b32")),
+            "LOP" => self.unsupported(inst, "logical operation lifting is not implemented"),
+            "LOP3" => self.unsupported(inst, "LOP3 truth-table lifting is not implemented"),
             "POPC" => Some(unary_op(inst, &pred, "popc", "b32")),
             "FADD" => Some(binary_op(
                 inst,
@@ -181,7 +202,7 @@ impl<'a> LiftContext<'a> {
             "FFMA" => Some(ternary_op(
                 inst,
                 &pred,
-                "fma",
+                "fma.rn",
                 &data_type_suffix(inst, SassDataType::F32),
             )),
             "FABS" => Some(unary_op(
@@ -198,7 +219,8 @@ impl<'a> LiftContext<'a> {
             )),
             "LDG" | "LDS" | "LDL" | "LDC" => Some(load_op(inst, &pred)),
             "STG" | "STS" | "STL" => Some(store_op(inst, &pred)),
-            "ISETP" | "FSETP" | "PSETP" => Some(setp_op(inst, &pred)),
+            "ISETP" | "FSETP" => Some(setp_op(inst, &pred)),
+            "PSETP" => self.unsupported(inst, "predicate set lifting is not implemented"),
             "BRA" | "BRX" | "JMP" => Some(branch_op(inst, &pred)),
             "BAR" => Some(format!("{}bar.sync 0;", pred)),
             "DEPBAR" => Some("// depbar preserved from SASS;".to_string()),
@@ -227,6 +249,12 @@ impl<'a> LiftContext<'a> {
             None
         }
     }
+}
+
+fn needs_iadd3_scratch(instructions: &[EnhancedSassInstruction]) -> bool {
+    instructions
+        .iter()
+        .any(|inst| inst.opcode == "IADD3" && inst.src_operands.len() >= 3)
 }
 
 #[derive(Debug, Default)]
@@ -300,6 +328,35 @@ fn binary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> 
         .map(format_operand)
         .unwrap_or_else(|| "0".to_string());
     format!("{}{}.{} {}, {}, {};", pred, op, ty, dst, src0, src1)
+}
+
+fn iadd3_op(
+    inst: &EnhancedSassInstruction,
+    pred: &str,
+    ty: &str,
+    scratch_gpr: Option<&str>,
+) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src2 = inst
+        .src_operands
+        .get(2)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let scratch = scratch_gpr.unwrap_or("%r0");
+    format!(
+        "{}add.{} {}, {}, {};\n    {}add.{} {}, {}, {};",
+        pred, ty, scratch, src0, src1, pred, ty, dst, scratch, src2
+    )
 }
 
 fn ternary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> String {
@@ -770,6 +827,86 @@ mod tests {
         assert!(result.ptx.contains("@%p0 bra L_0040;"));
         assert!(result.ptx.contains("add.s32 %r3, %r3, 1;"));
         assert!(result.ptx.contains("L_0040:"));
+    }
+
+    #[test]
+    fn sass_lifter_expands_three_source_iadd3_with_scratch_register() {
+        let mut iadd3 = EnhancedSassInstruction::new("IADD3".to_string(), 0x0);
+        iadd3.opcode_class = SassOpcodeClass::IntegerArithmetic;
+        iadd3.data_type = Some(SassDataType::S32);
+        iadd3.dest_operands.push(reg(2));
+        iadd3.src_operands.push(reg(9));
+        iadd3.src_operands.push(reg(1));
+        iadd3.src_operands.push(reg(4));
+
+        let result = lift_instructions_to_ptx(&[iadd3], &SassLiftOptions::default());
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %r<11>;"));
+        assert!(result.ptx.contains("add.s32 %r10, %r9, %r1;"));
+        assert!(result.ptx.contains("add.s32 %r2, %r10, %r4;"));
+    }
+
+    #[test]
+    fn sass_lifter_reports_lop3_instead_of_lowering_to_and() {
+        let mut lop3 = EnhancedSassInstruction::new("LOP3".to_string(), 0x0);
+        lop3.data_type = Some(SassDataType::B32);
+        lop3.dest_operands.push(reg(0));
+        lop3.src_operands.push(reg(1));
+        lop3.src_operands.push(reg(2));
+        lop3.src_operands.push(reg(3));
+        lop3.src_operands.push(SassOperand::Immediate(0xca));
+
+        let result = lift_instructions_to_ptx(&[lop3], &SassLiftOptions::default());
+
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].opcode, "LOP3");
+        assert_eq!(
+            result.diagnostics[0].message,
+            "LOP3 truth-table lifting is not implemented"
+        );
+        assert!(result.ptx.contains(
+            "unsupported SASS LOP3 at 0x0000: LOP3 truth-table lifting is not implemented"
+        ));
+        assert!(!result.ptx.contains("and.b32"));
+    }
+
+    #[test]
+    fn sass_lifter_emits_rounded_ffma() {
+        let mut ffma = EnhancedSassInstruction::new("FFMA".to_string(), 0x0);
+        ffma.opcode_class = SassOpcodeClass::FloatArithmetic;
+        ffma.data_type = Some(SassDataType::F32);
+        ffma.dest_operands.push(reg(0));
+        ffma.src_operands.push(reg(1));
+        ffma.src_operands.push(reg(2));
+        ffma.src_operands.push(reg(3));
+
+        let result = lift_instructions_to_ptx(&[ffma], &SassLiftOptions::default());
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("fma.rn.f32 %r0, %r1, %r2, %r3;"));
+    }
+
+    #[test]
+    fn sass_lifter_reports_psetp_instead_of_emitting_pred_setp() {
+        let mut psetp = EnhancedSassInstruction::new("PSETP".to_string(), 0x0);
+        psetp.data_type = Some(SassDataType::Pred);
+        psetp.dest_operands.push(pred(0));
+        psetp.src_operands.push(pred(1));
+        psetp.src_operands.push(pred(2));
+
+        let result = lift_instructions_to_ptx(&[psetp], &SassLiftOptions::default());
+
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].opcode, "PSETP");
+        assert_eq!(
+            result.diagnostics[0].message,
+            "predicate set lifting is not implemented"
+        );
+        assert!(result.ptx.contains(
+            "unsupported SASS PSETP at 0x0000: predicate set lifting is not implemented"
+        ));
+        assert!(!result.ptx.contains("setp.eq.pred"));
     }
 
     #[test]
