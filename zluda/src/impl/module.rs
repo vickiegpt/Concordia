@@ -810,10 +810,19 @@ pub(crate) fn get_function(
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
         .unwrap_or(false);
     if use_tmatmul || hmod.module.0.is_null() {
-        eprintln!(
-            "[Intel Backend] Creating placeholder kernel '{}' for tmatmul emulation",
-            name_str
-        );
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static PLACEHOLDER_KERNEL_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+        let placeholder_log_index = PLACEHOLDER_KERNEL_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+        if placeholder_log_index < 32 {
+            eprintln!(
+                "[Intel Backend] Creating placeholder kernel '{}' for tmatmul emulation",
+                name_str
+            );
+        } else if placeholder_log_index == 32 {
+            eprintln!(
+                "[Intel Backend] Placeholder kernel creation log limit reached; suppressing further messages"
+            );
+        }
         let kernel_wrapper = ZeKernel {
             context: hmod.context,
             device: hmod.device,
@@ -825,10 +834,19 @@ pub(crate) fn get_function(
             module_handle: hmod.module.0 as u64,
         };
         if let Some(ref ptx) = kernel_wrapper.ptx_source {
-            eprintln!(
-                "[Intel Backend] Kernel has {} bytes of PTX available",
-                ptx.len()
-            );
+            static KERNEL_PTX_AVAILABLE_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+            let log_index = KERNEL_PTX_AVAILABLE_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+            if log_index < 16 {
+                eprintln!(
+                    "[Intel Backend] Kernel '{}' has {} bytes of PTX available",
+                    name_str,
+                    ptx.len()
+                );
+            } else if log_index == 16 {
+                eprintln!(
+                    "[Intel Backend] Kernel PTX availability log limit reached; suppressing further messages"
+                );
+            }
         }
         *hfunc = kernel_wrapper.wrap();
         return CUresult::SUCCESS;

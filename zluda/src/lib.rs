@@ -66,6 +66,19 @@ pub extern "C" fn hetgpu_zstd_decompress(
     decoded.len() as c_int
 }
 
+#[cfg(feature = "intel")]
+fn hetgpu_log_cuda_calls_enabled() -> bool {
+    std::env::var("HETGPU_LOG_CUDA_CALLS")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(all(
     feature = "pacc",
     not(feature = "amd"),
@@ -160,8 +173,9 @@ macro_rules! implemented {
             #[allow(improper_ctypes)]
             #[allow(improper_ctypes_definitions)]
             pub unsafe extern $abi fn $fn_name ( $( $arg_id : $arg_type),* ) -> $ret_type {
-                // Debug log for all implemented function calls
-                eprintln!("[hetGPU] {} called", stringify!($fn_name));
+                if crate::hetgpu_log_cuda_calls_enabled() {
+                    eprintln!("[hetGPU] {} called", stringify!($fn_name));
+                }
 
                 // Convert arguments with error handling
                 let result = (|| -> std::result::Result<_, CUerror> {
