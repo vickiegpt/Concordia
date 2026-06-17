@@ -1,0 +1,48 @@
+.version 8.7
+.target sm_120
+.address_size 64
+
+.visible .entry kimi_attention_mask(
+    .param .u64 out,
+    .param .u64 in,
+    .param .u32 n
+)
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<6>;
+
+    ld.param.u64 %rd1, [out];
+    ld.param.u64 %rd2, [in];
+    ld.param.u32 %r1, [n];
+
+    mov.u32 %r2, %tid.x;
+    mov.u32 %r3, %ctaid.x;
+    mov.u32 %r4, %ntid.x;
+    mad.lo.u32 %r5, %r3, %r4, %r2;
+    setp.ge.u32 %p1, %r5, %r1;
+    @%p1 bra DONE;
+
+    mul.wide.u32 %rd3, %r5, 4;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.u32 %r6, [%rd4];
+
+    and.b32 %r7, %r5, 31;
+    shr.u32 %r8, %r6, 11;
+    and.b32 %r8, %r8, 31;
+    setp.gt.u32 %p2, %r8, %r7;
+    and.b32 %r9, %r6, 0x0000ffff;
+    xor.b32 %r10, %r9, 0x00005a5a;
+    selp.u32 %r11, 0, %r10, %p2;
+    setp.eq.u32 %p3, %r7, %r8;
+    add.u32 %r12, %r11, 127;
+    selp.u32 %r13, %r12, %r11, %p3;
+    shl.b32 %r14, %r7, 16;
+    or.b32 %r15, %r13, %r14;
+
+    add.u64 %rd5, %rd1, %rd3;
+    st.global.u32 [%rd5], %r15;
+
+DONE:
+    ret;
+}

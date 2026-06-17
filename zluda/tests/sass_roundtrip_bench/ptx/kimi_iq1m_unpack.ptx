@@ -1,0 +1,60 @@
+.version 8.7
+.target sm_120
+.address_size 64
+
+.visible .entry kimi_iq1m_unpack(
+    .param .u64 out,
+    .param .u64 in,
+    .param .u32 n
+)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<18>;
+    .reg .b64 %rd<6>;
+
+    ld.param.u64 %rd1, [out];
+    ld.param.u64 %rd2, [in];
+    ld.param.u32 %r1, [n];
+
+    mov.u32 %r2, %tid.x;
+    mov.u32 %r3, %ctaid.x;
+    mov.u32 %r4, %ntid.x;
+    mad.lo.u32 %r5, %r3, %r4, %r2;
+    setp.ge.u32 %p1, %r5, %r1;
+    @%p1 bra DONE;
+
+    mul.wide.u32 %rd3, %r5, 4;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.u32 %r6, [%rd4];
+
+    and.b32 %r7, %r6, 3;
+    shr.u32 %r8, %r6, 2;
+    and.b32 %r8, %r8, 3;
+    shr.u32 %r9, %r6, 4;
+    and.b32 %r9, %r9, 3;
+    shr.u32 %r10, %r6, 6;
+    and.b32 %r10, %r10, 3;
+
+    shl.b32 %r11, %r7, 30;
+    shr.s32 %r11, %r11, 30;
+    shl.b32 %r12, %r8, 30;
+    shr.s32 %r12, %r12, 30;
+    shl.b32 %r13, %r9, 30;
+    shr.s32 %r13, %r13, 30;
+    shl.b32 %r14, %r10, 30;
+    shr.s32 %r14, %r14, 30;
+
+    mad.lo.u32 %r15, %r11, 7, %r12;
+    mad.lo.u32 %r15, %r13, 13, %r15;
+    mad.lo.u32 %r15, %r14, 17, %r15;
+    and.b32 %r16, %r5, 1;
+    setp.eq.u32 %p2, %r16, 0;
+    xor.b32 %r17, %r15, 0x9e3779b9;
+    selp.u32 %r17, %r17, %r15, %p2;
+
+    add.u64 %rd5, %rd1, %rd3;
+    st.global.u32 [%rd5], %r17;
+
+DONE:
+    ret;
+}

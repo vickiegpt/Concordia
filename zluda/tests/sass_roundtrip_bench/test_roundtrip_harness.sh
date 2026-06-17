@@ -53,6 +53,21 @@ if grep -Fq "kimi_rope_mix,sm_120,dry_run" "${kimi_csv}"; then
     exit 1
 fi
 
+for kimi_case in \
+    kimi_iq1m_unpack \
+    kimi_rmsnorm_bits \
+    kimi_swiglu_mix \
+    kimi_rope_mix \
+    kimi_attention_mask
+do
+    ptx_file="${SCRIPT_DIR}/ptx/${kimi_case}.ptx"
+    test -s "${ptx_file}"
+    grep -Fq ".visible .entry ${kimi_case}(" "${ptx_file}"
+    grep -Fq ".param .u64 out" "${ptx_file}"
+    grep -Fq ".param .u64 in" "${ptx_file}"
+    grep -Fq ".param .u32 n" "${ptx_file}"
+done
+
 if rg -q "list-gpu-code" "${SCRIPT_DIR}/run.sh"; then
     echo "round-trip bench should validate PTX support through ptxas, not nvcc --list-gpu-code" >&2
     exit 1

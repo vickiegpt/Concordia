@@ -1,0 +1,54 @@
+.version 8.7
+.target sm_120
+.address_size 64
+
+.visible .entry kimi_rope_mix(
+    .param .u64 out,
+    .param .u64 in,
+    .param .u32 n
+)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<18>;
+    .reg .b64 %rd<10>;
+
+    ld.param.u64 %rd1, [out];
+    ld.param.u64 %rd2, [in];
+    ld.param.u32 %r1, [n];
+
+    mov.u32 %r2, %tid.x;
+    mov.u32 %r3, %ctaid.x;
+    mov.u32 %r4, %ntid.x;
+    mad.lo.u32 %r5, %r3, %r4, %r2;
+    setp.ge.u32 %p1, %r5, %r1;
+    @%p1 bra DONE;
+
+    xor.b32 %r6, %r5, 1;
+    setp.ge.u32 %p2, %r6, %r1;
+    selp.u32 %r6, %r5, %r6, %p2;
+
+    mul.wide.u32 %rd3, %r5, 4;
+    mul.wide.u32 %rd4, %r6, 4;
+    add.u64 %rd5, %rd2, %rd3;
+    add.u64 %rd6, %rd2, %rd4;
+    ld.global.u32 %r7, [%rd5];
+    ld.global.u32 %r8, [%rd6];
+
+    and.b32 %r9, %r5, 1;
+    setp.eq.u32 %p2, %r9, 0;
+    shl.b32 %r10, %r7, 5;
+    shr.u32 %r11, %r7, 27;
+    or.b32 %r12, %r10, %r11;
+    shl.b32 %r13, %r8, 7;
+    shr.u32 %r14, %r8, 25;
+    or.b32 %r15, %r13, %r14;
+    sub.u32 %r16, %r12, %r15;
+    add.u32 %r17, %r12, %r15;
+    selp.u32 %r17, %r16, %r17, %p2;
+
+    add.u64 %rd7, %rd1, %rd3;
+    st.global.u32 [%rd7], %r17;
+
+DONE:
+    ret;
+}

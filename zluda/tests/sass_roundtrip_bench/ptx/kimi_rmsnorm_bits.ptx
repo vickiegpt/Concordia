@@ -1,0 +1,52 @@
+.version 8.7
+.target sm_120
+.address_size 64
+
+.visible .entry kimi_rmsnorm_bits(
+    .param .u64 out,
+    .param .u64 in,
+    .param .u32 n
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<10>;
+    .reg .b64 %rd<6>;
+    .reg .f32 %f<13>;
+
+    ld.param.u64 %rd1, [out];
+    ld.param.u64 %rd2, [in];
+    ld.param.u32 %r1, [n];
+
+    mov.u32 %r2, %tid.x;
+    mov.u32 %r3, %ctaid.x;
+    mov.u32 %r4, %ntid.x;
+    mad.lo.u32 %r5, %r3, %r4, %r2;
+    setp.ge.u32 %p1, %r5, %r1;
+    @%p1 bra DONE;
+
+    mul.wide.u32 %rd3, %r5, 4;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.u32 %r6, [%rd4];
+
+    and.b32 %r7, %r6, 2047;
+    cvt.rn.f32.u32 %f1, %r7;
+    mov.f32 %f2, 0f3A83126F;
+    mov.f32 %f3, 0f3F000000;
+    fma.rn.f32 %f4, %f1, %f2, %f3;
+    mul.rn.f32 %f5, %f4, %f4;
+    mov.f32 %f6, 0f3C23D70A;
+    add.rn.f32 %f7, %f5, %f6;
+    rsqrt.approx.ftz.f32 %f8, %f7;
+    mul.rn.f32 %f9, %f4, %f8;
+    mov.f32 %f10, 0f42C80000;
+    mov.f32 %f11, 0f43000000;
+    fma.rn.f32 %f12, %f9, %f10, %f11;
+    cvt.rzi.u32.f32 %r8, %f12;
+    xor.b32 %r9, %r8, %r6;
+
+    add.u64 %rd5, %rd1, %rd3;
+    st.global.u32 [%rd5], %r9;
+
+DONE:
+    ret;
+}
