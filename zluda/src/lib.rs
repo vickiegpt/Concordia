@@ -30,6 +30,43 @@ pub extern "C" fn hetgpu_lz4_decompress(
     unsafe { lz4_sys::LZ4_decompress_safe(src, dst, compressed_size, dst_capacity) }
 }
 
+// FFI wrapper for Zstandard PTX payloads in CUDA fatbins. Newer CUDA toolchains
+// emit zstd-compressed entries while the legacy shim path only tried LZ4.
+#[no_mangle]
+pub extern "C" fn hetgpu_zstd_decompress(
+    src: *const c_char,
+    dst: *mut c_char,
+    compressed_size: c_int,
+    dst_capacity: c_int,
+) -> c_int {
+    if src.is_null() || dst.is_null() || compressed_size <= 0 || dst_capacity <= 0 {
+        return -1;
+    }
+
+    use std::io::Read;
+
+    let input =
+        unsafe { std::slice::from_raw_parts(src as *const u8, compressed_size as usize) };
+    let mut cursor = std::io::Cursor::new(input);
+    let decoder = match ruzstd::StreamingDecoder::new(&mut cursor) {
+        Ok(decoder) => decoder,
+        Err(_) => return -2,
+    };
+    let mut limited = decoder.take(dst_capacity as u64 + 1);
+    let mut decoded = Vec::new();
+    if limited.read_to_end(&mut decoded).is_err() {
+        return -3;
+    }
+    if decoded.len() > dst_capacity as usize {
+        return -4;
+    }
+
+    unsafe {
+        ptr::copy_nonoverlapping(decoded.as_ptr(), dst as *mut u8, decoded.len());
+    }
+    decoded.len() as c_int
+}
+
 #[cfg(all(
     feature = "pacc",
     not(feature = "amd"),

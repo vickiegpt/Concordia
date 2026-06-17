@@ -46,6 +46,16 @@ pub(crate) struct Module {
 
 #[cfg(feature = "intel")]
 const HETGPU_SASS_MAX_CUBIN_BYTES: usize = 256 * 1024 * 1024;
+#[cfg(feature = "intel")]
+const HETGPU_FATBIN_MAGIC: &[u8; 4] = b"\x50\xed\x55\xba";
+#[cfg(feature = "intel")]
+const HETGPU_ZSTD_MAGIC: &[u8; 4] = b"\x28\xb5\x2f\xfd";
+#[cfg(feature = "intel")]
+const HETGPU_FATBIN_KIND_PTX: u16 = 0x01;
+#[cfg(feature = "intel")]
+const HETGPU_FATBIN_KIND_ELF: u16 = 0x02;
+#[cfg(feature = "intel")]
+const HETGPU_FATBIN_FILE_HEADER_MIN_SIZE: usize = 64;
 
 #[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) struct Module {
@@ -887,7 +897,7 @@ pub(crate) struct ZeKernel {
     pub name: String,
     pub ptx_source: Option<Arc<String>>, // Shared PTX - avoids cloning per kernel
     pub cubin_binary: Option<Arc<Vec<u8>>>,
-    pub module_handle: u64,              // Handle for checkpoint tracking
+    pub module_handle: u64, // Handle for checkpoint tracking
 }
 #[cfg(feature = "intel")]
 unsafe impl Send for ZeKernel {}
@@ -1305,21 +1315,243 @@ where
 }
 
 #[cfg(feature = "intel")]
+fn read_u16_le(data: &[u8], offset: usize) -> Option<u16> {
+    let bytes = data.get(offset..offset + 2)?;
+    Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+}
+
+#[cfg(feature = "intel")]
+fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
+    let bytes = data.get(offset..offset + 4)?;
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(feature = "intel")]
+fn read_u64_le(data: &[u8], offset: usize) -> Option<u64> {
+    let bytes = data.get(offset..offset + 8)?;
+    Some(u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ]))
+}
+
+#[cfg(feature = "intel")]
+fn bytes_start_with(data: &[u8], magic: &[u8; 4]) -> bool {
+    data.get(..4) == Some(magic.as_slice())
+}
+
+#[cfg(feature = "intel")]
+fn try_decompress_zstd_bytes(data: &[u8], label: &str) -> Option<Vec<u8>> {
+    if !bytes_start_with(data, HETGPU_ZSTD_MAGIC) {
+        return None;
+    }
+
+    use std::io::Read;
+
+    let mut cursor = std::io::Cursor::new(data);
+    let decoder = match ruzstd::StreamingDecoder::new(&mut cursor) {
+        Ok(decoder) => decoder,
+        Err(err) => {
+            eprintln!(
+                "[hetGPU SASS] zstd decoder init failed for {}: {:?}",
+                label, err
+            );
+            return None;
+        }
+    };
+    let mut limited = decoder.take((HETGPU_SASS_MAX_CUBIN_BYTES + 1) as u64);
+    let mut decoded = Vec::new();
+    match limited.read_to_end(&mut decoded) {
+        Ok(_) if decoded.len() <= HETGPU_SASS_MAX_CUBIN_BYTES => {
+            eprintln!(
+                "[hetGPU SASS] zstd decompressed {}: {} -> {} bytes",
+                label,
+                data.len(),
+                decoded.len()
+            );
+            Some(decoded)
+        }
+        Ok(_) => {
+            eprintln!(
+                "[hetGPU SASS] zstd decompressed {} past {} byte limit",
+                label, HETGPU_SASS_MAX_CUBIN_BYTES
+            );
+            None
+        }
+        Err(err) => {
+            eprintln!(
+                "[hetGPU SASS] zstd decompression failed for {}: {}",
+                label, err
+            );
+            None
+        }
+    }
+}
+
+#[cfg(feature = "intel")]
+fn try_decompress_lz4_bytes(data: &[u8], uncompressed_size: usize, label: &str) -> Option<Vec<u8>> {
+    if uncompressed_size == 0 || uncompressed_size > HETGPU_SASS_MAX_CUBIN_BYTES {
+        return None;
+    }
+
+    let mut decoded = vec![0u8; uncompressed_size];
+    let result = unsafe {
+        lz4_sys::LZ4_decompress_safe(
+            data.as_ptr() as *const _,
+            decoded.as_mut_ptr() as *mut _,
+            data.len().try_into().ok()?,
+            decoded.len().try_into().ok()?,
+        )
+    };
+    if result <= 0 {
+        return None;
+    }
+    decoded.truncate(result as usize);
+    eprintln!(
+        "[hetGPU SASS] LZ4 decompressed {}: {} -> {} bytes",
+        label,
+        data.len(),
+        decoded.len()
+    );
+    Some(decoded)
+}
+
+#[cfg(feature = "intel")]
+fn cubin_payload_view(data: &[u8]) -> Option<&[u8]> {
+    if ptx::is_cubin(data) {
+        return Some(data);
+    }
+    if data.first() == Some(&0) && ptx::is_cubin(&data[1..]) {
+        return Some(&data[1..]);
+    }
+    None
+}
+
+#[cfg(feature = "intel")]
+fn try_extract_cubin_from_fatbin(data: &[u8], kernel_name: &str) -> Option<Vec<u8>> {
+    if !bytes_start_with(data, HETGPU_FATBIN_MAGIC) {
+        return None;
+    }
+
+    let header_size = read_u16_le(data, 6)? as usize;
+    let files_size = read_u64_le(data, 8)? as usize;
+    let end = header_size.checked_add(files_size)?.min(data.len());
+    if header_size >= end {
+        return None;
+    }
+
+    let mut offset = header_size;
+    let mut best: Option<(u32, Vec<u8>)> = None;
+    while offset + HETGPU_FATBIN_FILE_HEADER_MIN_SIZE <= end {
+        let kind = read_u16_le(data, offset)?;
+        let entry_header_size = read_u32_le(data, offset + 4)? as usize;
+        let padded_payload_size = read_u32_le(data, offset + 8)? as usize;
+        let payload_size = read_u32_le(data, offset + 16)? as usize;
+        let sm_version = read_u32_le(data, offset + 28).unwrap_or(0);
+        let uncompressed_size = read_u64_le(data, offset + 56).unwrap_or(0) as usize;
+
+        if entry_header_size < HETGPU_FATBIN_FILE_HEADER_MIN_SIZE {
+            break;
+        }
+        let payload_start = offset.checked_add(entry_header_size)?;
+        let payload_end = payload_start.checked_add(payload_size)?;
+        if payload_start > end || payload_end > end {
+            break;
+        }
+        let payload = &data[payload_start..payload_end];
+
+        if kind == HETGPU_FATBIN_KIND_ELF {
+            let label = format!("fatbin ELF entry sm={} for {}", sm_version, kernel_name);
+            let candidate = cubin_payload_view(payload)
+                .map(|cubin| cubin.to_vec())
+                .or_else(|| {
+                    try_decompress_zstd_bytes(payload, &label).and_then(|decoded| {
+                        cubin_payload_view(&decoded).map(|cubin| cubin.to_vec())
+                    })
+                })
+                .or_else(|| {
+                    try_decompress_lz4_bytes(payload, uncompressed_size, &label).and_then(
+                        |decoded| cubin_payload_view(&decoded).map(|cubin| cubin.to_vec()),
+                    )
+                });
+
+            if let Some(cubin) = candidate {
+                if best
+                    .as_ref()
+                    .map(|(best_sm, _)| sm_version >= *best_sm)
+                    .unwrap_or(true)
+                {
+                    best = Some((sm_version, cubin));
+                }
+            }
+        }
+
+        let entry_payload_span = if padded_payload_size > 0 {
+            padded_payload_size
+        } else {
+            (payload_size + 7) & !7
+        };
+        let next = offset
+            .checked_add(entry_header_size)?
+            .checked_add(entry_payload_span)?;
+        if next <= offset {
+            break;
+        }
+        offset = next;
+    }
+
+    if let Some((sm, cubin)) = best {
+        eprintln!(
+            "[hetGPU SASS] selected fatbin CUBIN for '{}' (sm={}, {} bytes)",
+            kernel_name,
+            sm,
+            cubin.len()
+        );
+        return Some(cubin);
+    }
+    None
+}
+
+#[cfg(feature = "intel")]
+fn select_cubin_for_sass_lifter<'a>(
+    binary: &'a [u8],
+    kernel_name: &str,
+) -> Option<std::borrow::Cow<'a, [u8]>> {
+    if let Some(cubin) = cubin_payload_view(binary) {
+        return Some(std::borrow::Cow::Borrowed(cubin));
+    }
+    if let Some(cubin) = try_extract_cubin_from_fatbin(binary, kernel_name) {
+        return Some(std::borrow::Cow::Owned(cubin));
+    }
+    if let Some(decoded) = try_decompress_zstd_bytes(binary, "retained module image") {
+        if let Some(cubin) = cubin_payload_view(&decoded) {
+            return Some(std::borrow::Cow::Owned(cubin.to_vec()));
+        }
+        if let Some(cubin) = try_extract_cubin_from_fatbin(&decoded, kernel_name) {
+            return Some(std::borrow::Cow::Owned(cubin));
+        }
+    }
+    None
+}
+
+#[cfg(feature = "intel")]
 pub(crate) fn lift_cubin_to_ptx_for_kernel(binary: &[u8], kernel_name: &str) -> Option<String> {
     if !intel_sass_lifter_requested() {
         return None;
     }
-    if !ptx::is_cubin(binary) {
-        eprintln!(
-            "[hetGPU SASS] retained binary for '{}' is not an NVIDIA CUBIN ({} bytes); cannot lift",
-            kernel_name,
-            binary.len()
-        );
-        return None;
-    }
+    let cubin = match select_cubin_for_sass_lifter(binary, kernel_name) {
+        Some(cubin) => cubin,
+        None => {
+            eprintln!(
+                "[hetGPU SASS] retained binary for '{}' did not contain an NVIDIA CUBIN ({} bytes); cannot lift",
+                kernel_name,
+                binary.len()
+            );
+            return None;
+        }
+    };
 
     match ptx::lift_cubin_to_ptx(
-        binary,
+        cubin.as_ref(),
         ptx::SassLiftOptions {
             sm_version: 0,
             kernel_name: kernel_name.to_string(),
@@ -1331,7 +1563,7 @@ pub(crate) fn lift_cubin_to_ptx_for_kernel(binary: &[u8], kernel_name: &str) -> 
             eprintln!(
                 "[hetGPU SASS] lifted '{}' from CUBIN: input={} bytes ptx={} bytes diagnostics={}",
                 kernel_name,
-                binary.len(),
+                cubin.len(),
                 result.ptx.len(),
                 result.diagnostics.len()
             );
@@ -1377,6 +1609,50 @@ pub(crate) fn lift_cubin_to_ptx_for_kernel(binary: &[u8], kernel_name: &str) -> 
 mod sass_fallback_tests {
     use super::*;
 
+    fn zstd_ptx_fixture() -> &'static [u8] {
+        &[
+            0x28, 0xb5, 0x2f, 0xfd, 0x20, 0x3d, 0xe9, 0x01, 0x00, 0x2e, 0x76, 0x65, 0x72, 0x73,
+            0x69, 0x6f, 0x6e, 0x20, 0x38, 0x2e, 0x30, 0x0a, 0x2e, 0x74, 0x61, 0x72, 0x67, 0x65,
+            0x74, 0x20, 0x73, 0x6d, 0x5f, 0x38, 0x30, 0x0a, 0x2e, 0x76, 0x69, 0x73, 0x69, 0x62,
+            0x6c, 0x65, 0x20, 0x2e, 0x65, 0x6e, 0x74, 0x72, 0x79, 0x20, 0x5f, 0x5a, 0x74, 0x65,
+            0x73, 0x74, 0x28, 0x29, 0x20, 0x7b, 0x20, 0x72, 0x65, 0x74, 0x3b, 0x20, 0x7d, 0x0a,
+        ]
+    }
+
+    fn fake_cubin() -> Vec<u8> {
+        let mut cubin = vec![0u8; 64];
+        cubin[0..4].copy_from_slice(b"\x7fELF");
+        cubin[4] = 2;
+        cubin[5] = 1;
+        cubin[18] = 0xbe;
+        cubin
+    }
+
+    fn build_fatbin(kind: u16, payload: &[u8]) -> Vec<u8> {
+        let fatbin_header_size = 16usize;
+        let entry_header_size = HETGPU_FATBIN_FILE_HEADER_MIN_SIZE;
+        let padded_payload_size = (payload.len() + 7) & !7;
+        let files_size = entry_header_size + padded_payload_size;
+        let mut fatbin = vec![0u8; fatbin_header_size + files_size];
+
+        fatbin[0..4].copy_from_slice(HETGPU_FATBIN_MAGIC);
+        fatbin[4..6].copy_from_slice(&1u16.to_le_bytes());
+        fatbin[6..8].copy_from_slice(&(fatbin_header_size as u16).to_le_bytes());
+        fatbin[8..16].copy_from_slice(&(files_size as u64).to_le_bytes());
+
+        let entry = fatbin_header_size;
+        fatbin[entry..entry + 2].copy_from_slice(&kind.to_le_bytes());
+        fatbin[entry + 2..entry + 4].copy_from_slice(&0x101u16.to_le_bytes());
+        fatbin[entry + 4..entry + 8].copy_from_slice(&(entry_header_size as u32).to_le_bytes());
+        fatbin[entry + 8..entry + 12].copy_from_slice(&(padded_payload_size as u32).to_le_bytes());
+        fatbin[entry + 16..entry + 20].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        fatbin[entry + 28..entry + 32].copy_from_slice(&80u32.to_le_bytes());
+        fatbin[entry + 32..entry + 36].copy_from_slice(&64u32.to_le_bytes());
+        let payload_start = entry + entry_header_size;
+        fatbin[payload_start..payload_start + payload.len()].copy_from_slice(payload);
+        fatbin
+    }
+
     #[test]
     fn runtime_ptx_wins_without_calling_sass_lifter() {
         let recovered = recover_ptx_source_with_sass_fallback(
@@ -1399,17 +1675,114 @@ mod sass_fallback_tests {
             |binary, kernel_name| {
                 assert_eq!(binary, b"fake-cubin");
                 assert_eq!(kernel_name, "_Z9mul_mat_q_test");
-                Some(".version 8.0\n.target sm_80\n.visible .entry _Z9mul_mat_q_test() {}\n".to_string())
+                Some(
+                    ".version 8.0\n.target sm_80\n.visible .entry _Z9mul_mat_q_test() {}\n"
+                        .to_string(),
+                )
             },
         )
         .expect("SASS lifter fallback should provide recovered PTX");
 
         assert!(recovered.contains("_Z9mul_mat_q_test"));
     }
+
+    #[test]
+    fn raw_zstd_ptx_payload_is_recovered_before_sass_fallback() {
+        let recovered =
+            try_extract_ptx_from_cubin(zstd_ptx_fixture()).expect("zstd PTX should decode");
+
+        assert!(recovered.contains(".target sm_80"));
+        assert!(recovered.contains("_Ztest"));
+    }
+
+    #[test]
+    fn fatbin_zstd_ptx_entry_is_recovered_before_sass_fallback() {
+        let fatbin = build_fatbin(HETGPU_FATBIN_KIND_PTX, zstd_ptx_fixture());
+        let recovered = try_extract_ptx_from_cubin(&fatbin).expect("fatbin PTX should decode");
+
+        assert!(recovered.contains(".target sm_80"));
+        assert!(recovered.contains("_Ztest"));
+    }
+
+    #[test]
+    fn fatbin_elf_entry_is_selected_for_sass_lifter() {
+        let mut payload = vec![0];
+        payload.extend(fake_cubin());
+        let fatbin = build_fatbin(HETGPU_FATBIN_KIND_ELF, &payload);
+
+        let selected = select_cubin_for_sass_lifter(&fatbin, "_Z9mul_mat_q_test")
+            .expect("fatbin CUBIN should be selected");
+
+        assert!(ptx::is_cubin(selected.as_ref()));
+        assert_eq!(&selected.as_ref()[0..4], b"\x7fELF");
+    }
+}
+
+#[cfg(feature = "intel")]
+fn try_extract_ptx_text_from_bytes(data: &[u8], label: &str) -> Option<String> {
+    if let Ok(text) = std::str::from_utf8(data) {
+        let trimmed = text.trim_matches('\0');
+        if trimmed.contains(".version") && trimmed.contains(".target") {
+            eprintln!(
+                "[PTX Extract] Found raw PTX text in {} ({} bytes)",
+                label,
+                trimmed.len()
+            );
+            return Some(trimmed.to_string());
+        }
+    }
+
+    for (pos, window) in data.windows(b".version".len()).enumerate() {
+        if window == b".version" {
+            if let Some(ptx) = extract_ptx_from_offset_improved(data, pos) {
+                eprintln!(
+                    "[PTX Extract] Recovered PTX from {} at offset {}",
+                    label, pos
+                );
+                return Some(ptx);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(feature = "intel")]
+fn try_decode_ptx_payload(payload: &[u8], uncompressed_size: usize, label: &str) -> Option<String> {
+    try_extract_ptx_text_from_bytes(payload, label)
+        .or_else(|| {
+            try_decompress_zstd_bytes(payload, label)
+                .and_then(|decoded| try_extract_ptx_text_from_bytes(&decoded, label))
+        })
+        .or_else(|| {
+            try_decompress_lz4_bytes(payload, uncompressed_size, label)
+                .and_then(|decoded| try_extract_ptx_text_from_bytes(&decoded, label))
+        })
+        .or_else(|| {
+            if payload.first() == Some(&0x78) {
+                try_decompress_zlib(payload)
+            } else {
+                None
+            }
+        })
 }
 
 #[cfg(feature = "intel")]
 fn try_extract_ptx_from_cubin(binary: &[u8]) -> Option<String> {
+    if let Some(ptx) = try_extract_ptx_text_from_bytes(binary, "module image") {
+        return Some(ptx);
+    }
+    if let Some(ptx) = try_decompress_zstd_bytes(binary, "module image")
+        .and_then(|decoded| try_extract_ptx_text_from_bytes(&decoded, "zstd module image"))
+    {
+        return Some(ptx);
+    }
+    if bytes_start_with(binary, HETGPU_FATBIN_MAGIC) {
+        eprintln!("[PTX Extract] CUDA fatbin detected, searching entries for PTX...");
+        if let Some(ptx) = try_extract_ptx_from_fatbin(binary) {
+            return Some(ptx);
+        }
+    }
+
     // Check for ELF magic
     if binary.len() < 4
         || !(binary[0] == 0x7f && binary[1] == b'E' && binary[2] == b'L' && binary[3] == b'F')
@@ -1698,80 +2071,67 @@ fn try_extract_ptx_from_fatbin(data: &[u8]) -> Option<String> {
         return None;
     }
 
-    let header_size = u16::from_le_bytes([data[6], data[7]]) as usize;
+    if !bytes_start_with(data, HETGPU_FATBIN_MAGIC) {
+        return None;
+    }
+
+    let header_size = read_u16_le(data, 6)? as usize;
+    let files_size = read_u64_le(data, 8)? as usize;
+    let end = header_size.checked_add(files_size)?.min(data.len());
 
     eprintln!("[PTX Extract] Fatbin header_size: {}", header_size);
 
-    if header_size >= data.len() {
+    if header_size >= end {
         return None;
     }
 
     let mut offset = header_size;
 
-    while offset + 24 < data.len() {
+    while offset + HETGPU_FATBIN_FILE_HEADER_MIN_SIZE <= end {
         // File entry header
-        let kind = u16::from_le_bytes([data[offset], data[offset + 1]]);
-        let entry_header_size = u16::from_le_bytes([data[offset + 4], data[offset + 5]]) as usize;
-        let payload_size = u64::from_le_bytes([
-            data[offset + 8],
-            data[offset + 9],
-            data[offset + 10],
-            data[offset + 11],
-            data[offset + 12],
-            data[offset + 13],
-            data[offset + 14],
-            data[offset + 15],
-        ]) as usize;
-        let uncompressed_size = u64::from_le_bytes([
-            data[offset + 16],
-            data[offset + 17],
-            data[offset + 18],
-            data[offset + 19],
-            data[offset + 20],
-            data[offset + 21],
-            data[offset + 22],
-            data[offset + 23],
-        ]) as usize;
+        let kind = read_u16_le(data, offset)?;
+        let entry_header_size = read_u32_le(data, offset + 4)? as usize;
+        let padded_payload_size = read_u32_le(data, offset + 8)? as usize;
+        let payload_size = read_u32_le(data, offset + 16)? as usize;
+        let sm_version = read_u32_le(data, offset + 28).unwrap_or(0);
+        let uncompressed_size = read_u64_le(data, offset + 56).unwrap_or(0) as usize;
 
         eprintln!(
-            "[PTX Extract] Fatbin entry: kind=0x{:04x}, header={}, payload={}, uncompressed={}",
-            kind, entry_header_size, payload_size, uncompressed_size
+            "[PTX Extract] Fatbin entry: kind=0x{:04x}, header={}, payload={}, padded={}, uncompressed={}, sm={}",
+            kind,
+            entry_header_size,
+            payload_size,
+            padded_payload_size,
+            uncompressed_size,
+            sm_version
         );
 
         // kind 0x01 = PTX, 0x02 = CUBIN/ELF
-        if kind == 0x01 {
+        if kind == HETGPU_FATBIN_KIND_PTX {
             let payload_start = offset + entry_header_size;
-            if payload_start + payload_size <= data.len() {
+            if payload_start + payload_size <= end {
                 let payload = &data[payload_start..payload_start + payload_size];
-
-                // Check if compressed
-                if uncompressed_size > payload_size && payload.len() >= 2 {
-                    if payload[0] == 0x78 {
-                        eprintln!("[PTX Extract] PTX entry is zlib compressed");
-                        if let Some(ptx) = try_decompress_zlib(payload) {
-                            return Some(ptx);
-                        }
-                    }
-                }
-
-                // Try as raw PTX
-                if let Ok(ptx) = std::str::from_utf8(payload) {
-                    let ptx = ptx.trim_end_matches('\0');
-                    if ptx.len() >= 50 && ptx.contains(".version") {
-                        return Some(ptx.to_string());
-                    }
+                let label = format!("fatbin PTX entry sm={}", sm_version);
+                if let Some(ptx) = try_decode_ptx_payload(payload, uncompressed_size, &label) {
+                    return Some(ptx);
                 }
             }
         }
 
         // Move to next entry (aligned)
-        let entry_total = entry_header_size + payload_size;
-        let aligned = (entry_total + 7) & !7;
-        offset += aligned;
+        let entry_payload_span = if padded_payload_size > 0 {
+            padded_payload_size
+        } else {
+            (payload_size + 7) & !7
+        };
+        let next = offset
+            .checked_add(entry_header_size)?
+            .checked_add(entry_payload_span)?;
 
-        if offset == 0 || aligned == 0 {
+        if next <= offset {
             break;
         }
+        offset = next;
     }
 
     None
