@@ -3255,6 +3255,8 @@ typedef struct {
 
 // LZ4 decompression (provided by Rust FFI wrapper in lib.rs)
 extern int hetgpu_lz4_decompress(const char* src, char* dst, int compressedSize, int dstCapacity);
+// Zstandard decompression (provided by Rust FFI wrapper in lib.rs)
+extern int hetgpu_zstd_decompress(const char* src, char* dst, int compressedSize, int dstCapacity);
 
 #define FATBIN_MAGIC 0xBA55ED50
 #define FATBIN_KIND_PTX 0x01
@@ -3323,6 +3325,19 @@ static char* extract_ptx_from_fatbin_memory(const unsigned char* base, size_t si
                 char* decompressed = (char*)malloc(file_header->uncompressed_payload + 1);
                 if (decompressed) {
                     int result = hetgpu_lz4_decompress(
+                        (const char*)payload,
+                        decompressed,
+                        (int)payload_size,
+                        (int)file_header->uncompressed_payload
+                    );
+                    if (result > 0) {
+                        decompressed[result] = '\0';
+                        if (hetgpu_ptx_has_markers((const unsigned char*)decompressed, (size_t)result)) {
+                            if (out_size) *out_size = (size_t)result;
+                            return decompressed;
+                        }
+                    }
+                    result = hetgpu_zstd_decompress(
                         (const char*)payload,
                         decompressed,
                         (int)payload_size,
@@ -3525,11 +3540,25 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
                             payload_size = (size_t)result;
                             payload_needs_free = 1;
                         } else {
-                            fprintf(stderr, "[cudart_shim] LZ4 decompression FAILED (result=%d), trying raw\n", result);
-                            free(decompressed);
-                            // Fall through to try raw
-                            payload = ptx_payload;
-                            payload_size = raw_size;
+                            int zstd_result = hetgpu_zstd_decompress(
+                                (const char*)ptx_payload,
+                                decompressed,
+                                (int)raw_size,
+                                (int)uncompressed_size
+                            );
+                            if (zstd_result > 0) {
+                                decompressed[zstd_result] = '\0';
+                                HETGPU_LOG("[cudart_shim] ZSTD decompression successful: %d bytes\n", zstd_result);
+                                payload = decompressed;
+                                payload_size = (size_t)zstd_result;
+                                payload_needs_free = 1;
+                            } else {
+                                fprintf(stderr, "[cudart_shim] LZ4 decompression FAILED (result=%d), ZSTD failed (result=%d), trying raw\n", result, zstd_result);
+                                free(decompressed);
+                                // Fall through to try raw
+                                payload = ptx_payload;
+                                payload_size = raw_size;
+                            }
                         }
                     } else {
                         fprintf(stderr, "[cudart_shim] Failed to allocate %zu bytes for decompression\n", uncompressed_size);

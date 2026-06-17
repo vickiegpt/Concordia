@@ -77,6 +77,28 @@ rg -Fq '.target ${sm}' "${SCRIPT_DIR}/run.sh"
 rg -q 'rm -f "\$\{lifted\}"' "${SCRIPT_DIR}/run.sh"
 rg -q 'wrote lifted PTX dump' "${SCRIPT_DIR}/run.sh"
 
+e2e_work_dir="$(mktemp -d /tmp/hetgpu-kimi-e2e-test.XXXXXX)"
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${e2e_work_dir}"' EXIT
+HETGPU_KIMI_E2E_WORKDIR="${e2e_work_dir}" \
+BITNET_LLAMA_CLI="${e2e_work_dir}/missing-llama-cli" \
+MODEL_DIR="${e2e_work_dir}/missing-model" \
+    "${SCRIPT_DIR}/run_kimi_k26_e2e.sh" >/dev/null
+e2e_csv="${e2e_work_dir}/bench_kimi_k26_e2e.csv"
+head -n 1 "${e2e_csv}" | grep -Fxq "case,status,total_ms,exit_code,stdout_bytes,stderr_bytes,lifter_markers,lifted_ptx_files,lifted_ptx_bytes,message"
+grep -Fq "kimi_k26_iq1m,skipped_missing_runner" "${e2e_csv}"
+
+fake_runner="${e2e_work_dir}/fake-llama-cli"
+printf '#!/usr/bin/env bash\nprintf "fake kimi output\\n"\n' >"${fake_runner}"
+chmod +x "${fake_runner}"
+e2e_model_work_dir="$(mktemp -d /tmp/hetgpu-kimi-e2e-model-test.XXXXXX)"
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}"' EXIT
+HETGPU_KIMI_E2E_WORKDIR="${e2e_model_work_dir}" \
+BITNET_LLAMA_CLI="${fake_runner}" \
+MODEL_DIR="${e2e_model_work_dir}/missing-model" \
+    "${SCRIPT_DIR}/run_kimi_k26_e2e.sh" >/dev/null
+e2e_model_csv="${e2e_model_work_dir}/bench_kimi_k26_e2e.csv"
+grep -Fq "kimi_k26_iq1m,skipped_missing_model" "${e2e_model_csv}"
+
 bar_line="$(rg -n 'bar\.sync 0' "${SCRIPT_DIR}/ptx/shared_reverse.ptx" | cut -d: -f1)"
 early_done_branch="$(
     (rg -n '@%p[0-9]+ bra DONE' "${SCRIPT_DIR}/ptx/shared_reverse.ptx" || true) \

@@ -45,8 +45,7 @@ pub extern "C" fn hetgpu_zstd_decompress(
 
     use std::io::Read;
 
-    let input =
-        unsafe { std::slice::from_raw_parts(src as *const u8, compressed_size as usize) };
+    let input = unsafe { std::slice::from_raw_parts(src as *const u8, compressed_size as usize) };
     let mut cursor = std::io::Cursor::new(input);
     let decoder = match ruzstd::StreamingDecoder::new(&mut cursor) {
         Ok(decoder) => decoder,
