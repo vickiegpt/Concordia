@@ -28,8 +28,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use ptx::sass::{
-    CubinParser, EnhancedSassInstruction, PtxReconstructor, PtxRecoveryEngine, SassDisassembler,
-    SassOpcodeClass, TextDisassemblyParser,
+    lift_cubin_to_ptx, lift_sass_text_to_ptx, CubinParser, EnhancedSassInstruction,
+    SassDisassembler, SassLiftOptions, SassOpcodeClass, TextDisassemblyParser,
 };
 
 // ============================================================================
@@ -1507,6 +1507,7 @@ enum Command {
         input: PathBuf,
         output: Option<PathBuf>,
         address: Option<u64>,
+        kernel_name: Option<String>,
     },
 }
 
@@ -1697,6 +1698,7 @@ fn parse_ptx_command(args: &[String]) -> Result<Command, String> {
     let mut input = PathBuf::new();
     let mut output = None;
     let mut address = None;
+    let mut kernel_name = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -1720,6 +1722,13 @@ fn parse_ptx_command(args: &[String]) -> Result<Command, String> {
                 };
                 address = Some(addr);
             }
+            "--kernel" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("--kernel requires an argument".to_string());
+                }
+                kernel_name = Some(args[i].clone());
+            }
             arg if arg.starts_with('-') => {
                 return Err(format!("Unknown option: {}", arg));
             }
@@ -1740,6 +1749,7 @@ fn parse_ptx_command(args: &[String]) -> Result<Command, String> {
         input,
         output,
         address,
+        kernel_name,
     })
 }
 
@@ -1755,7 +1765,7 @@ COMMANDS:
     replay      Replay a recorded session
     analyze     Analyze a recording
     info        Show recording information
-    ptx         Recover/reconstruct PTX from SASS using debug info
+    ptx         Recover/reconstruct PTX from SASS with the shared lifter
 
 OPTIONS:
     -v, --verbose    Verbose output
@@ -1778,6 +1788,7 @@ ANALYZE OPTIONS:
 PTX OPTIONS:
     -o, --output <file>       Output PTX file
     -a, --address <addr>      Show PTX for specific SASS address
+    --kernel <name>           Select kernel/function name to lift
 
 EXAMPLES:
     # Record kernel execution from CUBIN
@@ -1792,11 +1803,14 @@ EXAMPLES:
     # Show recording info
     gpu_rr info trace.gpur
 
-    # Recover PTX from CUBIN (uses debug info)
+    # Recover PTX from CUBIN with the shared lifter
     gpu_rr ptx kernel.cubin -o recovered.ptx
 
     # Reconstruct PTX from text SASS
     gpu_rr ptx cuobjdump_output.txt -o reconstructed.ptx
+
+    # Reconstruct PTX for a specific function from multi-function SASS text
+    gpu_rr ptx cuobjdump_output.txt --kernel second_kernel
 "#
     );
 }
@@ -1835,7 +1849,14 @@ fn run() -> Result<(), String> {
             input,
             output,
             address,
-        } => run_ptx(&input, output.as_ref(), address, args.verbose),
+            kernel_name,
+        } => run_ptx(
+            &input,
+            output.as_ref(),
+            address,
+            kernel_name.as_deref(),
+            args.verbose,
+        ),
     }
 }
 
@@ -2205,6 +2226,7 @@ fn run_ptx(
     input: &PathBuf,
     output: Option<&PathBuf>,
     address: Option<u64>,
+    kernel_name: Option<&str>,
     verbose: bool,
 ) -> Result<(), String> {
     if verbose {
@@ -2214,151 +2236,132 @@ fn run_ptx(
     // Load CUBIN or text SASS
     let content = fs::read(input).map_err(|e| format!("Failed to read input: {}", e))?;
 
-    if content.starts_with(&[0x7f, b'E', b'L', b'F']) {
-        // CUBIN file - use PTX recovery engine
-        let mut engine = PtxRecoveryEngine::new(content)
-            .map_err(|e| format!("Failed to create recovery engine: {}", e))?;
-
-        let result = engine
-            .recover_all()
-            .map_err(|e| format!("Failed to recover PTX: {}", e))?;
-
-        if let Some(addr) = address {
-            // Show PTX for specific address
-            if let Some(line_info) = engine.get_ptx_for_sass(addr) {
-                println!("=== PTX for SASS address 0x{:x} ===", addr);
-                println!("File: {}", line_info.file);
-                println!("Line: {}", line_info.line);
-                println!("Column: {}", line_info.column);
-                println!("Statement: {}", line_info.is_statement);
-            } else {
-                println!("No debug info for address 0x{:x}", addr);
-            }
-        } else {
-            // Print full recovery result
-            println!("=== PTX Recovery Report ===\n");
-            println!("{}", result.ptx_header);
-
-            for func in &result.functions {
-                println!("\n// Function: {}", func.name);
-                if let Some(ref linkage) = func.linkage_name {
-                    println!("// Linkage name: {}", linkage);
-                }
-                println!(
-                    "// SASS range: 0x{:x} - 0x{:x}\n",
-                    func.start_address, func.end_address
-                );
-
-                // Print PTX lines with SASS mapping
-                if !func.ptx_lines.is_empty() {
-                    println!("// === Original PTX Source ===");
-                    for (line_num, ptx_line) in &func.ptx_lines {
-                        println!("/* {} */ {}", line_num, ptx_line.source);
-                    }
-                }
-
-                // Print reconstructed PTX
-                if let Some(ref reconstructed) = func.reconstructed_ptx {
-                    println!("\n// === Reconstructed PTX ===");
-                    println!("{}", reconstructed);
-                }
-            }
-
-            // Print statistics
-            println!("\n=== Recovery Statistics ===");
-            println!(
-                "Total SASS instructions: {}",
-                result.stats.total_sass_instructions
-            );
-            println!("Mapped to PTX: {}", result.stats.mapped_instructions);
-            println!("Unmapped: {}", result.stats.unmapped_instructions);
-
-            if let Some(ref debug_info) = result.debug_info {
-                println!("\n=== Debug Info ===");
-                println!("Functions: {}", debug_info.functions.len());
-                println!("Line mappings: {}", debug_info.line_mappings.len());
-                println!("Source files: {:?}", result.source_files);
-            }
-        }
-
-        // Save output if requested
-        if let Some(out_path) = output {
-            let mut out_content = result.ptx_header.clone();
-            for func in &result.functions {
-                if let Some(ref reconstructed) = func.reconstructed_ptx {
-                    out_content.push_str("\n");
-                    out_content.push_str(reconstructed);
-                }
-            }
-            fs::write(out_path, out_content)
-                .map_err(|e| format!("Failed to write output: {}", e))?;
-            println!("\nRecovered PTX written to {:?}", out_path);
-        }
+    let result = if content.starts_with(&[0x7f, b'E', b'L', b'F']) {
+        lift_cubin_to_ptx(
+            &content,
+            SassLiftOptions {
+                sm_version: 0,
+                kernel_name: kernel_name.unwrap_or_default().to_string(),
+                include_sass_comments: true,
+                emit_unsupported_comments: true,
+            },
+        )?
     } else {
-        // Text SASS - use reconstructor
         let text = String::from_utf8_lossy(&content);
-        let instructions = TextDisassemblyParser::parse_cuobjdump_output(&text);
+        let effective_kernel_name =
+            text_lift_kernel_name(&text, kernel_name, verbose).unwrap_or_default();
+        lift_sass_text_to_ptx(
+            &text,
+            SassLiftOptions {
+                sm_version: 120,
+                kernel_name: effective_kernel_name,
+                include_sass_comments: true,
+                emit_unsupported_comments: true,
+            },
+        )?
+    };
 
-        if instructions.is_empty() {
-            return Err("No instructions found in input".to_string());
-        }
+    if verbose {
+        print_lifter_diagnostics(&result.diagnostics);
+    }
 
-        let kernel_name = instructions
-            .first()
-            .and_then(|i| i.function_name.clone())
-            .unwrap_or_else(|| "kernel".to_string());
-
-        println!("=== PTX Reconstruction for {} ===\n", kernel_name);
-
-        // Use SM 75 as default
-        let mut reconstructor = PtxReconstructor::new(75);
-
-        // Print header
-        println!(".version 7.0");
-        println!(".target sm_75");
-        println!(".address_size 64\n");
-
-        println!(".visible .entry {} ()", kernel_name);
-        println!("{{");
-        println!("    .reg .b32 %r<256>;");
-        println!("    .reg .pred %p<8>;\n");
-
-        for inst in &instructions {
-            let ptx = reconstructor.reconstruct_instruction(inst);
-            println!(
-                "    // 0x{:04x}: {} {:?}",
-                inst.address,
-                inst.opcode,
-                inst.src_operands.iter().take(3).collect::<Vec<_>>()
-            );
-            println!("    {}", ptx);
-        }
-
-        println!("}}");
-
-        // Save output if requested
-        if let Some(out_path) = output {
-            let mut out_content = String::new();
-            out_content.push_str(".version 7.0\n");
-            out_content.push_str(".target sm_75\n");
-            out_content.push_str(".address_size 64\n\n");
-            out_content.push_str(&format!(".visible .entry {} ()\n{{\n", kernel_name));
-            out_content.push_str("    .reg .b32 %r<256>;\n");
-            out_content.push_str("    .reg .pred %p<8>;\n\n");
-
-            let mut reconstructor = PtxReconstructor::new(75);
-            for inst in &instructions {
-                let ptx = reconstructor.reconstruct_instruction(inst);
-                out_content.push_str(&format!("    // 0x{:04x}: {}\n", inst.address, inst.opcode));
-                out_content.push_str(&format!("    {}\n", ptx));
-            }
-            out_content.push_str("}\n");
-
-            fs::write(out_path, out_content)
-                .map_err(|e| format!("Failed to write output: {}", e))?;
-            println!("\nRecovered PTX written to {:?}", out_path);
-        }
+    if let Some(addr) = address {
+        print_lifted_ptx_for_address(&result.ptx, addr);
+    } else if let Some(out_path) = output {
+        fs::write(out_path, &result.ptx).map_err(|e| format!("Failed to write output: {}", e))?;
+        println!("Recovered PTX written to {}", out_path.display());
+    } else {
+        print!("{}", result.ptx);
     }
 
     Ok(())
+}
+
+fn text_lift_kernel_name(text: &str, kernel_name: Option<&str>, verbose: bool) -> Option<String> {
+    if let Some(kernel_name) = kernel_name {
+        return Some(kernel_name.to_string());
+    }
+
+    let instructions = TextDisassemblyParser::parse_cuobjdump_output(text);
+    let mut function_names = Vec::new();
+    for name in instructions
+        .iter()
+        .filter_map(|inst| inst.function_name.as_deref())
+    {
+        if !function_names.contains(&name) {
+            function_names.push(name);
+        }
+    }
+
+    if function_names.len() > 1 && verbose {
+        eprintln!(
+            "Warning: multiple SASS functions parsed; selecting '{}' by default. Use --kernel <name> to select another.",
+            function_names[0]
+        );
+    }
+
+    function_names.first().map(|name| (*name).to_string())
+}
+
+fn print_lifter_diagnostics(diagnostics: &[ptx::sass::SassLiftDiagnostic]) {
+    for diagnostic in diagnostics {
+        eprintln!(
+            "lifter diagnostic at {} {}: {}",
+            diagnostic
+                .address
+                .map(|addr| format!("0x{:x}", addr))
+                .unwrap_or_else(|| "unknown".to_string()),
+            diagnostic.opcode,
+            diagnostic.message
+        );
+    }
+}
+
+fn print_lifted_ptx_for_address(ptx: &str, address: u64) {
+    let label = format!("L_{:04x}:", address);
+    let mut lines = ptx.lines();
+
+    while let Some(line) = lines.next() {
+        if line.trim() != label {
+            continue;
+        }
+
+        let mut lifted_lines = Vec::new();
+        let mut fallback = None;
+        for candidate in lines {
+            let trimmed = candidate.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.ends_with(':') || trimmed == "}" {
+                break;
+            }
+            if is_original_sass_comment(trimmed) {
+                fallback.get_or_insert(candidate);
+            } else {
+                lifted_lines.push(candidate);
+            }
+        }
+
+        println!("=== Lifted PTX for SASS address 0x{:x} ===", address);
+        println!("{}", label);
+        if lifted_lines.is_empty() {
+            if let Some(candidate) = fallback {
+                println!("{}", candidate);
+            }
+        } else {
+            for lifted_line in lifted_lines {
+                println!("{}", lifted_line);
+            }
+        }
+        return;
+    }
+
+    println!("No lifted PTX for address 0x{:x}", address);
+}
+
+fn is_original_sass_comment(line: &str) -> bool {
+    line.strip_prefix("// 0x")
+        .and_then(|rest| rest.get(..4))
+        .is_some_and(|addr| addr.chars().all(|c| c.is_ascii_hexdigit()))
 }

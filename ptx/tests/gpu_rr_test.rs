@@ -313,6 +313,149 @@ fn test_gpu_rr_recording_format() {
 }
 
 #[test]
+fn test_gpu_rr_ptx_uses_shared_sm120_lifter() {
+    let temp_dir = TempDir::new().unwrap();
+    let input_path = temp_dir.path().join("sm120.sass");
+    let sass = r#"
+Function : sm120_gpu_rr_kernel
+	/*0000*/                   S2R R0, SR_TID.X ;
+	/*0010*/                   FADD R1, R2, R3 ;
+	/*0020*/                   EXIT ;
+"#;
+
+    fs::write(&input_path, sass).unwrap();
+
+    let (success, stdout, stderr) = run_gpu_rr(&["ptx", input_path.to_str().unwrap()]);
+
+    assert!(
+        success,
+        "gpu_rr ptx should succeed\nstdout:\n{}\nstderr:\n{}",
+        stdout, stderr
+    );
+    assert!(stdout.contains(".version 8.5"));
+    assert!(stdout.contains(".target sm_120"));
+    assert!(stdout.contains(".visible .entry sm120_gpu_rr_kernel()"));
+    assert!(stdout.contains("mov.u32 %r0, %tid.x;"));
+    assert!(stdout.contains("add.f32 %r1, %r2, %r3;"));
+}
+
+#[test]
+fn test_gpu_rr_ptx_kernel_option_selects_second_function() {
+    let temp_dir = TempDir::new().unwrap();
+    let input_path = temp_dir.path().join("multi.sass");
+    let sass = r#"
+Function : first_kernel
+	/*0000*/                   S2R R0, SR_TID.X ;
+	/*0010*/                   EXIT ;
+
+Function : second_kernel
+	/*0000*/                   S2R R0, SR_TID.Y ;
+	/*0010*/                   FADD R4, R5, R6 ;
+	/*0020*/                   EXIT ;
+"#;
+
+    fs::write(&input_path, sass).unwrap();
+
+    let (success, stdout, stderr) = run_gpu_rr(&[
+        "ptx",
+        input_path.to_str().unwrap(),
+        "--kernel",
+        "second_kernel",
+    ]);
+
+    assert!(
+        success,
+        "gpu_rr ptx --kernel should succeed\nstdout:\n{}\nstderr:\n{}",
+        stdout, stderr
+    );
+    assert!(stdout.contains(".visible .entry second_kernel()"));
+    assert!(!stdout.contains(".visible .entry first_kernel()"));
+    assert!(stdout.contains("mov.u32 %r0, %tid.y;"));
+    assert!(stdout.contains("add.f32 %r4, %r5, %r6;"));
+}
+
+#[test]
+fn test_gpu_rr_ptx_multifunction_text_defaults_to_first_function() {
+    let temp_dir = TempDir::new().unwrap();
+    let input_path = temp_dir.path().join("multi_default.sass");
+    let sass = r#"
+Function : first_kernel
+	/*0000*/                   S2R R0, SR_TID.X ;
+	/*0010*/                   EXIT ;
+
+Function : second_kernel
+	/*0000*/                   S2R R0, SR_TID.Y ;
+	/*0010*/                   FADD R4, R5, R6 ;
+	/*0020*/                   EXIT ;
+"#;
+
+    fs::write(&input_path, sass).unwrap();
+
+    let (success, stdout, stderr) = run_gpu_rr(&["ptx", input_path.to_str().unwrap()]);
+
+    assert!(
+        success,
+        "gpu_rr ptx should default to the first function\nstdout:\n{}\nstderr:\n{}",
+        stdout, stderr
+    );
+    assert!(stdout.contains(".visible .entry first_kernel()"));
+    assert!(!stdout.contains(".visible .entry second_kernel()"));
+    assert!(stdout.contains("mov.u32 %r0, %tid.x;"));
+    assert!(!stdout.contains("add.f32 %r4, %r5, %r6;"));
+}
+
+#[test]
+fn test_gpu_rr_ptx_address_prints_full_multiline_lift() {
+    let temp_dir = TempDir::new().unwrap();
+    let input_path = temp_dir.path().join("address_iadd3.sass");
+    let sass = r#"
+Function : address_iadd3_kernel
+	/*0000*/                   IADD3 R2, R9, R1, R4 ;
+	/*0010*/                   EXIT ;
+"#;
+
+    fs::write(&input_path, sass).unwrap();
+
+    let (success, stdout, stderr) =
+        run_gpu_rr(&["ptx", input_path.to_str().unwrap(), "--address", "0x0"]);
+
+    assert!(
+        success,
+        "gpu_rr ptx --address should succeed\nstdout:\n{}\nstderr:\n{}",
+        stdout, stderr
+    );
+    assert!(stdout.contains("=== Lifted PTX for SASS address 0x0 ==="));
+    assert!(stdout.contains("L_0000:"));
+    assert!(stdout.contains("add.s32 %r10, %r9, %r1;"));
+    assert!(stdout.contains("add.s32 %r2, %r10, %r4;"));
+}
+
+#[test]
+fn test_gpu_rr_ptx_address_last_instruction_omits_module_close() {
+    let temp_dir = TempDir::new().unwrap();
+    let input_path = temp_dir.path().join("address_last.sass");
+    let sass = r#"
+Function : address_last_kernel
+	/*0000*/                   S2R R0, SR_TID.X ;
+	/*0010*/                   EXIT ;
+"#;
+
+    fs::write(&input_path, sass).unwrap();
+
+    let (success, stdout, stderr) =
+        run_gpu_rr(&["ptx", input_path.to_str().unwrap(), "--address", "0x10"]);
+
+    assert!(
+        success,
+        "gpu_rr ptx --address should succeed\nstdout:\n{}\nstderr:\n{}",
+        stdout, stderr
+    );
+    assert!(stdout.contains("L_0010:"));
+    assert!(stdout.contains("ret;"));
+    assert!(!stdout.contains("}\n"));
+}
+
+#[test]
 fn test_gpu_rr_error_no_input() {
     let (success, _, _) = run_gpu_rr(&["record"]);
     assert!(!success, "Should fail without input file");

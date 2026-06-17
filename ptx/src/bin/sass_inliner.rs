@@ -32,9 +32,9 @@ use llvm_zluda::{
 };
 
 use ptx::sass::{
-    ControlFlowAnalyzer, CubinParser, EnhancedSassInstruction, PtxReconstructor, PtxRecoveryEngine,
-    SassDisassembler, SassInlineConfig, SassInlineStrategy, SassInliner, SassKernelBuilder,
-    TextDisassemblyParser,
+    lift_instructions_to_ptx, lift_sass_text_to_ptx, ControlFlowAnalyzer, CubinParser,
+    EnhancedSassInstruction, SassDisassembler, SassInlineConfig, SassInlineStrategy, SassInliner,
+    SassKernelBuilder, SassLiftOptions, TextDisassemblyParser,
 };
 
 /// CLI arguments
@@ -51,6 +51,8 @@ struct Args {
     preserve_control_codes: bool,
     /// Target SM version
     target_sm: u32,
+    /// Whether --sm was explicitly provided
+    target_sm_explicit: bool,
     /// Dump SASS instructions without LLVM conversion
     dump_sass: bool,
     /// Dump parsed CUBIN structure
@@ -61,12 +63,20 @@ struct Args {
     verify: bool,
     /// Verbose output
     verbose: bool,
-    /// PTX source file (for mapping)
+    /// PTX source file (for mapping; ignored by shared-lifter recovery)
     ptx_source: Option<PathBuf>,
-    /// Recover PTX from SASS using debug info
+    /// Recover PTX from parsed SASS with the shared lifter
     recover_ptx: bool,
     /// Output file for recovered PTX
     ptx_output: Option<PathBuf>,
+}
+
+struct LoadedSassInput {
+    instructions: Vec<EnhancedSassInstruction>,
+    kernel_name: String,
+    lift_kernel_name: String,
+    effective_sm: u32,
+    source_text: Option<String>,
 }
 
 impl Default for Args {
@@ -78,6 +88,7 @@ impl Default for Args {
             strategy: SassInlineStrategy::Hybrid,
             preserve_control_codes: true,
             target_sm: 75,
+            target_sm_explicit: false,
             dump_sass: false,
             dump_cubin: false,
             emit_bitcode: false,
@@ -134,6 +145,7 @@ fn parse_args() -> Result<Args, String> {
                     return Err("--sm requires an argument".to_string());
                 }
                 args.target_sm = argv[i].parse().map_err(|_| "Invalid SM version")?;
+                args.target_sm_explicit = true;
             }
             "--dump-sass" => {
                 args.dump_sass = true;
@@ -219,9 +231,9 @@ OPTIONS:
                               ptx, reconstruct   - Convert to PTX-equivalent IR
                               meta, metadata     - Metadata only, no IR changes
                               hybrid (default)   - Balance precision/compatibility
-    --sm <version>          Target SM version (default: 75)
-    --ptx <file>            PTX source file for mapping
-    --recover-ptx           Recover PTX from SASS using debug info
+    --sm <version>          Target SM version (default: 75; text --recover-ptx defaults to 120)
+    --ptx <file>            PTX source file for mapping (ignored by --recover-ptx)
+    --recover-ptx           Recover PTX from parsed SASS with shared lifter
     --ptx-output <file>     Output file for recovered PTX (default: stdout)
     --dump-sass             Dump parsed SASS instructions (no LLVM)
     --dump-cubin            Dump parsed CUBIN structure
@@ -231,10 +243,9 @@ OPTIONS:
     -v, --verbose           Verbose output
 
 PTX RECOVERY:
-    The --recover-ptx option extracts PTX source from CUBIN files using
-    DWARF debug information (.debug_line section). If no debug info is
-    available, it reconstructs approximate PTX from SASS instruction
-    semantics.
+    The --recover-ptx option reconstructs PTX from parsed SASS using the
+    shared SASS lifter. It currently ignores --ptx source mapping; pass
+    --verbose with --ptx to print an explicit warning.
 
 EXAMPLES:
     # Inline SASS from CUBIN file
@@ -249,11 +260,11 @@ EXAMPLES:
     # Use PTX reconstruction strategy
     sass_inliner kernel.cubin --strategy ptx -o output.ll
 
-    # Recover PTX from CUBIN with debug info
+    # Recover PTX from CUBIN with the shared lifter
     sass_inliner kernel.cubin --recover-ptx --ptx-output recovered.ptx
 
-    # Recover PTX with original PTX source for better mapping
-    sass_inliner kernel.cubin --recover-ptx --ptx original.ptx -o recovered.ptx
+    # Recover PTX while warning that --ptx mapping is ignored
+    sass_inliner kernel.cubin --recover-ptx --ptx original.ptx --ptx-output recovered.ptx
 "#
     );
 }
@@ -271,19 +282,33 @@ fn main() {
 fn run() -> Result<(), String> {
     let args = parse_args()?;
 
-    // Load PTX source if provided
-    let _ptx_source = if let Some(ref path) = args.ptx_source {
-        Some(fs::read_to_string(path).map_err(|e| format!("Failed to read PTX source: {}", e))?)
+    // Shared-lifter recovery currently ignores --ptx source mapping.
+    let _ptx_source = if !args.recover_ptx {
+        if let Some(ref path) = args.ptx_source {
+            Some(
+                fs::read_to_string(path)
+                    .map_err(|e| format!("Failed to read PTX source: {}", e))?,
+            )
+        } else {
+            None
+        }
     } else {
         None
     };
 
     // Get instructions based on input type
-    let (instructions, kernel_name) = if args.stdin {
+    let loaded = if args.stdin {
         load_from_stdin(&args)?
     } else {
         load_from_cubin(&args)?
     };
+    let LoadedSassInput {
+        instructions,
+        kernel_name,
+        lift_kernel_name,
+        effective_sm,
+        source_text,
+    } = loaded;
 
     if args.verbose {
         eprintln!(
@@ -302,80 +327,54 @@ fn run() -> Result<(), String> {
     // Recover PTX if requested
     if args.recover_ptx {
         if args.verbose {
-            eprintln!("Recovering PTX from SASS...");
-        }
-
-        // Check if we have a CUBIN for full recovery or need reconstruction
-        if !args.stdin && fs::metadata(&args.input).is_ok() {
-            // Try full PTX recovery from CUBIN with debug info
-            let cubin_data = fs::read(&args.input)
-                .map_err(|e| format!("Failed to read CUBIN for PTX recovery: {}", e))?;
-
-            if cubin_data.starts_with(&[0x7f, b'E', b'L', b'F']) {
-                let mut engine = PtxRecoveryEngine::new(cubin_data)
-                    .map_err(|e| format!("Failed to create PTX recovery engine: {}", e))?;
-
-                // Add PTX source if provided
-                if let Some(ref ptx_path) = args.ptx_source {
-                    engine
-                        .add_ptx_source(ptx_path)
-                        .map_err(|e| format!("Failed to add PTX source: {}", e))?;
-                }
-
-                let result = engine
-                    .recover_all()
-                    .map_err(|e| format!("Failed to recover PTX: {}", e))?;
-
-                // Output recovered PTX
-                let mut ptx_content = result.ptx_header.clone();
-                for func in &result.functions {
-                    if let Some(ref reconstructed) = func.reconstructed_ptx {
-                        ptx_content.push_str("\n");
-                        ptx_content.push_str(reconstructed);
-                    }
-                }
-
-                if let Some(ref ptx_out) = args.ptx_output {
-                    fs::write(ptx_out, &ptx_content)
-                        .map_err(|e| format!("Failed to write PTX output: {}", e))?;
-                    eprintln!("Recovered PTX written to {:?}", ptx_out);
-                    eprintln!("  Functions: {}", result.functions.len());
-                    eprintln!(
-                        "  Total SASS instructions: {}",
-                        result.stats.total_sass_instructions
-                    );
-                    eprintln!("  Mapped to PTX: {}", result.stats.mapped_instructions);
-                } else {
-                    println!("{}", ptx_content);
-                }
-
-                return Ok(());
+            eprintln!("Recovering PTX from SASS with shared lifter...");
+            if args.ptx_source.is_some() {
+                eprintln!(
+                    "Warning: --ptx source mapping is not used by shared SASS lifter recovery yet"
+                );
             }
         }
 
-        // Fallback: reconstruct PTX from SASS semantics
-        let mut reconstructor = PtxReconstructor::new(args.target_sm);
-        let mut ptx_content = format!(
-            ".version 7.0\n.target sm_{}\n.address_size 64\n\n",
-            args.target_sm
-        );
-        ptx_content.push_str(&format!(".visible .entry {} ()\n{{\n", kernel_name));
-        ptx_content.push_str("    .reg .b32 %r<256>;\n");
-        ptx_content.push_str("    .reg .pred %p<8>;\n\n");
+        let lift_options = SassLiftOptions {
+            sm_version: effective_sm,
+            kernel_name: lift_kernel_name.clone(),
+            include_sass_comments: true,
+            emit_unsupported_comments: true,
+        };
+        let result = if let Some(ref text) = source_text {
+            lift_sass_text_to_ptx(text, lift_options)?
+        } else {
+            lift_instructions_to_ptx(
+                &instructions,
+                &SassLiftOptions {
+                    kernel_name: kernel_name.clone(),
+                    ..lift_options
+                },
+            )
+        };
 
-        for inst in &instructions {
-            let ptx = reconstructor.reconstruct_instruction(inst);
-            ptx_content.push_str(&format!("    // 0x{:04x}: {}\n", inst.address, inst.opcode));
-            ptx_content.push_str(&format!("    {}\n", ptx));
+        if args.verbose {
+            for diagnostic in &result.diagnostics {
+                eprintln!(
+                    "lifter diagnostic at {} {}: {}",
+                    diagnostic
+                        .address
+                        .map(|addr| format!("0x{:x}", addr))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    diagnostic.opcode,
+                    diagnostic.message
+                );
+            }
         }
-        ptx_content.push_str("}\n");
 
         if let Some(ref ptx_out) = args.ptx_output {
-            fs::write(ptx_out, &ptx_content)
+            fs::write(ptx_out, &result.ptx)
                 .map_err(|e| format!("Failed to write PTX output: {}", e))?;
-            eprintln!("Reconstructed PTX written to {:?}", ptx_out);
+            if args.verbose {
+                eprintln!("Recovered PTX written to {:?}", ptx_out);
+            }
         } else {
-            println!("{}", ptx_content);
+            print!("{}", result.ptx);
         }
 
         return Ok(());
@@ -491,7 +490,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn load_from_cubin(args: &Args) -> Result<(Vec<EnhancedSassInstruction>, String), String> {
+fn load_from_cubin(args: &Args) -> Result<LoadedSassInput, String> {
     let cubin_data =
         fs::read(&args.input).map_err(|e| format!("Failed to read CUBIN file: {}", e))?;
 
@@ -546,10 +545,16 @@ fn load_from_cubin(args: &Args) -> Result<(Vec<EnhancedSassInstruction>, String)
     ControlFlowAnalyzer::find_basic_blocks(&mut instructions);
     ControlFlowAnalyzer::analyze_data_flow(&mut instructions);
 
-    Ok((instructions, kernel_name))
+    Ok(LoadedSassInput {
+        instructions,
+        lift_kernel_name: kernel_name.clone(),
+        kernel_name,
+        effective_sm: kernel.sm_version,
+        source_text: None,
+    })
 }
 
-fn load_from_stdin(args: &Args) -> Result<(Vec<EnhancedSassInstruction>, String), String> {
+fn load_from_stdin(args: &Args) -> Result<LoadedSassInput, String> {
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
@@ -566,17 +571,31 @@ fn load_from_stdin(args: &Args) -> Result<(Vec<EnhancedSassInstruction>, String)
         return Err("No instructions parsed from input".to_string());
     }
 
-    // Get kernel name from first instruction
-    let kernel_name = instructions[0]
-        .function_name
-        .clone()
-        .unwrap_or_else(|| "kernel".to_string());
+    // Get kernel name from first instruction. Keep the lifter selector empty
+    // for function-less text so the shared text frontend can apply its fallback.
+    let lift_kernel_name = instructions[0].function_name.clone().unwrap_or_default();
+    let kernel_name = if lift_kernel_name.is_empty() {
+        "kernel".to_string()
+    } else {
+        lift_kernel_name.clone()
+    };
+    let effective_sm = if args.recover_ptx && !args.target_sm_explicit {
+        120
+    } else {
+        args.target_sm
+    };
 
     // Analyze control flow
     ControlFlowAnalyzer::find_basic_blocks(&mut instructions);
     ControlFlowAnalyzer::analyze_data_flow(&mut instructions);
 
-    Ok((instructions, kernel_name))
+    Ok(LoadedSassInput {
+        instructions,
+        lift_kernel_name,
+        kernel_name,
+        effective_sm,
+        source_text: Some(input),
+    })
 }
 
 fn dump_sass_instructions(instructions: &[EnhancedSassInstruction]) {

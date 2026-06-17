@@ -108,9 +108,9 @@ fn tmatmul_ptx_looks_valid(ptx: &str) -> bool {
     }) {
         return false;
     }
-    !trimmed.bytes().any(|b| {
-        b == 0 || b == 0x7f || (b < 0x20 && !matches!(b, b'\n' | b'\r' | b'\t'))
-    })
+    !trimmed
+        .bytes()
+        .any(|b| b == 0 || b == 0x7f || (b < 0x20 && !matches!(b, b'\n' | b'\r' | b'\t')))
 }
 
 #[cfg(feature = "intel")]
@@ -377,504 +377,87 @@ pub(crate) unsafe fn launch_kernel(
             f.name, grid_dim_x, grid_dim_y, grid_dim_z, block_dim_x, block_dim_y, block_dim_z
         );
 
-        // Check for zero dimensions that could cause SIGFPE in PyTorch
         if block_dim_x == 0 || block_dim_y == 0 || block_dim_z == 0 {
-            eprintln!("[TMatmul Backend] WARNING: Zero block dimension detected!");
+            eprintln!("[TMatmul Backend] WARNING: zero block dimension detected");
         }
         if grid_dim_x == 0 || grid_dim_y == 0 || grid_dim_z == 0 {
-            eprintln!("[TMatmul Backend] WARNING: Zero grid dimension detected!");
+            eprintln!("[TMatmul Backend] WARNING: zero grid dimension detected");
         }
 
-        let cocotb_dir = std::env::var("HETGPU_TMATMUL_COCOTB_DIR")
-            .unwrap_or_else(|_| tmatmul_default_cocotb_dir());
-        let selected_ptx = select_tmatmul_ptx(
-            f.ptx_source.as_deref().map(String::as_str),
-            &cocotb_dir,
-        );
-        let selected_ptx_ref = selected_ptx
-            .as_ref()
-            .map(|(ptx_source, _origin)| ptx_source.as_str());
-
-        if let Some(ref ptx_source) = valid_ptx {
-            eprintln!(
-                "[TMatmul Backend] Valid PTX source available ({} bytes)",
-                ptx_source.len()
-            );
-
-            // Get cocotb directory
-            let cocotb_dir = std::env::var("HETGPU_TMATMUL_COCOTB_DIR")
-                .unwrap_or_else(|_| "/mnt/ubuntu/ternary_matmul/cocotb".to_string());
-
-            // Create run directory
-            let _ = std::fs::create_dir_all(format!("{}/run", cocotb_dir));
-
-            // Save PTX source to file
-            let ptx_path = std::path::Path::new(&cocotb_dir).join("run/kernel.ptx");
-            if let Err(e) = std::fs::write(&ptx_path, ptx_source.as_str()) {
+        let ptx_source = f.ptx_source.as_deref().map(String::as_str);
+        match super::cxl_tmatmul::compile_ptx_to_tmatmul_assembly(ptx_source) {
+            Ok(compiled) => {
+                let ptx_source = ptx_source.expect("compile requires PTX source");
                 eprintln!(
-                    "[TMatmul Backend] Failed to write PTX to {}: {}",
-                    ptx_path.display(),
-                    e
-                );
-            } else {
-                eprintln!(
-                    "[TMatmul Backend] PTX saved to {} ({} bytes)",
-                    ptx_path.display(),
-                    ptx_source.len()
+                    "[TMatmul Backend] PTX JIT lowered '{}' to tmatmul assembly (ptx={} bytes, asm={} bytes)",
+                    f.name,
+                    compiled.source_len,
+                    compiled.assembly.len()
                 );
 
-                // Compile PTX to TMatmul assembly
-                match ptx::pass::ptx_to_tmatmul_assembly(ptx_source.as_str()) {
-                    Ok(asm) => {
-                        let asm_path = std::path::Path::new(&cocotb_dir).join("run/kernel.S");
-                        if let Err(e) = std::fs::write(&asm_path, &asm) {
-                            eprintln!(
-                                "[TMatmul Backend] Failed to write assembly to {}: {}",
-                                asm_path.display(),
-                                e
-                            );
-                        } else {
-                            eprintln!(
-                                "[TMatmul Backend] TMatmul assembly saved to {} ({} bytes)",
-                                asm_path.display(),
-                                asm.len()
-                            );
-                        }
-                        // Also save to /tmp for emulator access
-                        let _ = std::fs::write("/tmp/tmatmul_kernel.S", &asm);
-                    }
-                    Err(e) => {
-                        eprintln!("[TMatmul Backend] PTX->TMatmul compilation failed: {}", e);
-                    }
-                }
-            }
-        } else if let Some(ref ptx_source) = f.ptx_source {
-            eprintln!(
-                "[TMatmul Backend] Invalid PTX source ({} bytes, starts with {:?}) - kernel will be no-op",
-                ptx_source.len(),
-                ptx_source.chars().take(20).collect::<String>()
-            );
-        } else {
-            eprintln!("[TMatmul Backend] No PTX source available - kernel will be no-op");
-        }
-
-        // Minimal Phase 1–3: detect matmul, decode args heuristically, and either run cocotb or CPU fallback
-        let full_mode = std::env::var("HETGPU_TMATMUL_FULL")
-            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
-            .unwrap_or(false);
-        let is_matmul_name = {
-            let n = f.name.to_lowercase();
-            tmatmul_is_matmul_kernel_name(&n)
-        };
-
-        // Extract kernel parameters if available AND we need them (matmul kernels only)
-        // Note: kernel_params is *mut *mut void where each element points to
-        // a location in memory that holds the actual parameter value
-        let mut output_ptr: *mut ::core::ffi::c_void = ptr::null_mut();
-        let mut ptr_candidates: Vec<*mut ::core::ffi::c_void> = Vec::new();
-        let mut num_params = 0;
-
-        // Only extract parameters for matmul kernels to avoid segfaults on other kernels
-        if full_mode && is_matmul_name && !kernel_params.is_null() {
-            eprintln!("[TMatmul Backend] Matmul kernel detected, extracting parameters...");
-            let mut current_param = kernel_params;
-            const MAX_PARAMS: usize = 32; // Safety limit to prevent infinite loops
-
-            while num_params < MAX_PARAMS {
-                // First, safely check if current_param itself is valid before dereferencing
-                if (current_param as usize) < 0x1000 || (current_param as usize) > 0x7fffffffffff {
-                    eprintln!(
-                        "[TMatmul Backend] Invalid param pointer {:p}, stopping iteration",
-                        current_param
-                    );
-                    break;
+                match super::cxl_tmatmul::stage_jit_artifacts(&f.name, ptx_source, &compiled) {
+                    Ok(artifacts) => eprintln!(
+                        "[TMatmul Backend] staged PTX={} ASM={}",
+                        artifacts.ptx_path.display(),
+                        artifacts.asm_path.display()
+                    ),
+                    Err(e) => eprintln!("[TMatmul Backend] artifact staging failed: {e}"),
                 }
 
-                let param_addr = *current_param;
+                let _ = std::fs::write("/tmp/tmatmul_kernel.S", compiled.assembly.as_bytes());
 
-                // Check for null terminator
-                if param_addr.is_null() {
-                    break;
-                }
-
-                // Safety check: param_addr should be a valid stack pointer
-                // Parameters are passed on the stack, so param_addr should be in stack range
-                // On x86_64 Linux, stack is typically at high addresses (0x7fff...)
-                let param_addr_val = param_addr as usize;
-
-                if param_addr_val < 0x1000 {
-                    crate::r#impl::hetgpu_debug!(
-                        "[TMatmul Backend] Param {}: addr={:p} - INVALID (too low), stopping iteration",
-                        num_params,
-                        param_addr
-                    );
-                    break;
-                }
-
-                // Check that param_addr is in valid stack range
-                // Stack on Linux x86_64 is typically in upper half of address space
-                // Common range: 0x7f0000000000 - 0x7fffffffffff (due to ASLR)
-                // If param_addr is not on the stack, it's likely garbage and dereferencing it will crash
-                if param_addr_val < 0x7f0000000000 || param_addr_val > 0x7fffffffffff {
-                    crate::r#impl::hetgpu_debug!(
-                        "[TMatmul Backend] Param {}: addr={:p} - NOT ON STACK, stopping iteration",
-                        num_params,
-                        param_addr
-                    );
-                    break;
-                }
-
-                // Try to read as a CUdeviceptr (which is a wrapper around a pointer)
-                // For virtual device, CUdeviceptr_v2.0 IS the host pointer directly
-                // IMPORTANT: Use read_unaligned because stack addresses may not be 8-byte aligned
-                let potential_cudevptr = unsafe {
-                    (param_addr as *const cuda_types::cuda::CUdeviceptr_v2).read_unaligned()
-                };
-                let potential_ptr = potential_cudevptr.0 as *mut ::core::ffi::c_void;
-                let potential_i64 = unsafe { (param_addr as *const i64).read_unaligned() };
-
-                crate::r#impl::hetgpu_debug!(
-                    "[TMatmul Backend] Param {}: addr={:p}, as_CUdevptr={:p}, as_ptr={:p}, as_i64={}",
-                    num_params,
-                    param_addr,
-                    potential_cudevptr.0,
-                    potential_ptr,
-                    potential_i64
-                );
-
-                // Look for a pointer that looks like a real heap allocation
-                // Real allocations from alloc_zeroed are typically in range 0x1000 - 0x80000000
-                // Upper bits (0x7fff...) indicate stack addresses or encoded values, not heap
-                // PyTorch uses 16-byte alignment (0x10), not 32 or 64-byte
-                let looks_like_heap_ptr = (potential_ptr as usize & 0xf) == 0 &&  // 16-byte aligned
-                                          (potential_ptr as usize > 0x1000) &&         // Not null/sentinel
-                                          (potential_ptr as usize) < 0x100000000; // Below 4GB (typical heap range)
-
-                if looks_like_heap_ptr {
-                    crate::r#impl::hetgpu_debug!(
-                        "[TMatmul Backend]   -> Looks like a HEAP pointer (real allocation)!"
-                    );
-                    ptr_candidates.push(potential_ptr);
-                    if output_ptr.is_null() {
-                        output_ptr = potential_ptr;
-                        crate::r#impl::hetgpu_debug!(
-                            "[TMatmul Backend]   -> Selected as output buffer"
-                        );
-                    }
-                } else if (potential_ptr as usize & 0xf) == 0 && (potential_ptr as usize > 0x1000) {
-                    crate::r#impl::hetgpu_debug!(
-                        "[TMatmul Backend]   -> Aligned but possibly stack/encoded value (upper bits: {:#x})",
-                        potential_ptr as usize >> 32
-                    );
-                }
-
-                num_params += 1;
-                current_param = current_param.add(1);
-            }
-            eprintln!(
-                "[TMatmul Backend] Found {} kernel parameters total",
-                num_params
-            );
-            eprintln!("[TMatmul Backend] Selected output_ptr: {:p}", output_ptr);
-        } else if !is_matmul_name {
-            // Non-matmul kernel - compile PTX to tmatmul assembly and run via Python emulator
-            eprintln!(
-                "[TMatmul Backend] Non-matmul kernel '{}' - compiling PTX for emulator",
-                f.name
-            );
-
-            // Compile PTX to TMatmul assembly if PTX source is available
-            if let Some(ref ptx_source) = f.ptx_source {
-                if ptx_source.len() >= 50
-                    && (ptx_source.starts_with(".version") || ptx_source.starts_with("//"))
-                {
-                    // Dump PTX source for debugging
-                    let ptx_dump_path = format!(
-                        "/tmp/hetgpu_ptx_{}.ptx",
-                        f.name
-                            .replace(|c: char| !c.is_alphanumeric() && c != '_', "_")
-                    );
-                    let _ = std::fs::write(&ptx_dump_path, ptx_source.as_bytes());
-                    eprintln!(
-                        "[TMatmul Backend] PTX dumped to {} ({} bytes)",
-                        ptx_dump_path,
-                        ptx_source.len()
-                    );
-
-                    // Wrap PTX compilation in catch_unwind to prevent panics from crashing
-                    let ptx_str = ptx_source.clone();
-                    let compile_result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            ptx::pass::ptx_to_tmatmul_assembly(ptx_str.as_str())
-                        }));
-                    let compile_result = match compile_result {
-                        Ok(r) => r,
-                        Err(_) => {
-                            eprintln!(
-                                "[TMatmul Backend] PTX compilation panicked - trying kernel name fallback"
-                            );
-                            execute_kernel_name_fallback(
-                                &f.name,
-                                kernel_params,
-                                grid_dim_x,
-                                grid_dim_y,
-                                grid_dim_z,
-                                block_dim_x,
-                                block_dim_y,
-                                block_dim_z,
-                            );
-                            super::checkpoint::end_kernel_execution(exec_id);
-                            return ze_result_t::ZE_RESULT_SUCCESS;
-                        }
-                    };
-                    let asm_to_execute = match compile_result {
-                        Ok(asm) => {
-                            let asm_path = format!(
-                                "/tmp/hetgpu_asm_{}.S",
-                                f.name
-                                    .replace(|c: char| !c.is_alphanumeric() && c != '_', "_")
-                            );
-                            let _ = std::fs::write(&asm_path, &asm);
-                            eprintln!(
-                                "[TMatmul Backend] TMatmul assembly saved to {} ({} bytes):\n{}",
-                                asm_path,
-                                asm.len(),
-                                &asm[..asm.len().min(500)]
-                            );
-                            Some(asm)
-                        }
-                        Err(e) => {
-                            eprintln!("[TMatmul Backend] PTX->TMatmul compilation failed: {}", e);
-                            None
-                        }
-                    };
-
-                    // Execute via interpreter, falling back to kernel-name-based assembly
-                    if !kernel_params.is_null() {
-                        let exec_result = if let Some(ref asm) = asm_to_execute {
-                            super::tmatmul_interpreter::execute_assembly(
-                                asm,
-                                kernel_params,
-                                (grid_dim_x, grid_dim_y, grid_dim_z),
-                                (block_dim_x, block_dim_y, block_dim_z),
-                            )
-                        } else {
-                            Err("No compiled assembly".to_string())
-                        };
-
-                        if let Err(ref e) = exec_result {
-                            eprintln!(
-                                "[TMatmul Interpreter] Compiled assembly failed for '{}': {} - trying kernel name fallback",
-                                f.name, e
-                            );
-                            // Fall back to kernel-name-based assembly generation with proper param scanning
-                            execute_kernel_name_fallback(
-                                &f.name,
-                                kernel_params,
-                                grid_dim_x,
-                                grid_dim_y,
-                                grid_dim_z,
-                                block_dim_x,
-                                block_dim_y,
-                                block_dim_z,
-                            );
-                        } else {
-                            eprintln!(
-                                "[TMatmul Interpreter] Kernel '{}' executed successfully",
-                                f.name
-                            );
-                        }
-                    }
-                } else {
-                    eprintln!(
-                        "[TMatmul Backend] Invalid PTX source ({} bytes) - trying kernel name fallback",
-                        ptx_source.len()
-                    );
-                    execute_kernel_name_fallback(
-                        &f.name,
-                        kernel_params,
-                        grid_dim_x,
-                        grid_dim_y,
-                        grid_dim_z,
-                        block_dim_x,
-                        block_dim_y,
-                        block_dim_z,
-                    );
-                }
-            } else {
-                eprintln!("[TMatmul Backend] No PTX source - trying kernel name fallback");
-                execute_kernel_name_fallback(
-                    &f.name,
-                    kernel_params,
-                    grid_dim_x,
-                    grid_dim_y,
-                    grid_dim_z,
-                    block_dim_x,
-                    block_dim_y,
-                    block_dim_z,
-                );
-            }
-
-            super::checkpoint::end_kernel_execution(exec_id);
-            return ze_result_t::ZE_RESULT_SUCCESS;
-        }
-
-        // Execute matmul if we have enough pointer candidates
-        if full_mode && is_matmul_name && ptr_candidates.len() >= 3 {
-            // Heuristic: [C, A, B]
-            let mut c_ptr = ptr_candidates[0];
-            let a_ptr = ptr_candidates[1];
-            let b_ptr = ptr_candidates[2];
-            if !output_ptr.is_null() {
-                c_ptr = output_ptr;
-            }
-
-            // Optional dims from env: HETGPU_TMATMUL_DIMS="M,N,K"
-            if let Ok(dims) = std::env::var("HETGPU_TMATMUL_DIMS") {
-                let parts: Vec<usize> = dims
-                    .split(',')
-                    .filter_map(|s| s.trim().parse::<usize>().ok())
-                    .collect();
-                if parts.len() == 3 {
-                    let (m, n, k) = (parts[0], parts[1], parts[2]);
-                    crate::r#impl::hetgpu_debug!(
-                        "[TMatmul Backend] FULL CPU matmul fallback M={},N={},K={}",
-                        m,
-                        n,
-                        k
-                    );
-                    let a_len = m * k;
-                    let b_len = k * n;
-                    let c_len = m * n;
-                    let a_slice = std::slice::from_raw_parts(a_ptr as *const f32, a_len);
-                    let b_slice = std::slice::from_raw_parts(b_ptr as *const f32, b_len);
-                    let c_slice = std::slice::from_raw_parts_mut(c_ptr as *mut f32, c_len);
-                    for i in 0..m {
-                        for j in 0..n {
-                            let mut acc: f32 = 0.0;
-                            for p in 0..k {
-                                acc += a_slice[i * k + p] * b_slice[p * n + j];
-                            }
-                            c_slice[i * n + j] = acc;
-                        }
-                    }
-                    crate::r#impl::hetgpu_debug!(
-                        "[TMatmul Backend] CPU matmul complete, wrote {:p}",
-                        c_ptr
-                    );
-                    super::checkpoint::end_kernel_execution(exec_id);
-                    return ze_result_t::ZE_RESULT_SUCCESS;
-                }
-            }
-
-            // If dims not provided, compile PTX to tmatmul assembly for emulator
-            if let Some(ref ptx_source) = f.ptx_source {
-                if ptx_source.len() >= 50 {
-                    match ptx::pass::ptx_to_tmatmul_assembly(ptx_source.as_str()) {
-                        Ok(asm) => {
-                            let _ = std::fs::write("/tmp/tmatmul_kernel.S", &asm);
-                            crate::r#impl::hetgpu_debug!(
-                                "[TMatmul Backend] Matmul PTX compiled to tmatmul assembly ({} bytes)",
-                                asm.len()
-                            );
-                        }
-                        Err(e) => {
-                            crate::r#impl::hetgpu_debug!(
-                                "[TMatmul Backend] Matmul PTX compilation failed: {}",
-                                e
-                            );
-                        }
-                    }
-                }
-            }
-            crate::r#impl::hetgpu_debug!(
-                "[TMatmul Backend] Matmul kernel compiled; virtual success"
-            );
-            super::checkpoint::end_kernel_execution(exec_id);
-            return ze_result_t::ZE_RESULT_SUCCESS;
-        }
-
-        // Compile PTX to TMatmul assembly and run via emulator
-        let mut ptx_compiled = false;
-        if let Some(ref ptx_source) = f.ptx_source {
-            if ptx_source.len() >= 50
-                && (ptx_source.starts_with(".version") || ptx_source.starts_with("//"))
-            {
-                // Dump PTX for debugging
-                let ptx_dump_path = format!(
-                    "/tmp/hetgpu_ptx_{}.ptx",
-                    f.name
-                        .replace(|c: char| !c.is_alphanumeric() && c != '_', "_")
-                );
-                let _ = std::fs::write(&ptx_dump_path, ptx_source.as_bytes());
-                eprintln!(
-                    "[TMatmul Backend] PTX dumped to {} ({} bytes)",
-                    ptx_dump_path,
-                    ptx_source.len()
-                );
-
-                match ptx::pass::ptx_to_tmatmul_assembly(ptx_source.as_str()) {
-                    Ok(asm) => {
-                        let asm_path = format!(
-                            "/tmp/hetgpu_asm_{}.S",
-                            f.name
-                                .replace(|c: char| !c.is_alphanumeric() && c != '_', "_")
-                        );
-                        let _ = std::fs::write(&asm_path, &asm);
+                if use_cocotb {
+                    let cocotb_dir = std::env::var("HETGPU_TMATMUL_COCOTB_DIR")
+                        .unwrap_or_else(|_| tmatmul_default_cocotb_dir());
+                    let run_dir = std::path::Path::new(&cocotb_dir).join("run");
+                    if let Err(e) = std::fs::create_dir_all(&run_dir) {
                         eprintln!(
-                            "[TMatmul Backend] TMatmul assembly ({} bytes):\n{}",
-                            asm.len(),
-                            &asm[..asm.len().min(500)]
-                        );
-
-                        if !kernel_params.is_null() {
-                            match super::tmatmul_interpreter::execute_assembly(
-                                &asm,
-                                kernel_params,
-                                (grid_dim_x, grid_dim_y, grid_dim_z),
-                                (block_dim_x, block_dim_y, block_dim_z),
-                            ) {
-                                Ok(()) => {
-                                    eprintln!(
-                                        "[TMatmul Interpreter] Kernel '{}' executed successfully",
-                                        f.name
-                                    );
-                                    ptx_compiled = true;
-                                }
-                                Err(e) => {
-                                    eprintln!(
-                                        "[TMatmul Interpreter] Execution failed for '{}': {}",
-                                        f.name, e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "[TMatmul Backend] PTX->TMatmul compilation failed: {} - trying kernel name fallback",
+                            "[TMatmul Backend] failed to create cocotb run dir {}: {}",
+                            run_dir.display(),
                             e
                         );
+                    } else {
+                        let _ = std::fs::write(run_dir.join("kernel.ptx"), ptx_source.as_bytes());
+                        let _ =
+                            std::fs::write(run_dir.join("kernel.S"), compiled.assembly.as_bytes());
                     }
                 }
+
+                let interpreter_enabled = std::env::var("HETGPU_TMATMUL_INTERPRETER")
+                    .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                    .unwrap_or(false);
+                if interpreter_enabled && !kernel_params.is_null() {
+                    match super::tmatmul_interpreter::execute_assembly(
+                        &compiled.assembly,
+                        kernel_params,
+                        (grid_dim_x, grid_dim_y, grid_dim_z),
+                        (block_dim_x, block_dim_y, block_dim_z),
+                    ) {
+                        Ok(()) => eprintln!(
+                            "[TMatmul Interpreter] Kernel '{}' executed from JIT assembly",
+                            f.name
+                        ),
+                        Err(e) => eprintln!(
+                            "[TMatmul Interpreter] JIT assembly execution failed for '{}': {}",
+                            f.name, e
+                        ),
+                    }
+                }
+
+                if super::cxl_tmatmul::cxl_tmatmul_enabled() {
+                    eprintln!(
+                        "[CXL TMatmul] PTX JIT completed; CXL submit is waiting for a .S-to-AFU instruction encoder, so no kernel-name fallback was attempted"
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "[TMatmul Backend] PTX JIT unavailable for '{}': {}; no kernel-name fallback attempted",
+                    f.name, e
+                );
             }
         }
 
-        // Fallback: try kernel name-based assembly generation if PTX compilation didn't succeed
-        if !ptx_compiled && !kernel_params.is_null() {
-            execute_kernel_name_fallback(
-                &f.name,
-                kernel_params,
-                grid_dim_x,
-                grid_dim_y,
-                grid_dim_z,
-                block_dim_x,
-                block_dim_y,
-                block_dim_z,
-            );
-        }
-
-        // Virtual device path: return success after emulator execution
         super::checkpoint::end_kernel_execution(exec_id);
         return ze_result_t::ZE_RESULT_SUCCESS;
     }
@@ -1341,6 +924,33 @@ unsafe fn invoke_emulator_bridge(
 
 /// Helper: log unhandled kernel launches in the fallback path.
 /// The emulator bridge is only invoked when PTX compilation succeeds (not from this fallback).
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
+fn tmatmul_named_fallback_enabled() -> bool {
+    false
+}
+
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
+fn tmatmul_hardware_matmul_enabled() -> bool {
+    false
+}
+
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
+fn tmatmul_is_matmul_kernel_name(_name: &str) -> bool {
+    false
+}
+
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
+unsafe fn execute_tmatmul_hardware_matmul_fallback(
+    _kernel_name: &str,
+    _name_lower: &str,
+    _kernel_params: *mut *mut ::core::ffi::c_void,
+) {
+}
+
 #[cfg(feature = "intel")]
 unsafe fn execute_kernel_name_fallback(
     kernel_name: &str,
@@ -2026,9 +1636,7 @@ unsafe fn resolve_alloc_pointer_value(ptr_val: u64) -> Option<(u64, usize)> {
 }
 
 #[cfg(feature = "intel")]
-unsafe fn read_alloc_pointer_from_param(
-    param: *mut ::core::ffi::c_void,
-) -> Option<(u64, usize)> {
+unsafe fn read_alloc_pointer_from_param(param: *mut ::core::ffi::c_void) -> Option<(u64, usize)> {
     if param.is_null() {
         return None;
     }
@@ -7575,9 +7183,10 @@ unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
         i32::try_from(pacc_parse_env_u64_default("HETGPU_PACC_MUL_MAT_F_MAX_K", k.min(256)).max(1))
             .unwrap_or(i32::MAX);
 
-    let skinny_host_first = pacc_env_enabled_default("HETGPU_PACC_MUL_MAT_F_SKINNY_HOST_FIRST", true)
-        && n <= pacc_parse_env_u64_default("HETGPU_PACC_MUL_MAT_F_SKINNY_MAX_N", 1).max(1)
-        && k >= pacc_parse_env_u64_default("HETGPU_PACC_MUL_MAT_F_SKINNY_MIN_K", 64).max(1);
+    let skinny_host_first =
+        pacc_env_enabled_default("HETGPU_PACC_MUL_MAT_F_SKINNY_HOST_FIRST", true)
+            && n <= pacc_parse_env_u64_default("HETGPU_PACC_MUL_MAT_F_SKINNY_MAX_N", 1).max(1)
+            && k >= pacc_parse_env_u64_default("HETGPU_PACC_MUL_MAT_F_SKINNY_MIN_K", 64).max(1);
 
     let atype = pacc_runtime_sys::PaccDataType::Bfloat16 as i32;
     let btype = pacc_runtime_sys::PaccDataType::Float32 as i32;
@@ -13588,12 +13197,7 @@ unsafe fn try_offload_named_pacc_kernel(
             && name_lower.contains("loadwithcast")
             && name_lower.contains("storewithcast"))
     {
-        return execute_direct_copy_bool_host_cast(
-            kernel_name,
-            grid_dim_x,
-            1,
-            kernel_params,
-        );
+        return execute_direct_copy_bool_host_cast(kernel_name, grid_dim_x, 1, kernel_params);
     }
 
     None

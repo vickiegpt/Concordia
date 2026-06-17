@@ -5,6 +5,8 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+use tempfile::TempDir;
+
 // Sample cuobjdump -sass output for testing
 const SAMPLE_CUOBJDUMP_OUTPUT: &str = r#"
 Fatbin elf code:
@@ -41,6 +43,27 @@ Function : simple_add
         /*0030*/                   EXIT ;
 "#;
 
+const SM120_RECOVER_PTX_SASS: &str = r#"
+Function : sm120_text_kernel
+        /*0000*/                   S2R R0, SR_TID.X ;
+        /*0010*/                   LDG.E.U32 R1, [R2] ;
+        /*0020*/                   FADD R3, R4, R5 ;
+        /*0030*/              @P0  BRA 0x50 ;
+        /*0040*/                   STG.E.U32 [R6], R3 ;
+        /*0050*/                   EXIT ;
+"#;
+
+const MULTI_FUNCTION_RECOVER_PTX_SASS: &str = r#"
+Function : first_kernel
+        /*0000*/                   S2R R0, SR_TID.X ;
+        /*0010*/                   EXIT ;
+
+Function : second_kernel
+        /*0000*/                   S2R R0, SR_TID.Y ;
+        /*0010*/                   FADD R4, R5, R6 ;
+        /*0020*/                   EXIT ;
+"#;
+
 fn get_sass_inliner_path() -> std::path::PathBuf {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("..");
@@ -70,6 +93,173 @@ fn test_sass_inliner_help() {
     assert!(
         stdout.contains("--stdin") || stdout.contains("stdin"),
         "Expected stdin option"
+    );
+}
+
+#[test]
+fn test_sass_inliner_recover_ptx_sm120_stdin() {
+    let mut child = Command::new(get_sass_inliner_path())
+        .arg("--stdin")
+        .arg("--recover-ptx")
+        .arg("--sm")
+        .arg("120")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn sass_inliner");
+
+    {
+        let stdin = child.stdin.as_mut().expect("Failed to get stdin");
+        stdin
+            .write_all(SM120_RECOVER_PTX_SASS.as_bytes())
+            .expect("Failed to write");
+    }
+
+    let output = child.wait_with_output().expect("Failed to wait");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        eprintln!("stderr: {}", stderr);
+    }
+    assert!(output.status.success(), "sass_inliner failed: {}", stderr);
+    assert!(stdout.contains(".target sm_120"), "stdout: {}", stdout);
+    assert!(
+        stdout.contains(".visible .entry sm120_text_kernel()"),
+        "stdout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("mov.u32 %r0, %tid.x;"),
+        "stdout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("ld.global.u32 %r1, [%r2];"),
+        "stdout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("add.f32 %r3, %r4, %r5;"),
+        "stdout: {}",
+        stdout
+    );
+    assert!(stdout.contains("@%p0 bra L_0050;"), "stdout: {}", stdout);
+    assert!(
+        stdout.contains("st.global.u32 [%r6], %r3;"),
+        "stdout: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_sass_inliner_recover_ptx_defaults_text_to_sm120() {
+    let mut child = Command::new(get_sass_inliner_path())
+        .arg("--stdin")
+        .arg("--recover-ptx")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn sass_inliner");
+
+    {
+        let stdin = child.stdin.as_mut().expect("Failed to get stdin");
+        stdin
+            .write_all(SM120_RECOVER_PTX_SASS.as_bytes())
+            .expect("Failed to write");
+    }
+
+    let output = child.wait_with_output().expect("Failed to wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "sass_inliner failed: {}", stderr);
+    assert!(stdout.contains(".target sm_120"), "stdout: {}", stdout);
+}
+
+#[test]
+fn test_sass_inliner_recover_ptx_multifunction_stdin_uses_first_function() {
+    let mut child = Command::new(get_sass_inliner_path())
+        .arg("--stdin")
+        .arg("--recover-ptx")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn sass_inliner");
+
+    {
+        let stdin = child.stdin.as_mut().expect("Failed to get stdin");
+        stdin
+            .write_all(MULTI_FUNCTION_RECOVER_PTX_SASS.as_bytes())
+            .expect("Failed to write");
+    }
+
+    let output = child.wait_with_output().expect("Failed to wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "sass_inliner failed: {}", stderr);
+    assert!(stdout.contains(".target sm_120"), "stdout: {}", stdout);
+    assert!(stdout.contains(".visible .entry first_kernel()"));
+    assert!(!stdout.contains(".visible .entry second_kernel()"));
+    assert!(stdout.contains("mov.u32 %r0, %tid.x;"));
+    assert!(!stdout.contains("mov.u32 %r0, %tid.y;"));
+    assert!(!stdout.contains("add.f32 %r4, %r5, %r6;"));
+}
+
+#[test]
+fn test_sass_inliner_recover_ptx_verbose_warns_ptx_mapping_unused() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let ptx_path = temp_dir.path().join("missing.ptx");
+
+    let mut child = Command::new(get_sass_inliner_path())
+        .arg("--stdin")
+        .arg("--recover-ptx")
+        .arg("--ptx")
+        .arg(&ptx_path)
+        .arg("--verbose")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn sass_inliner");
+
+    {
+        let stdin = child.stdin.as_mut().expect("Failed to get stdin");
+        stdin
+            .write_all(SM120_RECOVER_PTX_SASS.as_bytes())
+            .expect("Failed to write");
+    }
+
+    let output = child.wait_with_output().expect("Failed to wait");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "sass_inliner failed: {}", stderr);
+    assert!(
+        stdout.contains(".visible .entry sm120_text_kernel()"),
+        "stdout: {}",
+        stdout
+    );
+    assert!(stdout.contains(".target sm_120"), "stdout: {}", stdout);
+    assert!(
+        stderr.contains("--ptx source mapping is not used by shared SASS lifter recovery yet"),
+        "stderr: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("Failed to read PTX source"),
+        "stderr: {}",
+        stderr
     );
 }
 

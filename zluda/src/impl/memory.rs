@@ -274,7 +274,7 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
             return Ok(());
         }
 
-        let layout = Layout::from_size_align(bytesize, 64).map_err(|_| CUerror::OUT_OF_MEMORY)?;
+        let layout = Layout::from_size_align(bytesize, 128).map_err(|_| CUerror::OUT_OF_MEMORY)?;
 
         // Use alloc_zeroed to initialize memory to zero
         // This makes torch.zeros() work correctly without kernel execution
@@ -1710,7 +1710,7 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
 fn pacc_alloc_host(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
     use std::alloc::{alloc_zeroed, Layout};
 
-    let align = 64;
+    let align = 128;
     let alloc_size = bytesize.max(1);
     let layout = Layout::from_size_align(alloc_size, align).map_err(|_| CUerror::OUT_OF_MEMORY)?;
     let ptr = unsafe { alloc_zeroed(layout) };

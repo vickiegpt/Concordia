@@ -72,9 +72,9 @@ pub(crate) fn ptx_looks_valid(ptx: &str) -> bool {
     }) {
         return false;
     }
-    !trimmed.bytes().any(|b| {
-        b == 0 || b == 0x7f || (b < 0x20 && !matches!(b, b'\n' | b'\r' | b'\t'))
-    })
+    !trimmed
+        .bytes()
+        .any(|b| b == 0 || b == 0x7f || (b < 0x20 && !matches!(b, b'\n' | b'\r' | b'\t')))
 }
 
 pub(crate) fn compile_ptx_to_tmatmul_assembly(
@@ -151,11 +151,41 @@ pub(crate) fn required_dax_len() -> usize {
 
 pub(crate) fn encode_smoke_program() -> Vec<u8> {
     let mut program = Vec::with_capacity(TMATMUL_PROGRAM_BYTES);
-    program.extend_from_slice(&encode_instr(0b001, 0, 0, 0, 0, 0b01, 0, 0, TMATMUL_DPA_INPUT));
+    program.extend_from_slice(&encode_instr(
+        0b001,
+        0,
+        0,
+        0,
+        0,
+        0b01,
+        0,
+        0,
+        TMATMUL_DPA_INPUT,
+    ));
     program.extend_from_slice(&encode_instr(0b011, 0, 0, 0, 0, 0, 0b01, 0, 0));
-    program.extend_from_slice(&encode_instr(0b011, 0, 0, 0, 0, 0, 0b10, 0, TMATMUL_DPA_MATRIX));
+    program.extend_from_slice(&encode_instr(
+        0b011,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0b10,
+        0,
+        TMATMUL_DPA_MATRIX,
+    ));
     program.extend_from_slice(&encode_instr(0b011, 0, 1, 1, 1, 0, 0b11, 0, 0));
-    program.extend_from_slice(&encode_instr(0b001, 0, 1, 1, 1, 0b10, 0, 0, TMATMUL_DPA_OUTPUT));
+    program.extend_from_slice(&encode_instr(
+        0b001,
+        0,
+        1,
+        1,
+        1,
+        0b10,
+        0,
+        0,
+        TMATMUL_DPA_OUTPUT,
+    ));
     program.extend_from_slice(&encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0));
     debug_assert_eq!(program.len(), TMATMUL_PROGRAM_BYTES);
     program
@@ -186,15 +216,16 @@ fn encode_instr(
 
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
-        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"))
+        .map(|v| {
+            matches!(
+                v.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
         .unwrap_or(false)
 }
 
-fn require_allocation(
-    name: &'static str,
-    have: usize,
-    need: usize,
-) -> Result<(), CxlTmatmulError> {
+fn require_allocation(name: &'static str, have: usize, need: usize) -> Result<(), CxlTmatmulError> {
     if have < need {
         Err(CxlTmatmulError::AllocationTooSmall { name, have, need })
     } else {
@@ -205,7 +236,13 @@ fn require_allocation(
 fn sanitize_kernel_name(kernel_name: &str) -> String {
     let mut out: String = kernel_name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if out.is_empty() {
         out.push_str("kernel");
