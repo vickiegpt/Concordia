@@ -384,7 +384,25 @@ pub(crate) unsafe fn launch_kernel(
             eprintln!("[TMatmul Backend] WARNING: zero grid dimension detected");
         }
 
-        let ptx_source = f.ptx_source.as_deref().map(String::as_str);
+        let runtime_ptx = f.ptx_source.as_deref().map(String::as_str);
+        let lifted_ptx = if runtime_ptx.is_none() {
+            super::module::recover_ptx_source_with_sass_fallback(
+                None,
+                f.cubin_binary.as_deref().map(Vec::as_slice),
+                &f.name,
+                super::module::lift_cubin_to_ptx_for_kernel,
+            )
+        } else {
+            None
+        };
+        if let Some(ref ptx) = lifted_ptx {
+            eprintln!(
+                "[TMatmul Backend] recovered {} bytes of PTX for '{}' with SASS lifter",
+                ptx.len(),
+                f.name
+            );
+        }
+        let ptx_source = runtime_ptx.or(lifted_ptx.as_deref());
         match super::cxl_tmatmul::compile_ptx_to_tmatmul_assembly(ptx_source) {
             Ok(compiled) => {
                 let ptx_source = ptx_source.expect("compile requires PTX source");
@@ -452,8 +470,18 @@ pub(crate) unsafe fn launch_kernel(
             }
             Err(e) => {
                 eprintln!(
-                    "[TMatmul Backend] PTX JIT unavailable for '{}': {}; no kernel-name fallback attempted",
+                    "[TMatmul Backend] PTX JIT unavailable for '{}': {}; trying kernel-name fallback if enabled",
                     f.name, e
+                );
+                execute_kernel_name_fallback(
+                    &f.name,
+                    kernel_params,
+                    grid_dim_x,
+                    grid_dim_y,
+                    grid_dim_z,
+                    block_dim_x,
+                    block_dim_y,
+                    block_dim_z,
                 );
             }
         }
@@ -926,29 +954,257 @@ unsafe fn invoke_emulator_bridge(
 /// The emulator bridge is only invoked when PTX compilation succeeds (not from this fallback).
 #[cfg(feature = "intel")]
 #[allow(dead_code)]
+fn tmatmul_env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
+fn tmatmul_env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+}
+
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
 fn tmatmul_named_fallback_enabled() -> bool {
-    false
+    tmatmul_env_truthy("HETGPU_TMATMUL_NAMED_FALLBACK")
 }
 
 #[cfg(feature = "intel")]
 #[allow(dead_code)]
 fn tmatmul_hardware_matmul_enabled() -> bool {
-    false
+    tmatmul_env_truthy("HETGPU_TMATMUL_HARDWARE_MATMUL")
+}
+
+#[cfg(feature = "intel")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TmatmulHardwareMatmulLayout {
+    name: &'static str,
+    matrix_param: usize,
+    vector_param: usize,
+    output_param: usize,
+    pointer_params: usize,
+}
+
+#[cfg(feature = "intel")]
+impl TmatmulHardwareMatmulLayout {
+    fn with_env_overrides(mut self) -> Self {
+        if let Some(value) = tmatmul_env_usize("HETGPU_TMATMUL_MATRIX_PARAM") {
+            self.matrix_param = value;
+        }
+        if let Some(value) = tmatmul_env_usize("HETGPU_TMATMUL_VECTOR_PARAM") {
+            self.vector_param = value;
+        }
+        if let Some(value) = tmatmul_env_usize("HETGPU_TMATMUL_OUTPUT_PARAM") {
+            self.output_param = value;
+        }
+        if let Some(value) = tmatmul_env_usize("HETGPU_TMATMUL_POINTER_PARAMS") {
+            self.pointer_params = value;
+        }
+        self.pointer_params = self
+            .pointer_params
+            .max(self.matrix_param + 1)
+            .max(self.vector_param + 1)
+            .max(self.output_param + 1);
+        self
+    }
 }
 
 #[cfg(feature = "intel")]
 #[allow(dead_code)]
-fn tmatmul_is_matmul_kernel_name(_name: &str) -> bool {
-    false
+fn tmatmul_is_matmul_kernel_name(name_lower: &str) -> bool {
+    if name_lower.contains("mul_mat_q_stream_k_fixup") || name_lower.contains("stream_k_fixup") {
+        return false;
+    }
+    name_lower.contains("mul_mat")
+        || name_lower.contains("gemm")
+        || name_lower.contains("matmul")
+        || name_lower.contains("mm_")
+        || name_lower.contains("dot")
+        || name_lower.contains("cublas")
+}
+
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
+fn tmatmul_hardware_matmul_layout(name_lower: &str) -> Option<TmatmulHardwareMatmulLayout> {
+    if !tmatmul_is_matmul_kernel_name(name_lower) {
+        return None;
+    }
+
+    let layout = if name_lower.contains("mul_mat_f_ids") {
+        TmatmulHardwareMatmulLayout {
+            name: "mul_mat_f_ids",
+            matrix_param: 0,
+            vector_param: 1,
+            output_param: 5,
+            pointer_params: 6,
+        }
+    } else if name_lower.contains("mul_mat_vec_f") {
+        TmatmulHardwareMatmulLayout {
+            name: "mul_mat_vec_f",
+            matrix_param: 0,
+            vector_param: 1,
+            output_param: 4,
+            pointer_params: 5,
+        }
+    } else if name_lower.contains("mul_mat_f") {
+        TmatmulHardwareMatmulLayout {
+            name: "mul_mat_f",
+            matrix_param: 0,
+            vector_param: 1,
+            output_param: 3,
+            pointer_params: 4,
+        }
+    } else if name_lower.contains("mul_mat_vec_q_moe") {
+        TmatmulHardwareMatmulLayout {
+            name: "mul_mat_vec_q_moe",
+            matrix_param: 0,
+            vector_param: 1,
+            output_param: 3,
+            pointer_params: 4,
+        }
+    } else if name_lower.contains("mul_mat_vec_q") {
+        TmatmulHardwareMatmulLayout {
+            name: "mul_mat_vec_q",
+            matrix_param: 0,
+            vector_param: 1,
+            output_param: 4,
+            pointer_params: 5,
+        }
+    } else if name_lower.contains("mul_mat_q") {
+        TmatmulHardwareMatmulLayout {
+            name: "mul_mat_q",
+            matrix_param: 0,
+            vector_param: 1,
+            output_param: 4,
+            pointer_params: 6,
+        }
+    } else {
+        TmatmulHardwareMatmulLayout {
+            name: "generic",
+            matrix_param: 0,
+            vector_param: 1,
+            output_param: 2,
+            pointer_params: 3,
+        }
+    };
+
+    Some(layout.with_env_overrides())
+}
+
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
+fn tmatmul_generate_hardware_matmul_assembly(
+    kernel_name: &str,
+    layout: TmatmulHardwareMatmulLayout,
+) -> String {
+    format!(
+        "; IA-780I hardware matmul fallback generated from kernel name
+         ; kernel: {kernel_name}
+         ; layout: {layout_name} matrix=PARAM_{matrix} vector=PARAM_{vector} output=PARAM_{output}
+         ; BIND PARAM_{matrix} matrix
+         ; BIND PARAM_{vector} vector
+         ; BIND PARAM_{output} output
+         ldv v0,PARAM_{vector}
+         tmatmul_import v0
+         tmatmul_go PARAM_{matrix}
+         tmatmul_export v1
+         sv v1,PARAM_{output}
+         stall
+",
+        kernel_name = kernel_name,
+        layout_name = layout.name,
+        matrix = layout.matrix_param,
+        vector = layout.vector_param,
+        output = layout.output_param,
+    )
 }
 
 #[cfg(feature = "intel")]
 #[allow(dead_code)]
 unsafe fn execute_tmatmul_hardware_matmul_fallback(
-    _kernel_name: &str,
-    _name_lower: &str,
-    _kernel_params: *mut *mut ::core::ffi::c_void,
+    kernel_name: &str,
+    name_lower: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
 ) {
+    let Some(layout) = tmatmul_hardware_matmul_layout(name_lower) else {
+        eprintln!(
+            "[TMatmul HW Matmul] Kernel '{}' is not a supported matmul layout, skipping",
+            kernel_name
+        );
+        return;
+    };
+
+    let asm_path = std::env::var("HETGPU_TMATMUL_ASM_PATH")
+        .unwrap_or_else(|_| "/tmp/tmatmul_kernel.S".to_string());
+    let assembly = tmatmul_generate_hardware_matmul_assembly(kernel_name, layout);
+    if let Err(err) = std::fs::write(&asm_path, assembly.as_bytes()) {
+        eprintln!(
+            "[TMatmul HW Matmul] Failed to write assembly '{}': {}",
+            asm_path, err
+        );
+        return;
+    }
+
+    let numel = tmatmul_env_usize("HETGPU_TMATMUL_NUMEL").unwrap_or(2048);
+    eprintln!(
+        "[TMatmul HW Matmul] Launching '{}' as {} via {} (numel={}, pointer_params={})",
+        kernel_name, layout.name, asm_path, numel, layout.pointer_params
+    );
+    invoke_emulator_bridge(
+        &asm_path,
+        kernel_params,
+        numel,
+        kernel_name,
+        layout.pointer_params,
+    );
+}
+
+#[cfg(all(test, feature = "intel"))]
+mod tmatmul_hardware_matmul_tests {
+    use super::*;
+
+    #[test]
+    fn hardware_matmul_env_gate_accepts_truthy_values() {
+        std::env::set_var("HETGPU_TMATMUL_HARDWARE_MATMUL", "1");
+        assert!(tmatmul_hardware_matmul_enabled());
+        std::env::remove_var("HETGPU_TMATMUL_HARDWARE_MATMUL");
+    }
+
+    #[test]
+    fn matmul_name_filter_skips_stream_k_fixup() {
+        assert!(tmatmul_is_matmul_kernel_name("_z9mul_mat_q"));
+        assert!(tmatmul_is_matmul_kernel_name("_z13mul_mat_vec_q"));
+        assert!(!tmatmul_is_matmul_kernel_name(
+            "_z26mul_mat_q_stream_k_fixup"
+        ));
+    }
+
+    #[test]
+    fn ggml_iq1s_mul_mat_q_layout_uses_param4_output() {
+        let layout = tmatmul_hardware_matmul_layout("_z9mul_mat_qil10ggml_type41eevpkc...iq1_s")
+            .expect("mul_mat_q should have a hardware fallback layout");
+        assert_eq!(layout.name, "mul_mat_q");
+        assert_eq!(layout.matrix_param, 0);
+        assert_eq!(layout.vector_param, 1);
+        assert_eq!(layout.output_param, 4);
+        assert_eq!(layout.pointer_params, 6);
+
+        let asm = tmatmul_generate_hardware_matmul_assembly("kernel", layout);
+        assert!(asm.contains("ldv v0,PARAM_1"));
+        assert!(asm.contains("tmatmul_go PARAM_0"));
+        assert!(asm.contains("sv v1,PARAM_4"));
+    }
 }
 
 #[cfg(feature = "intel")]

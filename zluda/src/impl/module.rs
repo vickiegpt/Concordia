@@ -38,8 +38,14 @@ pub(crate) struct Module {
     // Store PTX source and TMatmul assembly for emulator execution
     // Arc<String> avoids cloning multi-MB PTX for every kernel in the module
     ptx_source: Option<Arc<String>>,
+    // Keep the original binary image so a virtual launch can recover per-kernel
+    // PTX with the SASS lifter when embedded PTX is unavailable.
+    cubin_binary: Option<Arc<Vec<u8>>>,
     tmatmul_assembly: Option<String>,
 }
+
+#[cfg(feature = "intel")]
+const HETGPU_SASS_MAX_CUBIN_BYTES: usize = 256 * 1024 * 1024;
 
 #[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) struct Module {
@@ -377,6 +383,15 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
 
             // Try to extract PTX from CUBIN using full binary
             let ptx_source = try_extract_ptx_from_cubin(full_binary);
+            let cubin_binary = if full_binary.len() <= HETGPU_SASS_MAX_CUBIN_BYTES {
+                Some(Arc::new(full_binary.to_vec()))
+            } else {
+                eprintln!(
+                    "[Intel Backend] CUBIN image too large to retain for SASS lifting: {} bytes",
+                    full_binary.len()
+                );
+                None
+            };
 
             if let Some(ref ptx) = ptx_source {
                 eprintln!(
@@ -388,7 +403,9 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
                     &ptx[..ptx.len().min(200)]
                 );
             } else {
-                eprintln!("[Intel Backend] No PTX found in CUBIN - operations will be no-ops");
+                eprintln!(
+                    "[Intel Backend] No embedded PTX found in CUBIN - per-kernel SASS lifter fallback will be attempted at launch"
+                );
             }
 
             // Create placeholder module so downstream symbol lookups and launches are no-ops
@@ -398,6 +415,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
                 module: ze_module_handle_t(ptr::null_mut()),
                 functions: Vec::new(),
                 ptx_source: ptx_source.map(Arc::new),
+                cubin_binary,
                 tmatmul_assembly: None,
             };
             *module = new_module.wrap();
@@ -413,6 +431,13 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
             module: ze_module,
             functions: Vec::new(),
             ptx_source: None,
+            cubin_binary: if binary_size > 0 && binary_size <= HETGPU_SASS_MAX_CUBIN_BYTES {
+                Some(Arc::new(unsafe {
+                    std::slice::from_raw_parts(image as *const u8, binary_size).to_vec()
+                }))
+            } else {
+                None
+            },
             tmatmul_assembly: None,
         };
         *module = new_module.wrap();
@@ -485,6 +510,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
                     module: ze_module_handle_t(std::ptr::null_mut()),
                     functions: Vec::new(),
                     ptx_source: Some(Arc::new(text.to_string())),
+                    cubin_binary: None,
                     tmatmul_assembly: Some(tmatmul_asm),
                 };
                 *module = new_module.wrap();
@@ -525,6 +551,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
                             module: ze_module_handle_t(std::ptr::null_mut()),
                             functions: Vec::new(),
                             ptx_source: Some(Arc::new(sanitized.clone())),
+                            cubin_binary: None,
                             tmatmul_assembly: Some(tmatmul_asm),
                         };
                         *module = new_module.wrap();
@@ -542,6 +569,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
                             module: ze_module_handle_t(std::ptr::null_mut()),
                             functions: Vec::new(),
                             ptx_source: Some(Arc::new(text.to_string())),
+                            cubin_binary: None,
                             tmatmul_assembly: None,
                         };
                         *module = new_module.wrap();
@@ -783,6 +811,7 @@ pub(crate) fn get_function(
             kernel: ze_kernel_handle_t(std::ptr::null_mut()),
             name: name_str.to_string(),
             ptx_source: hmod.ptx_source.clone(), // Pass PTX to kernel for emulation
+            cubin_binary: hmod.cubin_binary.clone(),
             module_handle: hmod.module.0 as u64,
         };
         if let Some(ref ptx) = kernel_wrapper.ptx_source {
@@ -804,6 +833,7 @@ pub(crate) fn get_function(
             kernel: *kernel,
             name: name_str.to_string(),
             ptx_source: hmod.ptx_source.clone(),
+            cubin_binary: hmod.cubin_binary.clone(),
             module_handle: hmod.module.0 as u64,
         }
         .wrap();
@@ -830,6 +860,7 @@ pub(crate) fn get_function(
                 kernel,
                 name: name_str.to_string(),
                 ptx_source: hmod.ptx_source.clone(),
+                cubin_binary: hmod.cubin_binary.clone(),
                 module_handle: hmod.module.0 as u64,
             };
 
@@ -855,6 +886,7 @@ pub(crate) struct ZeKernel {
     pub kernel: ze_kernel_handle_t,
     pub name: String,
     pub ptx_source: Option<Arc<String>>, // Shared PTX - avoids cloning per kernel
+    pub cubin_binary: Option<Arc<Vec<u8>>>,
     pub module_handle: u64,              // Handle for checkpoint tracking
 }
 #[cfg(feature = "intel")]
@@ -1216,6 +1248,163 @@ impl ZludaObject for TMatmulKernel {
 impl<'a> super::FromCuda<'a, CUfunction> for &'a TMatmulKernel {
     fn from_cuda(handle: &'a CUfunction) -> Result<Self, CUerror> {
         super::as_ref::<TMatmulKernel>(handle).as_result()
+    }
+}
+
+#[cfg(feature = "intel")]
+fn intel_env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            let value = value.trim();
+            !value.is_empty()
+                && !matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "intel")]
+fn intel_env_os_value_requested(name: &str) -> Option<std::ffi::OsString> {
+    let value = std::env::var_os(name)?;
+    let enabled = {
+        let text = value.to_string_lossy();
+        let text = text.trim();
+        !text.is_empty()
+            && !matches!(
+                text.to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+    };
+    enabled.then_some(value)
+}
+
+#[cfg(feature = "intel")]
+fn intel_sass_lifter_requested() -> bool {
+    intel_env_flag_enabled("HETGPU_TMATMUL_SASS_FALLBACK")
+        || intel_env_flag_enabled("HETGPU_TMATMUL_HARDWARE_MATMUL")
+        || intel_env_flag_enabled("HETGPU_SASS_LIFTER_LOG")
+        || intel_env_os_value_requested("HETGPU_SASS_LIFTER_DUMP").is_some()
+}
+
+#[cfg(feature = "intel")]
+pub(crate) fn recover_ptx_source_with_sass_fallback<F>(
+    runtime_ptx: Option<&str>,
+    cubin_binary: Option<&[u8]>,
+    kernel_name: &str,
+    lifter: F,
+) -> Option<String>
+where
+    F: FnOnce(&[u8], &str) -> Option<String>,
+{
+    if let Some(ptx) = runtime_ptx {
+        return Some(ptx.to_string());
+    }
+    lifter(cubin_binary?, kernel_name)
+}
+
+#[cfg(feature = "intel")]
+pub(crate) fn lift_cubin_to_ptx_for_kernel(binary: &[u8], kernel_name: &str) -> Option<String> {
+    if !intel_sass_lifter_requested() {
+        return None;
+    }
+    if !ptx::is_cubin(binary) {
+        eprintln!(
+            "[hetGPU SASS] retained binary for '{}' is not an NVIDIA CUBIN ({} bytes); cannot lift",
+            kernel_name,
+            binary.len()
+        );
+        return None;
+    }
+
+    match ptx::lift_cubin_to_ptx(
+        binary,
+        ptx::SassLiftOptions {
+            sm_version: 0,
+            kernel_name: kernel_name.to_string(),
+            include_sass_comments: true,
+            emit_unsupported_comments: true,
+        },
+    ) {
+        Ok(result) => {
+            eprintln!(
+                "[hetGPU SASS] lifted '{}' from CUBIN: input={} bytes ptx={} bytes diagnostics={}",
+                kernel_name,
+                binary.len(),
+                result.ptx.len(),
+                result.diagnostics.len()
+            );
+            for diagnostic in result.diagnostics.iter().take(16) {
+                eprintln!(
+                    "[hetGPU SASS] diagnostic addr={:?} opcode={} {}",
+                    diagnostic.address, diagnostic.opcode, diagnostic.message
+                );
+            }
+            if result.diagnostics.len() > 16 {
+                eprintln!(
+                    "[hetGPU SASS] ... {} additional diagnostics suppressed",
+                    result.diagnostics.len() - 16
+                );
+            }
+            if let Some(path) = intel_env_os_value_requested("HETGPU_SASS_LIFTER_DUMP") {
+                if let Err(err) = std::fs::write(&path, &result.ptx) {
+                    eprintln!(
+                        "[hetGPU SASS] failed to write lifted PTX dump to {}: {}",
+                        std::path::Path::new(&path).display(),
+                        err
+                    );
+                } else {
+                    eprintln!(
+                        "[hetGPU SASS] wrote lifted PTX dump to {}",
+                        std::path::Path::new(&path).display()
+                    );
+                }
+            }
+            Some(result.ptx)
+        }
+        Err(err) => {
+            eprintln!(
+                "[hetGPU SASS] failed to lift '{}' from CUBIN: {}",
+                kernel_name, err
+            );
+            None
+        }
+    }
+}
+
+#[cfg(all(test, feature = "intel"))]
+mod sass_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_ptx_wins_without_calling_sass_lifter() {
+        let recovered = recover_ptx_source_with_sass_fallback(
+            Some(".version 8.0\n.visible .entry runtime() {}"),
+            Some(b"cubin"),
+            "kernel",
+            |_, _| panic!("lifter should not run when runtime PTX exists"),
+        )
+        .expect("runtime PTX should be selected");
+
+        assert!(recovered.contains("runtime"));
+    }
+
+    #[test]
+    fn missing_ptx_source_uses_sass_lifter_hook_for_current_kernel() {
+        let recovered = recover_ptx_source_with_sass_fallback(
+            None,
+            Some(b"fake-cubin"),
+            "_Z9mul_mat_q_test",
+            |binary, kernel_name| {
+                assert_eq!(binary, b"fake-cubin");
+                assert_eq!(kernel_name, "_Z9mul_mat_q_test");
+                Some(".version 8.0\n.target sm_80\n.visible .entry _Z9mul_mat_q_test() {}\n".to_string())
+            },
+        )
+        .expect("SASS lifter fallback should provide recovered PTX");
+
+        assert!(recovered.contains("_Z9mul_mat_q_test"));
     }
 }
 
