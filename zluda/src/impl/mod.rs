@@ -189,7 +189,11 @@ from_cuda_nop!(
     cuda_types::cuda::cuuint64_t,
     cuda_types::cuda::CUdevprop,
     cuda_types::cuda::CUresult,
-    CUdevice_attribute
+    CUdevice_attribute,
+    cuda_types::cuda::CUmemAllocationGranularity_flags,
+    *mut cuda_types::cuda::CUmemGenericAllocationHandle,
+    *const cuda_types::cuda::CUmemAllocationProp,
+    *const cuda_types::cuda::CUmemAccessDesc
 );
 
 // Wrapper entry points expected by cuda_function_declarations! for error string helpers

@@ -98,7 +98,7 @@ if ! grep -q "\\.entry add_one" "${ptx_dump}"; then
     exit 1
 fi
 
-if ! grep -q "\\.target sm_${cap}" "${ptx_dump}"; then
+if ! grep -Fxq ".target sm_${cap}" "${ptx_dump}"; then
     head -n 20 "${ptx_dump}" >&2
     echo "[ld-preload-e2e] lifted PTX dump does not target sm_${cap}" >&2
     exit 1

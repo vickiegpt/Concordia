@@ -37,14 +37,45 @@ lazy_static::lazy_static! {
     pub(crate) static ref VIRTUAL_ALLOC_MAP: Mutex<HashMap<usize, usize>> = Mutex::new(HashMap::new());
 }
 
-#[cfg(all(
-    feature = "tmatmul",
-    not(feature = "amd"),
-    not(feature = "intel"),
-    not(feature = "tenstorrent")
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
 ))]
 lazy_static::lazy_static! {
     static ref TMATMUL_ALLOC_MAP: Mutex<HashMap<usize, usize>> = Mutex::new(HashMap::new());
+    static ref TMATMUL_VMM_HANDLES: Mutex<HashMap<u64, TmatmulVmmHandle>> = Mutex::new(HashMap::new());
+    static ref TMATMUL_VMM_RESERVATIONS: Mutex<HashMap<usize, TmatmulVmmReservation>> = Mutex::new(HashMap::new());
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+#[derive(Clone, Copy)]
+struct TmatmulVmmHandle {
+    size: usize,
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+struct TmatmulVmmReservation {
+    size: usize,
+    align: usize,
+    mapped: bool,
 }
 
 /// Look up the allocation containing the given address.
@@ -69,6 +100,313 @@ pub(crate) fn get_alloc_size(addr: usize) -> Option<usize> {
     } else {
         None
     }
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+const TMATMUL_VMM_GRANULARITY: usize = 64 * 1024;
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+fn tmatmul_vmm_align(alignment: usize) -> Result<usize, CUerror> {
+    let align = alignment.max(TMATMUL_VMM_GRANULARITY);
+    align
+        .checked_next_power_of_two()
+        .ok_or(CUerror::OUT_OF_MEMORY)
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+fn tmatmul_vmm_contains(base: usize, len: usize, addr: usize, size: usize) -> bool {
+    let Some(base_end) = base.checked_add(len) else {
+        return false;
+    };
+    let Some(addr_end) = addr.checked_add(size) else {
+        return false;
+    };
+    addr >= base && addr_end <= base_end
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+pub(crate) fn get_allocation_granularity(
+    granularity: *mut usize,
+    prop: *const CUmemAllocationProp,
+    _option: CUmemAllocationGranularity_flags,
+) -> CUresult {
+    if granularity.is_null() || prop.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    unsafe {
+        *granularity = TMATMUL_VMM_GRANULARITY;
+    }
+    Ok(())
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+pub(crate) fn create(
+    handle: *mut CUmemGenericAllocationHandle,
+    size: usize,
+    prop: *const CUmemAllocationProp,
+    flags: ::core::ffi::c_ulonglong,
+) -> CUresult {
+    if handle.is_null() || prop.is_null() || size == 0 || flags != 0 {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    static NEXT_HANDLE: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0x544d_4d00_0000_0001);
+    let id = NEXT_HANDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if id == 0 {
+        return Err(CUerror::OUT_OF_MEMORY);
+    }
+
+    TMATMUL_VMM_HANDLES
+        .lock()
+        .map_err(|_| CUerror::UNKNOWN)?
+        .insert(id, TmatmulVmmHandle { size });
+    unsafe {
+        *handle = id;
+    }
+    Ok(())
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+pub(crate) fn release(handle: CUmemGenericAllocationHandle) -> CUresult {
+    if handle == 0 {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    TMATMUL_VMM_HANDLES
+        .lock()
+        .map_err(|_| CUerror::UNKNOWN)?
+        .remove(&handle);
+    Ok(())
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+pub(crate) fn address_reserve(
+    ptr: *mut CUdeviceptr,
+    size: usize,
+    alignment: usize,
+    addr: CUdeviceptr,
+    flags: ::core::ffi::c_ulonglong,
+) -> CUresult {
+    if ptr.is_null() || size == 0 || flags != 0 || !addr.0.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    let align = tmatmul_vmm_align(alignment)?;
+    let layout =
+        std::alloc::Layout::from_size_align(size, align).map_err(|_| CUerror::OUT_OF_MEMORY)?;
+    let reserved = unsafe { std::alloc::alloc_zeroed(layout) };
+    if reserved.is_null() {
+        return Err(CUerror::OUT_OF_MEMORY);
+    }
+
+    TMATMUL_VMM_RESERVATIONS
+        .lock()
+        .map_err(|_| CUerror::UNKNOWN)?
+        .insert(
+            reserved as usize,
+            TmatmulVmmReservation {
+                size,
+                align,
+                mapped: false,
+            },
+        );
+    unsafe {
+        *ptr = CUdeviceptr_v2(reserved as *mut _);
+    }
+    Ok(())
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+pub(crate) fn map(
+    ptr: CUdeviceptr,
+    size: usize,
+    offset: usize,
+    handle: CUmemGenericAllocationHandle,
+    flags: ::core::ffi::c_ulonglong,
+) -> CUresult {
+    let addr = ptr.0 as usize;
+    if addr == 0 || size == 0 || offset != 0 || flags != 0 || handle == 0 {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    let handle_size = {
+        let handles = TMATMUL_VMM_HANDLES.lock().map_err(|_| CUerror::UNKNOWN)?;
+        handles.get(&handle).map(|h| h.size)
+    };
+    let Some(handle_size) = handle_size else {
+        return Err(CUerror::INVALID_HANDLE);
+    };
+    if size > handle_size {
+        return Err(CUerror::INVALID_VALUE);
+    }
+
+    {
+        let mut reservations = TMATMUL_VMM_RESERVATIONS
+            .lock()
+            .map_err(|_| CUerror::UNKNOWN)?;
+        let Some(reservation) = reservations.get_mut(&addr) else {
+            return Err(CUerror::INVALID_VALUE);
+        };
+        if reservation.mapped || size > reservation.size {
+            return Err(CUerror::INVALID_VALUE);
+        }
+        reservation.mapped = true;
+    }
+    TMATMUL_ALLOC_MAP
+        .lock()
+        .map_err(|_| CUerror::UNKNOWN)?
+        .insert(addr, size);
+    Ok(())
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+pub(crate) fn set_access(
+    ptr: CUdeviceptr,
+    size: usize,
+    desc: *const CUmemAccessDesc,
+    count: usize,
+) -> CUresult {
+    let addr = ptr.0 as usize;
+    if addr == 0 || size == 0 || desc.is_null() || count == 0 {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    let reservations = TMATMUL_VMM_RESERVATIONS
+        .lock()
+        .map_err(|_| CUerror::UNKNOWN)?;
+    if reservations
+        .iter()
+        .any(|(base, r)| r.mapped && tmatmul_vmm_contains(*base, r.size, addr, size))
+    {
+        Ok(())
+    } else {
+        Err(CUerror::INVALID_VALUE)
+    }
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+pub(crate) fn unmap(ptr: CUdeviceptr, size: usize) -> CUresult {
+    let addr = ptr.0 as usize;
+    if addr == 0 || size == 0 {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    {
+        let mut reservations = TMATMUL_VMM_RESERVATIONS
+            .lock()
+            .map_err(|_| CUerror::UNKNOWN)?;
+        let Some(reservation) = reservations.get_mut(&addr) else {
+            return Err(CUerror::INVALID_VALUE);
+        };
+        if !reservation.mapped || size > reservation.size {
+            return Err(CUerror::INVALID_VALUE);
+        }
+        reservation.mapped = false;
+    }
+    TMATMUL_ALLOC_MAP
+        .lock()
+        .map_err(|_| CUerror::UNKNOWN)?
+        .remove(&addr);
+    Ok(())
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+pub(crate) fn address_free(ptr: CUdeviceptr, size: usize) -> CUresult {
+    let addr = ptr.0 as usize;
+    if addr == 0 || size == 0 {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    let reservation = TMATMUL_VMM_RESERVATIONS
+        .lock()
+        .map_err(|_| CUerror::UNKNOWN)?
+        .remove(&addr)
+        .ok_or(CUerror::INVALID_VALUE)?;
+    if size != reservation.size {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    TMATMUL_ALLOC_MAP
+        .lock()
+        .map_err(|_| CUerror::UNKNOWN)?
+        .remove(&addr);
+    if let Ok(layout) = std::alloc::Layout::from_size_align(reservation.size, reservation.align) {
+        unsafe {
+            std::alloc::dealloc(addr as *mut u8, layout);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(
@@ -1050,6 +1388,173 @@ pub(crate) fn set_d32_v2(dst_device: CUdeviceptr, ui: u32, n: usize) -> CUresult
         return Err(CUerror::UNKNOWN);
     }
     Ok(())
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+unsafe fn nvidia_driver_symbol<T>(name: &'static [u8]) -> Result<T, CUerror>
+where
+    T: Copy,
+{
+    let symbol = libc::dlsym(libc::RTLD_NEXT, name.as_ptr().cast());
+    if symbol.is_null() {
+        return Err(CUerror::NOT_SUPPORTED);
+    }
+    Ok(std::mem::transmute_copy::<*mut ::core::ffi::c_void, T>(
+        &symbol,
+    ))
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+pub(crate) fn address_reserve(
+    ptr: *mut CUdeviceptr,
+    size: usize,
+    alignment: usize,
+    addr: CUdeviceptr,
+    flags: ::core::ffi::c_ulonglong,
+) -> CUresult {
+    type FnTy = unsafe extern "C" fn(
+        *mut CUdeviceptr,
+        usize,
+        usize,
+        CUdeviceptr,
+        ::core::ffi::c_ulonglong,
+    ) -> CUresult;
+    unsafe {
+        nvidia_driver_symbol::<FnTy>(b"cuMemAddressReserve\0")?(ptr, size, alignment, addr, flags)
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+pub(crate) fn address_free(ptr: CUdeviceptr, size: usize) -> CUresult {
+    type FnTy = unsafe extern "C" fn(CUdeviceptr, usize) -> CUresult;
+    unsafe { nvidia_driver_symbol::<FnTy>(b"cuMemAddressFree\0")?(ptr, size) }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+pub(crate) fn create(
+    handle: *mut CUmemGenericAllocationHandle,
+    size: usize,
+    prop: *const CUmemAllocationProp,
+    flags: ::core::ffi::c_ulonglong,
+) -> CUresult {
+    type FnTy = unsafe extern "C" fn(
+        *mut CUmemGenericAllocationHandle,
+        usize,
+        *const CUmemAllocationProp,
+        ::core::ffi::c_ulonglong,
+    ) -> CUresult;
+    unsafe { nvidia_driver_symbol::<FnTy>(b"cuMemCreate\0")?(handle, size, prop, flags) }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+pub(crate) fn release(handle: CUmemGenericAllocationHandle) -> CUresult {
+    type FnTy = unsafe extern "C" fn(CUmemGenericAllocationHandle) -> CUresult;
+    unsafe { nvidia_driver_symbol::<FnTy>(b"cuMemRelease\0")?(handle) }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+pub(crate) fn map(
+    ptr: CUdeviceptr,
+    size: usize,
+    offset: usize,
+    handle: CUmemGenericAllocationHandle,
+    flags: ::core::ffi::c_ulonglong,
+) -> CUresult {
+    type FnTy = unsafe extern "C" fn(
+        CUdeviceptr,
+        usize,
+        usize,
+        CUmemGenericAllocationHandle,
+        ::core::ffi::c_ulonglong,
+    ) -> CUresult;
+    unsafe { nvidia_driver_symbol::<FnTy>(b"cuMemMap\0")?(ptr, size, offset, handle, flags) }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+pub(crate) fn unmap(ptr: CUdeviceptr, size: usize) -> CUresult {
+    type FnTy = unsafe extern "C" fn(CUdeviceptr, usize) -> CUresult;
+    unsafe { nvidia_driver_symbol::<FnTy>(b"cuMemUnmap\0")?(ptr, size) }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+pub(crate) fn set_access(
+    ptr: CUdeviceptr,
+    size: usize,
+    desc: *const CUmemAccessDesc,
+    count: usize,
+) -> CUresult {
+    type FnTy = unsafe extern "C" fn(CUdeviceptr, usize, *const CUmemAccessDesc, usize) -> CUresult;
+    unsafe { nvidia_driver_symbol::<FnTy>(b"cuMemSetAccess\0")?(ptr, size, desc, count) }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+pub(crate) fn get_allocation_granularity(
+    granularity: *mut usize,
+    prop: *const CUmemAllocationProp,
+    option: CUmemAllocationGranularity_flags,
+) -> CUresult {
+    type FnTy = unsafe extern "C" fn(
+        *mut usize,
+        *const CUmemAllocationProp,
+        CUmemAllocationGranularity_flags,
+    ) -> CUresult;
+    unsafe {
+        nvidia_driver_symbol::<FnTy>(b"cuMemGetAllocationGranularity\0")?(granularity, prop, option)
+    }
 }
 
 // ─── PACC memory API ─────────────────────────────────────────────────────────
