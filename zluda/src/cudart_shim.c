@@ -437,6 +437,44 @@ static int hetgpu_env_flag_default_true(const char *name) {
              strcasecmp(value, "off") == 0);
 }
 
+static int hetgpu_process_range_has_perms(const void *ptr, size_t bytes, int need_write) {
+    if (!ptr) return 0;
+    if (bytes == 0) return 1;
+
+    uintptr_t start = (uintptr_t)ptr;
+    if (start > UINTPTR_MAX - bytes) return 0;
+    uintptr_t end = start + bytes;
+
+    FILE *maps = fopen("/proc/self/maps", "r");
+    if (!maps) return 0;
+
+    char line[1024];
+    while (fgets(line, sizeof(line), maps)) {
+        unsigned long long map_start = 0;
+        unsigned long long map_end = 0;
+        char perms[5] = {0};
+        if (sscanf(line, "%llx-%llx %4s", &map_start, &map_end, perms) != 3) {
+            continue;
+        }
+        if ((uintptr_t)map_start <= start && end <= (uintptr_t)map_end &&
+            perms[0] == 'r' && (!need_write || perms[1] == 'w')) {
+            fclose(maps);
+            return 1;
+        }
+    }
+
+    fclose(maps);
+    return 0;
+}
+
+static int hetgpu_host_range_readable(const void *ptr, size_t bytes) {
+    return hetgpu_process_range_has_perms(ptr, bytes, 0);
+}
+
+static int hetgpu_host_range_writable(void *ptr, size_t bytes) {
+    return hetgpu_process_range_has_perms(ptr, bytes, 1);
+}
+
 static int hetgpu_cuda_host_backed_ptr(const void *ptr) {
     uintptr_t value = (uintptr_t)ptr;
     return value >= 0x100000000ULL;
@@ -2271,6 +2309,45 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                             (unsigned long long)(gridDim.x ? gridDim.x : 1) *
                             (unsigned long long)(gridDim.y ? gridDim.y : 1) *
                             (unsigned long long)(gridDim.z ? gridDim.z : 1);
+                        if (rows > (unsigned long long)(SIZE_MAX / (size_t)hidden) ||
+                            (size_t)rows * (size_t)hidden > SIZE_MAX / sizeof(float)) {
+                            fprintf(stderr,
+                                    "[cudart_shim] ERROR: RMSNorm named-only kernel '%s' has oversized host fallback range rows=%llu hidden=%d\n",
+                                    funcName,
+                                    rows,
+                                    hidden);
+                            return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
+                        }
+                        size_t elems = (size_t)rows * (size_t)hidden;
+                        size_t buffer_bytes = elems * sizeof(float);
+                        size_t weight_bytes = (size_t)hidden * sizeof(float);
+                        if (!hetgpu_host_range_readable(x, buffer_bytes) ||
+                            !hetgpu_host_range_writable(y, buffer_bytes) ||
+                            (weight && !hetgpu_host_range_readable(weight, weight_bytes))) {
+                            static unsigned long long rmsnorm_device_ptr_success_log_count = 0;
+                            unsigned long long log_index =
+                                __sync_fetch_and_add(&rmsnorm_device_ptr_success_log_count, 1);
+                            if (hetgpu_strict_pacc()) {
+                                fprintf(stderr,
+                                        "[cudart_shim] ERROR: RMSNorm named-only kernel '%s' has non-host-accessible args x=%p y=%p weight=%p rows=%llu hidden=%d\n",
+                                        funcName,
+                                        (const void*)x,
+                                        (void*)y,
+                                        (const void*)weight,
+                                        rows,
+                                        hidden);
+                                return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
+                            }
+                            if (log_index < 8) {
+                                fprintf(stderr,
+                                        "[cudart_shim] RMSNorm named-only kernel '%s' has non-host-accessible args x=%p y=%p weight=%p; fail-open success\n",
+                                        funcName,
+                                        (const void*)x,
+                                        (void*)y,
+                                        (const void*)weight);
+                            }
+                            return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+                        }
                         for (unsigned long long row = 0; row < rows; ++row) {
                             unsigned long long base = row * (unsigned long long)hidden;
                             float sumsq = 0.0f;

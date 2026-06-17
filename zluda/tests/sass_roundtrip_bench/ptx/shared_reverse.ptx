@@ -21,18 +21,21 @@
     mov.u32 %r3, %ctaid.x;
     mov.u32 %r4, %ntid.x;
     mad.lo.u32 %r5, %r3, %r4, %r2;
-    setp.ge.u32 %p1, %r5, %r1;
-    @%p1 bra DONE;
+    setp.lt.u32 %p1, %r5, %r1;
+    mov.u32 %r6, 0;
+    @!%p1 bra SKIP_LOAD;
 
     mul.wide.u32 %rd3, %r5, 4;
     add.u64 %rd4, %rd2, %rd3;
     ld.global.u32 %r6, [%rd4];
 
+SKIP_LOAD:
     mul.wide.u32 %rd5, %r2, 4;
     mov.u64 %rd6, scratch;
     add.u64 %rd7, %rd6, %rd5;
     st.shared.u32 [%rd7], %r6;
     bar.sync 0;
+    @!%p1 bra DONE;
 
     sub.u32 %r7, %r4, 1;
     sub.u32 %r8, %r7, %r2;

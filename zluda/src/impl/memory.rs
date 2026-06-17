@@ -389,14 +389,18 @@ pub(crate) fn address_free(ptr: CUdeviceptr, size: usize) -> CUresult {
     if addr == 0 || size == 0 {
         return Err(CUerror::INVALID_VALUE);
     }
-    let reservation = TMATMUL_VMM_RESERVATIONS
-        .lock()
-        .map_err(|_| CUerror::UNKNOWN)?
-        .remove(&addr)
-        .ok_or(CUerror::INVALID_VALUE)?;
-    if size != reservation.size {
-        return Err(CUerror::INVALID_VALUE);
-    }
+    let reservation = {
+        let mut reservations = TMATMUL_VMM_RESERVATIONS
+            .lock()
+            .map_err(|_| CUerror::UNKNOWN)?;
+        let Some(reservation) = reservations.get(&addr) else {
+            return Err(CUerror::INVALID_VALUE);
+        };
+        if size != reservation.size {
+            return Err(CUerror::INVALID_VALUE);
+        }
+        reservations.remove(&addr).ok_or(CUerror::INVALID_VALUE)?
+    };
     TMATMUL_ALLOC_MAP
         .lock()
         .map_err(|_| CUerror::UNKNOWN)?

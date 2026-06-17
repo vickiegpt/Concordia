@@ -17,11 +17,6 @@ if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN=1
 fi
 
-if [[ -x /usr/local/cuda-12.8/bin/nvcc ]]; then
-    NVCC="${NVCC:-/usr/local/cuda-12.8/bin/nvcc}"
-else
-    NVCC="${NVCC:-nvcc}"
-fi
 if [[ -x /usr/local/cuda-12.8/bin/ptxas ]]; then
     PTXAS="${PTXAS:-/usr/local/cuda-12.8/bin/ptxas}"
 else
@@ -37,7 +32,7 @@ if [[ "${HETGPU_ROUNDTRIP_KEEP:-0}" != "1" && -z "${HETGPU_ROUNDTRIP_WORKDIR:-}"
 else
     echo "[sass-roundtrip] keeping work dir: ${WORK_DIR}"
 fi
-mkdir -p "${WORK_DIR}/cubin" "${WORK_DIR}/lifted" "${WORK_DIR}/logs"
+mkdir -p "${WORK_DIR}/cubin" "${WORK_DIR}/lifted" "${WORK_DIR}/logs" "${WORK_DIR}/ptx"
 
 cap="${HETGPU_ROUNDTRIP_SM:-}"
 if [[ -z "${cap}" ]]; then
@@ -74,11 +69,6 @@ if [[ "${DRY_RUN}" == "1" ]]; then
     exit 0
 fi
 
-if ! "${NVCC}" --list-gpu-code | grep -qx "${sm}"; then
-    echo "[sass-roundtrip] ${NVCC} cannot emit ${sm}; set NVCC to a newer toolkit" >&2
-    exit 1
-fi
-
 echo "[sass-roundtrip] building libnvcuda.so with NVIDIA passthrough"
 if ! "${CARGO}" build -p zluda --no-default-features --features nvidia >"${WORK_DIR}/logs/cargo-build.log" 2>&1; then
     tail -n 120 "${WORK_DIR}/logs/cargo-build.log" >&2
@@ -108,6 +98,10 @@ append_result() {
     if grep -q "\\[hetGPU SASS\\] lifted CUBIN via Rust lifter" "${stderr_log}"; then
         diagnostics="$(grep -o 'diagnostics=[0-9]*' "${stderr_log}" | head -n 1 | cut -d= -f2)"
         diagnostics="${diagnostics:-0}"
+        if ! grep -q "\\[hetGPU SASS\\] wrote lifted PTX dump" "${stderr_log}"; then
+            message="missing_lifter_dump_marker"
+            status="missing_lifter_dump_marker"
+        fi
     else
         message="missing_lifter_marker"
         status="missing_lifter_marker"
@@ -125,16 +119,18 @@ append_result() {
 }
 
 for case_name in "${selected_cases[@]}"; do
-    ptx="${SCRIPT_DIR}/ptx/${case_name}.ptx"
+    ptx_template="${SCRIPT_DIR}/ptx/${case_name}.ptx"
+    ptx="${WORK_DIR}/ptx/${case_name}.ptx"
     cubin="${WORK_DIR}/cubin/${case_name}.cubin"
     lifted="${WORK_DIR}/lifted/${case_name}.ptx"
     stdout_log="${WORK_DIR}/logs/${case_name}.stdout"
     stderr_log="${WORK_DIR}/logs/${case_name}.stderr"
 
-    if [[ ! -f "${ptx}" ]]; then
+    if [[ ! -f "${ptx_template}" ]]; then
         echo "[sass-roundtrip] unknown case or missing PTX: ${case_name}" >&2
         exit 1
     fi
+    sed "s/^.target sm_.*/.target ${sm}/" "${ptx_template}" >"${ptx}"
 
     echo "[sass-roundtrip] assembling ${case_name} for ${sm}"
     if ! "${PTXAS}" -arch="${sm}" "${ptx}" -o "${cubin}" >"${WORK_DIR}/logs/${case_name}.ptxas.log" 2>&1; then
@@ -143,6 +139,7 @@ for case_name in "${selected_cases[@]}"; do
     fi
 
     echo "[sass-roundtrip] running ${case_name} through LD_PRELOAD hook"
+    rm -f "${lifted}"
     if ! env \
         LD_PRELOAD="${REPO_ROOT}/target/debug/libnvcuda.so" \
         HETGPU_SASS_LIFTER_LOG=1 \
