@@ -30,6 +30,10 @@ append_row() {
     local lifted_ptx_bytes="$8"
     local message="$9"
 
+    message="${message//$'\r'/ }"
+    message="${message//$'\n'/ }"
+    message="${message//,/;}"
+
     printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "${CASE_NAME}" "${status}" "${total_ms}" "${exit_code}" \
         "${stdout_bytes}" "${stderr_bytes}" "${lifter_markers}" \
@@ -131,6 +135,9 @@ elif [[ "${stdout_bytes}" == "0" ]]; then
 elif [[ "${lifter_markers}" == "0" ]]; then
     status="missing_lifter_marker"
     message="no_lifter_marker"
+elif [[ "${lifted_ptx_files}" == "0" || "${lifted_ptx_bytes}" == "0" ]]; then
+    status="missing_lifter_dump_marker"
+    message="no_lifted_ptx_dump"
 fi
 
 append_row "${status}" "${total_ms}" "${exit_code}" "${stdout_bytes}" "${stderr_bytes}" \

@@ -99,6 +99,47 @@ MODEL_DIR="${e2e_model_work_dir}/missing-model" \
 e2e_model_csv="${e2e_model_work_dir}/bench_kimi_k26_e2e.csv"
 grep -Fq "kimi_k26_iq1m,skipped_missing_model" "${e2e_model_csv}"
 
+e2e_comma_work_dir="$(mktemp -d "/tmp/hetgpu-kimi-e2e,comma-test.XXXXXX")"
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}"' EXIT
+HETGPU_KIMI_E2E_WORKDIR="${e2e_comma_work_dir}" \
+BITNET_LLAMA_CLI="${e2e_comma_work_dir}/missing,llama-cli" \
+MODEL_DIR="${e2e_comma_work_dir}/missing-model" \
+    "${SCRIPT_DIR}/run_kimi_k26_e2e.sh" >/dev/null
+e2e_comma_csv="${e2e_comma_work_dir}/bench_kimi_k26_e2e.csv"
+awk -F, 'NF != 10 { exit 1 }' "${e2e_comma_csv}"
+
+e2e_marker_work_dir="$(mktemp -d /tmp/hetgpu-kimi-e2e-marker-test.XXXXXX)"
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}"' EXIT
+fake_model_dir="${e2e_marker_work_dir}/model"
+mkdir -p "${fake_model_dir}"
+for shard in \
+    moonshotai_Kimi-K2.6-IQ1_M-00001-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_M-00002-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_M-00003-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_M-00004-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_M-00005-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_M-00006-of-00006.gguf
+do
+    : >"${fake_model_dir}/${shard}"
+done
+fake_marker_runner="${e2e_marker_work_dir}/fake-marker-llama-cli"
+printf '#!/usr/bin/env bash\nprintf "fake kimi output\\n"\nprintf "[hetGPU SASS] lifted fake marker\\n" >&2\n' >"${fake_marker_runner}"
+chmod +x "${fake_marker_runner}"
+set +e
+HETGPU_KIMI_E2E_WORKDIR="${e2e_marker_work_dir}" \
+BITNET_LLAMA_CLI="${fake_marker_runner}" \
+MODEL_DIR="${fake_model_dir}" \
+CARGO=/bin/true \
+    "${SCRIPT_DIR}/run_kimi_k26_e2e.sh" >/dev/null 2>&1
+marker_status="$?"
+set -e
+if [[ "${marker_status}" == "0" ]]; then
+    echo "Kimi e2e accepted lifter marker without a lifted PTX dump" >&2
+    exit 1
+fi
+e2e_marker_csv="${e2e_marker_work_dir}/bench_kimi_k26_e2e.csv"
+grep -Fq "kimi_k26_iq1m,missing_lifter_dump_marker" "${e2e_marker_csv}"
+
 bar_line="$(rg -n 'bar\.sync 0' "${SCRIPT_DIR}/ptx/shared_reverse.ptx" | cut -d: -f1)"
 early_done_branch="$(
     (rg -n '@%p[0-9]+ bra DONE' "${SCRIPT_DIR}/ptx/shared_reverse.ptx" || true) \
