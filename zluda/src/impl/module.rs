@@ -1844,6 +1844,194 @@ unsafe impl Sync for Module {}
     not(feature = "tenstorrent"),
     not(feature = "tmatmul")
 ))]
+const HETGPU_SASS_MAX_CUBIN_BYTES: usize = 256 * 1024 * 1024;
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            let value = value.trim();
+            !value.is_empty()
+                && !matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+fn sass_lifter_requested() -> bool {
+    env_flag_enabled("HETGPU_SASS_LIFTER_LOG")
+        || std::env::var_os("HETGPU_SASS_LIFTER_DUMP")
+            .map(|value| !value.is_empty())
+            .unwrap_or(false)
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
+    let end = offset.checked_add(2)?;
+    Some(u16::from_le_bytes(bytes.get(offset..end)?.try_into().ok()?))
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+fn read_u64_le(bytes: &[u8], offset: usize) -> Option<u64> {
+    let end = offset.checked_add(8)?;
+    Some(u64::from_le_bytes(bytes.get(offset..end)?.try_into().ok()?))
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+fn elf_table_end(offset: usize, entry_size: usize, count: usize) -> Option<usize> {
+    if offset == 0 || entry_size == 0 || count == 0 {
+        return Some(0);
+    }
+    offset.checked_add(entry_size.checked_mul(count)?)
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+unsafe fn copy_elf_cubin_image(image: *const std::ffi::c_void) -> Option<Vec<u8>> {
+    let header = std::slice::from_raw_parts(image as *const u8, 64);
+    if header.get(0..4) != Some(b"\x7fELF")
+        || header.get(4).copied() != Some(2)
+        || header.get(5).copied() != Some(1)
+    {
+        return None;
+    }
+
+    let phoff = read_u64_le(header, 32)? as usize;
+    let shoff = read_u64_le(header, 40)? as usize;
+    let phentsize = read_u16_le(header, 54)? as usize;
+    let phnum = read_u16_le(header, 56)? as usize;
+    let shentsize = read_u16_le(header, 58)? as usize;
+    let shnum = read_u16_le(header, 60)? as usize;
+
+    let ph_end = elf_table_end(phoff, phentsize, phnum)?;
+    let sh_end = elf_table_end(shoff, shentsize, shnum)?;
+    let len = ph_end.max(sh_end);
+    if len < 64 || len > HETGPU_SASS_MAX_CUBIN_BYTES {
+        return None;
+    }
+
+    Some(std::slice::from_raw_parts(image as *const u8, len).to_vec())
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+fn try_lift_nvidia_cubin_image(image: *const std::ffi::c_void) -> Option<String> {
+    if !sass_lifter_requested() {
+        return None;
+    }
+
+    let cubin = unsafe { copy_elf_cubin_image(image)? };
+    if !ptx::is_cubin(&cubin) {
+        eprintln!(
+            "[hetGPU SASS] binary module is ELF but not an NVIDIA CUBIN ({} bytes)",
+            cubin.len()
+        );
+        return None;
+    }
+
+    match ptx::lift_cubin_to_ptx(
+        &cubin,
+        ptx::SassLiftOptions {
+            sm_version: 0,
+            kernel_name: String::new(),
+            include_sass_comments: true,
+            emit_unsupported_comments: true,
+        },
+    ) {
+        Ok(result) => {
+            eprintln!(
+                "[hetGPU SASS] lifted CUBIN via Rust lifter: input={} bytes ptx={} bytes diagnostics={}",
+                cubin.len(),
+                result.ptx.len(),
+                result.diagnostics.len()
+            );
+            for diagnostic in result.diagnostics.iter().take(16) {
+                eprintln!(
+                    "[hetGPU SASS] diagnostic addr={:?} opcode={} {}",
+                    diagnostic.address, diagnostic.opcode, diagnostic.message
+                );
+            }
+            if result.diagnostics.len() > 16 {
+                eprintln!(
+                    "[hetGPU SASS] ... {} additional diagnostics suppressed",
+                    result.diagnostics.len() - 16
+                );
+            }
+            if let Some(path) = std::env::var_os("HETGPU_SASS_LIFTER_DUMP") {
+                if !path.is_empty() {
+                    if let Err(err) = std::fs::write(&path, &result.ptx) {
+                        eprintln!(
+                            "[hetGPU SASS] failed to write lifted PTX dump to {}: {}",
+                            std::path::Path::new(&path).display(),
+                            err
+                        );
+                    } else {
+                        eprintln!(
+                            "[hetGPU SASS] wrote lifted PTX dump to {}",
+                            std::path::Path::new(&path).display()
+                        );
+                    }
+                }
+            }
+            Some(result.ptx)
+        }
+        Err(err) => {
+            eprintln!("[hetGPU SASS] failed to lift CUBIN via Rust lifter: {}", err);
+            None
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
 impl ZludaObject for Module {
     const COOKIE: usize = 0xe9138bd040487d4a;
 
@@ -1893,7 +2081,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
         }
     } else {
         eprintln!("[NVIDIA Backend] Detected CUBIN/binary module");
-        None
+        try_lift_nvidia_cubin_image(image)
     };
 
     // IMPORTANT: Register PTX source BEFORE loading with NVIDIA driver

@@ -206,22 +206,12 @@ impl CubinParser {
         &self,
         elf: &ElfFile<'a, F>,
     ) -> Result<u32, CubinParseError> {
-        // NVIDIA encodes SM version in ELF flags
-        // The format varies by CUDA version, but generally:
-        // flags & 0xFF gives the SM version (e.g., 0x3D = 61 for sm_61)
-
-        // For now, try to detect from section names
-        for section in elf.sections() {
-            if let Ok(name) = section.name() {
-                // .text.kernel_name sections indicate this is a valid CUBIN
-                if name.starts_with(".text.") {
-                    // Check for .nv.info section which contains SM info
-                }
+        if let object::FileFlags::Elf { e_flags, .. } = elf.flags() {
+            if let Some(sm_version) = sm_version_from_elf_flags(e_flags) {
+                return Ok(sm_version);
             }
         }
 
-        // Default to sm_61 if we can't determine
-        // In a real implementation, we'd parse the .nv.info section
         Ok(61)
     }
 
@@ -581,6 +571,18 @@ pub fn sm_version_from_filename(filename: &str) -> Option<u32> {
     None
 }
 
+fn sm_version_from_elf_flags(flags: u32) -> Option<u32> {
+    let candidates = [
+        flags & 0xff,
+        (flags >> 8) & 0xff,
+        (flags >> 16) & 0xff,
+    ];
+    candidates
+        .into_iter()
+        .find(|sm| matches!(*sm, 10..=255))
+        .map(|sm| sm as u32)
+}
+
 // ============================================================================
 // Convenience Types
 // ============================================================================
@@ -678,6 +680,15 @@ mod tests {
         assert_eq!(sm_version_from_filename("kernel.sm_86.cubin"), Some(86));
         assert_eq!(sm_version_from_filename("test.sm_61.cubin"), Some(61));
         assert_eq!(sm_version_from_filename("kernel.cubin"), None);
+    }
+
+    #[test]
+    fn test_sm_version_from_elf_flags() {
+        assert_eq!(sm_version_from_elf_flags(0x0050_0550), Some(80));
+        assert_eq!(sm_version_from_elf_flags(0x005a_055a), Some(90));
+        assert_eq!(sm_version_from_elf_flags(0x0600_6402), Some(100));
+        assert_eq!(sm_version_from_elf_flags(0x0600_7802), Some(120));
+        assert_eq!(sm_version_from_elf_flags(0), None);
     }
 
     #[test]
