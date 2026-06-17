@@ -4,7 +4,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 
-CASES=(int_add pred_select fma_bits shared_reverse)
+CASES=(
+    int_add
+    pred_select
+    fma_bits
+    shared_reverse
+    kimi_iq1m_unpack
+    kimi_rmsnorm_bits
+    kimi_swiglu_mix
+    kimi_rope_mix
+    kimi_attention_mask
+)
 CSV_HEADER="case,sm,status,cubin_bytes,lifted_ptx_bytes,lift_diagnostics,load_cubin_us,load_ptx_us,kernel_cubin_us,kernel_ptx_us,total_us,message"
 
 if [[ "${1:-}" == "--list-cases" ]]; then
