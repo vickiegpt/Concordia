@@ -1836,6 +1836,11 @@ extern CUresult cuLaunchKernel(
 typedef struct {
     CUmodule module;
     void* fatCubinHandle;
+    void** registrationHandle;
+    void* deferredPayload;
+    size_t deferredPayloadSize;
+    int deferredPayloadOwned;
+    char soPath[512];
 } RegisteredModule;
 
 typedef struct {
@@ -1844,11 +1849,13 @@ typedef struct {
     CUfunction cuFunc;       // Driver API function handle
     char name[256];          // Kernel name for debugging
     CUmodule module;         // Parent module
+    void** fatCubinHandle;
     CUfunction cuFuncByDevice[4];
     CUmodule moduleByDevice[4];
 } RegisteredFunction;
 
 static RegisteredModule g_modules[MAX_MODULES];
+static void* g_module_handle_storage[MAX_MODULES];
 static int g_module_count = 0;
 static RegisteredFunction g_functions[MAX_FUNCTIONS];
 static int g_function_count = 0;
@@ -1896,6 +1903,61 @@ static void registered_function_set_current_device(RegisteredFunction* entry, CU
         entry->cuFunc = func;
         entry->module = module;
     }
+}
+
+static RegisteredModule* find_registered_module_by_handle(void** fatCubinHandle) {
+    if (!fatCubinHandle) return NULL;
+    for (int i = 0; i < g_module_count; i++) {
+        if (g_modules[i].registrationHandle == fatCubinHandle) {
+            return &g_modules[i];
+        }
+    }
+    return NULL;
+}
+
+static CUmodule load_or_get_deferred_module(RegisteredModule* entry) {
+    if (!entry) return NULL;
+    if (entry->module) {
+        return entry->module;
+    }
+    if (!entry->deferredPayload || entry->deferredPayloadSize == 0) {
+        return NULL;
+    }
+
+    CUmodule module = NULL;
+    hetgpu_cuModuleLoadData_fn p_cuModuleLoadData = resolve_cuModuleLoadData();
+    (void)cudaSetDevice(hetgpu_current_device_index());
+    CUresult result = p_cuModuleLoadData ? p_cuModuleLoadData(&module, entry->deferredPayload) : 1;
+    if (result != 0 || !module) {
+        const char* log_lazy_ptx = getenv("HETGPU_CUDART_LOG_LAZY_PTX");
+        if (log_lazy_ptx && strcmp(log_lazy_ptx, "1") == 0) {
+            fprintf(stderr,
+                    "[cudart_shim] deferred fatbin module load failed for %s: %d\n",
+                    entry->soPath[0] ? entry->soPath : "<unknown>",
+                    result);
+        }
+        return NULL;
+    }
+
+    entry->module = module;
+    if (entry->registrationHandle) {
+        *entry->registrationHandle = (void*)module;
+    }
+    if (entry->deferredPayloadOwned) {
+        free(entry->deferredPayload);
+    }
+    entry->deferredPayload = NULL;
+    entry->deferredPayloadSize = 0;
+    entry->deferredPayloadOwned = 0;
+
+    const char* log_lazy_ptx = getenv("HETGPU_CUDART_LOG_LAZY_PTX");
+    if (log_lazy_ptx && strcmp(log_lazy_ptx, "1") == 0) {
+        fprintf(stderr,
+                "[cudart_shim] lazy-loaded deferred fatbin module from %s on cuda device %d\n",
+                entry->soPath[0] ? entry->soPath : "<unknown>",
+                hetgpu_current_device_index());
+    }
+    return module;
 }
 
 static uintptr_t hetgpu_registry_alias_window(const Dl_info *func_info) {
@@ -3176,24 +3238,35 @@ static CUfunction lazy_load_registered_function_for_launch(const char* kernel_na
         return current_cufunc;
     }
 
-    void* anchor = entry->hostFun ? entry->hostFun : entry->deviceFun;
-    if (!anchor) {
-        anchor = (void*)launch_func;
+    const char* module_source = "<unknown>";
+    RegisteredModule* module_entry = find_registered_module_by_handle(entry->fatCubinHandle);
+    CUmodule module = load_or_get_deferred_module(module_entry);
+    if (module_entry && module_entry->soPath[0] != '\0') {
+        module_source = module_entry->soPath;
     }
 
     Dl_info info;
-    if (!dladdr(anchor, &info) || !info.dli_fname) {
-        return NULL;
-    }
+    memset(&info, 0, sizeof(info));
+    if (!module) {
+        void* anchor = entry->hostFun ? entry->hostFun : entry->deviceFun;
+        if (!anchor) {
+            anchor = (void*)launch_func;
+        }
 
-    CUmodule module = load_or_get_ptx_module_for_kernel(info.dli_fname, kernel_name);
-    if (!module && kernel_may_use_tmatmul_reference(kernel_name)) {
-        module = load_or_get_tmatmul_reference_module();
-        if (!module) {
+        if (!dladdr(anchor, &info) || !info.dli_fname) {
             return NULL;
         }
-    } else if (!module) {
-        return NULL;
+
+        module_source = info.dli_fname;
+        module = load_or_get_ptx_module_for_kernel(info.dli_fname, kernel_name);
+        if (!module && kernel_may_use_tmatmul_reference(kernel_name)) {
+            module = load_or_get_tmatmul_reference_module();
+            if (!module) {
+                return NULL;
+            }
+        } else if (!module) {
+            return NULL;
+        }
     }
 
     CUfunction func = NULL;
@@ -3213,7 +3286,7 @@ static CUfunction lazy_load_registered_function_for_launch(const char* kernel_na
                 "[cudart_shim] launch-time lazy resolved '%s' -> %p from %s on cuda device %d\n",
                 kernel_name,
                 func,
-                info.dli_fname,
+                module_source,
                 hetgpu_current_device_index());
     }
     return func;
@@ -3490,6 +3563,7 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
     size_t payload_size = 0;
     int payload_needs_free = 0;
     int defer_module_load = 0;
+    int retain_deferred_payload = 0;
 
     if (fatbin_header && fatbin_header->magic == FATBIN_MAGIC) {
         HETGPU_LOG("[cudart_shim] Valid FatbinHeader found (magic: 0x%08x)\n", fatbin_header->magic);
@@ -3666,8 +3740,22 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
         }
     }
 
+    if (!defer_module_load && payload != NULL && payload_size > 50 &&
+            hetgpu_ptx_has_markers((const unsigned char*)payload, payload_size) &&
+            !hetgpu_env_enabled_default("HETGPU_CUDART_EAGER_PTX", 0)) {
+        // CUDA shared objects can register thousands of kernels. Loading a
+        // large PTX module at registration time forces cuModuleGetFunction for
+        // every symbol and makes LD_PRELOAD startup look hung. Keep the PTX and
+        // load it only when one of its kernels is actually launched.
+        defer_module_load = 1;
+        retain_deferred_payload = 1;
+    }
+
     if (defer_module_load) {
-        payload = NULL;
+        if (!retain_deferred_payload) {
+            payload = NULL;
+            payload_size = 0;
+        }
     } else {
         // If we didn't find a payload, use the data pointer directly as fallback
         if (payload == NULL) {
@@ -3689,10 +3777,11 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
                     // running cuobjdump over all of them can make a normal
                     // LD_PRELOAD run look hung before the model starts. Keep a
                     // placeholder module here and let the launch path resolve
-                    // PTX lazily only for kernels that actually run.
+                    // PTX/CUBIN lazily only for kernels that actually run.
+                    // CUBIN-only modules need the retained binary so Rust can
+                    // fall back to the SASS lifter when no PTX is available.
                     defer_module_load = 1;
-                    payload = NULL;
-                    payload_size = 0;
+                    retain_deferred_payload = 1;
                 } else {
 
                 HETGPU_LOG("[cudart_shim] Detected binary CUBIN, attempting PTX extraction from .so file...\n");
@@ -3768,13 +3857,29 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
     // Try to load the payload as a module
     CUmodule module = NULL;
     CUresult result = 1;
+    void* deferred_payload = NULL;
+    size_t deferred_payload_size = 0;
+    int deferred_payload_owned = 0;
     if (hetgpu_cudart_defer_module_load_enabled()) {
         // Delivery/perf mode: ggml-cuda may register hundreds of kernels even
         // when the run only needs cuBLAS-backed GEMM. Keep placeholders here
         // and let launch-time lazy lookup/fail-open handle actual kernels.
+        if (payload != NULL && payload_size > 0) {
+            retain_deferred_payload = 1;
+        }
         defer_module_load = 1;
+        if (!retain_deferred_payload) {
+            payload = NULL;
+            payload_size = 0;
+        }
+    }
+    if (defer_module_load && retain_deferred_payload && payload != NULL && payload_size > 0) {
+        deferred_payload = payload;
+        deferred_payload_size = payload_size;
+        deferred_payload_owned = payload_needs_free;
         payload = NULL;
         payload_size = 0;
+        payload_needs_free = 0;
     }
     if (!defer_module_load && payload != NULL) {
         hetgpu_cuModuleLoadData_fn p_cuModuleLoadData = resolve_cuModuleLoadData();
@@ -3800,22 +3905,39 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
     }
 
     // Store the module
+    int module_index = -1;
     if (g_module_count < MAX_MODULES) {
-        g_modules[g_module_count].module = module;
-        g_modules[g_module_count].fatCubinHandle = fatCubin;
+        module_index = g_module_count;
+        g_modules[module_index].module = module;
+        g_modules[module_index].fatCubinHandle = fatCubin;
+        g_modules[module_index].registrationHandle = &g_module_handle_storage[module_index];
+        g_modules[module_index].deferredPayload = deferred_payload;
+        g_modules[module_index].deferredPayloadSize = deferred_payload_size;
+        g_modules[module_index].deferredPayloadOwned = deferred_payload_owned;
+        g_modules[module_index].soPath[0] = '\0';
+        if (wrapper_so_path[0] != '\0') {
+            strncpy(g_modules[module_index].soPath, wrapper_so_path, sizeof(g_modules[module_index].soPath) - 1);
+            g_modules[module_index].soPath[sizeof(g_modules[module_index].soPath) - 1] = '\0';
+        }
+        g_module_handle_storage[module_index] = (void*)module;
         g_module_count++;
 
         if (log_module_load) {
             fprintf(stderr, "[cudart_shim] Registered module %d (total: %d)\n",
                     g_module_count - 1, g_module_count);
         }
+    } else if (deferred_payload_owned && deferred_payload) {
+        free(deferred_payload);
+        deferred_payload = NULL;
     }
 
     // Return the module handle as the fatCubinHandle
     // PyTorch will pass this back to __cudaRegisterFunction
-    static void* handle_storage[MAX_MODULES];
-    handle_storage[g_module_count - 1] = (void*)module;
-    return &handle_storage[g_module_count - 1];
+    static void* dummy_handle = NULL;
+    if (module_index < 0) {
+        return &dummy_handle;
+    }
+    return &g_module_handle_storage[module_index];
 }
 
 void __cudaRegisterFatBinaryEnd(void** fatCubinHandle) {
@@ -3890,6 +4012,7 @@ void __cudaRegisterFunction(void** fatCubinHandle, const char* hostFun, char* de
         g_functions[g_function_count].deviceFun = (void*)deviceFun;
         g_functions[g_function_count].cuFunc = func;
         g_functions[g_function_count].module = module;
+        g_functions[g_function_count].fatCubinHandle = fatCubinHandle;
         memset(g_functions[g_function_count].cuFuncByDevice, 0, sizeof(g_functions[g_function_count].cuFuncByDevice));
         memset(g_functions[g_function_count].moduleByDevice, 0, sizeof(g_functions[g_function_count].moduleByDevice));
         registered_function_set_current_device(&g_functions[g_function_count], func, module);

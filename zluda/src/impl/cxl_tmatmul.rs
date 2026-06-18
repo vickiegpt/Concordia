@@ -309,6 +309,53 @@ mod tests {
     }
 
     #[test]
+    fn assembles_smoke_program_from_tmatmul_assembly() {
+        let asm = format!(
+            "
+            ; generated hardware matmul fallback
+            ldv v0,{input:#x}
+            tmatmul_import v0
+            tmatmul_go {matrix:#x}
+            tmatmul_export v1
+            sv v1,{output:#x}
+            stall
+            ",
+            input = TMATMUL_DPA_INPUT,
+            matrix = TMATMUL_DPA_MATRIX,
+            output = TMATMUL_DPA_OUTPUT,
+        );
+
+        let labels = std::collections::HashMap::new();
+        let program = assemble_tmatmul_program(&asm, &labels).unwrap();
+
+        assert_eq!(program, encode_smoke_program());
+    }
+
+    #[test]
+    fn assembler_resolves_param_labels_for_hardware_fallback() {
+        let asm = "
+            ; BIND PARAM_0 matrix
+            ; BIND PARAM_1 vector
+            ; BIND PARAM_4 output
+            ldv v0,PARAM_1
+            tmatmul_import v0
+            tmatmul_go PARAM_0
+            tmatmul_export v1
+            sv v1,PARAM_4
+            stall
+        ";
+        let labels = std::collections::HashMap::from([
+            ("PARAM_0".to_string(), TMATMUL_DPA_MATRIX),
+            ("PARAM_1".to_string(), TMATMUL_DPA_INPUT),
+            ("PARAM_4".to_string(), TMATMUL_DPA_OUTPUT),
+        ]);
+
+        let program = assemble_tmatmul_program(asm, &labels).unwrap();
+
+        assert_eq!(program, encode_smoke_program());
+    }
+
+    #[test]
     fn layout_requires_program_end() {
         assert_eq!(
             required_dax_len(),
