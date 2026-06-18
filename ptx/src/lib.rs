@@ -74,6 +74,7 @@ pub use sass::{
     get_ptx_template,
     is_cubin,
     lift_cubin_to_ptx,
+    lift_cubin_to_ptx_with_cuobjdump,
     lift_instructions_to_ptx,
     lift_sass_text_to_ptx,
     CompilationUnitInfo,
@@ -101,9 +102,6 @@ pub use sass::{
     PtxTemplate,
     SassControlCodes,
     SassDataType,
-    SassLiftDiagnostic,
-    SassLiftOptions,
-    SassLiftResult,
     // SASS disassembler
     SassDisassembler,
     SassInlineConfig,
@@ -111,6 +109,9 @@ pub use sass::{
     // SASS → LLVM inlining
     SassInliner,
     SassKernelBuilder,
+    SassLiftDiagnostic,
+    SassLiftOptions,
+    SassLiftResult,
     SassMemorySpace,
     SassMetadataExtractor,
     SassOpcodeClass,

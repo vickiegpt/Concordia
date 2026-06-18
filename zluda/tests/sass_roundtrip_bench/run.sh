@@ -32,6 +32,11 @@ if [[ -x /usr/local/cuda-12.8/bin/ptxas ]]; then
 else
     PTXAS="${PTXAS:-ptxas}"
 fi
+if [[ -x /usr/local/cuda-12.8/bin/cuobjdump ]]; then
+    CUOBJDUMP="${CUOBJDUMP:-/usr/local/cuda-12.8/bin/cuobjdump}"
+else
+    CUOBJDUMP="${CUOBJDUMP:-cuobjdump}"
+fi
 CC="${CC:-cc}"
 CARGO="${CARGO:-cargo}"
 NVIDIA_SMI="${NVIDIA_SMI:-nvidia-smi}"
@@ -154,6 +159,7 @@ for case_name in "${selected_cases[@]}"; do
         LD_PRELOAD="${REPO_ROOT}/target/debug/libnvcuda.so" \
         HETGPU_SASS_LIFTER_LOG=1 \
         HETGPU_SASS_LIFTER_DUMP="${lifted}" \
+        HETGPU_SASS_LIFTER_CUOBJDUMP="${CUOBJDUMP}" \
         "${WORK_DIR}/roundtrip_runner" "${case_name}" "${cubin}" "${lifted}" "${sm}" "${n}" "${warmups}" "${iters}" \
         >"${stdout_log}" 2>"${stderr_log}"; then
         cat "${stdout_log}" >&2

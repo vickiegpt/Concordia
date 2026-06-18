@@ -76,6 +76,7 @@ fi
 rg -Fq '.target ${sm}' "${SCRIPT_DIR}/run.sh"
 rg -q 'rm -f "\$\{lifted\}"' "${SCRIPT_DIR}/run.sh"
 rg -q 'wrote lifted PTX dump' "${SCRIPT_DIR}/run.sh"
+rg -q 'HETGPU_SASS_LIFTER_CUOBJDUMP' "${SCRIPT_DIR}/run.sh"
 
 proof_work_dir="$(mktemp -d /tmp/hetgpu-sass-proof-test.XXXXXX)"
 trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}"' EXIT

@@ -518,11 +518,7 @@ impl TextDisassemblyParser {
         let address = u64::from_str_radix(addr_str, 16).ok()?;
 
         // Get rest of line after address
-        let rest = line
-            .get(addr_end + 2..)?
-            .trim()
-            .trim_end_matches(';')
-            .trim();
+        let rest = strip_cuobjdump_trailing_metadata(line.get(addr_end + 2..)?.trim()).trim();
 
         // Check for predicate (@P0, @!P1, etc.)
         let (predicate, instruction_part) = if rest.starts_with('@') {
@@ -553,7 +549,7 @@ impl TextDisassemblyParser {
 
         // Parse operands
         let operands_str = parts[1..].join(" ");
-        let operand_strs: Vec<&str> = operands_str.split(',').map(|s| s.trim()).collect();
+        let operand_strs = split_top_level_operands(&operands_str);
 
         // First operand is typically destination
         let dest_operands: Vec<SassOperand> = if !operand_strs.is_empty() {
@@ -563,8 +559,9 @@ impl TextDisassemblyParser {
         };
 
         // Rest are source operands
-        let src_operands: Vec<SassOperand> = operand_strs[1..]
+        let src_operands: Vec<SassOperand> = operand_strs
             .iter()
+            .skip(1)
             .filter_map(|s| SassOperand::parse(s))
             .collect();
 
@@ -654,6 +651,63 @@ impl TextDisassemblyParser {
 
         instructions
     }
+}
+
+fn strip_cuobjdump_trailing_metadata(line: &str) -> &str {
+    let mut bracket_depth = 0u32;
+
+    for (idx, ch) in line.char_indices() {
+        match ch {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            ';' if bracket_depth == 0 => return line[..idx].trim_end(),
+            '/' if bracket_depth == 0 && line[idx..].starts_with("/*") => {
+                return line[..idx].trim_end();
+            }
+            '&' | '?' if bracket_depth == 0 && at_token_boundary(line, idx) => {
+                return line[..idx].trim_end();
+            }
+            _ => {}
+        }
+    }
+
+    line.trim_end()
+}
+
+fn at_token_boundary(line: &str, idx: usize) -> bool {
+    idx == 0
+        || line[..idx]
+            .chars()
+            .next_back()
+            .map(char::is_whitespace)
+            .unwrap_or(false)
+}
+
+fn split_top_level_operands(operands: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut bracket_depth = 0u32;
+
+    for (idx, ch) in operands.char_indices() {
+        match ch {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            ',' if bracket_depth == 0 => {
+                let operand = operands[start..idx].trim();
+                if !operand.is_empty() {
+                    out.push(operand);
+                }
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    let operand = operands[start..].trim();
+    if !operand.is_empty() {
+        out.push(operand);
+    }
+    out
 }
 
 // ============================================================================
@@ -804,6 +858,24 @@ mod tests {
         assert_eq!(inst.address, 0x100);
         assert_eq!(inst.opcode, "BRA");
         assert!(inst.predicate.is_some());
+    }
+
+    #[test]
+    fn test_text_parse_real_sm120_cuobjdump_annotations() {
+        let line = "/*00b0*/                   IMAD.WIDE.U32 R2, R7, 0x4, R2              &req={0}         ?WAIT6_END_GROUP;  /* 0x0000000407027825 */";
+        let inst = TextDisassemblyParser::parse_instruction_line(line).unwrap();
+
+        assert_eq!(inst.address, 0x00b0);
+        assert_eq!(inst.opcode, "IMAD");
+        assert!(inst.modifiers.contains(&"WIDE".to_string()));
+        assert!(inst.modifiers.contains(&"U32".to_string()));
+        assert_eq!(inst.dest_operands.len(), 1);
+        assert_eq!(inst.src_operands.len(), 3);
+        assert_eq!(inst.src_operands[1], SassOperand::Immediate(0x4));
+        assert_eq!(
+            inst.src_operands[2],
+            SassOperand::Register(SassRegister::new("R", 2))
+        );
     }
 
     #[test]

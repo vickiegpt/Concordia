@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, io::Write, path::Path, process::Command};
 
 use super::{
     CubinKernel, CubinParser, EnhancedSassInstruction, ParsedCubin, SassDataType, SassDisassembler,
@@ -69,6 +69,16 @@ pub fn lift_cubin_to_ptx(
     cubin_data: &[u8],
     mut options: SassLiftOptions,
 ) -> Result<SassLiftResult, String> {
+    if let Some(cuobjdump_path) = std::env::var_os("HETGPU_SASS_LIFTER_CUOBJDUMP") {
+        if !cuobjdump_path.is_empty() {
+            return lift_cubin_to_ptx_with_cuobjdump(
+                cubin_data,
+                options,
+                Path::new(&cuobjdump_path),
+            );
+        }
+    }
+
     let parsed = CubinParser::new(cubin_data.to_vec())
         .parse()
         .map_err(|e| format!("Failed to parse CUBIN: {}", e))?;
@@ -92,6 +102,60 @@ pub fn lift_cubin_to_ptx(
     }
 
     Ok(lift_instructions_to_ptx(&instructions, &options))
+}
+
+pub fn lift_cubin_to_ptx_with_cuobjdump(
+    cubin_data: &[u8],
+    mut options: SassLiftOptions,
+    cuobjdump_path: impl AsRef<Path>,
+) -> Result<SassLiftResult, String> {
+    let cuobjdump_path = cuobjdump_path.as_ref();
+    let mut cubin_file = tempfile::Builder::new()
+        .prefix("hetgpu-sass-lifter-")
+        .suffix(".cubin")
+        .tempfile()
+        .map_err(|err| format!("Failed to create temporary CUBIN file: {err}"))?;
+    cubin_file
+        .write_all(cubin_data)
+        .map_err(|err| format!("Failed to write temporary CUBIN file: {err}"))?;
+    cubin_file
+        .flush()
+        .map_err(|err| format!("Failed to flush temporary CUBIN file: {err}"))?;
+
+    let output = Command::new(cuobjdump_path)
+        .arg("--dump-sass")
+        .arg(cubin_file.path())
+        .output()
+        .map_err(|err| {
+            format!(
+                "Failed to execute cuobjdump '{}': {err}",
+                cuobjdump_path.display()
+            )
+        })?;
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|err| format!("cuobjdump stdout was not UTF-8: {err}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(format!(
+            "cuobjdump '{}' failed with status {}: {}",
+            cuobjdump_path.display(),
+            output.status,
+            stderr.trim()
+        ));
+    }
+
+    if options.sm_version == 0 {
+        options.sm_version = infer_sm_version_from_cuobjdump_text(&stdout)
+            .ok_or_else(|| "cuobjdump output did not include an sm_ target".to_string())?;
+    }
+
+    lift_sass_text_to_ptx(&stdout, options)
+}
+
+fn infer_sm_version_from_cuobjdump_text(text: &str) -> Option<u32> {
+    text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .find_map(|token| token.strip_prefix("sm_")?.parse::<u32>().ok())
 }
 
 fn select_sass_text_instructions(
@@ -163,6 +227,7 @@ struct LiftContext<'a> {
     diagnostics: Vec<SassLiftDiagnostic>,
     branch_targets: HashSet<u64>,
     scratch_gpr: Option<String>,
+    uses_cuda_param_abi: bool,
 }
 
 impl<'a> LiftContext<'a> {
@@ -173,35 +238,64 @@ impl<'a> LiftContext<'a> {
             diagnostics: Vec::new(),
             branch_targets: HashSet::new(),
             scratch_gpr: None,
+            uses_cuda_param_abi: false,
         }
     }
 
     fn emit_module(&mut self, instructions: &[EnhancedSassInstruction]) {
         self.collect_branch_targets(instructions);
+        self.uses_cuda_param_abi = uses_cuda_param_abi(instructions);
         let mut regs = RegisterDecls::from_instructions(instructions);
-        if needs_iadd3_scratch(instructions) {
+        if needs_gpr_scratch(instructions) {
             self.scratch_gpr = Some(format!("%r{}", regs.max_gpr));
             regs.max_gpr += 1;
         }
+        if self.uses_cuda_param_abi {
+            regs.max_b64 = regs.max_b64.max(16);
+        }
 
-        self.output.push_str(".version 8.5\n");
+        self.output.push_str(ptx_version_for_sm(self.options.sm_version));
+        self.output.push('\n');
         self.output
             .push_str(&format!(".target sm_{}\n", self.options.sm_version));
         self.output.push_str(".address_size 64\n\n");
-        self.output.push_str(&format!(
-            ".visible .entry {}()\n{{\n",
-            sanitize_ident(&self.options.kernel_name)
-        ));
+        if self.uses_cuda_param_abi {
+            self.output.push_str(&format!(
+                ".visible .entry {}(\n    .param .u64 out,\n    .param .u64 in,\n    .param .u32 n\n)\n{{\n",
+                sanitize_ident(&self.options.kernel_name)
+            ));
+        } else {
+            self.output.push_str(&format!(
+                ".visible .entry {}()\n{{\n",
+                sanitize_ident(&self.options.kernel_name)
+            ));
+        }
 
         if regs.max_gpr > 0 {
             self.output
                 .push_str(&format!("    .reg .b32 %r<{}>;\n", regs.max_gpr));
         }
+        if regs.max_uniform_gpr > 0 {
+            self.output.push_str(&format!(
+                "    .reg .b32 %ur<{}>;\n",
+                regs.max_uniform_gpr
+            ));
+        }
         if regs.max_pred > 0 {
             self.output
                 .push_str(&format!("    .reg .pred %p<{}>;\n", regs.max_pred));
         }
-        if regs.max_gpr > 0 || regs.max_pred > 0 {
+        if regs.max_uniform_pred > 0 {
+            self.output.push_str(&format!(
+                "    .reg .pred %up<{}>;\n",
+                regs.max_uniform_pred
+            ));
+        }
+        if regs.max_b64 > 0 {
+            self.output
+                .push_str(&format!("    .reg .b64 %rd<{}>;\n", regs.max_b64));
+        }
+        if regs.has_decls() {
             self.output.push('\n');
         }
 
@@ -238,7 +332,7 @@ impl<'a> LiftContext<'a> {
     fn lift_instruction(&mut self, inst: &EnhancedSassInstruction) -> Option<String> {
         let pred = predicate_prefix(inst);
         match inst.opcode.as_str() {
-            "S2R" | "CS2R" => Some(format!(
+            "S2R" | "S2UR" | "CS2R" => Some(format!(
                 "{}mov.u32 {}, {};",
                 pred,
                 dest_operand(inst).unwrap_or_else(|| "%r0".to_string()),
@@ -259,6 +353,11 @@ impl<'a> LiftContext<'a> {
                 "add",
                 &data_type_suffix(inst, SassDataType::S32),
             )),
+            "IADD3" if is_extended_iadd3(inst) => Some(iadd3_extended_op(
+                inst,
+                &pred,
+                &data_type_suffix(inst, SassDataType::U32),
+            )),
             "IADD3" if inst.src_operands.len() == 3 => Some(iadd3_op(
                 inst,
                 &pred,
@@ -278,6 +377,7 @@ impl<'a> LiftContext<'a> {
                 "mul.lo",
                 &data_type_suffix(inst, SassDataType::S32),
             )),
+            "IMAD" if has_modifier(inst, "WIDE") => Some(imad_wide_op(inst, &pred)),
             "IMAD" => Some(ternary_op(
                 inst,
                 &pred,
@@ -291,8 +391,13 @@ impl<'a> LiftContext<'a> {
                 "shr",
                 &data_type_suffix(inst, SassDataType::U32),
             )),
+            "SHF" => Some(shf_op(inst, &pred)),
             "LOP" if inst.src_operands.len() == 2 => Some(binary_op(inst, &pred, "and", "b32")),
             "LOP" => self.unsupported(inst, "logical operation lifting is not implemented"),
+            "LOP3" if is_lop3_even_predicate(inst) => {
+                Some(lop3_even_predicate_op(inst, &pred, self.scratch_gpr.as_deref()))
+            }
+            "LOP3" if is_lop3_xor(inst) => Some(lop3_xor_op(inst, &pred)),
             "LOP3" => self.unsupported(inst, "LOP3 truth-table lifting is not implemented"),
             "POPC" => Some(unary_op(inst, &pred, "popc", "b32")),
             "FADD" => Some(binary_op(
@@ -325,7 +430,8 @@ impl<'a> LiftContext<'a> {
                 "neg",
                 &data_type_suffix(inst, SassDataType::F32),
             )),
-            "LDG" | "LDS" | "LDL" | "LDC" => Some(load_op(inst, &pred)),
+            "LDG" | "LDS" | "LDL" => Some(load_op(inst, &pred)),
+            "LDC" | "LDCU" => Some(ldc_op(inst, &pred)),
             "STG" | "STS" | "STL" => Some(store_op(inst, &pred)),
             "ISETP" | "FSETP" => Some(setp_op(inst, &pred)),
             "PSETP" => self.unsupported(inst, "predicate set lifting is not implemented"),
@@ -333,6 +439,7 @@ impl<'a> LiftContext<'a> {
             "BAR" => Some(format!("{}bar.sync 0;", pred)),
             "DEPBAR" => Some("// depbar preserved from SASS;".to_string()),
             "MEMBAR" => Some(format!("{}membar.gl;", pred)),
+            "NOP" => Some("// nop;".to_string()),
             "EXIT" | "RET" => Some(format!("{}ret;", pred)),
             "HMMA" | "IMMA" | "BMMA" | "DMMA" => {
                 self.unsupported(inst, "tensor instruction lifting is not implemented")
@@ -359,16 +466,19 @@ impl<'a> LiftContext<'a> {
     }
 }
 
-fn needs_iadd3_scratch(instructions: &[EnhancedSassInstruction]) -> bool {
-    instructions
-        .iter()
-        .any(|inst| inst.opcode == "IADD3" && inst.src_operands.len() >= 3)
+fn needs_gpr_scratch(instructions: &[EnhancedSassInstruction]) -> bool {
+    instructions.iter().any(|inst| {
+        inst.opcode == "IADD3" && inst.src_operands.len() == 3 || is_lop3_even_predicate(inst)
+    })
 }
 
 #[derive(Debug, Default)]
 struct RegisterDecls {
     max_gpr: u32,
     max_pred: u32,
+    max_uniform_gpr: u32,
+    max_uniform_pred: u32,
+    max_b64: u32,
 }
 
 impl RegisterDecls {
@@ -383,6 +493,14 @@ impl RegisterDecls {
             }
         }
         decls
+    }
+
+    fn has_decls(&self) -> bool {
+        self.max_gpr > 0
+            || self.max_pred > 0
+            || self.max_uniform_gpr > 0
+            || self.max_uniform_pred > 0
+            || self.max_b64 > 0
     }
 }
 
@@ -409,7 +527,17 @@ fn collect_register(reg: &SassRegister, decls: &mut RegisterDecls) {
     match reg.prefix.as_str() {
         "R" => decls.max_gpr = decls.max_gpr.max(reg.number + 1),
         "P" => decls.max_pred = decls.max_pred.max(reg.number + 1),
+        "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(reg.number + 1),
+        "UP" => decls.max_uniform_pred = decls.max_uniform_pred.max(reg.number + 1),
         _ => {}
+    }
+}
+
+fn ptx_version_for_sm(sm_version: u32) -> &'static str {
+    if sm_version >= 120 {
+        ".version 8.7"
+    } else {
+        ".version 8.5"
     }
 }
 
@@ -490,6 +618,65 @@ fn ternary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) ->
     )
 }
 
+fn imad_wide_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_rd_operand(inst).unwrap_or_else(|| "%rd0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let base = inst
+        .src_operands
+        .get(2)
+        .map(format_rd_operand)
+        .unwrap_or_else(|| "0".to_string());
+
+    format!(
+        "{}mul.wide.u32 %rd15, {}, {};\n    {}add.u64 {}, {}, %rd15;",
+        pred, src0, src1, pred, dst, base
+    )
+}
+
+fn iadd3_extended_op(inst: &EnhancedSassInstruction, pred: &str, ty: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let terms: Vec<String> = inst
+        .src_operands
+        .iter()
+        .filter(|op| !is_zero_register_operand(op))
+        .map(format_operand)
+        .collect();
+
+    match terms.as_slice() {
+        [] => format!("{}mov.u32 {}, 0;", pred, dst),
+        [src] => format!("{}mov.u32 {}, {};", pred, dst, src),
+        [src0, src1] => format!("{}add.{} {}, {}, {};", pred, ty, dst, src0, src1),
+        [src0, src1, src2, ..] => format!(
+            "{}add.{} {}, {}, {};\n    {}add.{} {}, {}, {};",
+            pred, ty, dst, src0, src1, pred, ty, dst, dst, src2
+        ),
+    }
+}
+
+fn lop3_xor_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    format!("{}xor.b32 {}, {}, {};", pred, dst, src0, src1)
+}
+
 fn load_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
     let addr = inst
@@ -505,6 +692,28 @@ fn load_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         dst,
         addr
     )
+}
+
+fn ldc_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let const_bank = inst.src_operands.first().and_then(constant_bank_operand);
+    match const_bank {
+        Some((0, 0x360)) => format!("{}mov.u32 {}, %ntid.x;", pred, dst),
+        Some((0, 0x380)) if is_64bit_modifier(inst) => format!(
+            "{}ld.param.u64 {}, [out];",
+            pred,
+            dest_rd_operand(inst).unwrap_or_else(|| "%rd0".to_string())
+        ),
+        Some((0, 0x388)) if is_64bit_modifier(inst) => format!(
+            "{}ld.param.u64 {}, [in];",
+            pred,
+            dest_rd_operand(inst).unwrap_or_else(|| "%rd0".to_string())
+        ),
+        Some((0, 0x390)) => format!("{}ld.param.u32 {}, [n];", pred, dst),
+        Some((0, 0x358)) if is_64bit_modifier(inst) => format!("{}mov.u32 {}, 0;", pred, dst),
+        Some(_) => format!("{}mov.u32 {}, 0;", pred, dst),
+        None => load_op(inst, pred),
+    }
 }
 
 fn store_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -530,16 +739,7 @@ fn store_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
 
 fn setp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%p0".to_string());
-    let src0 = inst
-        .src_operands
-        .first()
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
-    let src1 = inst
-        .src_operands
-        .get(1)
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
+    let (src0, src1) = setp_compare_operands(inst);
     let default_ty = match inst.opcode.as_str() {
         "FSETP" => SassDataType::F32,
         "PSETP" => SassDataType::Pred,
@@ -554,6 +754,27 @@ fn setp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         src0,
         src1
     )
+}
+
+fn setp_compare_operands(inst: &EnhancedSassInstruction) -> (String, String) {
+    if inst.src_operands.len() >= 4 && is_pt_register_operand(&inst.src_operands[0]) {
+        return (
+            format_operand(&inst.src_operands[1]),
+            format_operand(&inst.src_operands[2]),
+        );
+    }
+
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    (src0, src1)
 }
 
 fn branch_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -679,13 +900,19 @@ fn format_address_operand(operand: &SassOperand) -> String {
             format!("[{}]", expr)
         }
         SassOperand::Address(address) => format!("[{}]", label_for_address(*address)),
-        SassOperand::Label(label) => format!("[{}]", label),
+        SassOperand::Label(label) => {
+            desc_address_to_ptx(label).unwrap_or_else(|| format!("[{}]", label))
+        }
         _ => format!("[{}]", format_operand(operand)),
     }
 }
 
 fn dest_operand(inst: &EnhancedSassInstruction) -> Option<String> {
     inst.dest_operands.first().map(format_operand)
+}
+
+fn dest_rd_operand(inst: &EnhancedSassInstruction) -> Option<String> {
+    inst.dest_operands.first().map(format_rd_operand)
 }
 
 fn predicate_prefix(inst: &EnhancedSassInstruction) -> String {
@@ -699,6 +926,85 @@ fn predicate_prefix(inst: &EnhancedSassInstruction) -> String {
         }
         _ => String::new(),
     }
+}
+
+fn format_rd_operand(operand: &SassOperand) -> String {
+    match operand {
+        SassOperand::Register(reg) if reg.prefix == "R" && !reg.is_zero => {
+            format!("%rd{}", reg.number)
+        }
+        SassOperand::Label(label) => desc_address_to_ptx(label).unwrap_or_else(|| label.clone()),
+        _ => format_operand(operand),
+    }
+}
+
+fn constant_bank_operand(operand: &SassOperand) -> Option<(u32, u32)> {
+    match operand {
+        SassOperand::ConstantBank { bank, offset } => Some((*bank, *offset)),
+        _ => None,
+    }
+}
+
+fn has_modifier(inst: &EnhancedSassInstruction, modifier: &str) -> bool {
+    inst.modifiers
+        .iter()
+        .any(|m| m.eq_ignore_ascii_case(modifier))
+}
+
+fn is_64bit_modifier(inst: &EnhancedSassInstruction) -> bool {
+    has_modifier(inst, "64")
+        || matches!(
+            inst.data_type,
+            Some(SassDataType::U64 | SassDataType::S64 | SassDataType::B64)
+        )
+}
+
+fn is_extended_iadd3(inst: &EnhancedSassInstruction) -> bool {
+    inst.opcode == "IADD3" && inst.src_operands.len() > 3
+}
+
+fn is_lop3_xor(inst: &EnhancedSassInstruction) -> bool {
+    if inst.opcode != "LOP3" || inst.src_operands.len() < 4 {
+        return false;
+    }
+    matches!(inst.src_operands.get(3), Some(SassOperand::Immediate(0x3c)))
+        && inst
+            .src_operands
+            .get(2)
+            .map(is_zero_register_operand)
+            .unwrap_or(false)
+}
+
+fn is_zero_register_operand(operand: &SassOperand) -> bool {
+    matches!(operand, SassOperand::Register(reg) if reg.is_zero)
+}
+
+fn is_pt_register_operand(operand: &SassOperand) -> bool {
+    matches!(operand, SassOperand::Register(reg) if reg.prefix == "PT")
+}
+
+fn desc_address_to_ptx(label: &str) -> Option<String> {
+    let marker = "][R";
+    let reg_start = label.find(marker)? + marker.len();
+    let rest = &label[reg_start..];
+    let digits: String = rest.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let reg_num = digits.parse::<u32>().ok()?;
+    Some(format!("[%rd{}]", reg_num))
+}
+
+fn uses_cuda_param_abi(instructions: &[EnhancedSassInstruction]) -> bool {
+    instructions.iter().any(|inst| {
+        inst.src_operands
+            .iter()
+            .chain(inst.dest_operands.iter())
+            .filter_map(constant_bank_operand)
+            .any(|(bank, offset)| {
+                bank == 0 && matches!(offset, 0x358 | 0x360 | 0x380 | 0x388 | 0x390)
+            })
+    })
 }
 
 fn format_operand(operand: &SassOperand) -> String {
