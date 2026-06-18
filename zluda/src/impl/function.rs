@@ -1132,6 +1132,109 @@ fn tmatmul_generate_hardware_matmul_assembly(
 
 #[cfg(feature = "intel")]
 #[allow(dead_code)]
+unsafe fn tmatmul_read_device_pointer_param(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+    kernel_name: &str,
+) -> Result<(usize, usize), super::cxl_tmatmul::CxlTmatmulError> {
+    if kernel_params.is_null() {
+        return Err(super::cxl_tmatmul::CxlTmatmulError::Device(format!(
+            "kernel '{kernel_name}' has null kernel_params"
+        )));
+    }
+
+    let param_slot = kernel_params.add(index);
+    let param_addr = *param_slot;
+    if param_addr.is_null() || (param_addr as usize) < 0x1000 {
+        return Err(super::cxl_tmatmul::CxlTmatmulError::Device(format!(
+            "kernel '{kernel_name}' PARAM_{index} has invalid parameter slot {:#x}",
+            param_addr as usize
+        )));
+    }
+    if !is_memory_readable(param_addr as *const u8, std::mem::size_of::<u64>()) {
+        return Err(super::cxl_tmatmul::CxlTmatmulError::Device(format!(
+            "kernel '{kernel_name}' PARAM_{index} parameter slot is not readable"
+        )));
+    }
+
+    let ptr_value = (param_addr as *const u64).read_unaligned() as usize;
+    let alloc_size = super::memory::get_alloc_size(ptr_value).unwrap_or(0);
+    if ptr_value < 0x1000 || alloc_size == 0 {
+        return Err(super::cxl_tmatmul::CxlTmatmulError::Device(format!(
+            "kernel '{kernel_name}' PARAM_{index} ptr={ptr_value:#x} is not a tracked hetGPU allocation"
+        )));
+    }
+    if !is_memory_readable(ptr_value as *const u8, alloc_size.min(4096)) {
+        return Err(super::cxl_tmatmul::CxlTmatmulError::Device(format!(
+            "kernel '{kernel_name}' PARAM_{index} ptr={ptr_value:#x} allocation is not readable"
+        )));
+    }
+
+    Ok((ptr_value, alloc_size))
+}
+
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
+unsafe fn submit_cxl_hardware_matmul_fallback(
+    kernel_name: &str,
+    layout: TmatmulHardwareMatmulLayout,
+    assembly: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Result<super::cxl_tmatmul::CxlTmatmulRunStatus, super::cxl_tmatmul::CxlTmatmulError> {
+    let (matrix_ptr, matrix_alloc) =
+        tmatmul_read_device_pointer_param(kernel_params, layout.matrix_param, kernel_name)?;
+    let (input_ptr, input_alloc) =
+        tmatmul_read_device_pointer_param(kernel_params, layout.vector_param, kernel_name)?;
+    let (output_ptr, output_alloc) =
+        tmatmul_read_device_pointer_param(kernel_params, layout.output_param, kernel_name)?;
+
+    let labels = std::collections::HashMap::from([
+        (
+            format!("PARAM_{}", layout.matrix_param),
+            super::cxl_tmatmul::TMATMUL_DPA_MATRIX,
+        ),
+        (
+            format!("PARAM_{}", layout.vector_param),
+            super::cxl_tmatmul::TMATMUL_DPA_INPUT,
+        ),
+        (
+            format!("PARAM_{}", layout.output_param),
+            super::cxl_tmatmul::TMATMUL_DPA_OUTPUT,
+        ),
+    ]);
+    let timeout_ms = tmatmul_env_usize("HETGPU_CXL_TMATMUL_TIMEOUT_MS")
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+
+    eprintln!(
+        "[CXL TMatmul] staging '{}' matrix=PARAM_{} ptr={:#x}/{} vector=PARAM_{} ptr={:#x}/{} output=PARAM_{} ptr={:#x}/{}",
+        kernel_name,
+        layout.matrix_param,
+        matrix_ptr,
+        matrix_alloc,
+        layout.vector_param,
+        input_ptr,
+        input_alloc,
+        layout.output_param,
+        output_ptr,
+        output_alloc,
+    );
+
+    super::cxl_tmatmul::submit_hardware_matmul_from_ptrs(
+        assembly,
+        &labels,
+        matrix_ptr as *const u8,
+        matrix_alloc,
+        input_ptr as *const u8,
+        input_alloc,
+        output_ptr as *mut u8,
+        output_alloc,
+        timeout_ms,
+    )
+}
+
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
 unsafe fn execute_tmatmul_hardware_matmul_fallback(
     kernel_name: &str,
     name_lower: &str,
@@ -1161,6 +1264,21 @@ unsafe fn execute_tmatmul_hardware_matmul_fallback(
         "[TMatmul HW Matmul] Launching '{}' as {} via {} (numel={}, pointer_params={})",
         kernel_name, layout.name, asm_path, numel, layout.pointer_params
     );
+
+    if super::cxl_tmatmul::cxl_tmatmul_enabled() {
+        match submit_cxl_hardware_matmul_fallback(kernel_name, layout, &assembly, kernel_params) {
+            Ok(status) => eprintln!(
+                "[CXL TMatmul] Kernel '{}' executed via RUN_CSR_ONLY: {:?}",
+                kernel_name, status
+            ),
+            Err(err) => eprintln!(
+                "[CXL TMatmul] Kernel '{}' RUN_CSR_ONLY submit failed: {}",
+                kernel_name, err
+            ),
+        }
+        return;
+    }
+
     invoke_emulator_bridge(
         &asm_path,
         kernel_params,
