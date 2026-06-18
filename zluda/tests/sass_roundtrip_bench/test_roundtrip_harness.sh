@@ -77,8 +77,19 @@ rg -Fq '.target ${sm}' "${SCRIPT_DIR}/run.sh"
 rg -q 'rm -f "\$\{lifted\}"' "${SCRIPT_DIR}/run.sh"
 rg -q 'wrote lifted PTX dump' "${SCRIPT_DIR}/run.sh"
 
+proof_work_dir="$(mktemp -d /tmp/hetgpu-sass-proof-test.XXXXXX)"
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}"' EXIT
+HETGPU_SASS_PROOF_WORKDIR="${proof_work_dir}" \
+    "${SCRIPT_DIR}/run_correctness_suite.sh" --dry-run >/dev/null
+proof_csv="${proof_work_dir}/sass_lifter_correctness.csv"
+head -n 1 "${proof_csv}" | grep -Fxq "step,status,elapsed_ms,message"
+grep -Fq "rust_fuzzer,dry_run,0,planned" "${proof_csv}"
+grep -Fq "roundtrip_harness,dry_run,0,planned" "${proof_csv}"
+grep -Fq "ld_preload_roundtrip,dry_run,0,planned" "${proof_csv}"
+grep -Fq "kimi_e2e,dry_run,0,planned" "${proof_csv}"
+
 e2e_work_dir="$(mktemp -d /tmp/hetgpu-kimi-e2e-test.XXXXXX)"
-trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${e2e_work_dir}"' EXIT
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}"' EXIT
 HETGPU_KIMI_E2E_WORKDIR="${e2e_work_dir}" \
 BITNET_LLAMA_CLI="${e2e_work_dir}/missing-llama-cli" \
 MODEL_DIR="${e2e_work_dir}/missing-model" \
@@ -91,7 +102,7 @@ fake_runner="${e2e_work_dir}/fake-llama-cli"
 printf '#!/usr/bin/env bash\nprintf "fake kimi output\\n"\n' >"${fake_runner}"
 chmod +x "${fake_runner}"
 e2e_model_work_dir="$(mktemp -d /tmp/hetgpu-kimi-e2e-model-test.XXXXXX)"
-trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}"' EXIT
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}"' EXIT
 HETGPU_KIMI_E2E_WORKDIR="${e2e_model_work_dir}" \
 BITNET_LLAMA_CLI="${fake_runner}" \
 MODEL_DIR="${e2e_model_work_dir}/missing-model" \
@@ -100,7 +111,7 @@ e2e_model_csv="${e2e_model_work_dir}/bench_kimi_k26_e2e.csv"
 grep -Fq "kimi_k26_iq1m,skipped_missing_model" "${e2e_model_csv}"
 
 e2e_comma_work_dir="$(mktemp -d "/tmp/hetgpu-kimi-e2e,comma-test.XXXXXX")"
-trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}"' EXIT
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}"' EXIT
 HETGPU_KIMI_E2E_WORKDIR="${e2e_comma_work_dir}" \
 BITNET_LLAMA_CLI="${e2e_comma_work_dir}/missing,llama-cli" \
 MODEL_DIR="${e2e_comma_work_dir}/missing-model" \
@@ -109,7 +120,7 @@ e2e_comma_csv="${e2e_comma_work_dir}/bench_kimi_k26_e2e.csv"
 awk -F, 'NF != 10 { exit 1 }' "${e2e_comma_csv}"
 
 e2e_marker_work_dir="$(mktemp -d /tmp/hetgpu-kimi-e2e-marker-test.XXXXXX)"
-trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}"' EXIT
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}"' EXIT
 fake_model_dir="${e2e_marker_work_dir}/model"
 mkdir -p "${fake_model_dir}"
 for shard in \

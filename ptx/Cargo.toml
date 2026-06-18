@@ -78,6 +78,10 @@ path = "src/bin/sass_inliner.rs"
 name = "gpu_rr"
 path = "src/bin/gpu_rr.rs"
 
+[[bin]]
+name = "sass_lifter_fuzz"
+path = "src/bin/sass_lifter_fuzz.rs"
+
 [features]
 intel = ["comgr/intel"]
 amd = ["comgr/amd"]
