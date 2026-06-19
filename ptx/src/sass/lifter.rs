@@ -228,6 +228,7 @@ struct LiftContext<'a> {
     branch_targets: HashSet<u64>,
     scratch_gpr: Option<String>,
     uses_cuda_param_abi: bool,
+    uses_shared_memory: bool,
 }
 
 impl<'a> LiftContext<'a> {
@@ -239,22 +240,25 @@ impl<'a> LiftContext<'a> {
             branch_targets: HashSet::new(),
             scratch_gpr: None,
             uses_cuda_param_abi: false,
+            uses_shared_memory: false,
         }
     }
 
     fn emit_module(&mut self, instructions: &[EnhancedSassInstruction]) {
         self.collect_branch_targets(instructions);
         self.uses_cuda_param_abi = uses_cuda_param_abi(instructions);
+        self.uses_shared_memory = uses_shared_memory(instructions);
         let mut regs = RegisterDecls::from_instructions(instructions);
         if needs_gpr_scratch(instructions) {
             self.scratch_gpr = Some(format!("%r{}", regs.max_gpr));
             regs.max_gpr += 1;
         }
-        if self.uses_cuda_param_abi {
+        if self.uses_cuda_param_abi || self.uses_shared_memory {
             regs.max_b64 = regs.max_b64.max(16);
         }
 
-        self.output.push_str(ptx_version_for_sm(self.options.sm_version));
+        self.output
+            .push_str(ptx_version_for_sm(self.options.sm_version));
         self.output.push('\n');
         self.output
             .push_str(&format!(".target sm_{}\n", self.options.sm_version));
@@ -276,26 +280,26 @@ impl<'a> LiftContext<'a> {
                 .push_str(&format!("    .reg .b32 %r<{}>;\n", regs.max_gpr));
         }
         if regs.max_uniform_gpr > 0 {
-            self.output.push_str(&format!(
-                "    .reg .b32 %ur<{}>;\n",
-                regs.max_uniform_gpr
-            ));
+            self.output
+                .push_str(&format!("    .reg .b32 %ur<{}>;\n", regs.max_uniform_gpr));
         }
         if regs.max_pred > 0 {
             self.output
                 .push_str(&format!("    .reg .pred %p<{}>;\n", regs.max_pred));
         }
         if regs.max_uniform_pred > 0 {
-            self.output.push_str(&format!(
-                "    .reg .pred %up<{}>;\n",
-                regs.max_uniform_pred
-            ));
+            self.output
+                .push_str(&format!("    .reg .pred %up<{}>;\n", regs.max_uniform_pred));
         }
         if regs.max_b64 > 0 {
             self.output
                 .push_str(&format!("    .reg .b64 %rd<{}>;\n", regs.max_b64));
         }
-        if regs.has_decls() {
+        if self.uses_shared_memory {
+            self.output
+                .push_str("    .shared .align 4 .b8 scratch[512];\n");
+        }
+        if regs.has_decls() || self.uses_shared_memory {
             self.output.push('\n');
         }
 
@@ -347,6 +351,9 @@ impl<'a> LiftContext<'a> {
                 "mov",
                 &data_type_suffix(inst, SassDataType::U32),
             )),
+            "UMOV" => Some(unary_op(inst, &pred, "mov", "u32")),
+            "ULEA" => Some(ulea_op(inst, &pred)),
+            "LEA" => Some(lea_op(inst, &pred)),
             "IADD" => Some(binary_op(
                 inst,
                 &pred,
@@ -391,33 +398,41 @@ impl<'a> LiftContext<'a> {
                 "shr",
                 &data_type_suffix(inst, SassDataType::U32),
             )),
-            "SHF" => Some(shf_op(inst, &pred)),
+            "SHF" => Some(shf_op(inst, &pred, self.scratch_gpr.as_deref())),
             "LOP" if inst.src_operands.len() == 2 => Some(binary_op(inst, &pred, "and", "b32")),
             "LOP" => self.unsupported(inst, "logical operation lifting is not implemented"),
-            "LOP3" if is_lop3_even_predicate(inst) => {
-                Some(lop3_even_predicate_op(inst, &pred, self.scratch_gpr.as_deref()))
-            }
+            "LOP3" if is_lop3_odd_predicate(inst) => Some(lop3_odd_predicate_op(
+                inst,
+                &pred,
+                self.scratch_gpr.as_deref(),
+            )),
+            "LOP3" if is_lop3_and(inst) => Some(lop3_binary_op(inst, &pred, "and")),
+            "LOP3" if is_lop3_or(inst) => Some(lop3_binary_op(inst, &pred, "or")),
             "LOP3" if is_lop3_xor(inst) => Some(lop3_xor_op(inst, &pred)),
             "LOP3" => self.unsupported(inst, "LOP3 truth-table lifting is not implemented"),
             "POPC" => Some(unary_op(inst, &pred, "popc", "b32")),
-            "FADD" => Some(binary_op(
+            "FADD" => Some(float_binary_op(
                 inst,
                 &pred,
                 "add",
                 &data_type_suffix(inst, SassDataType::F32),
             )),
-            "FMUL" => Some(binary_op(
+            "FMUL" => Some(float_binary_op(
                 inst,
                 &pred,
                 "mul",
                 &data_type_suffix(inst, SassDataType::F32),
             )),
-            "FFMA" => Some(ternary_op(
+            "FFMA" => Some(float_ternary_op(
                 inst,
                 &pred,
                 "fma.rn",
                 &data_type_suffix(inst, SassDataType::F32),
             )),
+            "HFMA2" => Some(hfma2_constant_op(inst, &pred)),
+            "I2FP" => Some(i2fp_op(inst, &pred)),
+            "F2I" => Some(f2i_op(inst, &pred)),
+            "FMNMX" => Some(fmnmx_op(inst, &pred)),
             "FABS" => Some(unary_op(
                 inst,
                 &pred,
@@ -434,6 +449,7 @@ impl<'a> LiftContext<'a> {
             "LDC" | "LDCU" => Some(ldc_op(inst, &pred)),
             "STG" | "STS" | "STL" => Some(store_op(inst, &pred)),
             "ISETP" | "FSETP" => Some(setp_op(inst, &pred)),
+            "SEL" => Some(sel_op(inst, &pred)),
             "PSETP" => self.unsupported(inst, "predicate set lifting is not implemented"),
             "BRA" | "BRX" | "JMP" => Some(branch_op(inst, &pred)),
             "BAR" => Some(format!("{}bar.sync 0;", pred)),
@@ -444,6 +460,7 @@ impl<'a> LiftContext<'a> {
             "HMMA" | "IMMA" | "BMMA" | "DMMA" => {
                 self.unsupported(inst, "tensor instruction lifting is not implemented")
             }
+            "MUFU" if has_modifier(inst, "RSQ") => Some(mufu_rsq_op(inst, &pred)),
             "MUFU" => self.unsupported(inst, "MUFU sub-operation lifting is not implemented"),
             _ => self.unsupported(inst, "instruction lifting is not implemented"),
         }
@@ -468,7 +485,9 @@ impl<'a> LiftContext<'a> {
 
 fn needs_gpr_scratch(instructions: &[EnhancedSassInstruction]) -> bool {
     instructions.iter().any(|inst| {
-        inst.opcode == "IADD3" && inst.src_operands.len() == 3 || is_lop3_even_predicate(inst)
+        inst.opcode == "IADD3" && inst.src_operands.len() == 3
+            || is_lop3_odd_predicate(inst)
+            || is_shf_left_rotate(inst)
     })
 }
 
@@ -566,6 +585,21 @@ fn binary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> 
     format!("{}{}.{} {}, {}, {};", pred, op, ty, dst, src0, src1)
 }
 
+fn float_binary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_float_operand)
+        .unwrap_or_else(|| "0.0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_float_operand)
+        .unwrap_or_else(|| "0.0".to_string());
+    format!("{}{}.{} {}, {}, {};", pred, op, ty, dst, src0, src1)
+}
+
 fn iadd3_op(
     inst: &EnhancedSassInstruction,
     pred: &str,
@@ -618,6 +652,82 @@ fn ternary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) ->
     )
 }
 
+fn float_ternary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_float_operand)
+        .unwrap_or_else(|| "0.0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_float_operand)
+        .unwrap_or_else(|| "0.0".to_string());
+    let src2 = inst
+        .src_operands
+        .get(2)
+        .map(format_float_operand)
+        .unwrap_or_else(|| "0.0".to_string());
+    format!(
+        "{}{}.{} {}, {}, {}, {};",
+        pred, op, ty, dst, src0, src1, src2
+    )
+}
+
+fn hfma2_constant_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let bits = extract_sass_encoding(inst)
+        .map(|encoding| (encoding >> 32) as u32)
+        .unwrap_or(0);
+    format!("{}mov.b32 {}, 0x{:08x};", pred, dst, bits)
+}
+
+fn i2fp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    format!("{}cvt.rn.f32.u32 {}, {};", pred, dst, src)
+}
+
+fn f2i_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    format!("{}cvt.rzi.u32.f32 {}, {};", pred, dst, src)
+}
+
+fn mufu_rsq_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    format!("{}rsqrt.approx.ftz.f32 {}, {};", pred, dst, src)
+}
+
+fn fmnmx_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_float_operand)
+        .unwrap_or_else(|| "0.0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_float_operand)
+        .unwrap_or_else(|| "0.0".to_string());
+    format!("{}min.f32 {}, {}, {};", pred, dst, src0, src1)
+}
+
 fn imad_wide_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let dst = dest_rd_operand(inst).unwrap_or_else(|| "%rd0".to_string());
     let src0 = inst
@@ -644,25 +754,53 @@ fn imad_wide_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
 
 fn iadd3_extended_op(inst: &EnhancedSassInstruction, pred: &str, ty: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
-    let terms: Vec<String> = inst
+    let terms: Vec<(String, bool)> = inst
         .src_operands
         .iter()
         .filter(|op| !is_zero_register_operand(op))
-        .map(format_operand)
+        .map(format_signed_operand)
         .collect();
 
     match terms.as_slice() {
         [] => format!("{}mov.u32 {}, 0;", pred, dst),
-        [src] => format!("{}mov.u32 {}, {};", pred, dst, src),
-        [src0, src1] => format!("{}add.{} {}, {}, {};", pred, ty, dst, src0, src1),
-        [src0, src1, src2, ..] => format!(
-            "{}add.{} {}, {}, {};\n    {}add.{} {}, {}, {};",
-            pred, ty, dst, src0, src1, pred, ty, dst, dst, src2
+        [(src, false)] => format!("{}mov.u32 {}, {};", pred, dst, src),
+        [(src, true)] => format!("{}sub.{} {}, 0, {};", pred, ty, dst, src),
+        [(src0, false), (src1, false)] => {
+            format!("{}add.{} {}, {}, {};", pred, ty, dst, src0, src1)
+        }
+        [(src0, false), (src1, true)] => {
+            format!("{}sub.{} {}, {}, {};", pred, ty, dst, src0, src1)
+        }
+        [(src0, true), (src1, false)] => {
+            format!("{}sub.{} {}, {}, {};", pred, ty, dst, src1, src0)
+        }
+        [(src0, true), (src1, true)] => format!(
+            "{}sub.{} {}, 0, {};\n    {}sub.{} {}, {}, {};",
+            pred, ty, dst, src0, pred, ty, dst, dst, src1
         ),
+        [(src0, neg0), rest @ ..] => {
+            let mut lines = if *neg0 {
+                format!("{}sub.{} {}, 0, {};", pred, ty, dst, src0)
+            } else {
+                format!("{}mov.u32 {}, {};", pred, dst, src0)
+            };
+            for (src, negated) in rest {
+                let op = if *negated { "sub" } else { "add" };
+                lines.push_str(&format!(
+                    "\n    {}{}.{} {}, {}, {};",
+                    pred, op, ty, dst, dst, src
+                ));
+            }
+            lines
+        }
     }
 }
 
 fn lop3_xor_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    lop3_binary_op(inst, pred, "xor")
+}
+
+fn lop3_binary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
     let src0 = inst
         .src_operands
@@ -674,15 +812,139 @@ fn lop3_xor_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         .get(1)
         .map(format_operand)
         .unwrap_or_else(|| "0".to_string());
-    format!("{}xor.b32 {}, {}, {};", pred, dst, src0, src1)
+    format!("{}{}.b32 {}, {}, {};", pred, op, dst, src0, src1)
+}
+
+fn lop3_odd_predicate_op(
+    inst: &EnhancedSassInstruction,
+    pred: &str,
+    scratch_gpr: Option<&str>,
+) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%p0".to_string());
+    let value = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let scratch = scratch_gpr.unwrap_or("%r0");
+    format!(
+        "{}and.b32 {}, {}, 1;\n    {}setp.ne.u32 {}, {}, 0;",
+        pred, scratch, value, pred, dst, scratch
+    )
+}
+
+fn shf_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str>) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let amount = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    if has_modifier(inst, "R") {
+        let value = inst
+            .src_operands
+            .get(2)
+            .map(format_operand)
+            .unwrap_or_else(|| "0".to_string());
+        format!(
+            "{}shr.{} {}, {}, {};",
+            pred,
+            data_type_suffix(inst, SassDataType::U32),
+            dst,
+            value,
+            amount
+        )
+    } else if is_shf_left_rotate(inst) {
+        let value = inst
+            .src_operands
+            .first()
+            .map(format_operand)
+            .unwrap_or_else(|| "0".to_string());
+        let scratch = scratch_gpr.unwrap_or("%r0");
+        let right_amount = shift_amount_immediate(inst)
+            .map(|amount| 32 - amount)
+            .unwrap_or(0);
+        format!(
+            "{}shl.b32 {}, {}, {};\n    {}shr.u32 {}, {}, {};\n    {}or.b32 {}, {}, {};",
+            pred, dst, value, amount, pred, scratch, value, right_amount, pred, dst, dst, scratch
+        )
+    } else {
+        let value = inst
+            .src_operands
+            .first()
+            .map(format_operand)
+            .unwrap_or_else(|| "0".to_string());
+        format!("{}shl.b32 {}, {}, {};", pred, dst, value, amount)
+    }
+}
+
+fn sel_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let mut src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let mut src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let (predicate, negated) = inst
+        .src_operands
+        .get(2)
+        .map(format_sel_predicate_operand)
+        .unwrap_or_else(|| ("%p0".to_string(), false));
+    if negated {
+        std::mem::swap(&mut src0, &mut src1);
+    }
+    format!(
+        "{}selp.{} {}, {}, {}, {};",
+        pred,
+        data_type_suffix(inst, SassDataType::U32),
+        dst,
+        src0,
+        src1,
+        predicate
+    )
+}
+
+fn ulea_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%ur0".to_string());
+    format!("{}mov.u32 {}, 0;", pred, dst)
+}
+
+fn lea_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let shift = inst
+        .src_operands
+        .get(2)
+        .and_then(|operand| match operand {
+            SassOperand::Immediate(value) => Some(*value),
+            _ => None,
+        })
+        .unwrap_or(0);
+    if shift == 0 {
+        format!("{}mov.u32 {}, {};", pred, dst, src)
+    } else {
+        format!("{}shl.b32 {}, {}, {};", pred, dst, src, shift)
+    }
 }
 
 fn load_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    if is_shared_memory_inst(inst) {
+        return shared_load_op(inst, pred);
+    }
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
     let addr = inst
         .src_operands
         .first()
-        .map(format_address_operand)
+        .map(|operand| format_memory_address_operand(inst, operand))
         .unwrap_or_else(|| "[0]".to_string());
     format!(
         "{}ld.{}.{} {}, {};",
@@ -717,10 +979,13 @@ fn ldc_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
 }
 
 fn store_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    if is_shared_memory_inst(inst) {
+        return shared_store_op(inst, pred);
+    }
     let addr = inst
         .dest_operands
         .first()
-        .map(format_address_operand)
+        .map(|operand| format_memory_address_operand(inst, operand))
         .unwrap_or_else(|| "[0]".to_string());
     let src = inst
         .src_operands
@@ -735,6 +1000,62 @@ fn store_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         addr,
         src
     )
+}
+
+fn shared_load_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let addr_setup = inst
+        .src_operands
+        .first()
+        .map(shared_address_setup)
+        .unwrap_or_else(|| "mov.u64 %rd14, scratch;".to_string());
+    format!(
+        "{}\n    {}ld.shared.{} {}, [%rd14];",
+        addr_setup,
+        pred,
+        data_type_suffix(inst, SassDataType::U32),
+        dst
+    )
+}
+
+fn shared_store_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let addr_setup = inst
+        .dest_operands
+        .first()
+        .map(shared_address_setup)
+        .unwrap_or_else(|| "mov.u64 %rd14, scratch;".to_string());
+    let src = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    format!(
+        "{}\n    {}st.shared.{} [%rd14], {};",
+        addr_setup,
+        pred,
+        data_type_suffix(inst, SassDataType::U32),
+        src
+    )
+}
+
+fn shared_address_setup(operand: &SassOperand) -> String {
+    match operand {
+        SassOperand::Memory { base, offset, .. } => {
+            let offset_reg = base
+                .as_ref()
+                .map(format_register)
+                .unwrap_or_else(|| "0".to_string());
+            let mut setup = format!(
+                "cvt.u64.u32 %rd14, {};\n    mov.u64 %rd13, scratch;\n    add.u64 %rd14, %rd13, %rd14;",
+                offset_reg
+            );
+            if *offset != 0 {
+                setup.push_str(&format!("\n    add.u64 %rd14, %rd14, {};", offset));
+            }
+            setup
+        }
+        _ => "mov.u64 %rd14, scratch;".to_string(),
+    }
 }
 
 fn setp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -838,6 +1159,37 @@ fn memory_space_suffix(inst: &EnhancedSassInstruction) -> String {
         SassMemorySpace::Generic => "generic",
     }
     .to_string()
+}
+
+fn is_shared_memory_inst(inst: &EnhancedSassInstruction) -> bool {
+    matches!(inst.memory_space, Some(SassMemorySpace::Shared))
+        || matches!(inst.opcode.as_str(), "LDS" | "STS")
+}
+
+fn format_memory_address_operand(inst: &EnhancedSassInstruction, operand: &SassOperand) -> String {
+    if is_shared_memory_inst(inst) {
+        return format_shared_address_operand(operand);
+    }
+    format_address_operand(operand)
+}
+
+fn format_shared_address_operand(operand: &SassOperand) -> String {
+    match operand {
+        SassOperand::Memory { base, offset, .. } => {
+            let mut expr = "scratch".to_string();
+            if let Some(base) = base {
+                expr.push('+');
+                expr.push_str(&format_register(base));
+            }
+            if *offset > 0 {
+                expr.push_str(&format!("+{}", offset));
+            } else if *offset < 0 {
+                expr.push_str(&offset.to_string());
+            }
+            format!("[{}]", expr)
+        }
+        _ => format_address_operand(operand),
+    }
 }
 
 fn comparison_suffix(inst: &EnhancedSassInstruction) -> String {
@@ -964,15 +1316,65 @@ fn is_extended_iadd3(inst: &EnhancedSassInstruction) -> bool {
 }
 
 fn is_lop3_xor(inst: &EnhancedSassInstruction) -> bool {
-    if inst.opcode != "LOP3" || inst.src_operands.len() < 4 {
-        return false;
-    }
-    matches!(inst.src_operands.get(3), Some(SassOperand::Immediate(0x3c)))
+    is_lop3_binary_truth_table(inst, 0x3c)
+}
+
+fn is_lop3_and(inst: &EnhancedSassInstruction) -> bool {
+    is_lop3_binary_truth_table(inst, 0xc0)
+}
+
+fn is_lop3_or(inst: &EnhancedSassInstruction) -> bool {
+    is_lop3_binary_truth_table(inst, 0xfc)
+}
+
+fn is_lop3_binary_truth_table(inst: &EnhancedSassInstruction, lut: i64) -> bool {
+    inst.opcode == "LOP3"
+        && inst.src_operands.len() >= 4
+        && matches!(inst.src_operands.get(3), Some(SassOperand::Immediate(value)) if *value == lut)
         && inst
             .src_operands
             .get(2)
             .map(is_zero_register_operand)
             .unwrap_or(false)
+}
+
+fn is_lop3_odd_predicate(inst: &EnhancedSassInstruction) -> bool {
+    if inst.opcode != "LOP3" || inst.src_operands.len() < 5 {
+        return false;
+    }
+    let dest_is_pred = matches!(
+        inst.dest_operands.first(),
+        Some(SassOperand::Register(reg)) if reg.prefix == "P"
+    );
+    dest_is_pred
+        && inst
+            .src_operands
+            .first()
+            .map(is_zero_register_operand)
+            .unwrap_or(false)
+        && matches!(inst.src_operands.get(2), Some(SassOperand::Immediate(1)))
+        && matches!(inst.src_operands.get(4), Some(SassOperand::Immediate(0xc0)))
+}
+
+fn is_shf_left_rotate(inst: &EnhancedSassInstruction) -> bool {
+    inst.opcode == "SHF"
+        && has_modifier(inst, "HI")
+        && !has_modifier(inst, "R")
+        && shift_amount_immediate(inst)
+            .map(|amount| (1..32).contains(&amount))
+            .unwrap_or(false)
+        && operands_same_register(inst.src_operands.first(), inst.src_operands.get(2))
+}
+
+fn shift_amount_immediate(inst: &EnhancedSassInstruction) -> Option<i64> {
+    match inst.src_operands.get(1) {
+        Some(SassOperand::Immediate(amount)) => Some(*amount),
+        _ => None,
+    }
+}
+
+fn operands_same_register(lhs: Option<&SassOperand>, rhs: Option<&SassOperand>) -> bool {
+    matches!((lhs, rhs), (Some(SassOperand::Register(a)), Some(SassOperand::Register(b))) if a == b)
 }
 
 fn is_zero_register_operand(operand: &SassOperand) -> bool {
@@ -1004,6 +1406,13 @@ fn uses_cuda_param_abi(instructions: &[EnhancedSassInstruction]) -> bool {
             .any(|(bank, offset)| {
                 bank == 0 && matches!(offset, 0x358 | 0x360 | 0x380 | 0x388 | 0x390)
             })
+    })
+}
+
+fn uses_shared_memory(instructions: &[EnhancedSassInstruction]) -> bool {
+    instructions.iter().any(|inst| {
+        matches!(inst.memory_space, Some(SassMemorySpace::Shared))
+            || matches!(inst.opcode.as_str(), "LDS" | "STS")
     })
 }
 
@@ -1040,6 +1449,54 @@ fn format_operand(operand: &SassOperand) -> String {
     }
 }
 
+fn format_signed_operand(operand: &SassOperand) -> (String, bool) {
+    match operand {
+        SassOperand::Register(reg) if reg.prefix.starts_with('-') => {
+            (format_register_without_negation(reg), true)
+        }
+        SassOperand::Immediate(value) if *value < 0 => (value.abs().to_string(), true),
+        _ => (format_operand(operand), false),
+    }
+}
+
+fn format_float_operand(operand: &SassOperand) -> String {
+    match operand {
+        SassOperand::Immediate(value) => format!("{}.0", value),
+        SassOperand::FloatImmediate(value) => value.to_string(),
+        _ => format_operand(operand),
+    }
+}
+
+fn extract_sass_encoding(inst: &EnhancedSassInstruction) -> Option<u64> {
+    let marker = "/* 0x";
+    let start = inst.instruction_text.rfind(marker)? + marker.len();
+    let end = inst.instruction_text[start..].find(" */")? + start;
+    u64::from_str_radix(&inst.instruction_text[start..end], 16).ok()
+}
+
+fn format_register_without_negation(reg: &SassRegister) -> String {
+    let prefix = reg.prefix.trim_start_matches('-');
+    if reg.is_zero {
+        return "%rz".to_string();
+    }
+    match prefix {
+        "R" => format!("%r{}", reg.number),
+        "UR" => format!("%ur{}", reg.number),
+        "P" => format!("%p{}", reg.number),
+        "UP" => format!("%up{}", reg.number),
+        _ => format_register(reg),
+    }
+}
+
+fn format_sel_predicate_operand(operand: &SassOperand) -> (String, bool) {
+    match operand {
+        SassOperand::Predicate { register, negated } => (format_register(register), *negated),
+        SassOperand::Register(reg) if reg.prefix == "P" => (format_register(reg), false),
+        SassOperand::Register(reg) if reg.prefix == "!P" => (format!("%p{}", reg.number), true),
+        _ => (format_operand(operand), false),
+    }
+}
+
 fn format_register(reg: &SassRegister) -> String {
     if reg.is_zero {
         return "0".to_string();
@@ -1067,6 +1524,7 @@ fn map_special_register(name: &str) -> String {
         "SR_NCTAID.X" | "SR_NCTAIDX" => "%nctaid.x".to_string(),
         "SR_NCTAID.Y" | "SR_NCTAIDY" => "%nctaid.y".to_string(),
         "SR_NCTAID.Z" | "SR_NCTAIDZ" => "%nctaid.z".to_string(),
+        "SR_CgaCtaId" | "SR_CGACTAID" => "0".to_string(),
         "SR_LANEID" => "%laneid".to_string(),
         "SR_WARPID" => "%warpid".to_string(),
         "SR_CLOCK" | "SR_CLOCK_LO" => "%clock".to_string(),

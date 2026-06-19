@@ -54,15 +54,12 @@ finish_non_pass() {
 
 runner="${BITNET_LLAMA_CLI:-/root/hetGPU/BitNet-work/build/bin/llama-cli}"
 model_dir="${MODEL_DIR:-/root/hetGPU/models/bartowski/moonshotai_Kimi-K2.6-GGUF/moonshotai_Kimi-K2.6-IQ1_M}"
+model_prefix="${MODEL_PREFIX:-$(basename "${model_dir}")}"
 
-required_shards=(
-    "moonshotai_Kimi-K2.6-IQ1_M-00001-of-00006.gguf"
-    "moonshotai_Kimi-K2.6-IQ1_M-00002-of-00006.gguf"
-    "moonshotai_Kimi-K2.6-IQ1_M-00003-of-00006.gguf"
-    "moonshotai_Kimi-K2.6-IQ1_M-00004-of-00006.gguf"
-    "moonshotai_Kimi-K2.6-IQ1_M-00005-of-00006.gguf"
-    "moonshotai_Kimi-K2.6-IQ1_M-00006-of-00006.gguf"
-)
+required_shards=()
+for shard_index in 1 2 3 4 5 6; do
+    required_shards+=("$(printf '%s-%05d-of-00006.gguf' "${model_prefix}" "${shard_index}")")
+done
 
 if [[ ! -x "${runner}" ]]; then
     append_row "skipped_missing_runner" 0 0 0 0 0 0 0 "missing_runner:${runner}"
@@ -106,6 +103,7 @@ env \
     HETGPU_SASS_LIFTER_DUMP="${ptx_dump}" \
     BITNET_LLAMA_CLI="${runner}" \
     MODEL_DIR="${model_dir}" \
+    MODEL_PREFIX="${model_prefix}" \
     "${REPO_ROOT}/tools/run_kimi_k26_iq1m_bitnet.sh" "${prompt}" \
     >"${stdout_log}" 2>"${stderr_log}"
 exit_code="$?"

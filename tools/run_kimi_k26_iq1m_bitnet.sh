@@ -2,7 +2,8 @@
 set -euo pipefail
 
 model_dir="${MODEL_DIR:-/root/hetGPU/models/bartowski/moonshotai_Kimi-K2.6-GGUF/moonshotai_Kimi-K2.6-IQ1_M}"
-model="${MODEL:-${model_dir}/moonshotai_Kimi-K2.6-IQ1_M-00001-of-00006.gguf}"
+model_prefix="${MODEL_PREFIX:-$(basename "${model_dir}")}"
+model="${MODEL:-${model_dir}/${model_prefix}-00001-of-00006.gguf}"
 runner="${BITNET_LLAMA_CLI:-/root/hetGPU/BitNet-work/build/bin/llama-cli}"
 threads="${THREADS:-$(nproc)}"
 ctx_size="${CTX_SIZE:-4096}"
@@ -11,14 +12,10 @@ temp="${TEMP:-0.6}"
 system_prompt="${SYSTEM_PROMPT:-You are Kimi, an AI assistant created by Moonshot AI.}"
 user_prompt="${1:-用一句中文说明你已经启动。}"
 
-required=(
-    "moonshotai_Kimi-K2.6-IQ1_M-00001-of-00006.gguf"
-    "moonshotai_Kimi-K2.6-IQ1_M-00002-of-00006.gguf"
-    "moonshotai_Kimi-K2.6-IQ1_M-00003-of-00006.gguf"
-    "moonshotai_Kimi-K2.6-IQ1_M-00004-of-00006.gguf"
-    "moonshotai_Kimi-K2.6-IQ1_M-00005-of-00006.gguf"
-    "moonshotai_Kimi-K2.6-IQ1_M-00006-of-00006.gguf"
-)
+required=()
+for shard_index in 1 2 3 4 5 6; do
+    required+=("$(printf '%s-%05d-of-00006.gguf' "${model_prefix}" "${shard_index}")")
+done
 
 if [[ ! -x "$runner" ]]; then
     echo "missing BitNet llama-cli: ${runner}" >&2

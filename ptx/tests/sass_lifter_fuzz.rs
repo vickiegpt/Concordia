@@ -190,7 +190,159 @@ fn text_lifter_handles_real_sm120_predicate_shift_pattern() {
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert!(result.ptx.contains("and.b32 %r10, %r7, 1;"));
-    assert!(result.ptx.contains("setp.eq.u32 %p0, %r10, 0;"));
+    assert!(result.ptx.contains("setp.ne.u32 %p0, %r10, 0;"));
     assert!(result.ptx.contains("shl.b32 %r9, %r2, 1;"));
     assert!(result.ptx.contains("@%p0 shr.u32 %r9, %r2, 1;"));
+}
+
+#[test]
+fn text_lifter_preserves_signed_shf_right_shift() {
+    let text = r#"Function : kimi_iq1m_unpack
+        /*0120*/                   SHF.R.S32.HI R8, RZ, 0x1e, R6                                    ?trans2;           /* 0x0000001eff087819 */
+        /*0130*/                   EXIT                                                             ?trans5;           /* 0x000000000000794d */
+"#;
+
+    let result = lift_sass_text_to_ptx(
+        text,
+        SassLiftOptions {
+            sm_version: 120,
+            kernel_name: "kimi_iq1m_unpack".to_string(),
+            include_sass_comments: false,
+            emit_unsupported_comments: true,
+        },
+    )
+    .expect("signed SM120 SHF text should lift");
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(result.ptx.contains("shr.s32 %r8, %r6, 30;"));
+}
+
+#[test]
+fn text_lifter_handles_real_sm120_rope_select_rotate_pattern() {
+    let text = r#"Function : kimi_rope_mix
+        /*00c0*/                   SEL R7, R9.reuse, R0, P0                                       ?trans1;           /* 0x0000000009077207 */
+        /*0140*/                   SHF.L.U32.HI R0, R2, 0x5, R2                  &req={2}         ?trans2;           /* 0x0000000502007819 */
+        /*0160*/                   IADD3 R13, PT, PT, R0, -R11, RZ                                ?WAIT5_END_GROUP;  /* 0x8000000b000d7210 */
+        /*0170*/                   EXIT                                                           ?trans5;           /* 0x000000000000794d */
+"#;
+
+    let result = lift_sass_text_to_ptx(
+        text,
+        SassLiftOptions {
+            sm_version: 120,
+            kernel_name: "kimi_rope_mix".to_string(),
+            include_sass_comments: false,
+            emit_unsupported_comments: true,
+        },
+    )
+    .expect("real SM120 RoPE text should lift");
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(result.ptx.contains("selp.u32 %r7, %r9, %r0, %p0;"));
+    assert!(result.ptx.contains("shl.b32 %r0, %r2, 5;"));
+    assert!(result.ptx.contains("shr.u32 %r14, %r2, 27;"));
+    assert!(result.ptx.contains("or.b32 %r0, %r0, %r14;"));
+    assert!(result.ptx.contains("sub.u32 %r13, %r0, %r11;"));
+}
+
+#[test]
+fn text_lifter_handles_real_sm120_attention_mask_lop3_select_pattern() {
+    let text = r#"Function : kimi_attention_mask
+        /*00d0*/                   LOP3.LUT R0, R7, 0x1f, RZ, 0xc0, !PT                    ?trans2;           /* 0x0000001f07007812 */
+        /*00f0*/                   LOP3.LUT R9, R6, 0x1f, RZ, 0xc0, !PT                    ?trans2;           /* 0x0000001f06097812 */
+        /*0100*/                   LOP3.LUT R6, R2, 0xffff, RZ, 0xc0, !PT                  ?trans1;           /* 0x0000ffff02067812 */
+        /*0160*/                   SEL R6, R6, RZ, !P0                                     ?WAIT6_END_GROUP;  /* 0x000000ff06067207 */
+        /*0180*/                   LOP3.LUT R9, R6, R9, RZ, 0xfc, !PT                      ?WAIT5_END_GROUP;  /* 0x0000000906097212 */
+        /*0190*/                   EXIT                                                    ?trans5;           /* 0x000000000000794d */
+"#;
+
+    let result = lift_sass_text_to_ptx(
+        text,
+        SassLiftOptions {
+            sm_version: 120,
+            kernel_name: "kimi_attention_mask".to_string(),
+            include_sass_comments: false,
+            emit_unsupported_comments: true,
+        },
+    )
+    .expect("real SM120 attention-mask text should lift");
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(result.ptx.contains("and.b32 %r0, %r7, 31;"));
+    assert!(result.ptx.contains("and.b32 %r9, %r6, 31;"));
+    assert!(result.ptx.contains("and.b32 %r6, %r2, 65535;"));
+    assert!(result.ptx.contains("selp.u32 %r6, 0, %r6, %p0;"));
+    assert!(result.ptx.contains("or.b32 %r9, %r6, %r9;"));
+}
+
+#[test]
+fn text_lifter_handles_real_sm120_float_conversion_patterns() {
+    let text = r#"Function : kimi_swiglu_mix
+        /*00c0*/                   HFMA2 R5, -RZ, RZ, 1.0341796875, -112.625                  ?trans1;           /* 0x3c23d70aff057431 */
+        /*00d0*/                   LOP3.LUT R0, R2, 0x3ff, RZ, 0xc0, !PT                                      /* 0x000003ff02007812 */
+        /*00f0*/                   I2FP.F32.U32 R0, R0                                        ?trans2;           /* 0x0000000000007245 */
+        /*0120*/                   FFMA R5, R0, R5, 1                                         ?trans1;           /* 0x3f80000000057423 */
+        /*0140*/                   MUFU.RSQ R9, R8                                           &wr=0x1          ?trans2;           /* 0x0000000800097308 */
+        /*0150*/                   FMNMX.NAN R0, R4, 256, PT                                  ?trans2;           /* 0x4380000004007809 */
+        /*0170*/                   F2I.U32.TRUNC.NTZ R0, R0                  &wr=0x1          ?trans2;           /* 0x0000000000007305 */
+        /*0180*/                   EXIT                                                       ?trans5;           /* 0x000000000000794d */
+"#;
+
+    let result = lift_sass_text_to_ptx(
+        text,
+        SassLiftOptions {
+            sm_version: 120,
+            kernel_name: "kimi_swiglu_mix".to_string(),
+            include_sass_comments: false,
+            emit_unsupported_comments: true,
+        },
+    )
+    .expect("real SM120 float conversion text should lift");
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(result.ptx.contains("mov.b32 %r5, 0x3c23d70a;"));
+    assert!(result.ptx.contains("and.b32 %r0, %r2, 1023;"));
+    assert!(result.ptx.contains("cvt.rn.f32.u32 %r0, %r0;"));
+    assert!(result.ptx.contains("fma.rn.f32 %r5, %r0, %r5, 1.0;"));
+    assert!(result.ptx.contains("rsqrt.approx.ftz.f32 %r9, %r8;"));
+    assert!(result.ptx.contains("min.f32 %r0, %r4, 256.0;"));
+    assert!(result.ptx.contains("cvt.rzi.u32.f32 %r0, %r0;"));
+}
+
+#[test]
+fn text_lifter_handles_real_sm120_shared_reverse_address_pattern() {
+    let text = r#"Function : shared_reverse
+        /*00c0*/                   S2UR UR5, SR_CgaCtaId                    &wr=0x1          ?trans1;           /* 0x00000000000579c3 */
+        /*00d0*/                   UMOV UR4, 0x400                                           ?trans2;           /* 0x0000040000047882 */
+        /*00e0*/                   ULEA UR4, UR5, UR4, 0x18                 &req={1}         ?WAIT6_END_GROUP;  /* 0x0000000405047291 */
+        /*00f0*/                   LEA R7, R4, UR4, 0x2                                      ?WAIT5_END_GROUP;  /* 0x0000000404077c11 */
+        /*0100*/                   STS [R7], R0                             &req={2} &rd=0x1 ?trans1;           /* 0x0000000007007388 */
+        /*0150*/                   LEA R0, R0, UR4, 0x2                                      ?WAIT6_END_GROUP;  /* 0x0000000400007c11 */
+        /*0160*/                   LDS R0, [R0]                             &wr=0x1          ?trans1;           /* 0x0000000000007984 */
+        /*0170*/                   EXIT                                                      ?trans5;           /* 0x000000000000794d */
+"#;
+
+    let result = lift_sass_text_to_ptx(
+        text,
+        SassLiftOptions {
+            sm_version: 120,
+            kernel_name: "shared_reverse".to_string(),
+            include_sass_comments: false,
+            emit_unsupported_comments: true,
+        },
+    )
+    .expect("real SM120 shared reverse text should lift");
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(result.ptx.contains(".shared .align 4 .b8 scratch[512];"));
+    assert!(result.ptx.contains("mov.u32 %ur5, 0;"));
+    assert!(result.ptx.contains("mov.u32 %ur4, 1024;"));
+    assert!(result.ptx.contains("mov.u32 %ur4, 0;"));
+    assert!(result.ptx.contains("shl.b32 %r7, %r4, 2;"));
+    assert!(result.ptx.contains("cvt.u64.u32 %rd14, %r7;"));
+    assert!(result.ptx.contains("mov.u64 %rd13, scratch;"));
+    assert!(result.ptx.contains("st.shared.u32 [%rd14], %r0;"));
+    assert!(result.ptx.contains("shl.b32 %r0, %r0, 2;"));
+    assert!(result.ptx.contains("cvt.u64.u32 %rd14, %r0;"));
+    assert!(result.ptx.contains("ld.shared.u32 %r0, [%rd14];"));
 }

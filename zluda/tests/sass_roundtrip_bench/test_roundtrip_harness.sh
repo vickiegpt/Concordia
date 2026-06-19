@@ -125,12 +125,12 @@ trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work
 fake_model_dir="${e2e_marker_work_dir}/model"
 mkdir -p "${fake_model_dir}"
 for shard in \
-    moonshotai_Kimi-K2.6-IQ1_M-00001-of-00006.gguf \
-    moonshotai_Kimi-K2.6-IQ1_M-00002-of-00006.gguf \
-    moonshotai_Kimi-K2.6-IQ1_M-00003-of-00006.gguf \
-    moonshotai_Kimi-K2.6-IQ1_M-00004-of-00006.gguf \
-    moonshotai_Kimi-K2.6-IQ1_M-00005-of-00006.gguf \
-    moonshotai_Kimi-K2.6-IQ1_M-00006-of-00006.gguf
+    moonshotai_Kimi-K2.6-IQ1_S-00001-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00002-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00003-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00004-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00005-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00006-of-00006.gguf
 do
     : >"${fake_model_dir}/${shard}"
 done
@@ -141,6 +141,7 @@ set +e
 HETGPU_KIMI_E2E_WORKDIR="${e2e_marker_work_dir}" \
 BITNET_LLAMA_CLI="${fake_marker_runner}" \
 MODEL_DIR="${fake_model_dir}" \
+MODEL_PREFIX=moonshotai_Kimi-K2.6-IQ1_S \
 CARGO=/bin/true \
     "${SCRIPT_DIR}/run_kimi_k26_e2e.sh" >/dev/null 2>&1
 marker_status="$?"
