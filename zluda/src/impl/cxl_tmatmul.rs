@@ -4,6 +4,8 @@ use std::fs::{File, OpenOptions};
 use std::io::Read;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::ptr;
 
@@ -18,6 +20,9 @@ const DEFAULT_DAX_PATH: &str = "/dev/dax0.0";
 const DEFAULT_TIMEOUT_MS: u32 = 10_000;
 const CXL_TYPE2_TMATMUL_RESULT_STALLED: u32 = 1 << 0;
 const CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR: u32 = 1 << 2;
+
+#[cfg(unix)]
+static MATRIX_STAGE_CACHE: std::sync::Mutex<Option<(usize, usize)>> = std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CxlTmatmulError {
@@ -631,7 +636,21 @@ fn submit_prepared_hardware_matmul(
 
     let staging = StagingMap::open(used_len)?;
     unsafe {
-        stage_bytes(staging.ptr, TMATMUL_DPA_MATRIX, matrix)?;
+        let matrix_key = (matrix.as_ptr() as usize, matrix.len());
+        let assume_static_matrix = env_flag("HETGPU_CXL_TMATMUL_ASSUME_STATIC_MATRIX");
+        let matrix_already_staged = assume_static_matrix
+            && MATRIX_STAGE_CACHE
+                .lock()
+                .map(|cache| *cache == Some(matrix_key))
+                .unwrap_or(false);
+        if !matrix_already_staged {
+            stage_bytes(staging.ptr, TMATMUL_DPA_MATRIX, matrix)?;
+            if assume_static_matrix {
+                if let Ok(mut cache) = MATRIX_STAGE_CACHE.lock() {
+                    *cache = Some(matrix_key);
+                }
+            }
+        }
         stage_bytes(staging.ptr, TMATMUL_DPA_INPUT, input)?;
         ptr::write_bytes(
             staging.ptr.add(TMATMUL_DPA_OUTPUT as usize),
@@ -762,9 +781,12 @@ impl StagingMap {
         map_len: usize,
         kind: &str,
     ) -> Result<Self, CxlTmatmulError> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        if kind == "physical hpa" {
+            options.custom_flags(libc::O_SYNC);
+        }
+        let file = options
             .open(path)
             .map_err(|e| CxlTmatmulError::Io(format!("open {path}: {e}")))?;
         let offset = libc::off_t::try_from(offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
@@ -1192,6 +1214,95 @@ mod tests {
             return;
         }
 
+        let (device, info, matrix, input, mut output, program) = hardware_smoke_setup();
+        let started = std::time::Instant::now();
+        let status = submit_prepared_hardware_matmul(
+            &device,
+            &program,
+            &matrix,
+            &input,
+            &mut output,
+            10_000,
+            info.dim_d,
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(
+            output.iter().any(|&byte| byte != 0xa5),
+            "output staging window was not overwritten"
+        );
+        eprintln!(
+            "tmatmul hardware smoke dim={} matrix={}B vector={}B elapsed_us={} status={:?} output_prefix={:02x?}",
+            info.dim_d,
+            matrix.len(),
+            input.len(),
+            elapsed.as_micros(),
+            status,
+            &output[..output.len().min(16)]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardware_benchmark_runs_when_requested() {
+        if !env_flag("HETGPU_CXL_TMATMUL_HW_BENCH") {
+            return;
+        }
+
+        let iters = std::env::var("HETGPU_CXL_TMATMUL_HW_BENCH_ITERS")
+            .ok()
+            .and_then(|value| parse_u64_text(&value))
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|&value| value > 0)
+            .unwrap_or(5);
+        let (device, info, matrix, input, mut output, program) = hardware_smoke_setup();
+        let mut elapsed_us = Vec::with_capacity(iters);
+
+        for iter in 0..iters {
+            let started = std::time::Instant::now();
+            let status = submit_prepared_hardware_matmul(
+                &device,
+                &program,
+                &matrix,
+                &input,
+                &mut output,
+                10_000,
+                info.dim_d,
+            )
+            .unwrap();
+            let elapsed = started.elapsed().as_micros();
+            elapsed_us.push(elapsed);
+            eprintln!(
+                "tmatmul bench iter={} elapsed_us={} status={:?}",
+                iter, elapsed, status
+            );
+        }
+
+        let total: u128 = elapsed_us.iter().copied().sum();
+        let min = elapsed_us.iter().copied().min().unwrap_or(0);
+        let max = elapsed_us.iter().copied().max().unwrap_or(0);
+        eprintln!(
+            "tmatmul bench summary dim={} matrix={}B vector={}B iters={} avg_us={} min_us={} max_us={}",
+            info.dim_d,
+            matrix.len(),
+            input.len(),
+            elapsed_us.len(),
+            total / elapsed_us.len() as u128,
+            min,
+            max
+        );
+    }
+
+    #[cfg(unix)]
+    fn hardware_smoke_setup() -> (
+        File,
+        CxlType2TmatmulInfo,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+    ) {
         let device_path = cxl_tmatmul_device_path();
         let device = OpenOptions::new()
             .read(true)
@@ -1213,32 +1324,7 @@ mod tests {
         let mut output = vec![0u8; vector_len];
         let program = encode_smoke_program();
 
-        let started = std::time::Instant::now();
-        let status = submit_prepared_hardware_matmul(
-            &device,
-            &program,
-            &matrix,
-            &input,
-            &mut output,
-            10_000,
-            info.dim_d,
-        )
-        .unwrap();
-        let elapsed = started.elapsed();
-
-        assert!(
-            output.iter().any(|&byte| byte != 0xa5),
-            "output staging window was not overwritten"
-        );
-        eprintln!(
-            "tmatmul hardware smoke dim={} matrix={}B vector={}B elapsed_us={} status={:?} output_prefix={:02x?}",
-            dim,
-            matrix_len,
-            vector_len,
-            elapsed.as_micros(),
-            status,
-            &output[..output.len().min(16)]
-        );
+        (device, info, matrix, input, output, program)
     }
 
     #[test]
