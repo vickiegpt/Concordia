@@ -20,32 +20,32 @@ fn main() -> Result<(), VarError> {
             panic!("Static library creation failed");
         }
     } else {
-    // Compile the C++ file
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "g++".to_string());
-    let compile_status = std::process::Command::new(cxx)
-        .args(&[
-            "-std=c++20",
-            "-c",
-            "src/tt_metal_wrapper.cpp",
-            "-o",
-            &obj_file,
-        ])
-        .status()
-        .expect("Failed to run g++");
+        // Compile the C++ file
+        let cxx = std::env::var("CXX").unwrap_or_else(|_| "g++".to_string());
+        let compile_status = std::process::Command::new(cxx)
+            .args(&[
+                "-std=c++20",
+                "-c",
+                "src/tt_metal_wrapper.cpp",
+                "-o",
+                &obj_file,
+            ])
+            .status()
+            .expect("Failed to run g++");
 
-    if !compile_status.success() {
-        panic!("C++ compilation failed");
-    }
+        if !compile_status.success() {
+            panic!("C++ compilation failed");
+        }
 
-    // Create static library
-    let ar_status = std::process::Command::new("ar")
-        .args(&["rcs", &lib_file, &obj_file])
-        .status()
-        .expect("Failed to run ar");
+        // Create static library
+        let ar_status = std::process::Command::new("ar")
+            .args(&["rcs", &lib_file, &obj_file])
+            .status()
+            .expect("Failed to run ar");
 
-    if !ar_status.success() {
-        panic!("Static library creation failed");
-    }
+        if !ar_status.success() {
+            panic!("Static library creation failed");
+        }
     }
 
     println!("cargo:warning=C++ compilation completed successfully");

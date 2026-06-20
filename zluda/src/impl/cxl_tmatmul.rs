@@ -619,8 +619,6 @@ fn submit_prepared_hardware_matmul(
     timeout_ms: u32,
     dim_d: u32,
 ) -> Result<CxlTmatmulRunStatus, CxlTmatmulError> {
-    let dax_path = cxl_tmatmul_dax_path();
-    let dax_size = read_dax_size(&dax_path)?;
     let used_len = [
         range_end(TMATMUL_DPA_MATRIX, matrix.len())?,
         range_end(TMATMUL_DPA_INPUT, input.len())?,
@@ -630,35 +628,35 @@ fn submit_prepared_hardware_matmul(
     .into_iter()
     .max()
     .ok_or(CxlTmatmulError::SizeOverflow)?;
-    if used_len > dax_size {
-        return Err(CxlTmatmulError::AllocationTooSmall {
-            name: "dax window",
-            have: dax_size,
-            need: used_len,
-        });
-    }
 
-    let dax = DaxMap::open(&dax_path, dax_size)?;
+    let staging = StagingMap::open(used_len)?;
     unsafe {
-        stage_bytes(dax.ptr, TMATMUL_DPA_MATRIX, matrix)?;
-        stage_bytes(dax.ptr, TMATMUL_DPA_INPUT, input)?;
-        ptr::write_bytes(dax.ptr.add(TMATMUL_DPA_OUTPUT as usize), 0xa5, output.len());
-        flush_range(dax.ptr.add(TMATMUL_DPA_OUTPUT as usize), output.len());
-        stage_bytes(dax.ptr, TMATMUL_DPA_PROGRAM, program)?;
+        stage_bytes(staging.ptr, TMATMUL_DPA_MATRIX, matrix)?;
+        stage_bytes(staging.ptr, TMATMUL_DPA_INPUT, input)?;
+        ptr::write_bytes(
+            staging.ptr.add(TMATMUL_DPA_OUTPUT as usize),
+            0xa5,
+            output.len(),
+        );
+        flush_range(staging.ptr.add(TMATMUL_DPA_OUTPUT as usize), output.len());
+        stage_bytes(staging.ptr, TMATMUL_DPA_PROGRAM, program)?;
     }
 
     let mut run = CxlType2TmatmulCsrRun {
         timeout_ms: timeout_ms_or_default(timeout_ms),
         ..Default::default()
     };
-    let rc = unsafe {
-        libc::ioctl(
-            device.as_raw_fd(),
-            cxl_type2_tmatmul_run_csr_only_ioctl(),
-            &mut run,
-        )
-    };
-    let saved_error = std::io::Error::last_os_error();
+    let mut rc = -1;
+    let mut saved_error = std::io::Error::from_raw_os_error(0);
+    for request in cxl_type2_tmatmul_run_csr_only_ioctl_requests() {
+        let mut attempt = run;
+        rc = unsafe { libc::ioctl(device.as_raw_fd(), request, &mut attempt) };
+        saved_error = std::io::Error::last_os_error();
+        run = attempt;
+        if rc == 0 || saved_error.raw_os_error() != Some(libc::ENOTTY) {
+            break;
+        }
+    }
     let status = CxlTmatmulRunStatus::from(&run);
     if rc != 0 {
         return Err(CxlTmatmulError::Device(format!(
@@ -683,9 +681,9 @@ fn submit_prepared_hardware_matmul(
     }
 
     unsafe {
-        invalidate_range(dax.ptr.add(TMATMUL_DPA_OUTPUT as usize), output.len());
+        invalidate_range(staging.ptr.add(TMATMUL_DPA_OUTPUT as usize), output.len());
         ptr::copy_nonoverlapping(
-            dax.ptr.add(TMATMUL_DPA_OUTPUT as usize),
+            staging.ptr.add(TMATMUL_DPA_OUTPUT as usize),
             output.as_mut_ptr(),
             output.len(),
         );
@@ -695,48 +693,111 @@ fn submit_prepared_hardware_matmul(
 }
 
 #[cfg(unix)]
-struct DaxMap {
+struct StagingMap {
     ptr: *mut u8,
-    len: usize,
+    map_ptr: *mut u8,
+    map_len: usize,
 }
 
 #[cfg(unix)]
-impl DaxMap {
-    fn open(path: &str, len: usize) -> Result<Self, CxlTmatmulError> {
+impl StagingMap {
+    fn open(used_len: usize) -> Result<Self, CxlTmatmulError> {
+        if let Some(hpa_base) = cxl_tmatmul_hpa_base()? {
+            let hpa_size = cxl_tmatmul_hpa_size()?;
+            if let Some(hpa_size) = hpa_size {
+                if used_len > hpa_size {
+                    return Err(CxlTmatmulError::AllocationTooSmall {
+                        name: "hpa staging window",
+                        have: hpa_size,
+                        need: used_len,
+                    });
+                }
+            }
+            return Self::open_physical(&cxl_tmatmul_mem_path(), hpa_base, used_len);
+        }
+
+        let dax_path = cxl_tmatmul_dax_path();
+        let dax_size = read_dax_size(&dax_path)?;
+        if used_len > dax_size {
+            return Err(CxlTmatmulError::AllocationTooSmall {
+                name: "dax window",
+                have: dax_size,
+                need: used_len,
+            });
+        }
+        Self::open_file_window(&dax_path, 0, used_len, "dax")
+    }
+
+    fn open_physical(path: &str, hpa_base: u64, used_len: usize) -> Result<Self, CxlTmatmulError> {
+        let page_size = page_size();
+        let page_mask = u64::try_from(page_size - 1).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+        let page_offset =
+            usize::try_from(hpa_base & page_mask).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+        let map_offset = hpa_base
+            .checked_sub(u64::try_from(page_offset).map_err(|_| CxlTmatmulError::SizeOverflow)?)
+            .ok_or(CxlTmatmulError::SizeOverflow)?;
+        let map_len = page_align_len(
+            used_len
+                .checked_add(page_offset)
+                .ok_or(CxlTmatmulError::SizeOverflow)?,
+        )?;
+        let mut map = Self::mmap_file(path, map_offset, map_len, "physical hpa")?;
+        map.ptr = unsafe { map.map_ptr.add(page_offset) };
+        Ok(map)
+    }
+
+    fn open_file_window(
+        path: &str,
+        offset: u64,
+        used_len: usize,
+        kind: &str,
+    ) -> Result<Self, CxlTmatmulError> {
+        let map_len = page_align_len(used_len)?;
+        Self::mmap_file(path, offset, map_len, kind)
+    }
+
+    fn mmap_file(
+        path: &str,
+        offset: u64,
+        map_len: usize,
+        kind: &str,
+    ) -> Result<Self, CxlTmatmulError> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)
             .map_err(|e| CxlTmatmulError::Io(format!("open {path}: {e}")))?;
+        let offset = libc::off_t::try_from(offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
         let ptr = unsafe {
             libc::mmap(
                 ptr::null_mut(),
-                len,
+                map_len,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
                 file.as_raw_fd(),
-                0,
+                offset,
             )
         };
         drop(file);
         if ptr == libc::MAP_FAILED {
             return Err(CxlTmatmulError::Io(format!(
-                "mmap {path} len=0x{len:x}: {}",
+                "mmap {kind} {path} offset=0x{offset:x} len=0x{map_len:x}: {}",
                 std::io::Error::last_os_error()
             )));
         }
         Ok(Self {
             ptr: ptr.cast(),
-            len,
+            map_ptr: ptr.cast(),
+            map_len,
         })
     }
 }
 
 #[cfg(unix)]
-impl Drop for DaxMap {
+impl Drop for StagingMap {
     fn drop(&mut self) {
         unsafe {
-            libc::munmap(self.ptr.cast(), self.len);
+            libc::munmap(self.map_ptr.cast(), self.map_len);
         }
     }
 }
@@ -777,6 +838,69 @@ fn cxl_tmatmul_dax_path() -> String {
         .or_else(|_| std::env::var("HETGPU_TMATMUL_DAX"))
         .or_else(|_| std::env::var("CXL_DAX_PATH"))
         .unwrap_or_else(|_| DEFAULT_DAX_PATH.to_string())
+}
+
+#[cfg(unix)]
+fn cxl_tmatmul_hpa_base() -> Result<Option<u64>, CxlTmatmulError> {
+    env_u64_any(&[
+        "HETGPU_CXL_TMATMUL_HPA_BASE",
+        "HETGPU_TMATMUL_HPA_BASE",
+        "CXL_TMATMUL_HPA_BASE",
+    ])
+}
+
+#[cfg(unix)]
+fn cxl_tmatmul_hpa_size() -> Result<Option<usize>, CxlTmatmulError> {
+    env_u64_any(&[
+        "HETGPU_CXL_TMATMUL_HPA_SIZE",
+        "HETGPU_TMATMUL_HPA_SIZE",
+        "CXL_TMATMUL_HPA_SIZE",
+    ])?
+    .map(|value| usize::try_from(value).map_err(|_| CxlTmatmulError::SizeOverflow))
+    .transpose()
+}
+
+#[cfg(unix)]
+fn cxl_tmatmul_mem_path() -> String {
+    std::env::var("HETGPU_CXL_TMATMUL_MEM_PATH")
+        .or_else(|_| std::env::var("HETGPU_TMATMUL_MEM_PATH"))
+        .unwrap_or_else(|_| "/dev/mem".to_string())
+}
+
+fn env_u64_any(keys: &[&str]) -> Result<Option<u64>, CxlTmatmulError> {
+    for key in keys {
+        match std::env::var(key) {
+            Ok(value) => {
+                let parsed = parse_u64_text(&value).ok_or_else(|| {
+                    CxlTmatmulError::Io(format!("invalid {key}={value:?}, expected integer"))
+                })?;
+                return Ok(Some(parsed));
+            }
+            Err(std::env::VarError::NotPresent) => {}
+            Err(e) => {
+                return Err(CxlTmatmulError::Io(format!("read {key}: {e}")));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn page_size() -> usize {
+    #[cfg(unix)]
+    {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if page_size > 0 {
+            return usize::try_from(page_size).unwrap_or(4096);
+        }
+    }
+    4096
+}
+
+fn page_align_len(len: usize) -> Result<usize, CxlTmatmulError> {
+    let page = page_size();
+    len.checked_add(page - 1)
+        .map(|value| value & !(page - 1))
+        .ok_or(CxlTmatmulError::SizeOverflow)
 }
 
 fn timeout_ms_or_default(timeout_ms: u32) -> u32 {
@@ -823,9 +947,29 @@ fn cxl_type2_tmatmul_run_csr_only_ioctl() -> libc::c_ulong {
     ioctl_request(
         IOC_READ | IOC_WRITE,
         0xCE,
+        0x02,
+        std::mem::size_of::<CxlType2TmatmulCsrRun>() as u64,
+    )
+}
+
+#[cfg(unix)]
+fn cxl_type2_tmatmul_run_csr_only_ioctl_compat() -> libc::c_ulong {
+    const IOC_READ: u64 = 2;
+    const IOC_WRITE: u64 = 1;
+    ioctl_request(
+        IOC_READ | IOC_WRITE,
+        0xCE,
         0x03,
         std::mem::size_of::<CxlType2TmatmulCsrRun>() as u64,
     )
+}
+
+#[cfg(unix)]
+fn cxl_type2_tmatmul_run_csr_only_ioctl_requests() -> [libc::c_ulong; 2] {
+    [
+        cxl_type2_tmatmul_run_csr_only_ioctl(),
+        cxl_type2_tmatmul_run_csr_only_ioctl_compat(),
+    ]
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1020,6 +1164,80 @@ mod tests {
         assert_eq!(
             required_dax_len(),
             TMATMUL_DPA_PROGRAM as usize + TMATMUL_PROGRAM_BYTES
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_csr_only_ioctl_requests_cover_known_abis() {
+        let requests = cxl_type2_tmatmul_run_csr_only_ioctl_requests();
+
+        assert_eq!(requests[0], 0xC040CE02 as libc::c_ulong);
+        assert_eq!(requests[1], 0xC040CE03 as libc::c_ulong);
+    }
+
+    #[test]
+    fn staging_map_len_is_page_aligned() {
+        let page = page_size();
+
+        assert_eq!(page_align_len(1).unwrap(), page);
+        assert_eq!(page_align_len(page).unwrap(), page);
+        assert_eq!(page_align_len(page + 1).unwrap(), page * 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardware_smoke_runs_when_requested() {
+        if !env_flag("HETGPU_CXL_TMATMUL_HW_SMOKE") {
+            return;
+        }
+
+        let device_path = cxl_tmatmul_device_path();
+        let device = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&device_path)
+            .unwrap_or_else(|e| panic!("open {device_path}: {e}"));
+        let info = get_info(&device).unwrap();
+        assert_eq!(info.version, CXL_TYPE2_TMATMUL_UAPI_VERSION);
+        assert_ne!(info.dim_d, 0);
+
+        let dim = usize::try_from(info.dim_d).unwrap();
+        let matrix_len = matrix_bytes(dim).unwrap();
+        let vector_len = vector_bytes(dim).unwrap();
+        let matrix = vec![0u8; matrix_len];
+        let mut input = vec![0u8; vector_len];
+        for value in input.chunks_exact_mut(2) {
+            value.copy_from_slice(&0x0100u16.to_le_bytes());
+        }
+        let mut output = vec![0u8; vector_len];
+        let program = encode_smoke_program();
+
+        let started = std::time::Instant::now();
+        let status = submit_prepared_hardware_matmul(
+            &device,
+            &program,
+            &matrix,
+            &input,
+            &mut output,
+            10_000,
+            info.dim_d,
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(
+            output.iter().any(|&byte| byte != 0xa5),
+            "output staging window was not overwritten"
+        );
+        eprintln!(
+            "tmatmul hardware smoke dim={} matrix={}B vector={}B elapsed_us={} status={:?} output_prefix={:02x?}",
+            dim,
+            matrix_len,
+            vector_len,
+            elapsed.as_micros(),
+            status,
+            &output[..output.len().min(16)]
         );
     }
 

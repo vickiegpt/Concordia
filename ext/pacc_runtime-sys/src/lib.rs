@@ -2549,8 +2549,7 @@ fn ensure_pacc_jobd_bootstrapped(dev: &PaccDevice) -> std::io::Result<()> {
 }
 
 fn preloaded_arg_slot(job_id: u32) -> Option<usize> {
-    if job_id == hetgpu_pacc_job_id::GEMM
-        && env_flag_enabled("HETGPU_PACC_RUNTIME_TABLE_ONLY_GEMM")
+    if job_id == hetgpu_pacc_job_id::GEMM && env_flag_enabled("HETGPU_PACC_RUNTIME_TABLE_ONLY_GEMM")
     {
         return None;
     }
@@ -2737,12 +2736,8 @@ fn wait_shared_ddr_job_status_grace(
     while grace_start.elapsed() < grace_deadline {
         *shared_file = None;
         std::sync::atomic::fence(Ordering::SeqCst);
-        match read_shared_ddr_status_window_cached(
-            shared_file,
-            dev.id,
-            pacc_completion_off(),
-            buf,
-        ) {
+        match read_shared_ddr_status_window_cached(shared_file, dev.id, pacc_completion_off(), buf)
+        {
             Ok(()) => {
                 std::sync::atomic::fence(Ordering::SeqCst);
                 if let Some(result) = decode_pacc_host_status(buf, expected_job_id, seq) {
@@ -3150,12 +3145,7 @@ fn wait_shared_ddr_job_status(
         }
     }
 
-    read_shared_ddr_status_window_cached(
-        shared_file,
-        dev.id,
-        pacc_completion_off(),
-        &mut buf,
-    )?;
+    read_shared_ddr_status_window_cached(shared_file, dev.id, pacc_completion_off(), &mut buf)?;
     let magic = u64::from_le_bytes(buf[0..8].try_into().unwrap());
     let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
     let status_job_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
@@ -5225,8 +5215,7 @@ fn read_shared_ddr_status_window_cached(
         let requested_mirror_base = parse_optional_env_usize("HETGPU_PACC_COMPLETION_MIRROR_OFF")
             .map(|v| v as u64)
             .unwrap_or(0);
-        if requested_mirror_base == 0
-            && std::env::var("HETGPU_PACC_COMPLETION_MIRROR_OFF").is_ok()
+        if requested_mirror_base == 0 && std::env::var("HETGPU_PACC_COMPLETION_MIRROR_OFF").is_ok()
         {
             return Ok(false);
         }
@@ -5523,8 +5512,7 @@ fn wait_mailbox_job_status_cached(
         ));
     }
     loop {
-        if read_pacc2ap_mailbox_cached(mailbox_file, dev.id, pacc_completion_off(), &mut buf)?
-        {
+        if read_pacc2ap_mailbox_cached(mailbox_file, dev.id, pacc_completion_off(), &mut buf)? {
             if let Some(result) = decode_pacc_host_status(&buf, expected_job_id, seq) {
                 return result;
             }
@@ -6505,7 +6493,10 @@ fn gemm_read_f32_from_bytes(src: &[u8], dtype: i32, index: usize) -> std::io::Re
         .checked_mul(elem_size)
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "GEMM dtype byte offset overflow"))?;
     if byte_off + elem_size > src.len() {
-        return Err(Error::new(ErrorKind::UnexpectedEof, "GEMM dtype read out of range"));
+        return Err(Error::new(
+            ErrorKind::UnexpectedEof,
+            "GEMM dtype read out of range",
+        ));
     }
     match dtype as u32 {
         x if x == PaccDataType::Int8 as u32 => Ok(src[byte_off] as i8 as f32),
@@ -6513,15 +6504,15 @@ fn gemm_read_f32_from_bytes(src: &[u8], dtype: i32, index: usize) -> std::io::Re
         x if x == PaccDataType::Int32 as u32 => {
             Ok(i32::from_ne_bytes(src[byte_off..byte_off + 4].try_into().unwrap()) as f32)
         }
-        x if x == PaccDataType::Float16 as u32 => {
-            Ok(f16_to_f32_bits(u16::from_ne_bytes(src[byte_off..byte_off + 2].try_into().unwrap())))
-        }
-        x if x == PaccDataType::Float32 as u32 => {
-            Ok(f32::from_ne_bytes(src[byte_off..byte_off + 4].try_into().unwrap()))
-        }
-        x if x == PaccDataType::Bfloat16 as u32 => {
-            Ok(bf16_to_f32_bits(u16::from_ne_bytes(src[byte_off..byte_off + 2].try_into().unwrap())))
-        }
+        x if x == PaccDataType::Float16 as u32 => Ok(f16_to_f32_bits(u16::from_ne_bytes(
+            src[byte_off..byte_off + 2].try_into().unwrap(),
+        ))),
+        x if x == PaccDataType::Float32 as u32 => Ok(f32::from_ne_bytes(
+            src[byte_off..byte_off + 4].try_into().unwrap(),
+        )),
+        x if x == PaccDataType::Bfloat16 as u32 => Ok(bf16_to_f32_bits(u16::from_ne_bytes(
+            src[byte_off..byte_off + 2].try_into().unwrap(),
+        ))),
         _ => Err(Error::new(
             ErrorKind::Unsupported,
             "unsupported staged GEMM dtype conversion",
@@ -8438,8 +8429,7 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
         && matches!(
             ctype as u32,
             x if x == PaccDataType::Float16 as u32 || x == PaccDataType::Bfloat16 as u32
-        )
-    {
+        ) {
         ctype
     } else {
         PaccDataType::Float32 as i32
@@ -8738,9 +8728,9 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
             );
         }
         if let Err(e) = submit_gemm_runtime_job_cached(dev, &job, total, &mut mailbox_file) {
-            let accept_output_after_timeout = env_flag_enabled(
-                "HETGPU_PACC_GEMM_ACCEPT_OUTPUT_ON_COMPLETION_TIMEOUT",
-            ) && e.kind() == ErrorKind::TimedOut;
+            let accept_output_after_timeout =
+                env_flag_enabled("HETGPU_PACC_GEMM_ACCEPT_OUTPUT_ON_COMPLETION_TIMEOUT")
+                    && e.kind() == ErrorKind::TimedOut;
             if accept_output_after_timeout {
                 if trace_gemm || zluda_irq_trace_enabled() {
                     eprintln!(
@@ -8802,7 +8792,8 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
                     .and_then(|v| v.checked_mul(pacc_c_dtype_size))
                     .unwrap_or(usize::MAX);
                 if src_off + pacc_c_dtype_size <= c_partial.len() {
-                    let value = gemm_read_f32_from_bytes(&c_partial, pacc_ctype, row * pacc_chunk_n)?;
+                    let value =
+                        gemm_read_f32_from_bytes(&c_partial, pacc_ctype, row * pacc_chunk_n)?;
                     eprintln!(
                         "hetgpu_pacc_submit_gemm_staged_tiled: dump C row={} col=0 f32={} raw={:02x?}",
                         row,
@@ -8815,21 +8806,24 @@ unsafe fn submit_gemm_staged_c_tile_on_device(
         let bf16_skinny_cpu_fill = atype as u32 == PaccDataType::Bfloat16 as u32
             && btype as u32 == PaccDataType::Bfloat16 as u32
             && chunk_n <= parse_env_usize("HETGPU_PACC_GEMM_CPU_FILL_BF16_SKINNY_MAX_N", 4).max(1);
-        let cpu_fill_missing = env_flag_enabled("HETGPU_PACC_GEMM_CPU_FILL_MISSING")
-            || bf16_skinny_cpu_fill;
-        let trusted_pacc_rows = parse_env_usize("HETGPU_PACC_GEMM_BF16_SKINNY_TRUST_PACC_ROWS", 8).max(1);
+        let cpu_fill_missing =
+            env_flag_enabled("HETGPU_PACC_GEMM_CPU_FILL_MISSING") || bf16_skinny_cpu_fill;
+        let trusted_pacc_rows =
+            parse_env_usize("HETGPU_PACC_GEMM_BF16_SKINNY_TRUST_PACC_ROWS", 8).max(1);
         for row in 0..chunk_m {
             for col in 0..chunk_n {
                 let src_index = row * pacc_chunk_n + col;
                 let dst = row * chunk_n + col;
-                let src_off = src_index
-                    .checked_mul(pacc_c_dtype_size)
-                    .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "C partial byte offset overflow"))?;
-                let src_end = src_off
-                    .checked_add(pacc_c_dtype_size)
-                    .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "C partial byte end overflow"))?;
+                let src_off = src_index.checked_mul(pacc_c_dtype_size).ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidInput, "C partial byte offset overflow")
+                })?;
+                let src_end = src_off.checked_add(pacc_c_dtype_size).ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidInput, "C partial byte end overflow")
+                })?;
                 let pacc_ready = src_end <= c_partial.len()
-                    && c_partial[src_off..src_end].iter().any(|&b| b != output_sentinel)
+                    && c_partial[src_off..src_end]
+                        .iter()
+                        .any(|&b| b != output_sentinel)
                     && !(bf16_skinny_cpu_fill && row >= trusted_pacc_rows);
                 if pacc_ready || !cpu_fill_missing {
                     c_accum[dst] += gemm_read_f32_from_bytes(&c_partial, pacc_ctype, src_index)?;
@@ -8930,8 +8924,11 @@ unsafe fn submit_gemm_staged_tiled_shared_ddr(
     let mut max_m = if max_m > 0 { max_m as usize } else { m };
     let max_n = if max_n > 0 { max_n as usize } else { n };
     let max_k = if max_k > 0 { max_k as usize } else { k };
-    if let Some(bf16_skinny_effective_m_env) = parse_optional_env_usize("HETGPU_PACC_GEMM_BF16_SKINNY_EFFECTIVE_M") {
-        let bf16_skinny_effective_max_n = parse_env_usize("HETGPU_PACC_GEMM_BF16_SKINNY_MAX_N", 4).max(1);
+    if let Some(bf16_skinny_effective_m_env) =
+        parse_optional_env_usize("HETGPU_PACC_GEMM_BF16_SKINNY_EFFECTIVE_M")
+    {
+        let bf16_skinny_effective_max_n =
+            parse_env_usize("HETGPU_PACC_GEMM_BF16_SKINNY_MAX_N", 4).max(1);
         let bf16_skinny_effective_m = bf16_skinny_effective_m_env.max(1);
         if atype as u32 == PaccDataType::Bfloat16 as u32
             && btype as u32 == PaccDataType::Bfloat16 as u32
@@ -10107,14 +10104,22 @@ pub unsafe extern "C" fn hetgpu_pacc_submit_gemm_staged_tiled(
         eprintln!("hetgpu_pacc_submit_gemm_staged_tiled: invalid argument");
         return -1;
     }
-    if std::env::var("HETGPU_PACC_TILED_SKINNY_N_FALLBACK").ok().as_deref() != Some("0") {
+    if std::env::var("HETGPU_PACC_TILED_SKINNY_N_FALLBACK")
+        .ok()
+        .as_deref()
+        != Some("0")
+    {
         let max_n_guard = parse_env_usize("HETGPU_PACC_TILED_SKINNY_N_MAX_N", 4) as i32;
         let min_k_guard = parse_env_usize("HETGPU_PACC_TILED_SKINNY_N_MIN_K", 512) as i32;
         if n <= max_n_guard && k >= min_k_guard {
             return 1;
         }
     }
-    if std::env::var("HETGPU_PACC_TILED_SMALL_HOST_FALLBACK").ok().as_deref() == Some("1") {
+    if std::env::var("HETGPU_PACC_TILED_SMALL_HOST_FALLBACK")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         let max_n_guard = parse_env_usize("HETGPU_PACC_TILED_SMALL_MAX_N", 1) as i32;
         let max_k_guard = parse_env_usize("HETGPU_PACC_TILED_SMALL_MAX_K", 128) as i32;
         if n <= max_n_guard && k <= max_k_guard {

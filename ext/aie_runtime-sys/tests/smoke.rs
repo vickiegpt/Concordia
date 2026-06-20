@@ -17,7 +17,10 @@ fn open_device_zero() {
     use aie_runtime_sys::*;
     unsafe {
         let dev = xrtDeviceOpen(0);
-        assert!(!dev.is_null(), "xrtDeviceOpen(0) returned null — is amdxdna loaded?");
+        assert!(
+            !dev.is_null(),
+            "xrtDeviceOpen(0) returned null — is amdxdna loaded?"
+        );
         let rc = xrtDeviceClose(dev);
         assert_eq!(rc, 0, "xrtDeviceClose returned {rc}");
     }

@@ -217,11 +217,14 @@ mod mma_shape_tests {
         // Minimal test that doesn't construct GlobalStringIdentResolver2:
         // exercise the format string directly.
         let shape = MmaShape { m: 16, n: 8, k: 16 };
-        let expected =
-            "tensor<1x16x16xf16>, tensor<1x16x8xf16>) -> tensor<1x16x8xf32>";
+        let expected = "tensor<1x16x16xf16>, tensor<1x16x8xf16>) -> tensor<1x16x8xf32>";
         let line = format!(
             "tensor<1x{m}x{k}x{et}>, tensor<1x{k}x{n}x{et}>) -> tensor<1x{m}x{n}x{at}>",
-            m = shape.m, n = shape.n, k = shape.k, et = "f16", at = "f32"
+            m = shape.m,
+            n = shape.n,
+            k = shape.k,
+            et = "f16",
+            at = "f32"
         );
         assert_eq!(line, expected);
     }
@@ -339,7 +342,10 @@ mod tests {
 "#;
         let out = super::super::ptx_to_tosa_aie(ptx).expect("tosa emit failed");
         assert!(out.contains("module {"), "has module wrapper");
-        assert!(out.contains("func.func @kernel_"), "has func.func for entry");
+        assert!(
+            out.contains("func.func @kernel_"),
+            "has func.func for entry"
+        );
         assert!(out.contains("return"), "has return");
     }
 }

@@ -11,8 +11,7 @@ const PTX: &[u8] = include_bytes!("../examples/hello_aie_matmul.ptx");
 #[cfg_attr(not(feature = "hw-test"), ignore = "requires Strix NPU")]
 fn aie_int4_matmul_end_to_end() {
     let device = CStr::from_bytes_with_nul(b"strix\0").unwrap();
-    let xclbin = comgr::compile_bitcode_aie(device, PTX, &[])
-        .expect("compile_bitcode_aie failed");
+    let xclbin = comgr::compile_bitcode_aie(device, PTX, &[]).expect("compile_bitcode_aie failed");
 
     // Basic artifact sanity:
     assert!(xclbin.len() > 64, "XCLBIN too small to be valid");

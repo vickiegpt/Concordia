@@ -1411,8 +1411,8 @@ fn compile_bc_to_xm_object_via_sanitized_ll(
             std::env::var("HETGPU_PACC_SOURCE_SYSROOT").unwrap_or_else(|_| "/".to_string());
         let gcc_toolchain = std::env::var("HETGPU_PACC_SOURCE_GCC_TOOLCHAIN")
             .unwrap_or_else(|_| "/usr".to_string());
-            cmd.arg(format!("--sysroot={}", sysroot))
-                .arg(format!("--gcc-toolchain={}", gcc_toolchain));
+        cmd.arg(format!("--sysroot={}", sysroot))
+            .arg(format!("--gcc-toolchain={}", gcc_toolchain));
     }
 
     match run_command(&mut cmd, "sanitized LLVM IR -> RISC-V object") {
@@ -1696,7 +1696,11 @@ fn llvm_dis_tool() -> String {
 }
 
 fn llc_tool() -> String {
-    bundled_llvm_tool("HETGPU_PACC_LLC", "llc", &["llc-21", "/usr/bin/llc-21", "llc"])
+    bundled_llvm_tool(
+        "HETGPU_PACC_LLC",
+        "llc",
+        &["llc-21", "/usr/bin/llc-21", "llc"],
+    )
 }
 
 fn pacc_clang_tool(env_var: &str) -> String {

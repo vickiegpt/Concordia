@@ -572,11 +572,7 @@ pub fn sm_version_from_filename(filename: &str) -> Option<u32> {
 }
 
 fn sm_version_from_elf_flags(flags: u32) -> Option<u32> {
-    let candidates = [
-        flags & 0xff,
-        (flags >> 8) & 0xff,
-        (flags >> 16) & 0xff,
-    ];
+    let candidates = [flags & 0xff, (flags >> 8) & 0xff, (flags >> 16) & 0xff];
     candidates
         .into_iter()
         .find(|sm| matches!(*sm, 10..=255))

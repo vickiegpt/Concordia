@@ -248,8 +248,7 @@ impl PaccConfig {
             default_sew: 8,
             target_triple: "riscv64-linux-gnu".to_string(),
             march: "rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b".to_string(),
-            mattr: "+v,+d,+f,+zbb,+zfh,+zvfh,+zfbfmin,+zvfbfmin,+zvfbfwma,+zvl1024b"
-                .to_string(),
+            mattr: "+v,+d,+f,+zbb,+zfh,+zvfh,+zfbfmin,+zvfbfmin,+zvfbfwma,+zvl1024b".to_string(),
             codegen_mode: PaccCodegenMode::Zvbdot,
             spike_isa: String::new(),
         }

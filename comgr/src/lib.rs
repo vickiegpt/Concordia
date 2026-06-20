@@ -1538,7 +1538,11 @@ pub enum AieComgrError {
     ParseFailed(String),
     LoweringFailed(String),
     ToolchainNotFound(String),
-    ToolchainFailed { step: String, stderr: String, exit_code: i32 },
+    ToolchainFailed {
+        step: String,
+        stderr: String,
+        exit_code: i32,
+    },
     Io(String),
     InvalidInput(String),
 }
@@ -1550,7 +1554,11 @@ impl std::fmt::Display for AieComgrError {
             AieComgrError::ParseFailed(m) => write!(f, "PTX parse failed: {m}"),
             AieComgrError::LoweringFailed(m) => write!(f, "PTX→TOSA lowering failed: {m}"),
             AieComgrError::ToolchainNotFound(m) => write!(f, "mlir-aie toolchain not found: {m}"),
-            AieComgrError::ToolchainFailed { step, stderr, exit_code } => {
+            AieComgrError::ToolchainFailed {
+                step,
+                stderr,
+                exit_code,
+            } => {
                 write!(f, "{step} failed (exit {exit_code}):\n{stderr}")
             }
             AieComgrError::Io(m) => write!(f, "I/O error: {m}"),
@@ -1568,9 +1576,15 @@ impl From<aie_comgr_sys::AieComgrError> for AieComgrError {
         use aie_comgr_sys::AieComgrError as Src;
         match e {
             Src::ToolchainNotFound(s) => AieComgrError::ToolchainNotFound(s),
-            Src::ToolchainFailed { step, stderr, exit_code } => {
-                AieComgrError::ToolchainFailed { step: step.to_string(), stderr, exit_code }
-            }
+            Src::ToolchainFailed {
+                step,
+                stderr,
+                exit_code,
+            } => AieComgrError::ToolchainFailed {
+                step: step.to_string(),
+                stderr,
+                exit_code,
+            },
             Src::Io(ioe) => AieComgrError::Io(ioe.to_string()),
             Src::InvalidInput(s) => AieComgrError::InvalidInput(s),
         }
