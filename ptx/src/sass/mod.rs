@@ -19,6 +19,7 @@ pub mod instruction;
 pub mod lifter;
 pub mod llvm_inline;
 pub mod ptx_recovery;
+pub mod translation_pipeline;
 
 pub use cubin_parser::*;
 pub use disassembler::*;
@@ -28,3 +29,4 @@ pub use instruction::*;
 pub use lifter::*;
 pub use llvm_inline::*;
 pub use ptx_recovery::*;
+pub use translation_pipeline::*;

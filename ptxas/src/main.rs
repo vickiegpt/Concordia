@@ -71,32 +71,43 @@ fn main() {
         }
     };
 
-    // For now: generate a minimal CUBIN to prove the CLI works
-    // Full PTX parsing and compilation pipeline will be connected later
-    let _ = ptx_source;
-    let module = nvidia_sass::types::SassModule {
-        kernels: vec![],
-        sm_version,
-        global_constants: vec![],
-    };
-
-    match nvidia_sass::cubin_builder::build_cubin_from_module(&module) {
-        Ok(cubin) => {
-            if let Err(e) = std::fs::write(&options.output, &cubin) {
+    let kernel_name = infer_entry_name(&ptx_source).unwrap_or("kernel");
+    match nvidia_sass::pipeline::compile_ptx_to_cubin(&ptx_source, kernel_name, sm_version) {
+        Ok(result) => {
+            if let Err(e) = std::fs::write(&options.output, &result.cubin) {
                 eprintln!("error: cannot write {}: {}", options.output, e);
                 std::process::exit(1);
             }
             if options.verbose {
                 eprintln!(
-                    "hetGPU ptxas: wrote {} ({} bytes)",
+                    "hetGPU ptxas: wrote {} ({} bytes) via passes: {}",
                     options.output,
-                    cubin.len()
+                    result.cubin.len(),
+                    result.pass_names.join(",")
                 );
             }
         }
         Err(e) => {
-            eprintln!("error: CUBIN generation failed: {}", e);
+            eprintln!("error: PTX to SASS compilation failed: {}", e);
             std::process::exit(1);
         }
     }
+}
+
+fn infer_entry_name(ptx_source: &str) -> Option<&str> {
+    for line in ptx_source.lines() {
+        let line = line.split_once("//").map(|(line, _)| line).unwrap_or(line);
+        let marker = ".entry ";
+        let Some(start) = line.find(marker).map(|idx| idx + marker.len()) else {
+            continue;
+        };
+        let rest = line[start..].trim_start();
+        let end = rest
+            .find(|ch: char| ch == '(' || ch.is_whitespace())
+            .unwrap_or(rest.len());
+        if end > 0 {
+            return Some(&rest[..end]);
+        }
+    }
+    None
 }
