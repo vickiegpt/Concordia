@@ -1,4 +1,9 @@
-use std::{collections::HashSet, io::Write, path::Path, process::Command};
+use std::{
+    collections::{BTreeMap, HashSet},
+    io::Write,
+    path::Path,
+    process::Command,
+};
 
 use super::{
     CubinKernel, CubinParser, EnhancedSassInstruction, ParsedCubin, SassDataType, SassDisassembler,
@@ -274,6 +279,7 @@ struct LiftContext<'a> {
     diagnostics: Vec<SassLiftDiagnostic>,
     branch_targets: HashSet<u64>,
     scratch_gpr: Option<String>,
+    cuda_params: Vec<CudaParamDecl>,
     uses_cuda_param_abi: bool,
     uses_shared_memory: bool,
 }
@@ -286,6 +292,7 @@ impl<'a> LiftContext<'a> {
             diagnostics: Vec::new(),
             branch_targets: HashSet::new(),
             scratch_gpr: None,
+            cuda_params: Vec::new(),
             uses_cuda_param_abi: false,
             uses_shared_memory: false,
         }
@@ -308,11 +315,13 @@ impl<'a> LiftContext<'a> {
     fn emit_entry(&mut self, kernel_name: &str, instructions: &[EnhancedSassInstruction]) {
         self.branch_targets.clear();
         self.scratch_gpr = None;
+        self.cuda_params.clear();
         self.uses_cuda_param_abi = false;
         self.uses_shared_memory = false;
 
         self.collect_branch_targets(instructions);
-        self.uses_cuda_param_abi = uses_cuda_param_abi(instructions);
+        self.cuda_params = cuda_param_decls(instructions);
+        self.uses_cuda_param_abi = !self.cuda_params.is_empty();
         self.uses_shared_memory = uses_shared_memory(instructions);
         let mut regs = RegisterDecls::from_instructions(instructions);
         if needs_gpr_scratch(instructions) {
@@ -324,10 +333,7 @@ impl<'a> LiftContext<'a> {
         }
 
         if self.uses_cuda_param_abi {
-            self.output.push_str(&format!(
-                ".visible .entry {}(\n    .param .u64 out,\n    .param .u64 in,\n    .param .u32 n\n)\n{{\n",
-                sanitize_ident(kernel_name)
-            ));
+            self.emit_param_entry_header(kernel_name);
         } else {
             self.output.push_str(&format!(
                 ".visible .entry {}()\n{{\n",
@@ -378,6 +384,27 @@ impl<'a> LiftContext<'a> {
         }
 
         self.output.push_str("}\n");
+    }
+
+    fn emit_param_entry_header(&mut self, kernel_name: &str) {
+        self.output.push_str(&format!(
+            ".visible .entry {}(\n",
+            sanitize_ident(kernel_name)
+        ));
+        for (idx, param) in self.cuda_params.iter().enumerate() {
+            let comma = if idx + 1 == self.cuda_params.len() {
+                ""
+            } else {
+                ","
+            };
+            self.output.push_str(&format!(
+                "    .param .{} {}{}\n",
+                param.width.ptx_type(),
+                cuda_param_name(param.index, param.width),
+                comma
+            ));
+        }
+        self.output.push_str(")\n{\n");
     }
 
     fn collect_branch_targets(&mut self, instructions: &[EnhancedSassInstruction]) {
@@ -459,15 +486,23 @@ impl<'a> LiftContext<'a> {
                 &data_type_suffix(inst, SassDataType::U32),
             )),
             "SHF" => Some(shf_op(inst, &pred, self.scratch_gpr.as_deref())),
+            "USHF" => Some(ushf_op(inst, &pred)),
+            "VIMNMX" | "UVIMNMX" if vimnmx_static_operator(inst).is_some() => {
+                Some(vimnmx_op(inst, &pred))
+            }
+            "VIMNMX" | "UVIMNMX" => self.unsupported(
+                inst,
+                "integer min/max dynamic selector lifting is not implemented",
+            ),
             "LOP" if is_lop_lut(inst) => Some(lop3_lut_op(inst, &pred)),
             "LOP" if inst.src_operands.len() == 2 => Some(binary_op(inst, &pred, "and", "b32")),
             "LOP" => self.unsupported(inst, "logical operation lifting is not implemented"),
-            "LOP3" if is_lop3_predicate_lut(inst) => Some(lop3_predicate_lut_op(
+            "LOP3" if is_lop3_odd_predicate(inst) => Some(lop3_odd_predicate_op(
                 inst,
                 &pred,
                 self.scratch_gpr.as_deref(),
             )),
-            "LOP3" if is_lop3_odd_predicate(inst) => Some(lop3_odd_predicate_op(
+            "LOP3" if is_lop3_predicate_lut(inst) => Some(lop3_predicate_lut_op(
                 inst,
                 &pred,
                 self.scratch_gpr.as_deref(),
@@ -510,7 +545,7 @@ impl<'a> LiftContext<'a> {
             "F2I" => Some(f2i_op(inst, &pred)),
             "FRND" if has_modifier(inst, "TRUNC") => Some(frnd_trunc_op(inst, &pred)),
             "FRND" => self.unsupported(inst, "floating round mode lifting is not implemented"),
-            "FMNMX" => Some(fmnmx_op(inst, &pred)),
+            "FMNMX" => Some(fmnmx_op(inst, &pred, self.scratch_gpr.as_deref())),
             "FABS" => Some(unary_op(
                 inst,
                 &pred,
@@ -577,7 +612,73 @@ fn needs_gpr_scratch(instructions: &[EnhancedSassInstruction]) -> bool {
             || is_lop3_predicate_lut(inst)
             || is_hadd2_zero_source(inst)
             || is_shf_left_rotate(inst)
+            || has_abs_float_operand(inst)
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CudaParamDecl {
+    index: u32,
+    width: CudaParamWidth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CudaParamWidth {
+    U32,
+    U64,
+}
+
+impl CudaParamWidth {
+    fn ptx_type(self) -> &'static str {
+        match self {
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+        }
+    }
+}
+
+fn cuda_param_decls(instructions: &[EnhancedSassInstruction]) -> Vec<CudaParamDecl> {
+    let mut widths: BTreeMap<u32, CudaParamWidth> = BTreeMap::new();
+
+    for inst in instructions {
+        for operand in inst.src_operands.iter().chain(inst.dest_operands.iter()) {
+            let Some((0, offset)) = constant_bank_operand(operand) else {
+                continue;
+            };
+            let Some((index, byte_offset)) = cuda_param_index_and_byte_offset(offset) else {
+                continue;
+            };
+            let width = if is_64bit_modifier(inst) || byte_offset >= 4 {
+                CudaParamWidth::U64
+            } else {
+                CudaParamWidth::U32
+            };
+            widths
+                .entry(index)
+                .and_modify(|existing| *existing = (*existing).max(width))
+                .or_insert(width);
+        }
+    }
+
+    let Some(max_index) = widths.keys().next_back().copied() else {
+        return Vec::new();
+    };
+
+    (0..=max_index)
+        .map(|index| CudaParamDecl {
+            index,
+            width: widths.get(&index).copied().unwrap_or(CudaParamWidth::U64),
+        })
+        .collect()
+}
+
+fn cuda_param_name(index: u32, width: CudaParamWidth) -> String {
+    match (index, width) {
+        (0, _) => "out".to_string(),
+        (1, _) => "in".to_string(),
+        (2, CudaParamWidth::U32) => "n".to_string(),
+        _ => format!("param{}", index),
+    }
 }
 
 #[derive(Debug, Default)]
@@ -599,6 +700,7 @@ impl RegisterDecls {
             if let Some(predicate) = &inst.predicate {
                 collect_register_decl(predicate, &mut decls);
             }
+            collect_implicit_register_pair_decl(inst, &mut decls);
         }
         decls
     }
@@ -609,6 +711,23 @@ impl RegisterDecls {
             || self.max_uniform_gpr > 0
             || self.max_uniform_pred > 0
             || self.max_b64 > 0
+    }
+}
+
+fn collect_implicit_register_pair_decl(inst: &EnhancedSassInstruction, decls: &mut RegisterDecls) {
+    if !matches!(inst.opcode.as_str(), "LDC" | "LDCU") || !is_64bit_modifier(inst) {
+        return;
+    }
+    let Some(SassOperand::Register(reg)) = inst.dest_operands.first() else {
+        return;
+    };
+    if reg.is_zero {
+        return;
+    }
+    match reg.prefix.as_str() {
+        "R" => decls.max_gpr = decls.max_gpr.max(reg.number + 2),
+        "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(reg.number + 2),
+        _ => {}
     }
 }
 
@@ -920,19 +1039,47 @@ fn mufu_rcp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     format!("{}rcp.approx.ftz.f32 {}, {};", pred, dst, src)
 }
 
-fn fmnmx_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+fn fmnmx_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str>) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
-    let src0 = inst
+    let op = fmnmx_operator(inst);
+    let raw_src0 = inst
         .src_operands
         .first()
         .map(format_float_operand)
         .unwrap_or_else(|| "0.0".to_string());
-    let src1 = inst
+    let raw_src1 = inst
         .src_operands
         .get(1)
         .map(format_float_operand)
         .unwrap_or_else(|| "0.0".to_string());
-    format!("{}min.f32 {}, {}, {};", pred, dst, src0, src1)
+    let abs_src0 = inst.src_operands.first().and_then(abs_float_operand);
+    let abs_src1 = inst.src_operands.get(1).and_then(abs_float_operand);
+    let src0 = abs_src0.clone().unwrap_or(raw_src0);
+    let src1 = abs_src1.clone().unwrap_or(raw_src1);
+    match (abs_src0, abs_src1) {
+        (Some(abs0), Some(abs1)) => {
+            let scratch = scratch_gpr.unwrap_or(&dst);
+            format!(
+                "{}abs.f32 {}, {};\n    {}abs.f32 {}, {};\n    {}{}.f32 {}, {}, {};",
+                pred, scratch, abs0, pred, dst, abs1, pred, op, dst, scratch, dst
+            )
+        }
+        (Some(abs0), None) => {
+            let scratch = scratch_gpr.unwrap_or(&dst);
+            format!(
+                "{}abs.f32 {}, {};\n    {}{}.f32 {}, {}, {};",
+                pred, scratch, abs0, pred, op, dst, scratch, src1
+            )
+        }
+        (None, Some(abs1)) => {
+            let scratch = scratch_gpr.unwrap_or(&dst);
+            format!(
+                "{}abs.f32 {}, {};\n    {}{}.f32 {}, {}, {};",
+                pred, scratch, abs1, pred, op, dst, src0, scratch
+            )
+        }
+        (None, None) => format!("{}{}.f32 {}, {}, {};", pred, op, dst, src0, src1),
+    }
 }
 
 fn imad_wide_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -1123,19 +1270,31 @@ fn shf_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str>)
         .map(format_operand)
         .unwrap_or_else(|| "0".to_string());
     if has_modifier(inst, "R") {
-        let value = inst
+        let src0 = inst
+            .src_operands
+            .first()
+            .map(format_operand)
+            .unwrap_or_else(|| "0".to_string());
+        let src1 = inst
             .src_operands
             .get(2)
             .map(format_operand)
             .unwrap_or_else(|| "0".to_string());
-        format!(
-            "{}shr.{} {}, {}, {};",
-            pred,
-            data_type_suffix(inst, SassDataType::U32),
-            dst,
-            value,
-            amount
-        )
+        if has_modifier(inst, "U64") || has_modifier(inst, "S64") {
+            format!(
+                "{}shf.r.clamp.b32 {}, {}, {}, {};",
+                pred, dst, src0, src1, amount
+            )
+        } else {
+            format!(
+                "{}shr.{} {}, {}, {};",
+                pred,
+                data_type_suffix(inst, SassDataType::U32),
+                dst,
+                src1,
+                amount
+            )
+        }
     } else if is_shf_left_rotate(inst) {
         let value = inst
             .src_operands
@@ -1158,6 +1317,57 @@ fn shf_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str>)
             .unwrap_or_else(|| "0".to_string());
         format!("{}shl.b32 {}, {}, {};", pred, dst, value, amount)
     }
+}
+
+fn ushf_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%ur0".to_string());
+    let amount = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    if has_modifier(inst, "R") {
+        let src1 = inst
+            .src_operands
+            .get(2)
+            .map(format_operand)
+            .unwrap_or_else(|| "0".to_string());
+        format!(
+            "{}shf.r.clamp.b32 {}, {}, {}, {};",
+            pred, dst, src0, src1, amount
+        )
+    } else {
+        format!("{}shl.b32 {}, {}, {};", pred, dst, src0, amount)
+    }
+}
+
+fn vimnmx_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let op = vimnmx_static_operator(inst).unwrap_or("min");
+    format!(
+        "{}{}.{} {}, {}, {};",
+        pred,
+        op,
+        data_type_suffix(inst, SassDataType::S32),
+        dst,
+        src0,
+        src1
+    )
 }
 
 fn shfl_bfly_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -1277,18 +1487,14 @@ fn ldc_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
     let const_bank = inst.src_operands.first().and_then(constant_bank_operand);
     match const_bank {
-        Some((0, 0x360)) => format!("{}mov.u32 {}, %ntid.x;", pred, dst),
-        Some((0, 0x380)) if is_64bit_modifier(inst) => format!(
-            "{}ld.param.u64 {}, [out];",
-            pred,
-            dest_rd_operand(inst).unwrap_or_else(|| "%rd0".to_string())
-        ),
-        Some((0, 0x388)) if is_64bit_modifier(inst) => format!(
-            "{}ld.param.u64 {}, [in];",
-            pred,
-            dest_rd_operand(inst).unwrap_or_else(|| "%rd0".to_string())
-        ),
-        Some((0, 0x390)) => format!("{}ld.param.u32 {}, [n];", pred, dst),
+        Some((0, offset)) if cuda_launch_constant_value(offset).is_some() => {
+            let value = cuda_launch_constant_value(offset).unwrap();
+            format!("{}mov.u32 {}, {};", pred, dst, value)
+        }
+        Some((0, offset)) if cuda_param_index_and_byte_offset(offset).is_some() => {
+            let (index, byte_offset) = cuda_param_index_and_byte_offset(offset).unwrap();
+            cuda_param_load_op(inst, pred, index, byte_offset)
+        }
         Some((0, 0x358)) if is_64bit_modifier(inst) => format!("{}mov.u32 {}, 0;", pred, dst),
         Some((bank, offset)) => format!(
             "{}ld.const.{} {}, [c[0x{:x}][0x{:x}]];",
@@ -1394,11 +1600,30 @@ fn setp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         "{}setp.{}.{} {}, {}, {};",
         pred,
         comparison_suffix(inst),
-        data_type_suffix(inst, default_ty),
+        setp_data_type_suffix(inst, default_ty, &src0, &src1),
         dst,
         src0,
         src1
     )
+}
+
+fn setp_data_type_suffix(
+    inst: &EnhancedSassInstruction,
+    default_ty: SassDataType,
+    src0: &str,
+    src1: &str,
+) -> String {
+    let suffix = data_type_suffix(inst, default_ty);
+    if matches!(suffix.as_str(), "s64" | "u64")
+        && !(src0.starts_with("%rd") && src1.starts_with("%rd"))
+    {
+        match suffix.as_str() {
+            "u64" => "u32".to_string(),
+            _ => "s32".to_string(),
+        }
+    } else {
+        suffix
+    }
 }
 
 fn setp_compare_operands(inst: &EnhancedSassInstruction) -> (String, String) {
@@ -1621,6 +1846,77 @@ fn constant_bank_operand(operand: &SassOperand) -> Option<(u32, u32)> {
     }
 }
 
+fn cuda_launch_constant_value(offset: u32) -> Option<&'static str> {
+    match offset {
+        0x360 => Some("%ntid.x"),
+        0x364 => Some("%ntid.y"),
+        0x368 => Some("%ntid.z"),
+        0x370 => Some("%nctaid.x"),
+        0x374 => Some("%nctaid.y"),
+        0x378 => Some("%nctaid.z"),
+        // ptxas emits this metadata read in SM120 kernels even when the
+        // destination is dead. PTX has no corresponding special register.
+        0x37c => Some("0"),
+        _ => None,
+    }
+}
+
+fn cuda_param_index_and_byte_offset(offset: u32) -> Option<(u32, u32)> {
+    let relative = offset.checked_sub(0x380)?;
+    Some((relative / 8, relative % 8))
+}
+
+fn cuda_param_load_op(
+    inst: &EnhancedSassInstruction,
+    pred: &str,
+    index: u32,
+    byte_offset: u32,
+) -> String {
+    let name = cuda_param_name(
+        index,
+        if is_64bit_modifier(inst) || byte_offset >= 4 {
+            CudaParamWidth::U64
+        } else {
+            CudaParamWidth::U32
+        },
+    );
+    if is_64bit_modifier(inst) && byte_offset == 0 {
+        if let Some((low, high)) = uniform_register_pair_dest(inst) {
+            return format!(
+                "{}ld.param.u32 {}, [{}];\n    {}ld.param.u32 {}, [{}+4];",
+                pred, low, name, pred, high, name
+            );
+        }
+        return format!(
+            "{}ld.param.u64 {}, [{}];",
+            pred,
+            dest_rd_operand(inst).unwrap_or_else(|| "%rd0".to_string()),
+            name
+        );
+    }
+
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let address = if byte_offset == 0 {
+        name
+    } else {
+        format!("{}+{}", name, byte_offset)
+    };
+    format!("{}ld.param.u32 {}, [{}];", pred, dst, address)
+}
+
+fn uniform_register_pair_dest(inst: &EnhancedSassInstruction) -> Option<(String, String)> {
+    let Some(SassOperand::Register(reg)) = inst.dest_operands.first() else {
+        return None;
+    };
+    if reg.prefix != "UR" || reg.is_zero {
+        return None;
+    }
+    let low = format_register(reg);
+    let mut high_reg = reg.clone();
+    high_reg.number += 1;
+    Some((low, format_register(&high_reg)))
+}
+
 fn has_modifier(inst: &EnhancedSassInstruction, modifier: &str) -> bool {
     inst.modifiers
         .iter()
@@ -1773,6 +2069,50 @@ fn is_hadd2_zero_source(inst: &EnhancedSassInstruction) -> bool {
     inst.opcode == "HADD2" && inst.src_operands.iter().any(is_half2_zero_operand)
 }
 
+fn has_abs_float_operand(inst: &EnhancedSassInstruction) -> bool {
+    inst.opcode == "FMNMX"
+        && inst
+            .src_operands
+            .iter()
+            .take(2)
+            .any(|operand| abs_float_operand(operand).is_some())
+}
+
+fn fmnmx_operator(inst: &EnhancedSassInstruction) -> &'static str {
+    match inst.src_operands.get(2).and_then(static_predicate_value) {
+        Some(false) => "max",
+        _ => "min",
+    }
+}
+
+fn abs_float_operand(operand: &SassOperand) -> Option<String> {
+    let SassOperand::Label(label) = operand else {
+        return None;
+    };
+    let inner = label.strip_prefix('|')?.strip_suffix('|')?;
+    SassOperand::parse(inner).map(|operand| format_float_operand(&operand))
+}
+
+fn vimnmx_static_operator(inst: &EnhancedSassInstruction) -> Option<&'static str> {
+    match static_predicate_value(inst.src_operands.get(2)?)? {
+        true => Some("min"),
+        false => Some("max"),
+    }
+}
+
+fn static_predicate_value(operand: &SassOperand) -> Option<bool> {
+    match operand {
+        SassOperand::Register(reg) if reg.prefix == "PT" => Some(true),
+        SassOperand::Predicate { register, negated } if register.prefix == "PT" => Some(!negated),
+        SassOperand::Label(label) => match label.as_str() {
+            "PT" | "UPT" => Some(true),
+            "!PT" | "!UPT" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn shift_amount_immediate(inst: &EnhancedSassInstruction) -> Option<i64> {
     match inst.src_operands.get(1) {
         Some(SassOperand::Immediate(amount)) => Some(*amount),
@@ -1806,18 +2146,6 @@ fn desc_address_to_ptx(label: &str) -> Option<String> {
     }
     let reg_num = digits.parse::<u32>().ok()?;
     Some(format!("[%rd{}]", reg_num))
-}
-
-fn uses_cuda_param_abi(instructions: &[EnhancedSassInstruction]) -> bool {
-    instructions.iter().any(|inst| {
-        inst.src_operands
-            .iter()
-            .chain(inst.dest_operands.iter())
-            .filter_map(constant_bank_operand)
-            .any(|(bank, offset)| {
-                bank == 0 && matches!(offset, 0x358 | 0x360 | 0x380 | 0x388 | 0x390)
-            })
-    })
 }
 
 fn uses_shared_memory(instructions: &[EnhancedSassInstruction]) -> bool {
@@ -1855,6 +2183,7 @@ fn format_operand(operand: &SassOperand) -> String {
         }
         SassOperand::Barrier(id) => id.to_string(),
         SassOperand::SpecialRegister(name) => map_special_register(name),
+        SassOperand::Label(label) if matches!(label.as_str(), "SRZ" | "SR_Z") => "0".to_string(),
         SassOperand::Label(label) => label.clone(),
         SassOperand::Address(address) => label_for_address(*address),
     }
@@ -1871,6 +2200,11 @@ fn format_signed_operand(operand: &SassOperand) -> (String, bool) {
 }
 
 fn format_float_operand(operand: &SassOperand) -> String {
+    if is_zero_register_operand(operand)
+        || matches!(operand, SassOperand::Label(label) if matches!(label.as_str(), "RZ" | "-RZ" | "URZ" | "-URZ"))
+    {
+        return "0.0".to_string();
+    }
     match operand {
         SassOperand::Immediate(value) => format!("{}.0", value),
         SassOperand::FloatImmediate(value) => value.to_string(),
@@ -1980,6 +2314,7 @@ fn format_register(reg: &SassRegister) -> String {
 
 fn map_special_register(name: &str) -> String {
     match name {
+        "SRZ" | "SR_Z" => "0".to_string(),
         "SR_TID.X" | "SR_TIDX" => "%tid.x".to_string(),
         "SR_TID.Y" | "SR_TIDY" => "%tid.y".to_string(),
         "SR_TID.Z" | "SR_TIDZ" => "%tid.z".to_string(),
@@ -2327,6 +2662,153 @@ Function : kernel
     }
 
     #[test]
+    fn sass_lifter_maps_sm120_launch_constant_bank_metadata() {
+        let text = r#"Function : launch_metadata
+        /*0000*/                   LDC R1, c[0x0][0x37c]                  ?trans1;          /* 0x0000df00ff017b82 */
+        /*0010*/                   LDCU UR6, c[0x0][0x370]       &wr=0x0  ?trans7;          /* 0x00006e00ff0677ac */
+        /*0020*/                   LDC R5, c[0x0][0x374]         &wr=0x0  ?trans8;          /* 0x0000dd00ff057b82 */
+        /*0030*/                   LDC R0, c[0x0][0x378]         &wr=0x0  ?trans2;          /* 0x0000de00ff007b82 */
+        /*0040*/                   LDC R2, c[0x0][0x360]         &wr=0x1  ?trans2;          /* 0x0000d800ff027b82 */
+        /*0050*/                   LDC R3, c[0x0][0x364]         &wr=0x1  ?trans2;          /* 0x0000d900ff037b82 */
+        /*0060*/                   LDC R4, c[0x0][0x368]         &wr=0x1  ?trans2;          /* 0x0000da00ff047b82 */
+"#;
+
+        let result = lift_sass_text_to_ptx(
+            text,
+            SassLiftOptions {
+                include_sass_comments: false,
+                ..SassLiftOptions::default()
+            },
+        )
+        .expect("SM120 launch metadata constant bank reads should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("mov.u32 %r1, 0;"));
+        assert!(result.ptx.contains("mov.u32 %ur6, %nctaid.x;"));
+        assert!(result.ptx.contains("mov.u32 %r5, %nctaid.y;"));
+        assert!(result.ptx.contains("mov.u32 %r0, %nctaid.z;"));
+        assert!(result.ptx.contains("mov.u32 %r2, %ntid.x;"));
+        assert!(result.ptx.contains("mov.u32 %r3, %ntid.y;"));
+        assert!(result.ptx.contains("mov.u32 %r4, %ntid.z;"));
+        assert!(!result.ptx.contains(".param"));
+        assert!(!result.ptx.contains("c[0x0]"));
+    }
+
+    #[test]
+    fn sass_lifter_expands_cuda_param_abi_from_sm120_constant_bank_reads() {
+        let text = r#"Function : kimi_params
+        /*0000*/                   LDC.64 R12, c[0x0][0x380]                           &wr=0x3                  ?trans1;           /* 0x0000e000ff0c8b82 */
+        /*0010*/                   LDC.64 R4, c[0x0][0x388]                            &wr=0x1                  ?trans1;           /* 0x0000e200ff047b82 */
+        /*0020*/                   LDC.64 R6, c[0x0][0x390]                            &wr=0x0                  ?trans8;           /* 0x0000e400ff068b82 */
+        /*0030*/                   LDCU.64 UR14, c[0x0][0x398]                         &wr=0x1                  ?trans1;           /* 0x00007300ff0e77ac */
+        /*0040*/                   LDCU.64 UR4, c[0x0][0x3a0]                          &wr=0x2                  ?trans1;           /* 0x00007400ff0477ac */
+"#;
+
+        let result = lift_sass_text_to_ptx(
+            text,
+            SassLiftOptions {
+                include_sass_comments: false,
+                ..SassLiftOptions::default()
+            },
+        )
+        .expect("Kimi-style CUDA parameter constant bank reads should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".param .u64 out"));
+        assert!(result.ptx.contains(".param .u64 in"));
+        assert!(result.ptx.contains(".param .u64 param2"));
+        assert!(result.ptx.contains(".param .u64 param3"));
+        assert!(result.ptx.contains(".param .u64 param4"));
+        assert!(result.ptx.contains("ld.param.u64 %rd12, [out];"));
+        assert!(result.ptx.contains("ld.param.u64 %rd4, [in];"));
+        assert!(result.ptx.contains("ld.param.u64 %rd6, [param2];"));
+        assert!(result
+            .ptx
+            .contains("ld.param.u32 %ur14, [param3];\n    ld.param.u32 %ur15, [param3+4];"));
+        assert!(result
+            .ptx
+            .contains("ld.param.u32 %ur4, [param4];\n    ld.param.u32 %ur5, [param4+4];"));
+        assert!(!result.ptx.contains("c[0x0]"));
+    }
+
+    #[test]
+    fn sass_lifter_lowers_sm120_ptxas_followup_bucket_ops() {
+        let text = r#"Function : ptxas_followup
+        /*0000*/                   ISETP.GE.S64.AND P0, PT, R8, UR4, PT                &req={2}                 ?WAIT14_END_GROUP; /* 0x0000000408007c0c */
+        /*0010*/                   CS2R R4, SRZ                                                                 ?WAIT4_END_GROUP;  /* 0x0000000000047805 */
+        /*0020*/                   SHF.R.U64 R19, R2, 0x5, R3                                                   ?trans1;           /* 0x0000000502137819 */
+        /*0030*/                   FMNMX.FTZ R9, |R5|, |R4|, !PT                       &req={2}                 ?WAIT5_END_GROUP;  /* 0x4000000405097209 */
+"#;
+
+        let result = lift_sass_text_to_ptx(
+            text,
+            SassLiftOptions {
+                include_sass_comments: false,
+                ..SassLiftOptions::default()
+            },
+        )
+        .expect("SM120 ptxas follow-up bucket ops should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("setp.ge.s32 %p0, %r8, %ur4;"));
+        assert!(result.ptx.contains("mov.u32 %r4, 0;"));
+        assert!(result.ptx.contains("shf.r.clamp.b32 %r19, %r2, %r3, 5;"));
+        assert!(result.ptx.contains(".reg .b32 %r<21>;"));
+        assert!(result
+            .ptx
+            .contains("abs.f32 %r20, %r5;\n    abs.f32 %r9, %r4;\n    max.f32 %r9, %r20, %r9;"));
+        assert!(!result.ptx.contains("|R"));
+        assert!(!result.ptx.contains("SRZ"));
+    }
+
+    #[test]
+    fn sass_lifter_maps_fmnmx_static_selector_to_min_or_max() {
+        let text = r#"Function : fmnmx_selector
+        /*0000*/                   FMNMX R4, R1, R2, PT                                ?WAIT5_END_GROUP;  /* 0x0000000201047209 */
+        /*0010*/                   FMNMX R5, R1, R2, !PT                               ?WAIT5_END_GROUP;  /* 0x0000000201057209 */
+"#;
+
+        let result = lift_sass_text_to_ptx(
+            text,
+            SassLiftOptions {
+                include_sass_comments: false,
+                ..SassLiftOptions::default()
+            },
+        )
+        .expect("FMNMX static min/max selector should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("min.f32 %r4, %r1, %r2;"));
+        assert!(result.ptx.contains("max.f32 %r5, %r1, %r2;"));
+    }
+
+    #[test]
+    fn sass_lifter_formats_zero_register_as_float_literal_in_float_ops() {
+        let text = r#"Function : float_zero
+        /*0000*/                   FMNMX R4, RZ, R4, PT                                ?WAIT5_END_GROUP;  /* 0x00000004ff047209 */
+        /*0010*/                   FADD R8, RZ, R8                                     ?trans1;           /* 0x00000008ff087221 */
+        /*0020*/                   FMUL R5, RZ, R15                                    ?trans1;           /* 0x0000000fff057220 */
+"#;
+
+        let result = lift_sass_text_to_ptx(
+            text,
+            SassLiftOptions {
+                include_sass_comments: false,
+                ..SassLiftOptions::default()
+            },
+        )
+        .expect("float zero register operands should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("min.f32 %r4, 0.0, %r4;"));
+        assert!(result.ptx.contains("add.f32 %r8, 0.0, %r8;"));
+        assert!(result.ptx.contains("mul.f32 %r5, 0.0, %r15;"));
+        assert!(!result.ptx.contains("min.f32 %r4, 0, %r4;"));
+        assert!(!result.ptx.contains("add.f32 %r8, 0, %r8;"));
+        assert!(!result.ptx.contains("mul.f32 %r5, 0, %r15;"));
+    }
+
+    #[test]
     fn sass_lifter_preserves_predicates_and_branch_targets() {
         let mut isetp = EnhancedSassInstruction::new("ISETP".to_string(), 0x0);
         isetp.opcode_class = SassOpcodeClass::IntegerComparison;
@@ -2547,6 +3029,24 @@ Function : kernel
     }
 
     #[test]
+    fn sass_lifter_lowers_lop3_odd_predicate_before_generic_predicate_lut() {
+        let text = r#"Function : odd_pred
+        /*0000*/                   LOP3.LUT P0, RZ, R7, 0x1, RZ, 0xc0, !PT ;
+        /*0010*/              @!P0 LOP3.LUT R9, R9, 0x9e3779b9, RZ, 0x3c, !PT ;
+        /*0020*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("odd predicate LOP3 should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("and.b32 %r10, %r7, 1;"));
+        assert!(result.ptx.contains("setp.ne.u32 %p0, %r10, 0;"));
+        assert!(!result.ptx.contains("lop3.b32 %r10, 0, %r7, 1, 0xc0;"));
+        assert!(result.ptx.contains("@!%p0 xor.b32 %r9, %r9, 2654435769;"));
+    }
+
+    #[test]
     fn sass_lifter_lifts_sm120_uniform_and_permute_bucket_ops() {
         let text = r#"Function : uniform_bucket_ops
         /*0000*/                   UIMAD UR4, UR4, UR6, URZ ;
@@ -2609,5 +3109,30 @@ Function : kernel
             .ptx
             .contains("@%p3 mov.b32 %r21, 0;\n    @%p3 add.rn.f16x2 %r0, %r21, %r2;"));
         assert!(result.ptx.contains("or.pred %p0, %p0, %p1;"));
+    }
+
+    #[test]
+    fn sass_lifter_lifts_sm120_uniform_shift_and_minmax_bucket_ops() {
+        let text = r#"Function : uniform_shift_minmax_bucket_ops
+        /*0090*/                   UVIMNMX.S32 UR5, UR5, UR7, UPT ?trans1; /* 0x000000070505724a */
+        /*0110*/                   VIMNMX.S32 R3, R3, UR5, !PT ?WAIT5_END_GROUP; /* 0x0000000503037c48 */
+        /*0300*/                   USHF.R.U64 UR8, UR8, 0x5, UR6 ?trans1; /* 0x0000000508087899 */
+        /*0310*/                   USHF.R.U32.HI UR6, URZ, 0x5, UR6 ?WAIT3_END_GROUP; /* 0x00000005ff067899 */
+        /*0920*/                   VIMNMX.S32 R5, R4, UR5, !PT ?trans1; /* 0x0000000504057c48 */
+        /*0a50*/                   VIMNMX.S32 R7, R6, UR5, !PT ?trans1; /* 0x0000000506077c48 */
+        /*0b00*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("SM120 uniform shift and min/max bucket ops should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %ur<9>;"));
+        assert!(result.ptx.contains("min.s32 %ur5, %ur5, %ur7;"));
+        assert!(result.ptx.contains("max.s32 %r3, %r3, %ur5;"));
+        assert!(result.ptx.contains("max.s32 %r5, %r4, %ur5;"));
+        assert!(result.ptx.contains("max.s32 %r7, %r6, %ur5;"));
+        assert!(result.ptx.contains("shf.r.clamp.b32 %ur8, %ur8, %ur6, 5;"));
+        assert!(result.ptx.contains("shf.r.clamp.b32 %ur6, 0, %ur6, 5;"));
     }
 }

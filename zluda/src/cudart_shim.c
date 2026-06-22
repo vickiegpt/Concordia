@@ -305,7 +305,7 @@ static int hetgpu_cudart_fail_open_enabled(void) {
         value = getenv("HETGPU_PACC_ASSUME_SUCCESS_ON_WAIT_ERROR");
     }
     if (!value || !*value) {
-        return 1;
+        return 0;
     }
     if (strcmp(value, "0") == 0 ||
         strcasecmp(value, "false") == 0 ||
@@ -317,9 +317,7 @@ static int hetgpu_cudart_fail_open_enabled(void) {
 }
 
 static int hetgpu_cudart_lazy_ptx_fail_open_enabled(void) {
-    return hetgpu_env_enabled_default(
-        "HETGPU_CUDART_LAZY_PTX_FAIL_OPEN",
-        hetgpu_pacc_jobd_emulator_mode());
+    return hetgpu_env_enabled_default("HETGPU_CUDART_LAZY_PTX_FAIL_OPEN", 0);
 }
 
 static int hetgpu_cudart_defer_module_load_enabled(void) {
@@ -2068,14 +2066,17 @@ static CUfunction lookup_registered_function(const void *func, const char **func
     for (int i = 0; i < g_function_count; i++) {
         uintptr_t registered_host_normalized = (uintptr_t)g_functions[i].hostFun & ~(uintptr_t)0x7;
         uintptr_t registered_device_normalized = (uintptr_t)g_functions[i].deviceFun & ~(uintptr_t)0x7;
+        CUfunction current_cufunc = registered_function_current_cufunc(&g_functions[i]);
+        uintptr_t registered_cufunc_normalized = (uintptr_t)current_cufunc & ~(uintptr_t)0x7;
         if (g_functions[i].hostFun == func ||
             g_functions[i].deviceFun == func ||
             registered_host_normalized == func_normalized ||
-            registered_device_normalized == func_normalized) {
+            registered_device_normalized == func_normalized ||
+            (current_cufunc && (current_cufunc == func ||
+                                registered_cufunc_normalized == func_normalized))) {
             if (func_name) {
                 *func_name = g_functions[i].name;
             }
-            CUfunction current_cufunc = registered_function_current_cufunc(&g_functions[i]);
             const char* log_null_cufunc = getenv("HETGPU_CUDART_LOG_NULL_CUFUNC");
             if (current_cufunc == NULL &&
                     log_null_cufunc && strcmp(log_null_cufunc, "1") == 0 &&
@@ -2394,18 +2395,6 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                     HETGPU_LOG("[cudart_shim] named launch handled '%s' without CUfunction\n", funcName);
                     return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
                 }
-                if (named_result == HETGPU_CUDA_ERROR_UNKNOWN) {
-                    if (hetgpu_cudart_fail_open_enabled()) {
-                        fprintf(stderr,
-                                "[cudart_shim] named launch for '%s' failed; fail-open success\n",
-                                funcName);
-                        return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
-                    }
-                    fprintf(stderr,
-                            "[cudart_shim] named launch for '%s' failed; refusing to skip kernel\n",
-                            funcName);
-                    return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
-                }
                 const char* log_named_miss = getenv("HETGPU_CUDART_LOG_NAMED_MISS");
                 if (log_named_miss && strcmp(log_named_miss, "1") == 0 && g_registry_miss_log_count < 12) {
                     fprintf(stderr,
@@ -2415,27 +2404,23 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                     g_registry_miss_log_count++;
                 }
             }
-            int requires_named_launch = hetgpu_requires_named_launch(funcName);
-            if (requires_named_launch && !hetgpu_cudart_lazy_ptx_fail_open_enabled()) {
-                cuFunc = lazy_load_registered_function_for_launch(funcName, func);
-                if (cuFunc != NULL) {
-                    HETGPU_LOG("[cudart_shim] launch-time lazy PTX resolved named-only candidate '%s': %p\n",
-                            funcName, cuFunc);
-                    goto launch_registered_kernel;
-                }
+            cuFunc = lazy_load_registered_function_for_launch(funcName, func);
+            if (cuFunc != NULL) {
+                HETGPU_LOG("[cudart_shim] launch-time lazy PTX resolved '%s': %p\n", funcName, cuFunc);
+                goto launch_registered_kernel;
             }
+
+            int requires_named_launch = hetgpu_requires_named_launch(funcName);
             if (requires_named_launch) {
-                const char* rmsnorm_fail_open = getenv("HETGPU_PACC_RMSNORM_NULL_FUNC_SUCCESS");
                 int allow_rmsnorm_null_success =
-                    rmsnorm_fail_open == NULL ||
-                    strcmp(rmsnorm_fail_open, "0") != 0;
-                if (allow_rmsnorm_null_success &&
-                    (strstr(funcName, "rms_norm_f32") || strstr(funcName, "rmsnorm_f32"))) {
+                    hetgpu_env_enabled_default("HETGPU_PACC_RMSNORM_NULL_FUNC_SUCCESS", 0) ||
+                    hetgpu_cudart_fail_open_enabled();
+                if (strstr(funcName, "rms_norm_f32") || strstr(funcName, "rmsnorm_f32")) {
                     if (!hetgpu_is_ggml_cuda_rms_norm_f32(funcName)) {
                         static unsigned long long rmsnorm_unsupported_sig_log_count = 0;
                         unsigned long long log_index =
                             __sync_fetch_and_add(&rmsnorm_unsupported_sig_log_count, 1);
-                        if (hetgpu_strict_pacc()) {
+                        if (hetgpu_strict_pacc() || !allow_rmsnorm_null_success) {
                             fprintf(stderr,
                                     "[cudart_shim] ERROR: RMSNorm named-only kernel '%s' has unsupported host fallback signature\n",
                                     funcName);
@@ -2475,8 +2460,8 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                             (weight && !hetgpu_host_range_readable(weight, weight_bytes))) {
                             static unsigned long long rmsnorm_device_ptr_success_log_count = 0;
                             unsigned long long log_index =
-                                __sync_fetch_and_add(&rmsnorm_device_ptr_success_log_count, 1);
-                            if (hetgpu_strict_pacc()) {
+                            __sync_fetch_and_add(&rmsnorm_device_ptr_success_log_count, 1);
+                            if (hetgpu_strict_pacc() || !allow_rmsnorm_null_success) {
                                 fprintf(stderr,
                                         "[cudart_shim] ERROR: RMSNorm named-only kernel '%s' has non-host-accessible args x=%p y=%p weight=%p rows=%llu hidden=%d\n",
                                         funcName,
@@ -2528,8 +2513,14 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                             funcName);
                     return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
                 }
+                if (hetgpu_cudart_fail_open_enabled()) {
+                    fprintf(stderr,
+                            "[cudart_shim] named-only PACC kernel '%s' has NULL CUfunction; explicit fail-open success\n",
+                            funcName);
+                    return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+                }
                 fprintf(stderr,
-                        "[cudart_shim] ERROR: named-only PACC kernel '%s' has NULL CUfunction and named launch did not take it; refusing lazy/normal launch\n",
+                        "[cudart_shim] ERROR: named-only PACC kernel '%s' has NULL CUfunction after lazy module/function lookup\n",
                         funcName);
                 return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
             }
@@ -2550,11 +2541,13 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                 }
                 return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
             }
-            cuFunc = lazy_load_registered_function_for_launch(funcName, func);
-            if (cuFunc != NULL) {
-                HETGPU_LOG("[cudart_shim] launch-time lazy PTX resolved '%s': %p\n", funcName, cuFunc);
-                goto launch_registered_kernel;
-            } else if (!hetgpu_allow_skip_null_registered_kernel()) {
+            if (hetgpu_cudart_fail_open_enabled()) {
+                fprintf(stderr,
+                        "[cudart_shim] registered kernel '%s' has no CUfunction after lazy module/function lookup; explicit fail-open success\n",
+                        funcName);
+                return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+            }
+            if (!hetgpu_allow_skip_null_registered_kernel()) {
                 fprintf(stderr,
                         "[cudart_shim] ERROR: registered kernel '%s' has no CUfunction and no named PACC handler; refusing to skip uninitialized output\n",
                         funcName);
@@ -3983,7 +3976,7 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
     if (hetgpu_cudart_defer_module_load_enabled()) {
         // Delivery/perf mode: ggml-cuda may register hundreds of kernels even
         // when the run only needs cuBLAS-backed GEMM. Keep placeholders here
-        // and let launch-time lazy lookup/fail-open handle actual kernels.
+        // and let launch-time lazy lookup handle actual kernels.
         if (payload != NULL && payload_size > 0) {
             retain_deferred_payload = 1;
         }
@@ -4582,6 +4575,16 @@ cudaError_t cudaGetSymbolSize(size_t* size, const void* symbol) {
 cudaError_t cudaGetFuncBySymbol(cudaFunction_t* functionPtr, const void* symbol) {
     if (!functionPtr) {
         return 1; // cudaErrorInvalidValue
+    }
+    const char* func_name = "<unknown>";
+    CUfunction registered = symbol ? lookup_registered_function(symbol, &func_name) : NULL;
+    if (registered) {
+        *functionPtr = (cudaFunction_t)(uintptr_t)registered;
+        HETGPU_LOG("[cudart_shim] cudaGetFuncBySymbol resolved '%s': %p -> %p\n",
+                func_name,
+                symbol,
+                registered);
+        return 0;
     }
     *functionPtr = (cudaFunction_t)(uintptr_t)symbol;
     return 0;

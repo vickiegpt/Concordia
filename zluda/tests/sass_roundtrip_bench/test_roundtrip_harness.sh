@@ -148,7 +148,8 @@ if rg -q '^extern int hetgpu_pacc_submit_gemm' "${REPO_ROOT}/zluda/src/cublas_sh
     exit 1
 fi
 rg -q 'hetgpu_is_ggml_cuda_rms_norm_f32' "${REPO_ROOT}/zluda/src/cudart_shim.c"
-rg -q 'lazy PTX resolved named-only candidate' "${REPO_ROOT}/zluda/src/cudart_shim.c"
+rg -q "launch-time lazy PTX resolved '%s'" "${REPO_ROOT}/zluda/src/cudart_shim.c"
+rg -q 'HETGPU_CUDART_LAZY_PTX_FAIL_OPEN",.*0' "${REPO_ROOT}/zluda/src/cudart_shim.c"
 rg -q 'float eps = \(args && args\[3\]\)' "${REPO_ROOT}/zluda/src/cudart_shim.c"
 if rg -q 'args\[[67]\]' "${REPO_ROOT}/zluda/src/cudart_shim.c"; then
     echo "RMSNorm host fallback must not probe beyond the known four-argument ggml CUDA signature" >&2
@@ -453,6 +454,8 @@ cudart_fatbin_log="${cudart_fatbin_work_dir}/module.log"
     printf '%s\n' '#include <stdlib.h>'
     printf '%s\n' '#include <string.h>'
     printf '%s\n' 'typedef int CUresult;'
+    printf '%s\n' 'typedef int CUdevice;'
+    printf '%s\n' 'typedef void* CUcontext;'
     printf '%s\n' 'typedef void* CUmodule;'
     printf '%s\n' 'typedef void* CUfunction;'
     printf '%s\n' 'typedef void* CUstream;'
@@ -462,6 +465,9 @@ cudart_fatbin_log="${cudart_fatbin_work_dir}/module.log"
     printf '%s\n' 'void **__cudaRegisterFatBinary(void *fatCubin);'
     printf '%s\n' 'int hetgpu_lz4_decompress(const char *src, char *dst, int compressedSize, int dstCapacity) { (void)src; (void)dst; (void)compressedSize; (void)dstCapacity; return -1; }'
     printf '%s\n' 'int hetgpu_zstd_decompress(const char *src, char *dst, int compressedSize, int dstCapacity) { (void)src; (void)dst; (void)compressedSize; (void)dstCapacity; return -1; }'
+    printf '%s\n' 'CUresult cuDeviceGet(CUdevice *device, int ordinal) { if (device) *device = ordinal; return 0; }'
+    printf '%s\n' 'CUresult cuDevicePrimaryCtxRetain(CUcontext *pctx, CUdevice dev) { (void)dev; if (pctx) *pctx = (void*)0x3333; return 0; }'
+    printf '%s\n' 'CUresult cuCtxSetCurrent(CUcontext ctx) { (void)ctx; return 0; }'
     printf '%s\n' 'CUresult cuModuleGetFunction(CUfunction *hfunc, CUmodule hmod, const char *name) { (void)hmod; (void)name; if (hfunc) *hfunc = (void*)0x2222; return 0; }'
     printf '%s\n' 'CUresult cuLaunchKernel(CUfunction f, unsigned int gx, unsigned int gy, unsigned int gz, unsigned int bx, unsigned int by, unsigned int bz, unsigned int sh, CUstream s, void **params, void **extra) { (void)f; (void)gx; (void)gy; (void)gz; (void)bx; (void)by; (void)bz; (void)sh; (void)s; (void)params; (void)extra; return 0; }'
     printf '%s\n' 'static void write_log(const char *value) {'
@@ -530,8 +536,120 @@ if ! grep -Eq 'loaded_fatbin|loaded_elf' "${cudart_fatbin_log}"; then
     exit 1
 fi
 
+cudart_lazy_launch_work_dir="$(mktemp -d /tmp/hetgpu-cudart-lazy-launch-test.XXXXXX)"
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_no_cuda_work_dir}" "${e2e_preload_work_dir}" "${e2e_cudart_work_dir}" "${cublas_forward_work_dir}" "${cudart_fatbin_work_dir}" "${cudart_lazy_launch_work_dir}"' EXIT
+cudart_lazy_launch_so="${cudart_lazy_launch_work_dir}/libhetgpu_cudart_lazy_probe.so"
+cudart_lazy_launch_probe_src="${cudart_lazy_launch_work_dir}/probe.c"
+cudart_lazy_launch_probe_bin="${cudart_lazy_launch_work_dir}/probe"
+cudart_lazy_launch_log="${cudart_lazy_launch_work_dir}/driver.log"
+cudart_lazy_launch_stderr="${cudart_lazy_launch_work_dir}/stderr.log"
+{
+    printf '%s\n' '#define _GNU_SOURCE'
+    printf '%s\n' '#include <stdint.h>'
+    printf '%s\n' '#include <stdio.h>'
+    printf '%s\n' '#include <stdlib.h>'
+    printf '%s\n' '#include <string.h>'
+    printf '%s\n' 'typedef int CUresult;'
+    printf '%s\n' 'typedef int CUdevice;'
+    printf '%s\n' 'typedef void* CUcontext;'
+    printf '%s\n' 'typedef void* CUmodule;'
+    printf '%s\n' 'typedef void* CUfunction;'
+    printf '%s\n' 'typedef void* CUstream;'
+    printf '%s\n' 'typedef void* cudaStream_t;'
+    printf '%s\n' 'typedef struct { unsigned int x; unsigned int y; unsigned int z; } dim3;'
+    printf '%s\n' 'typedef struct { uint32_t magic; uint16_t version; uint16_t header_size; uint64_t files_size; } FatbinHeader;'
+    printf '%s\n' 'typedef struct { uint16_t kind; uint16_t version; uint32_t header_size; uint32_t padded_payload_size; uint32_t unknown0; uint32_t payload_size; uint32_t unknown1; uint32_t unknown2; uint32_t sm_version; uint32_t bit_width; uint32_t unknown3; uint64_t unknown4; uint64_t unknown5; uint64_t uncompressed_payload; } FatbinFileHeader;'
+    printf '%s\n' 'typedef struct { uint32_t magic; uint32_t version; void *data; void *filename; } FatbinWrapper;'
+    printf '%s\n' 'void **__cudaRegisterFatBinary(void *fatCubin);'
+    printf '%s\n' 'void __cudaRegisterFunction(void** fatCubinHandle, const char* hostFun, char* deviceFun, const char* deviceName, int thread_limit, void* tid, void* bid, void* bDim, void* gDim, void* wSize);'
+    printf '%s\n' 'int cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, void** args, size_t sharedMem, cudaStream_t stream);'
+    printf '%s\n' 'int hetgpu_lz4_decompress(const char *src, char *dst, int compressedSize, int dstCapacity) { (void)src; (void)dst; (void)compressedSize; (void)dstCapacity; return -1; }'
+    printf '%s\n' 'int hetgpu_zstd_decompress(const char *src, char *dst, int compressedSize, int dstCapacity) { (void)src; (void)dst; (void)compressedSize; (void)dstCapacity; return -1; }'
+    printf '%s\n' 'CUresult cuDeviceGet(CUdevice *device, int ordinal) { if (device) *device = ordinal; return 0; }'
+    printf '%s\n' 'CUresult cuDevicePrimaryCtxRetain(CUcontext *pctx, CUdevice dev) { (void)dev; if (pctx) *pctx = (void*)0x3333; return 0; }'
+    printf '%s\n' 'CUresult cuCtxSetCurrent(CUcontext ctx) { (void)ctx; return 0; }'
+    printf '%s\n' 'static void write_log(const char *tag, const char *value) {'
+    printf '%s\n' '    const char *path = getenv("HETGPU_CUDART_LAZY_LAUNCH_PROBE_LOG");'
+    printf '%s\n' '    FILE *f = path ? fopen(path, "a") : NULL;'
+    printf '%s\n' '    if (f) { fprintf(f, "%s:%s\n", tag, value ? value : ""); fclose(f); }'
+    printf '%s\n' '}'
+    printf '%s\n' 'CUresult cuModuleLoadData(CUmodule *module, const void *image) {'
+    printf '%s\n' '    const unsigned char *p = (const unsigned char*)image;'
+    printf '%s\n' '    if (memcmp(p, ".version", 8) == 0) write_log("loaded", "ptx");'
+    printf '%s\n' '    else write_log("loaded", "other");'
+    printf '%s\n' '    if (module) *module = (void*)0x1111;'
+    printf '%s\n' '    return 0;'
+    printf '%s\n' '}'
+    printf '%s\n' 'CUresult cuModuleGetFunction(CUfunction *hfunc, CUmodule hmod, const char *name) {'
+    printf '%s\n' '    (void)hmod;'
+    printf '%s\n' '    write_log("getfunc", name);'
+    printf '%s\n' '    if (hfunc) *hfunc = (void*)0x2222;'
+    printf '%s\n' '    return 0;'
+    printf '%s\n' '}'
+    printf '%s\n' 'CUresult cuLaunchKernel(CUfunction f, unsigned int gx, unsigned int gy, unsigned int gz, unsigned int bx, unsigned int by, unsigned int bz, unsigned int sh, CUstream s, void **params, void **extra) {'
+    printf '%s\n' '    (void)gx; (void)gy; (void)gz; (void)bx; (void)by; (void)bz; (void)sh; (void)s; (void)params; (void)extra;'
+    printf '%s\n' '    const char *path = getenv("HETGPU_CUDART_LAZY_LAUNCH_PROBE_LOG");'
+    printf '%s\n' '    FILE *log = path ? fopen(path, "a") : NULL;'
+    printf '%s\n' '    if (log) { fprintf(log, "launch:%p\n", f); fclose(log); }'
+    printf '%s\n' '    return f == (void*)0x2222 ? 0 : 99;'
+    printf '%s\n' '}'
+    printf '%s\n' 'static void fake_host_kernel(void) {}'
+    printf '%s\n' 'static void put_entry(unsigned char *entry, uint16_t kind, const unsigned char *payload, uint32_t payload_size) {'
+    printf '%s\n' '    FatbinFileHeader *fh = (FatbinFileHeader*)entry;'
+    printf '%s\n' '    memset(fh, 0, sizeof(*fh));'
+    printf '%s\n' '    fh->kind = kind;'
+    printf '%s\n' '    fh->version = 0x101;'
+    printf '%s\n' '    fh->header_size = sizeof(FatbinFileHeader);'
+    printf '%s\n' '    fh->payload_size = payload_size;'
+    printf '%s\n' '    fh->padded_payload_size = (payload_size + 7u) & ~7u;'
+    printf '%s\n' '    fh->sm_version = 120;'
+    printf '%s\n' '    fh->bit_width = 64;'
+    printf '%s\n' '    memcpy(entry + sizeof(FatbinFileHeader), payload, payload_size);'
+    printf '%s\n' '}'
+    printf '%s\n' 'int main(void) {'
+    printf '%s\n' '    static const unsigned char ptx[] = ".version 8.8\n.target sm_120\n.address_size 64\n.visible .entry fake_kernel() { ret; }\n";'
+    printf '%s\n' '    size_t ptx_padded = (sizeof(ptx) + 7u) & ~7u;'
+    printf '%s\n' '    size_t fatbin_size = sizeof(FatbinHeader) + sizeof(FatbinFileHeader) + ptx_padded;'
+    printf '%s\n' '    unsigned char *fatbin = (unsigned char*)calloc(1, fatbin_size);'
+    printf '%s\n' '    FatbinHeader *header = (FatbinHeader*)fatbin;'
+    printf '%s\n' '    header->magic = 0xba55ed50u;'
+    printf '%s\n' '    header->version = 1;'
+    printf '%s\n' '    header->header_size = sizeof(FatbinHeader);'
+    printf '%s\n' '    header->files_size = fatbin_size - sizeof(FatbinHeader);'
+    printf '%s\n' '    put_entry(fatbin + sizeof(FatbinHeader), 1, ptx, (uint32_t)sizeof(ptx));'
+    printf '%s\n' '    FatbinWrapper wrapper = { 0x466243b1u, 1, fatbin, NULL };'
+    printf '%s\n' '    void **handle = __cudaRegisterFatBinary(&wrapper);'
+    printf '%s\n' '    if (!handle) return 2;'
+    printf '%s\n' '    __cudaRegisterFunction(handle, (const char*)fake_host_kernel, NULL, "fake_kernel", -1, NULL, NULL, NULL, NULL, NULL);'
+    printf '%s\n' '    dim3 one = {1, 1, 1};'
+    printf '%s\n' '    int rc = cudaLaunchKernel((const void*)fake_host_kernel, one, one, NULL, 0, NULL);'
+    printf '%s\n' '    free(fatbin);'
+    printf '%s\n' '    return rc;'
+    printf '%s\n' '}'
+} >"${cudart_lazy_launch_probe_src}"
+"${CC:-cc}" -shared -fPIC -Wno-unused-parameter \
+    -o "${cudart_lazy_launch_so}" "${REPO_ROOT}/zluda/src/cudart_shim.c" -ldl -lm -pthread
+"${CC:-cc}" -rdynamic -o "${cudart_lazy_launch_probe_bin}" "${cudart_lazy_launch_probe_src}" \
+    "${cudart_lazy_launch_so}" -ldl -Wl,--allow-shlib-undefined -Wl,-rpath,"${cudart_lazy_launch_work_dir}"
+set +e
+HETGPU_CUDART_LAZY_LAUNCH_PROBE_LOG="${cudart_lazy_launch_log}" \
+    "${cudart_lazy_launch_probe_bin}" >"${cudart_lazy_launch_stderr}" 2>&1
+cudart_lazy_launch_status="$?"
+set -e
+if [[ "${cudart_lazy_launch_status}" != "0" ]]; then
+    cat "${cudart_lazy_launch_stderr}" >&2
+    exit "${cudart_lazy_launch_status}"
+fi
+grep -Fxq "loaded:ptx" "${cudart_lazy_launch_log}"
+grep -Fxq "getfunc:fake_kernel" "${cudart_lazy_launch_log}"
+grep -Fxq "launch:0x2222" "${cudart_lazy_launch_log}"
+if grep -Fqi "fail-open" "${cudart_lazy_launch_log}" "${cudart_lazy_launch_stderr}"; then
+    echo "cudart shim used fail-open instead of the deferred module/function launch path" >&2
+    exit 1
+fi
+
 numerical_work_dir="$(mktemp -d /tmp/hetgpu-kimi-numerical-test.XXXXXX)"
-trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_no_cuda_work_dir}" "${e2e_preload_work_dir}" "${e2e_cudart_work_dir}" "${cublas_forward_work_dir}" "${cudart_fatbin_work_dir}" "${numerical_work_dir}"' EXIT
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_no_cuda_work_dir}" "${e2e_preload_work_dir}" "${e2e_cudart_work_dir}" "${cublas_forward_work_dir}" "${cudart_fatbin_work_dir}" "${cudart_lazy_launch_work_dir}" "${numerical_work_dir}"' EXIT
 fake_numerical_model_dir="${numerical_work_dir}/model"
 mkdir -p "${fake_numerical_model_dir}"
 for shard in \
@@ -563,7 +681,7 @@ head -n 1 "${numerical_csv}" | grep -Fxq "case,status,total_ms,baseline_exit_cod
 grep -Fq "kimi_k26_numerical,pass" "${numerical_csv}"
 
 numerical_mismatch_work_dir="$(mktemp -d /tmp/hetgpu-kimi-numerical-mismatch-test.XXXXXX)"
-trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_no_cuda_work_dir}" "${e2e_preload_work_dir}" "${e2e_cudart_work_dir}" "${cublas_forward_work_dir}" "${numerical_work_dir}" "${numerical_mismatch_work_dir}"' EXIT
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_no_cuda_work_dir}" "${e2e_preload_work_dir}" "${e2e_cudart_work_dir}" "${cublas_forward_work_dir}" "${cudart_fatbin_work_dir}" "${cudart_lazy_launch_work_dir}" "${numerical_work_dir}" "${numerical_mismatch_work_dir}"' EXIT
 fake_mismatch_runner="${numerical_mismatch_work_dir}/fake-mismatch-llama-cli"
 {
     printf '%s\n' '#!/usr/bin/env bash'
@@ -588,7 +706,7 @@ fi
 grep -Fq "kimi_k26_numerical,output_mismatch" "${numerical_mismatch_work_dir}/bench_kimi_k26_numerical.csv"
 
 numerical_hook_fail_work_dir="$(mktemp -d /tmp/hetgpu-kimi-numerical-hook-fail-test.XXXXXX)"
-trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_no_cuda_work_dir}" "${e2e_preload_work_dir}" "${e2e_cudart_work_dir}" "${cublas_forward_work_dir}" "${numerical_work_dir}" "${numerical_mismatch_work_dir}" "${numerical_hook_fail_work_dir}"' EXIT
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_no_cuda_work_dir}" "${e2e_preload_work_dir}" "${e2e_cudart_work_dir}" "${cublas_forward_work_dir}" "${cudart_fatbin_work_dir}" "${cudart_lazy_launch_work_dir}" "${numerical_work_dir}" "${numerical_mismatch_work_dir}" "${numerical_hook_fail_work_dir}"' EXIT
 fake_hook_fail_runner="${numerical_hook_fail_work_dir}/fake-hook-fail-llama-cli"
 {
     printf '%s\n' '#!/usr/bin/env bash'
