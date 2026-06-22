@@ -59,6 +59,13 @@ pub fn lift_sass_text_to_ptx(
         return Err("No SASS instructions parsed from text input".to_string());
     }
 
+    if is_unspecified_kernel_name(&options.kernel_name) {
+        let function_groups = group_sass_text_functions(&instructions);
+        if function_groups.len() > 1 {
+            return Ok(lift_function_groups_to_ptx(&function_groups, &options));
+        }
+    }
+
     let (kernel_name, instructions) =
         select_sass_text_instructions(&instructions, &options.kernel_name)?;
     options.kernel_name = kernel_name;
@@ -198,6 +205,42 @@ fn select_sass_text_instructions(
     }
 }
 
+fn group_sass_text_functions(
+    instructions: &[EnhancedSassInstruction],
+) -> Vec<(String, Vec<EnhancedSassInstruction>)> {
+    let mut groups: Vec<(String, Vec<EnhancedSassInstruction>)> = Vec::new();
+    for inst in instructions {
+        let name = inst
+            .function_name
+            .clone()
+            .unwrap_or_else(|| "kernel".to_string());
+        if let Some((_, group)) = groups.iter_mut().find(|(group_name, _)| *group_name == name) {
+            group.push(inst.clone());
+        } else {
+            groups.push((name, vec![inst.clone()]));
+        }
+    }
+    groups
+}
+
+fn lift_function_groups_to_ptx(
+    groups: &[(String, Vec<EnhancedSassInstruction>)],
+    options: &SassLiftOptions,
+) -> SassLiftResult {
+    let mut ctx = LiftContext::new(options);
+    ctx.emit_header();
+    for (index, (kernel_name, instructions)) in groups.iter().enumerate() {
+        if index > 0 {
+            ctx.output.push('\n');
+        }
+        ctx.emit_entry(kernel_name, instructions);
+    }
+    SassLiftResult {
+        ptx: ctx.output,
+        diagnostics: ctx.diagnostics,
+    }
+}
+
 /// CUBIN parsing already provides kernel boundaries, so selection is a simple
 /// metadata lookup before disassembling the chosen kernel's code bytes.
 fn select_cubin_kernel<'a>(
@@ -246,6 +289,25 @@ impl<'a> LiftContext<'a> {
     }
 
     fn emit_module(&mut self, instructions: &[EnhancedSassInstruction]) {
+        self.emit_header();
+        self.emit_entry(&self.options.kernel_name, instructions);
+    }
+
+    fn emit_header(&mut self) {
+        self.output
+            .push_str(ptx_version_for_sm(self.options.sm_version));
+        self.output.push('\n');
+        self.output
+            .push_str(&format!(".target sm_{}\n", self.options.sm_version));
+        self.output.push_str(".address_size 64\n\n");
+    }
+
+    fn emit_entry(&mut self, kernel_name: &str, instructions: &[EnhancedSassInstruction]) {
+        self.branch_targets.clear();
+        self.scratch_gpr = None;
+        self.uses_cuda_param_abi = false;
+        self.uses_shared_memory = false;
+
         self.collect_branch_targets(instructions);
         self.uses_cuda_param_abi = uses_cuda_param_abi(instructions);
         self.uses_shared_memory = uses_shared_memory(instructions);
@@ -258,21 +320,15 @@ impl<'a> LiftContext<'a> {
             regs.max_b64 = regs.max_b64.max(16);
         }
 
-        self.output
-            .push_str(ptx_version_for_sm(self.options.sm_version));
-        self.output.push('\n');
-        self.output
-            .push_str(&format!(".target sm_{}\n", self.options.sm_version));
-        self.output.push_str(".address_size 64\n\n");
         if self.uses_cuda_param_abi {
             self.output.push_str(&format!(
                 ".visible .entry {}(\n    .param .u64 out,\n    .param .u64 in,\n    .param .u32 n\n)\n{{\n",
-                sanitize_ident(&self.options.kernel_name)
+                sanitize_ident(kernel_name)
             ));
         } else {
             self.output.push_str(&format!(
                 ".visible .entry {}()\n{{\n",
-                sanitize_ident(&self.options.kernel_name)
+                sanitize_ident(kernel_name)
             ));
         }
 
@@ -1006,7 +1062,14 @@ fn ldc_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         ),
         Some((0, 0x390)) => format!("{}ld.param.u32 {}, [n];", pred, dst),
         Some((0, 0x358)) if is_64bit_modifier(inst) => format!("{}mov.u32 {}, 0;", pred, dst),
-        Some(_) => format!("{}mov.u32 {}, 0;", pred, dst),
+        Some((bank, offset)) => format!(
+            "{}ld.const.{} {}, [c[0x{:x}][0x{:x}]];",
+            pred,
+            data_type_suffix(inst, SassDataType::U32),
+            dst,
+            bank,
+            offset
+        ),
         None => load_op(inst, pred),
     }
 }
@@ -1704,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn sass_lifter_text_frontend_rejects_ambiguous_multi_function_input() {
+    fn sass_lifter_text_frontend_lifts_unspecified_multi_function_input() {
         let text = r#"Function : first
         /*0000*/                   S2R R0, SR_TID.X ;
         /*0010*/                   EXIT ;
@@ -1713,20 +1776,25 @@ Function : second
         /*0030*/                   EXIT ;
 "#;
 
-        let err = lift_sass_text_to_ptx(text, SassLiftOptions::default())
-            .expect_err("default multi-function text should require a selector");
-        assert!(err.contains("Multiple SASS functions parsed"), "{err}");
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("default multi-function text should lift all functions");
 
-        let err = lift_sass_text_to_ptx(
+        assert!(result.ptx.contains(".visible .entry first()"));
+        assert!(result.ptx.contains(".visible .entry second()"));
+        assert!(result.ptx.contains("mov.u32 %r0, %tid.x;"));
+        assert!(result.ptx.contains("add.s32 %r4, %r5, 7;"));
+
+        let result = lift_sass_text_to_ptx(
             text,
             SassLiftOptions {
                 kernel_name: String::new(),
                 ..SassLiftOptions::default()
             },
         )
-        .expect_err("empty kernel_name should require a selector for multi-function text");
+        .expect("empty kernel_name should lift all functions");
 
-        assert!(err.contains("Multiple SASS functions parsed"), "{err}");
+        assert!(result.ptx.contains(".visible .entry first()"));
+        assert!(result.ptx.contains(".visible .entry second()"));
     }
 
     #[test]
@@ -1872,7 +1940,7 @@ Function : kernel
         );
 
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(result.ptx.contains(".version 8.5"));
+        assert!(result.ptx.contains(".version 8.7"));
         assert!(result.ptx.contains(".target sm_120"));
         assert!(result.ptx.contains(".visible .entry sm120_kernel()"));
         assert!(result.ptx.contains(".reg .b32 %r<4>;"));
@@ -1957,7 +2025,10 @@ Function : kernel
         jmx.opcode_class = SassOpcodeClass::ConditionalBranch;
         jmx.src_operands.push(SassOperand::Address(0x40));
 
-        let result = lift_instructions_to_ptx(&[jmx], &SassLiftOptions::default());
+        let mut ret = EnhancedSassInstruction::new("RET".to_string(), 0x40);
+        ret.opcode_class = SassOpcodeClass::Exit;
+
+        let result = lift_instructions_to_ptx(&[jmx, ret], &SassLiftOptions::default());
 
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.ptx.contains("L_0040:\n"));
@@ -2083,5 +2154,57 @@ Function : kernel
             result.diagnostics[0].instruction_text,
             "/*0080*/ TEX R4, R5, R6, 0x2 ; /* 0x4000000000600504 */"
         );
+    }
+
+    #[test]
+    fn sass_lifter_lifts_sm120_scalar_and_warp_bucket_ops() {
+        let text = r#"Function : bucket_ops
+        /*0000*/                   IABS R2, R18 ;
+        /*0010*/                   I2F.RP R14, R2 ;
+        /*0020*/                   UI2F.U32.RP UR4, UR9 ;
+        /*0030*/                   UI2FP.F32.S32 UR5, UR10 ;
+        /*0040*/                   MUFU.RCP R3, R4 ;
+        /*0050*/                   BSSY.RECONVERGENT B0, 0x90 ;
+        /*0060*/                   BSYNC.RECONVERGENT B0 ;
+        /*0070*/                   SHFL.BFLY PT, R5, R8, 0x10, 0x1f ;
+        /*0080*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("SM120 bucket ops should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("abs.s32 %r2, %r18;"));
+        assert!(result.ptx.contains("cvt.rp.f32.s32 %r14, %r2;"));
+        assert!(result.ptx.contains("cvt.rp.f32.u32 %ur4, %ur9;"));
+        assert!(result.ptx.contains("cvt.rn.f32.s32 %ur5, %ur10;"));
+        assert!(result.ptx.contains("rcp.approx.ftz.f32 %r3, %r4;"));
+        assert!(result.ptx.contains("// bssy reconvergence marker;"));
+        assert!(result.ptx.contains("// bsync reconvergence marker;"));
+        assert!(
+            result
+                .ptx
+                .contains("shfl.sync.bfly.b32 %r5, %r8, 0x10, 0x1f, 0xffffffff;")
+        );
+    }
+
+    #[test]
+    fn sass_lifter_lifts_predicate_lop3_lut_with_scratch() {
+        let text = r#"Function : pred_lop3
+        /*0000*/                   LOP3.LUT P0, R6, R0, 0x1f, RZ, 0xc0, !PT ;
+        /*0010*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("predicate LOP3 LUT should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %r<7>;"));
+        assert!(
+            result
+                .ptx
+                .contains("lop3.b32 %r6, %r6, %r0, 31, 0xc0;")
+        );
+        assert!(result.ptx.contains("setp.ne.u32 %p0, %r6, 0;"));
     }
 }
