@@ -104,6 +104,7 @@ else
     kimi_ld_preload="${REPO_ROOT}/target/debug/libnvcuda.so"
 fi
 kimi_cudart_defer_module_load="${HETGPU_KIMI_E2E_CUDART_DEFER_MODULE_LOAD:-${HETGPU_CUDART_DEFER_MODULE_LOAD:-0}}"
+kimi_cudart_compute_capability="${HETGPU_KIMI_E2E_CUDART_COMPUTE_CAPABILITY:-${HETGPU_CUDART_COMPUTE_CAPABILITY:-}}"
 kimi_gpu_layers="${HETGPU_KIMI_E2E_N_GPU_LAYERS:-${LLAMA_ARG_N_GPU_LAYERS:-1}}"
 kimi_extra_llama_args="${HETGPU_KIMI_E2E_EXTRA_LLAMA_ARGS:-${KIMI_EXTRA_LLAMA_ARGS:-}}"
 
@@ -120,6 +121,7 @@ env \
     HETGPU_SASS_LIFTER_LOG=1 \
     HETGPU_SASS_LIFTER_DUMP="${ptx_dump}" \
     HETGPU_CUDART_DEFER_MODULE_LOAD="${kimi_cudart_defer_module_load}" \
+    HETGPU_CUDART_COMPUTE_CAPABILITY="${kimi_cudart_compute_capability}" \
     BITNET_LLAMA_CLI="${runner}" \
     MODEL_DIR="${model_dir}" \
     MODEL_PREFIX="${model_prefix}" \

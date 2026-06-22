@@ -2506,6 +2506,62 @@ fn sass_lifter_requested() -> bool {
     not(feature = "tenstorrent"),
     not(feature = "tmatmul")
 ))]
+fn nvidia_module_image_prefix_is_ptx(prefix: &[u8]) -> bool {
+    let first_non_ws = prefix
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(prefix.len());
+    let trimmed = &prefix[first_non_ws..];
+
+    trimmed.starts_with(b".version") || trimmed.starts_with(b"//")
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+unsafe fn nvidia_module_image_is_ptx_text(image: *const std::ffi::c_void) -> bool {
+    let prefix = std::slice::from_raw_parts(image as *const u8, 64);
+    nvidia_module_image_prefix_is_ptx(prefix)
+}
+
+#[cfg(all(
+    test,
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+mod nvidia_module_tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_ptx_after_leading_whitespace_and_comments() {
+        assert!(nvidia_module_image_prefix_is_ptx(
+            b"\n//\n// generated\n.version 8.8\n"
+        ));
+    }
+
+    #[test]
+    fn does_not_treat_fatbin_magic_as_ptx() {
+        let mut header = [0u8; 16];
+        header[0..4].copy_from_slice(HETGPU_FATBIN_MAGIC);
+
+        assert!(!nvidia_module_image_prefix_is_ptx(&header));
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
 fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
     let end = offset.checked_add(2)?;
     Some(u16::from_le_bytes(bytes.get(offset..end)?.try_into().ok()?))
@@ -2945,10 +3001,9 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
 
     eprintln!("[NVIDIA Backend] Loading module data...");
 
-    // Try to extract PTX source for checkpointing
-    // Check if image starts with ".version" (indicates PTX text)
-    let image_bytes = unsafe { std::slice::from_raw_parts(image as *const u8, 8) };
-    let is_ptx = image_bytes.starts_with(b".version") || image_bytes.starts_with(b"//");
+    // Try to extract PTX source for checkpointing. Some CUDA fatbin payloads
+    // are PTX text with leading newlines/comments before the .version directive.
+    let is_ptx = unsafe { nvidia_module_image_is_ptx_text(image) };
 
     let ptx_source: Option<String> = if is_ptx {
         // It's PTX text, extract the full string

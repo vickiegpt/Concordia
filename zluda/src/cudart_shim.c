@@ -27,6 +27,36 @@ static unsigned long long hetgpu_parse_u64_env(const char *name, unsigned long l
     return parsed;
 }
 
+static void hetgpu_cudart_compute_capability(int *major, int *minor) {
+    int cc_major = 8;
+    int cc_minor = 0;
+    const char *value = getenv("HETGPU_CUDART_COMPUTE_CAPABILITY");
+    if (value && *value) {
+        char *end = NULL;
+        long parsed_major = strtol(value, &end, 10);
+        long parsed_minor = 0;
+        if (end != value) {
+            if (*end == '.' || *end == ',') {
+                char *minor_end = NULL;
+                parsed_minor = strtol(end + 1, &minor_end, 10);
+                if (minor_end == end + 1) {
+                    parsed_minor = -1;
+                }
+            } else if (parsed_major >= 10) {
+                parsed_minor = parsed_major % 10;
+                parsed_major /= 10;
+            }
+            if (parsed_major >= 1 && parsed_major <= 99 &&
+                parsed_minor >= 0 && parsed_minor <= 9) {
+                cc_major = (int)parsed_major;
+                cc_minor = (int)parsed_minor;
+            }
+        }
+    }
+    if (major) *major = cc_major;
+    if (minor) *minor = cc_minor;
+}
+
 static int hetgpu_pacc_physical_device_for_logical(int logical) {
     const char *visible = getenv("HETGPU_PACC_VISIBLE_DEVICES");
     if (!visible || !*visible) return logical;
@@ -1087,9 +1117,13 @@ cudaError_t cudaGetDeviceProperties(cudaDeviceProp_t prop, int device) {
     memset(&p, 0, sizeof(p));
 
     int physical_device = hetgpu_pacc_physical_device_for_logical(device);
+    int cc_major = 8;
+    int cc_minor = 0;
+    hetgpu_cudart_compute_capability(&cc_major, &cc_minor);
 
     // Device name
-    snprintf(p.name, sizeof(p.name), "Virtual GPU (hetGPU PACC%d sm_80)", physical_device);
+    snprintf(p.name, sizeof(p.name), "Virtual GPU (hetGPU PACC%d sm_%d%d)",
+             physical_device, cc_major, cc_minor);
 
     // Memory properties
     p.totalGlobalMem = (size_t)hetgpu_parse_u64_env(
@@ -1126,8 +1160,8 @@ cudaError_t cudaGetDeviceProperties(cudaDeviceProp_t prop, int device) {
     p.memoryBusWidth = 5120;      // 5120-bit (like A100)
 
     // Compute capability - THE KEY FIELDS!
-    p.major = 8;
-    p.minor = 0;
+    p.major = cc_major;
+    p.minor = cc_minor;
 
     // Cache properties
     p.l2CacheSize = 40 * 1024 * 1024;  // 40MB
@@ -1374,10 +1408,18 @@ cudaError_t cudaDeviceGetAttribute(int* value, int attr, int device) {
             *value = 32768; break;
         case 63: // cudaDevAttrMaxTexture2DMipmappedHeight
             *value = 32768; break;
-        case 75: // cudaDevAttrComputeCapabilityMajor
-            *value = 8; break;
-        case 76: // cudaDevAttrComputeCapabilityMinor
-            *value = 0; break;
+        case 75: { // cudaDevAttrComputeCapabilityMajor
+            int cc_major = 8, cc_minor = 0;
+            hetgpu_cudart_compute_capability(&cc_major, &cc_minor);
+            (void)cc_minor;
+            *value = cc_major; break;
+        }
+        case 76: { // cudaDevAttrComputeCapabilityMinor
+            int cc_major = 8, cc_minor = 0;
+            hetgpu_cudart_compute_capability(&cc_major, &cc_minor);
+            (void)cc_major;
+            *value = cc_minor; break;
+        }
         case 77: // cudaDevAttrMaxTexture1DMipmappedWidth
             *value = 32768; break;
         case 78: // cudaDevAttrStreamPrioritiesSupported

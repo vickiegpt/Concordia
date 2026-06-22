@@ -82,9 +82,12 @@ rg -q -- '--n-gpu-layers "\$\{gpu_layers\}"' "${REPO_ROOT}/tools/run_kimi_k26_iq
 rg -q 'KIMI_EXTRA_LLAMA_ARGS' "${REPO_ROOT}/tools/run_kimi_k26_iq1m_bitnet.sh"
 rg -q 'LLAMA_ARG_N_GPU_LAYERS="\$\{kimi_gpu_layers\}"' "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
 rg -q 'HETGPU_KIMI_E2E_EXTRA_LLAMA_ARGS' "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
+rg -q 'HETGPU_KIMI_E2E_CUDART_COMPUTE_CAPABILITY' "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
 rg -q 'skipped_no_cuda_offload' "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
 rg -q 'hetgpu_driver_stream' "${REPO_ROOT}/zluda/src/cudart_shim.c"
 rg -q 'CUstream driver_stream = hetgpu_driver_stream\(stream\);' "${REPO_ROOT}/zluda/src/cudart_shim.c"
+rg -q 'HETGPU_CUDART_COMPUTE_CAPABILITY' "${REPO_ROOT}/zluda/src/cudart_shim.c"
+rg -q 'hetgpu_cudart_compute_capability' "${REPO_ROOT}/zluda/src/cudart_shim.c"
 if rg -q '\(CUstream\)stream,' "${REPO_ROOT}/zluda/src/cudart_shim.c"; then
     echo "cudart shim must not pass managed cudaStream_t wrappers directly to driver cuLaunchKernel" >&2
     exit 1
