@@ -495,7 +495,7 @@ impl<'a> LiftContext<'a> {
                 "integer min/max dynamic selector lifting is not implemented",
             ),
             "LOP" if is_lop_lut(inst) => Some(lop3_lut_op(inst, &pred)),
-            "LOP" if inst.src_operands.len() == 2 => Some(binary_op(inst, &pred, "and", "b32")),
+            "LOP" if lop_binary_operator(inst).is_some() => Some(lop_binary_op(inst, &pred)),
             "LOP" => self.unsupported(inst, "logical operation lifting is not implemented"),
             "LOP3" if is_lop3_odd_predicate(inst) => Some(lop3_odd_predicate_op(
                 inst,
@@ -1227,6 +1227,18 @@ fn plop3_binary_lut_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         .unwrap_or_else(|| "%p0".to_string());
     let op = plop3_binary_lut_operator(inst).unwrap_or("or");
     format!("{}{}.pred {}, {}, {};", pred, op, dst, src0, src1)
+}
+
+fn lop_binary_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let mut srcs = inst
+        .src_operands
+        .iter()
+        .filter_map(format_integer_data_operand);
+    let src0 = srcs.next().unwrap_or_else(|| "0".to_string());
+    let src1 = srcs.next().unwrap_or_else(|| "0".to_string());
+    let op = lop_binary_operator(inst).unwrap_or("and");
+    format!("{}{}.b32 {}, {}, {};", pred, op, dst, src0, src1)
 }
 
 fn lop3_binary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str) -> String {
@@ -2024,6 +2036,29 @@ fn is_lop_lut(inst: &EnhancedSassInstruction) -> bool {
             inst.dest_operands.first(),
             Some(SassOperand::Predicate { .. })
         )
+}
+
+fn lop_binary_operator(inst: &EnhancedSassInstruction) -> Option<&'static str> {
+    if inst.opcode != "LOP" {
+        return None;
+    }
+    if inst
+        .src_operands
+        .iter()
+        .filter_map(format_integer_data_operand)
+        .take(2)
+        .count()
+        < 2
+    {
+        return None;
+    }
+    if has_modifier(inst, "OR") {
+        Some("or")
+    } else if has_modifier(inst, "XOR") {
+        Some("xor")
+    } else {
+        Some("and")
+    }
 }
 
 fn is_lop3_binary_truth_table(inst: &EnhancedSassInstruction, lut: i64) -> bool {
@@ -2910,6 +2945,60 @@ Function : kernel
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.ptx.contains("lop3.b32 %r0, %r1, %r2, %r3, 0xe2;"));
         assert!(!result.ptx.contains("unsupported SASS LOP"));
+    }
+
+    #[test]
+    fn sass_lifter_lifts_kimi_binary_lop_text_sample() {
+        let text = r#"Function : kimi_lop
+        /*0ca0*/                   LOP R48, R114, R243 ;
+        /*0cb0*/                   EXIT ;
+"#;
+
+        let result =
+            lift_sass_text_to_ptx(text, SassLiftOptions::default()).expect("LOP text should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %r<244>;"));
+        assert!(result.ptx.contains("and.b32 %r48, %r114, %r243;"));
+        assert!(!result.ptx.contains("unsupported SASS LOP"));
+    }
+
+    #[test]
+    fn sass_lifter_lifts_decoded_binary_lop_with_spurious_third_source() {
+        let mut lop = EnhancedSassInstruction::new("LOP".to_string(), 0x0ca0);
+        lop.opcode_class = SassOpcodeClass::IntegerLogical;
+        lop.data_type = Some(SassDataType::B32);
+        lop.dest_operands.push(reg(48));
+        lop.src_operands.push(reg(114));
+        lop.src_operands.push(reg(243));
+        lop.src_operands.push(reg(7));
+
+        let result = lift_instructions_to_ptx(&[lop], &SassLiftOptions::default());
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("and.b32 %r48, %r114, %r243;"));
+        assert!(!result.ptx.contains("%r7"));
+    }
+
+    #[test]
+    fn sass_lifter_respects_binary_lop_or_and_xor_modifiers() {
+        let mut lop_or = EnhancedSassInstruction::new("LOP".to_string(), 0x0);
+        lop_or.modifiers.push("OR".to_string());
+        lop_or.dest_operands.push(reg(1));
+        lop_or.src_operands.push(reg(2));
+        lop_or.src_operands.push(reg(3));
+
+        let mut lop_xor = EnhancedSassInstruction::new("LOP".to_string(), 0x10);
+        lop_xor.modifiers.push("XOR".to_string());
+        lop_xor.dest_operands.push(reg(4));
+        lop_xor.src_operands.push(reg(5));
+        lop_xor.src_operands.push(reg(6));
+
+        let result = lift_instructions_to_ptx(&[lop_or, lop_xor], &SassLiftOptions::default());
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("or.b32 %r1, %r2, %r3;"));
+        assert!(result.ptx.contains("xor.b32 %r4, %r5, %r6;"));
     }
 
     #[test]

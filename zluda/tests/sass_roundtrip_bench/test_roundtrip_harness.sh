@@ -150,6 +150,7 @@ fi
 rg -q 'hetgpu_is_ggml_cuda_rms_norm_f32' "${REPO_ROOT}/zluda/src/cudart_shim.c"
 rg -q "launch-time lazy PTX resolved '%s'" "${REPO_ROOT}/zluda/src/cudart_shim.c"
 rg -q 'HETGPU_CUDART_LAZY_PTX_FAIL_OPEN",.*0' "${REPO_ROOT}/zluda/src/cudart_shim.c"
+rg -Fq 'lookup_registered_function_exact(symbol' "${REPO_ROOT}/zluda/src/cudart_shim.c"
 rg -q 'float eps = \(args && args\[3\]\)' "${REPO_ROOT}/zluda/src/cudart_shim.c"
 if rg -q 'args\[[67]\]' "${REPO_ROOT}/zluda/src/cudart_shim.c"; then
     echo "RMSNorm host fallback must not probe beyond the known four-argument ggml CUDA signature" >&2
@@ -568,6 +569,7 @@ cudart_lazy_launch_stderr="${cudart_lazy_launch_work_dir}/stderr.log"
     printf '%s\n' 'CUresult cuDeviceGet(CUdevice *device, int ordinal) { if (device) *device = ordinal; return 0; }'
     printf '%s\n' 'CUresult cuDevicePrimaryCtxRetain(CUcontext *pctx, CUdevice dev) { (void)dev; if (pctx) *pctx = (void*)0x3333; return 0; }'
     printf '%s\n' 'CUresult cuCtxSetCurrent(CUcontext ctx) { (void)ctx; return 0; }'
+    printf '%s\n' 'static int g_in_launch = 0;'
     printf '%s\n' 'static void write_log(const char *tag, const char *value) {'
     printf '%s\n' '    const char *path = getenv("HETGPU_CUDART_LAZY_LAUNCH_PROBE_LOG");'
     printf '%s\n' '    FILE *f = path ? fopen(path, "a") : NULL;'
@@ -575,6 +577,7 @@ cudart_lazy_launch_stderr="${cudart_lazy_launch_work_dir}/stderr.log"
     printf '%s\n' '}'
     printf '%s\n' 'CUresult cuModuleLoadData(CUmodule *module, const void *image) {'
     printf '%s\n' '    const unsigned char *p = (const unsigned char*)image;'
+    printf '%s\n' '    write_log("load_phase", g_in_launch ? "launch" : "register");'
     printf '%s\n' '    if (memcmp(p, ".version", 8) == 0) write_log("loaded", "ptx");'
     printf '%s\n' '    else write_log("loaded", "other");'
     printf '%s\n' '    if (module) *module = (void*)0x1111;'
@@ -582,7 +585,9 @@ cudart_lazy_launch_stderr="${cudart_lazy_launch_work_dir}/stderr.log"
     printf '%s\n' '}'
     printf '%s\n' 'CUresult cuModuleGetFunction(CUfunction *hfunc, CUmodule hmod, const char *name) {'
     printf '%s\n' '    (void)hmod;'
+    printf '%s\n' '    write_log("getfunc_phase", g_in_launch ? "launch" : "register");'
     printf '%s\n' '    write_log("getfunc", name);'
+    printf '%s\n' '    if (getenv("HETGPU_CUDART_LAZY_LAUNCH_GETFUNC_FAIL")) return 77;'
     printf '%s\n' '    if (hfunc) *hfunc = (void*)0x2222;'
     printf '%s\n' '    return 0;'
     printf '%s\n' '}'
@@ -621,8 +626,11 @@ cudart_lazy_launch_stderr="${cudart_lazy_launch_work_dir}/stderr.log"
     printf '%s\n' '    void **handle = __cudaRegisterFatBinary(&wrapper);'
     printf '%s\n' '    if (!handle) return 2;'
     printf '%s\n' '    __cudaRegisterFunction(handle, (const char*)fake_host_kernel, NULL, "fake_kernel", -1, NULL, NULL, NULL, NULL, NULL);'
+    printf '%s\n' '    write_log("phase", "registered");'
+    printf '%s\n' '    g_in_launch = 1;'
     printf '%s\n' '    dim3 one = {1, 1, 1};'
     printf '%s\n' '    int rc = cudaLaunchKernel((const void*)fake_host_kernel, one, one, NULL, 0, NULL);'
+    printf '%s\n' '    g_in_launch = 0;'
     printf '%s\n' '    free(fatbin);'
     printf '%s\n' '    return rc;'
     printf '%s\n' '}'
@@ -632,6 +640,7 @@ cudart_lazy_launch_stderr="${cudart_lazy_launch_work_dir}/stderr.log"
 "${CC:-cc}" -rdynamic -o "${cudart_lazy_launch_probe_bin}" "${cudart_lazy_launch_probe_src}" \
     "${cudart_lazy_launch_so}" -ldl -Wl,--allow-shlib-undefined -Wl,-rpath,"${cudart_lazy_launch_work_dir}"
 set +e
+HETGPU_CUDART_DEFER_MODULE_LOAD=1 \
 HETGPU_CUDART_LAZY_LAUNCH_PROBE_LOG="${cudart_lazy_launch_log}" \
     "${cudart_lazy_launch_probe_bin}" >"${cudart_lazy_launch_stderr}" 2>&1
 cudart_lazy_launch_status="$?"
@@ -640,11 +649,43 @@ if [[ "${cudart_lazy_launch_status}" != "0" ]]; then
     cat "${cudart_lazy_launch_stderr}" >&2
     exit "${cudart_lazy_launch_status}"
 fi
+grep -Fxq "phase:registered" "${cudart_lazy_launch_log}"
+grep -Fxq "load_phase:launch" "${cudart_lazy_launch_log}"
+grep -Fxq "getfunc_phase:launch" "${cudart_lazy_launch_log}"
+if grep -Fxq "load_phase:register" "${cudart_lazy_launch_log}" ||
+   grep -Fxq "getfunc_phase:register" "${cudart_lazy_launch_log}"; then
+    echo "cudart shim eager-loaded module/function before deferred launch" >&2
+    exit 1
+fi
 grep -Fxq "loaded:ptx" "${cudart_lazy_launch_log}"
 grep -Fxq "getfunc:fake_kernel" "${cudart_lazy_launch_log}"
 grep -Fxq "launch:0x2222" "${cudart_lazy_launch_log}"
 if grep -Fqi "fail-open" "${cudart_lazy_launch_log}" "${cudart_lazy_launch_stderr}"; then
     echo "cudart shim used fail-open instead of the deferred module/function launch path" >&2
+    exit 1
+fi
+
+: >"${cudart_lazy_launch_log}"
+: >"${cudart_lazy_launch_stderr}"
+set +e
+HETGPU_CUDART_DEFER_MODULE_LOAD=1 \
+HETGPU_CUDART_LAZY_LAUNCH_GETFUNC_FAIL=1 \
+HETGPU_CUDART_LAZY_LAUNCH_PROBE_LOG="${cudart_lazy_launch_log}" \
+    "${cudart_lazy_launch_probe_bin}" >"${cudart_lazy_launch_stderr}" 2>&1
+cudart_lazy_launch_fail_status="$?"
+set -e
+if [[ "${cudart_lazy_launch_fail_status}" == "0" ]]; then
+    echo "cudart shim succeeded after lazy cuModuleGetFunction failure with fail-open disabled" >&2
+    exit 1
+fi
+grep -Fxq "load_phase:launch" "${cudart_lazy_launch_log}"
+grep -Fxq "getfunc_phase:launch" "${cudart_lazy_launch_log}"
+if grep -Fq "launch:" "${cudart_lazy_launch_log}"; then
+    echo "cudart shim called cuLaunchKernel after lazy cuModuleGetFunction failure" >&2
+    exit 1
+fi
+if grep -Fqi "fail-open" "${cudart_lazy_launch_log}" "${cudart_lazy_launch_stderr}"; then
+    echo "cudart shim fail-opened after lazy cuModuleGetFunction failure" >&2
     exit 1
 fi
 

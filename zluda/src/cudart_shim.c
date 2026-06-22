@@ -2060,7 +2060,7 @@ static int hetgpu_same_image(const Dl_info *a, const Dl_info *b) {
     return 0;
 }
 
-static CUfunction lookup_registered_function(const void *func, const char **func_name) {
+static CUfunction lookup_registered_function_exact(const void *func, const char **func_name) {
     uintptr_t func_normalized = (uintptr_t)func & ~(uintptr_t)0x7;
 
     for (int i = 0; i < g_function_count; i++) {
@@ -2092,6 +2092,14 @@ static CUfunction lookup_registered_function(const void *func, const char **func
             }
             return current_cufunc;
         }
+    }
+    return NULL;
+}
+
+static CUfunction lookup_registered_function(const void *func, const char **func_name) {
+    CUfunction exact = lookup_registered_function_exact(func, func_name);
+    if (exact) {
+        return exact;
     }
 
     // Fallback: some frameworks launch through a nearby wrapper/thunk in the same
@@ -2381,6 +2389,12 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
 
     if (cuFunc == NULL) {
         if (funcName && strcmp(funcName, "<unknown>") != 0) {
+            cuFunc = lazy_load_registered_function_for_launch(funcName, func);
+            if (cuFunc != NULL) {
+                HETGPU_LOG("[cudart_shim] launch-time lazy PTX resolved '%s': %p\n", funcName, cuFunc);
+                goto launch_registered_kernel;
+            }
+
             hetgpu_pacc_launch_named_kernel_fn launch_named = resolve_hetgpu_pacc_launch_named_kernel();
             if (launch_named) {
                 int named_result = launch_named(
@@ -2395,6 +2409,18 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                     HETGPU_LOG("[cudart_shim] named launch handled '%s' without CUfunction\n", funcName);
                     return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
                 }
+                if (named_result == HETGPU_CUDA_ERROR_UNKNOWN) {
+                    if (hetgpu_cudart_fail_open_enabled()) {
+                        fprintf(stderr,
+                                "[cudart_shim] named launch for '%s' failed after lazy module/function lookup; explicit fail-open success\n",
+                                funcName);
+                        return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+                    }
+                    fprintf(stderr,
+                            "[cudart_shim] named launch for '%s' failed after lazy module/function lookup; refusing to skip kernel\n",
+                            funcName);
+                    return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
+                }
                 const char* log_named_miss = getenv("HETGPU_CUDART_LOG_NAMED_MISS");
                 if (log_named_miss && strcmp(log_named_miss, "1") == 0 && g_registry_miss_log_count < 12) {
                     fprintf(stderr,
@@ -2403,11 +2429,6 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                             named_result);
                     g_registry_miss_log_count++;
                 }
-            }
-            cuFunc = lazy_load_registered_function_for_launch(funcName, func);
-            if (cuFunc != NULL) {
-                HETGPU_LOG("[cudart_shim] launch-time lazy PTX resolved '%s': %p\n", funcName, cuFunc);
-                goto launch_registered_kernel;
             }
 
             int requires_named_launch = hetgpu_requires_named_launch(funcName);
@@ -4577,7 +4598,7 @@ cudaError_t cudaGetFuncBySymbol(cudaFunction_t* functionPtr, const void* symbol)
         return 1; // cudaErrorInvalidValue
     }
     const char* func_name = "<unknown>";
-    CUfunction registered = symbol ? lookup_registered_function(symbol, &func_name) : NULL;
+    CUfunction registered = symbol ? lookup_registered_function_exact(symbol, &func_name) : NULL;
     if (registered) {
         *functionPtr = (cudaFunction_t)(uintptr_t)registered;
         HETGPU_LOG("[cudart_shim] cudaGetFuncBySymbol resolved '%s': %p -> %p\n",
