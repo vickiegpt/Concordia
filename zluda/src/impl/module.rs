@@ -1,6 +1,6 @@
-use super::ZludaObject;
 #[cfg(feature = "intel")]
 use super::ze_module;
+use super::ZludaObject;
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
@@ -1313,6 +1313,37 @@ fn intel_env_os_value_requested(name: &str) -> Option<std::ffi::OsString> {
     enabled.then_some(value)
 }
 
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "nvidia",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent"),
+        not(feature = "tmatmul")
+    )
+))]
+fn sass_diagnostic_log_limit() -> usize {
+    std::env::var("HETGPU_SASS_LIFTER_DIAGNOSTIC_LIMIT")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(16)
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "nvidia",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent"),
+        not(feature = "tmatmul")
+    )
+))]
+fn sass_diagnostic_instruction_for_log(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(feature = "intel")]
 fn intel_sass_lifter_requested() -> bool {
     intel_env_flag_enabled("HETGPU_TMATMUL_SASS_FALLBACK")
@@ -1590,16 +1621,20 @@ pub(crate) fn lift_cubin_to_ptx_for_kernel(binary: &[u8], kernel_name: &str) -> 
                 result.ptx.len(),
                 result.diagnostics.len()
             );
-            for diagnostic in result.diagnostics.iter().take(16) {
+            let diagnostic_limit = sass_diagnostic_log_limit();
+            for diagnostic in result.diagnostics.iter().take(diagnostic_limit) {
                 eprintln!(
-                    "[hetGPU SASS] diagnostic addr={:?} opcode={} {}",
-                    diagnostic.address, diagnostic.opcode, diagnostic.message
+                    "[hetGPU SASS] diagnostic addr={:?} opcode={} {} inst={}",
+                    diagnostic.address,
+                    diagnostic.opcode,
+                    diagnostic.message,
+                    sass_diagnostic_instruction_for_log(&diagnostic.instruction_text)
                 );
             }
-            if result.diagnostics.len() > 16 {
+            if result.diagnostics.len() > diagnostic_limit {
                 eprintln!(
                     "[hetGPU SASS] ... {} additional diagnostics suppressed",
-                    result.diagnostics.len() - 16
+                    result.diagnostics.len() - diagnostic_limit
                 );
             }
             if let Some(path) = intel_env_os_value_requested("HETGPU_SASS_LIFTER_DUMP") {
@@ -2436,6 +2471,14 @@ const HETGPU_FATBIN_MAGIC: &[u8; 4] = b"\x50\xed\x55\xba";
     not(feature = "tenstorrent"),
     not(feature = "tmatmul")
 ))]
+const HETGPU_ZSTD_MAGIC: &[u8; 4] = b"\x28\xb5\x2f\xfd";
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
 const HETGPU_FATBIN_KIND_ELF: u16 = 0x02;
 #[cfg(all(
     feature = "nvidia",
@@ -2484,7 +2527,11 @@ fn env_os_value_requested(name: &str) -> Option<std::ffi::OsString> {
                 "0" | "false" | "no" | "off"
             )
     };
-    if enabled { Some(value) } else { None }
+    if enabled {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 #[cfg(all(
@@ -2539,6 +2586,71 @@ unsafe fn nvidia_module_image_is_ptx_text(image: *const std::ffi::c_void) -> boo
 mod nvidia_module_tests {
     use super::*;
 
+    fn fake_cubin() -> Vec<u8> {
+        let mut cubin = vec![0u8; 64];
+        cubin[0..4].copy_from_slice(b"\x7fELF");
+        cubin[4] = 2;
+        cubin[5] = 1;
+        cubin[18] = 0xbe;
+        cubin
+    }
+
+    fn lz4_compress(data: &[u8]) -> Vec<u8> {
+        let bound = unsafe { lz4_sys::LZ4_compressBound(data.len().try_into().unwrap()) };
+        assert!(bound > 0);
+        let mut compressed = vec![0u8; bound as usize];
+        let written = unsafe {
+            lz4_sys::LZ4_compress_default(
+                data.as_ptr() as *const _,
+                compressed.as_mut_ptr() as *mut _,
+                data.len().try_into().unwrap(),
+                compressed.len().try_into().unwrap(),
+            )
+        };
+        assert!(written > 0);
+        compressed.truncate(written as usize);
+        compressed
+    }
+
+    fn build_fatbin_with_uncompressed_size(
+        kind: u16,
+        payload: &[u8],
+        uncompressed_size: usize,
+    ) -> Vec<u8> {
+        build_fatbin_with_payload_size_field(kind, payload, payload.len(), uncompressed_size)
+    }
+
+    fn build_fatbin_with_payload_size_field(
+        kind: u16,
+        payload: &[u8],
+        payload_size_field: usize,
+        uncompressed_size: usize,
+    ) -> Vec<u8> {
+        let fatbin_header_size = 16usize;
+        let entry_header_size = HETGPU_FATBIN_FILE_HEADER_MIN_SIZE;
+        let padded_payload_size = (payload.len() + 7) & !7;
+        let files_size = entry_header_size + padded_payload_size;
+        let mut fatbin = vec![0u8; fatbin_header_size + files_size];
+
+        fatbin[0..4].copy_from_slice(HETGPU_FATBIN_MAGIC);
+        fatbin[4..6].copy_from_slice(&1u16.to_le_bytes());
+        fatbin[6..8].copy_from_slice(&(fatbin_header_size as u16).to_le_bytes());
+        fatbin[8..16].copy_from_slice(&(files_size as u64).to_le_bytes());
+
+        let entry = fatbin_header_size;
+        fatbin[entry..entry + 2].copy_from_slice(&kind.to_le_bytes());
+        fatbin[entry + 2..entry + 4].copy_from_slice(&0x101u16.to_le_bytes());
+        fatbin[entry + 4..entry + 8].copy_from_slice(&(entry_header_size as u32).to_le_bytes());
+        fatbin[entry + 8..entry + 12].copy_from_slice(&(padded_payload_size as u32).to_le_bytes());
+        fatbin[entry + 16..entry + 20].copy_from_slice(&(payload_size_field as u32).to_le_bytes());
+        fatbin[entry + 28..entry + 32].copy_from_slice(&120u32.to_le_bytes());
+        fatbin[entry + 32..entry + 36].copy_from_slice(&64u32.to_le_bytes());
+        fatbin[entry + 56..entry + 64].copy_from_slice(&(uncompressed_size as u64).to_le_bytes());
+        let payload_start = entry + entry_header_size;
+        fatbin[payload_start..payload_start + payload.len()].copy_from_slice(payload);
+        fatbin
+    }
+
     #[test]
     fn recognizes_ptx_after_leading_whitespace_and_comments() {
         assert!(nvidia_module_image_prefix_is_ptx(
@@ -2552,6 +2664,32 @@ mod nvidia_module_tests {
         header[0..4].copy_from_slice(HETGPU_FATBIN_MAGIC);
 
         assert!(!nvidia_module_image_prefix_is_ptx(&header));
+    }
+
+    #[test]
+    fn nvidia_fatbin_lz4_elf_entry_is_selected_for_sass_lifter() {
+        let cubin = fake_cubin();
+        let compressed = lz4_compress(&cubin);
+        let fatbin =
+            build_fatbin_with_uncompressed_size(HETGPU_FATBIN_KIND_ELF, &compressed, cubin.len());
+
+        let selected = select_nvidia_cubin_for_sass_lifter(&fatbin)
+            .expect("compressed fatbin CUBIN should be selected");
+
+        assert!(ptx::is_cubin(selected.as_ref()));
+        assert_eq!(&selected.as_ref()[0..4], b"\x7fELF");
+    }
+
+    #[test]
+    fn nvidia_fatbin_elf_entry_uses_padded_size_when_payload_size_is_zero() {
+        let cubin = fake_cubin();
+        let fatbin = build_fatbin_with_payload_size_field(HETGPU_FATBIN_KIND_ELF, &cubin, 0, 0);
+
+        let selected = select_nvidia_cubin_for_sass_lifter(&fatbin)
+            .expect("fatbin CUBIN with zero payload_size should be selected");
+
+        assert!(ptx::is_cubin(selected.as_ref()));
+        assert_eq!(&selected.as_ref()[0..4], b"\x7fELF");
     }
 }
 
@@ -2589,6 +2727,105 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
 fn read_u64_le(bytes: &[u8], offset: usize) -> Option<u64> {
     let end = offset.checked_add(8)?;
     Some(u64::from_le_bytes(bytes.get(offset..end)?.try_into().ok()?))
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+fn bytes_start_with(data: &[u8], magic: &[u8; 4]) -> bool {
+    data.get(..4) == Some(magic.as_slice())
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+fn try_decompress_zstd_bytes(data: &[u8], label: &str) -> Option<Vec<u8>> {
+    if !bytes_start_with(data, HETGPU_ZSTD_MAGIC) {
+        return None;
+    }
+
+    use std::io::Read;
+
+    let mut cursor = std::io::Cursor::new(data);
+    let decoder = match ruzstd::StreamingDecoder::new(&mut cursor) {
+        Ok(decoder) => decoder,
+        Err(err) => {
+            eprintln!(
+                "[hetGPU SASS] zstd decoder init failed for {}: {:?}",
+                label, err
+            );
+            return None;
+        }
+    };
+    let mut limited = decoder.take((HETGPU_SASS_MAX_CUBIN_BYTES + 1) as u64);
+    let mut decoded = Vec::new();
+    match limited.read_to_end(&mut decoded) {
+        Ok(_) if decoded.len() <= HETGPU_SASS_MAX_CUBIN_BYTES => {
+            eprintln!(
+                "[hetGPU SASS] zstd decompressed {}: {} -> {} bytes",
+                label,
+                data.len(),
+                decoded.len()
+            );
+            Some(decoded)
+        }
+        Ok(_) => {
+            eprintln!(
+                "[hetGPU SASS] zstd decompressed {} past {} byte limit",
+                label, HETGPU_SASS_MAX_CUBIN_BYTES
+            );
+            None
+        }
+        Err(err) => {
+            eprintln!(
+                "[hetGPU SASS] zstd decompression failed for {}: {}",
+                label, err
+            );
+            None
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+fn try_decompress_lz4_bytes(data: &[u8], uncompressed_size: usize, label: &str) -> Option<Vec<u8>> {
+    if uncompressed_size == 0 || uncompressed_size > HETGPU_SASS_MAX_CUBIN_BYTES {
+        return None;
+    }
+
+    let mut decoded = vec![0u8; uncompressed_size];
+    let result = unsafe {
+        lz4_sys::LZ4_decompress_safe(
+            data.as_ptr() as *const _,
+            decoded.as_mut_ptr() as *mut _,
+            data.len().try_into().ok()?,
+            decoded.len().try_into().ok()?,
+        )
+    };
+    if result <= 0 {
+        return None;
+    }
+    decoded.truncate(result as usize);
+    eprintln!(
+        "[hetGPU SASS] LZ4 decompressed {}: {} -> {} bytes",
+        label,
+        data.len(),
+        decoded.len()
+    );
+    Some(decoded)
 }
 
 #[cfg(all(
@@ -2783,6 +3020,15 @@ fn try_extract_nvidia_cubin_from_fatbin(data: &[u8]) -> Option<Vec<u8>> {
     let header_size = read_u16_le(data, 6)? as usize;
     let files_size = usize::try_from(read_u64_le(data, 8)?).ok()?;
     let end = header_size.checked_add(files_size)?.min(data.len());
+    if env_flag_enabled("HETGPU_SASS_LIFTER_LOG") {
+        eprintln!(
+            "[hetGPU SASS] NVIDIA fatbin scan: total={} header_size={} files_size={} end={}",
+            data.len(),
+            header_size,
+            files_size,
+            end
+        );
+    }
     if header_size >= end {
         return None;
     }
@@ -2795,34 +3041,76 @@ fn try_extract_nvidia_cubin_from_fatbin(data: &[u8]) -> Option<Vec<u8>> {
         let padded_payload_size = read_u32_le(data, offset + 8)? as usize;
         let payload_size = read_u32_le(data, offset + 16)? as usize;
         let sm_version = read_u32_le(data, offset + 28).unwrap_or(0);
+        let uncompressed_size = read_u64_le(data, offset + 56).unwrap_or(0) as usize;
+        if env_flag_enabled("HETGPU_SASS_LIFTER_LOG") {
+            let first4 = data
+                .get(offset + entry_header_size..offset + entry_header_size + 4)
+                .map(|bytes| {
+                    format!(
+                        "{:02x} {:02x} {:02x} {:02x}",
+                        bytes[0], bytes[1], bytes[2], bytes[3]
+                    )
+                })
+                .unwrap_or_else(|| "out-of-range".to_string());
+            eprintln!(
+                "[hetGPU SASS] NVIDIA fatbin entry: offset={} kind=0x{:04x} header_size={} payload_size={} padded={} sm={} uncompressed={} first4={}",
+                offset,
+                kind,
+                entry_header_size,
+                payload_size,
+                padded_payload_size,
+                sm_version,
+                uncompressed_size,
+                first4
+            );
+        }
 
         if entry_header_size < HETGPU_FATBIN_FILE_HEADER_MIN_SIZE {
             break;
         }
+        let entry_payload_span = if padded_payload_size > 0 {
+            padded_payload_size
+        } else {
+            (payload_size + 7) & !7
+        };
+        let effective_payload_size = if kind == HETGPU_FATBIN_KIND_ELF && payload_size == 0 {
+            entry_payload_span
+        } else {
+            payload_size
+        };
         let payload_start = offset.checked_add(entry_header_size)?;
-        let payload_end = payload_start.checked_add(payload_size)?;
+        let payload_end = payload_start.checked_add(effective_payload_size)?;
         if payload_start > end || payload_end > end {
             break;
         }
 
         if kind == HETGPU_FATBIN_KIND_ELF {
             let payload = &data[payload_start..payload_end];
-            if let Some(cubin) = nvidia_cubin_payload_view(payload) {
+            let label = format!("NVIDIA fatbin ELF entry sm={}", sm_version);
+            let candidate = nvidia_cubin_payload_view(payload)
+                .map(|cubin| cubin.to_vec())
+                .or_else(|| {
+                    try_decompress_zstd_bytes(payload, &label).and_then(|decoded| {
+                        nvidia_cubin_payload_view(&decoded).map(|cubin| cubin.to_vec())
+                    })
+                })
+                .or_else(|| {
+                    try_decompress_lz4_bytes(payload, uncompressed_size, &label).and_then(
+                        |decoded| nvidia_cubin_payload_view(&decoded).map(|cubin| cubin.to_vec()),
+                    )
+                });
+
+            if let Some(cubin) = candidate {
                 if best
                     .as_ref()
                     .map(|(best_sm, _)| sm_version >= *best_sm)
                     .unwrap_or(true)
                 {
-                    best = Some((sm_version, cubin.to_vec()));
+                    best = Some((sm_version, cubin));
                 }
             }
         }
 
-        let entry_payload_span = if padded_payload_size > 0 {
-            padded_payload_size
-        } else {
-            (payload_size + 7) & !7
-        };
         let next = offset
             .checked_add(entry_header_size)?
             .checked_add(entry_payload_span)?;
@@ -2888,7 +3176,7 @@ fn try_lift_nvidia_cubin_image(image: *const std::ffi::c_void) -> Option<String>
         None => {
             if module_image.get(0..4) == Some(HETGPU_FATBIN_MAGIC.as_slice()) {
                 eprintln!(
-                    "[hetGPU SASS] CUDA fatbin did not contain a raw NVIDIA CUBIN ({} bytes)",
+                    "[hetGPU SASS] CUDA fatbin did not contain a loadable NVIDIA CUBIN ({} bytes)",
                     module_image.len()
                 );
             } else {
@@ -2924,16 +3212,20 @@ fn try_lift_nvidia_cubin_image(image: *const std::ffi::c_void) -> Option<String>
                 result.ptx.len(),
                 result.diagnostics.len()
             );
-            for diagnostic in result.diagnostics.iter().take(16) {
+            let diagnostic_limit = sass_diagnostic_log_limit();
+            for diagnostic in result.diagnostics.iter().take(diagnostic_limit) {
                 eprintln!(
-                    "[hetGPU SASS] diagnostic addr={:?} opcode={} {}",
-                    diagnostic.address, diagnostic.opcode, diagnostic.message
+                    "[hetGPU SASS] diagnostic addr={:?} opcode={} {} inst={}",
+                    diagnostic.address,
+                    diagnostic.opcode,
+                    diagnostic.message,
+                    sass_diagnostic_instruction_for_log(&diagnostic.instruction_text)
                 );
             }
-            if result.diagnostics.len() > 16 {
+            if result.diagnostics.len() > diagnostic_limit {
                 eprintln!(
                     "[hetGPU SASS] ... {} additional diagnostics suppressed",
-                    result.diagnostics.len() - 16
+                    result.diagnostics.len() - diagnostic_limit
                 );
             }
             if let Some(path) = env_os_value_requested("HETGPU_SASS_LIFTER_DUMP") {

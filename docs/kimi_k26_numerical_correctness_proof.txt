@@ -1,0 +1,215 @@
+# Kimi K2.6 Numerical Correctness Proof
+
+This record captures the strict NVIDIA passthrough path after fixing real
+cuBLAS forwarding and exposing Kimi CUDA fatbin/CUBIN payloads to the Rust SASS
+lifter.
+
+The proof has two contracts:
+
+1. Numerical equivalence: native CUDA Kimi output must match the hooked
+   `LD_PRELOAD` output byte-for-byte under deterministic sampling.
+2. Translation coverage: synthetic PTX->SASS->PTX round-trip tests must pass,
+   and the real Kimi runner must expose fatbin/CUBIN modules to the SASS lifter.
+
+## Shim Fix Under Test
+
+For `--features nvidia,embed_cudart`, `zluda/build.rs` defines
+`HETGPU_SHIM_ENABLE_REAL_CUBLAS_BY_DEFAULT` when PACC is not enabled. That makes
+the cuBLAS shim default to forwarding real NVIDIA cuBLAS calls in the passthrough
+path.
+
+`zluda/src/cublas_shim.c` now:
+
+- gates real forwarding with `HETGPU_CUBLAS_FORWARD_REAL`
+- supports `HETGPU_REAL_CUBLAS_PATH` before trying `libcublas.so.12` and
+  `libcublas.so`
+- forwards handle, stream, pointer-mode, atomics-mode, math-mode, and SGEMM
+  calls when real cuBLAS is available
+- maps cudart-shim managed stream objects to `NULL` before forwarding them to
+  real cuBLAS
+- keeps the lazy PACC submit/staging path available for virtual/PACC builds
+
+The old failure was:
+
+```text
+CUDA error: CUBLAS_STATUS_NOT_SUPPORTED
+current device: 0, in function ggml_cuda_op_mul_mat_cublas
+cublasSgemm_v2(...)
+```
+
+`HETGPU_PACC_ALLOW_HOST_GEMM_FALLBACK=1` is not a valid proof escape for the real
+NVIDIA path, because real GPU device pointers cannot be treated as host memory.
+
+## Kimi SASS/CUBIN Exposure
+
+The cudart shim now accepts `HETGPU_CUDART_PREFER_FATBIN_CUBIN_FOR_SASS=1`.
+When set, `__cudaRegisterFatBinary` keeps the whole CUDA fatbin available for
+launch-time module load instead of selecting only embedded PTX.
+
+The NVIDIA module loader now:
+
+- scans CUDA fatbin entries for ELF/CUBIN payloads
+- supports raw ELF/CUBIN entries
+- supports zstd and LZ4-compressed ELF/CUBIN entries
+- handles Kimi's real fatbin layout where ELF entries have `payload_size=0` and
+  the real CUBIN span is in `padded_payload_size`
+- logs the fatbin entry shape under `HETGPU_SASS_LIFTER_LOG=1`
+
+Regression tests cover both compressed and zero-payload-size fatbin CUBIN
+entries.
+
+## Strict Numerical Equivalence Command
+
+```bash
+rm -rf /tmp/hetgpu-kimi-numerical-sass-cubin-20260622
+HETGPU_KIMI_NUMERICAL_WORKDIR=/tmp/hetgpu-kimi-numerical-sass-cubin-20260622 \
+HETGPU_KIMI_NUMERICAL_KEEP=1 \
+HETGPU_KIMI_NUMERICAL_USE_CUDART_SHIM=1 \
+HETGPU_KIMI_NUMERICAL_CUDART_DEFER_MODULE_LOAD=1 \
+HETGPU_KIMI_NUMERICAL_CUDART_COMPUTE_CAPABILITY=50 \
+HETGPU_KIMI_NUMERICAL_PREFER_FATBIN_CUBIN_FOR_SASS=1 \
+HETGPU_CUDART_LAZY_PTX_FAIL_OPEN=0 \
+HETGPU_CUDART_LOG_LAZY_PTX=1 \
+HETGPU_CUDART_LOG_MODULE_LOADS=1 \
+BITNET_LLAMA_CLI=/home/eabban/BitNet/build-cuda128-gcc12/bin/llama-cli \
+MODEL_DIR=/root/models/kimi-k2.6-iq1_s/moonshotai_Kimi-K2.6-IQ1_S \
+MODEL_PREFIX=moonshotai_Kimi-K2.6-IQ1_S \
+THREADS=16 CTX_SIZE=512 N_PREDICT=1 NO_WARMUP=1 LLAMA_ARG_N_GPU_LAYERS=1 \
+KIMI_PROMPT='SayOK.' \
+KIMI_EXTRA_LLAMA_ARGS='--seed 42 --temp 0 --top-k 1 --top-p 1.0 --min-p 0.0 --repeat-penalty 1.0 --no-display-prompt --simple-io' \
+zluda/tests/sass_roundtrip_bench/run_kimi_k26_numerical_proof.sh
+```
+
+Passing means all of the following are true:
+
+- baseline exit code is `0`
+- hooked exit code is `0`
+- baseline stdout is non-empty
+- hooked stdout is non-empty
+- baseline stdout SHA-256 equals hooked stdout SHA-256
+- hooked stderr reports non-zero CUDA offload
+- hooked stderr records PTX source markers or SASS lifter markers
+
+Validated artifact:
+
+```csv
+case,status,total_ms,baseline_exit_code,hooked_exit_code,baseline_stdout_sha256,hooked_stdout_sha256,baseline_stdout_bytes,hooked_stdout_bytes,ptx_source_markers,sass_lifter_markers,offloaded_layers,message
+kimi_k26_numerical,pass,20772,0,0,0673d69ff78439adfb40182f626c701aa63586c0f636a134a72a8cd425151a29,0673d69ff78439adfb40182f626c701aa63586c0f636a134a72a8cd425151a29,3,3,0,14,1/62,stdout_sha_match
+```
+
+The matching generated stdout was:
+
+```text
+.
+```
+
+This proves the strict cudart-shim Kimi path preserves the generated token
+stream for this deterministic prompt/offload configuration while exposing 14
+real Kimi CUBIN modules to the Rust SASS lifter.
+
+## Full SASS/PTX Proof Suite
+
+```bash
+rm -rf /tmp/hetgpu-sass-proof-kimi-cubin-20260622
+HETGPU_SASS_PROOF_WORKDIR=/tmp/hetgpu-sass-proof-kimi-cubin-20260622 \
+HETGPU_SASS_PROOF_KEEP=1 \
+HETGPU_SASS_PROOF_REAL=1 \
+HETGPU_SASS_PROOF_KIMI=1 \
+HETGPU_SASS_PROOF_KIMI_NUMERICAL=1 \
+HETGPU_KIMI_E2E_USE_CUDART_SHIM=1 \
+HETGPU_KIMI_E2E_CUDART_DEFER_MODULE_LOAD=1 \
+HETGPU_KIMI_E2E_CUDART_COMPUTE_CAPABILITY=50 \
+HETGPU_KIMI_E2E_PREFER_FATBIN_CUBIN_FOR_SASS=1 \
+HETGPU_KIMI_NUMERICAL_USE_CUDART_SHIM=1 \
+HETGPU_KIMI_NUMERICAL_CUDART_DEFER_MODULE_LOAD=1 \
+HETGPU_KIMI_NUMERICAL_CUDART_COMPUTE_CAPABILITY=50 \
+HETGPU_KIMI_NUMERICAL_PREFER_FATBIN_CUBIN_FOR_SASS=1 \
+HETGPU_CUDART_LAZY_PTX_FAIL_OPEN=0 \
+HETGPU_CUDART_LOG_LAZY_PTX=1 \
+HETGPU_CUDART_LOG_MODULE_LOADS=1 \
+BITNET_LLAMA_CLI=/home/eabban/BitNet/build-cuda128-gcc12/bin/llama-cli \
+MODEL_DIR=/root/models/kimi-k2.6-iq1_s/moonshotai_Kimi-K2.6-IQ1_S \
+MODEL_PREFIX=moonshotai_Kimi-K2.6-IQ1_S \
+THREADS=16 CTX_SIZE=512 N_PREDICT=1 NO_WARMUP=1 LLAMA_ARG_N_GPU_LAYERS=1 \
+KIMI_PROMPT='SayOK.' \
+KIMI_EXTRA_LLAMA_ARGS='--seed 42 --temp 0 --top-k 1 --top-p 1.0 --min-p 0.0 --repeat-penalty 1.0 --no-display-prompt --simple-io' \
+zluda/tests/sass_roundtrip_bench/run_correctness_suite.sh
+```
+
+Observed results from
+`/tmp/hetgpu-sass-proof-kimi-cubin-20260622/sass_lifter_correctness.csv`:
+
+```csv
+step,status,elapsed_ms,message
+rust_fuzzer,pass,2592,log:/tmp/hetgpu-sass-proof-kimi-cubin-20260622/logs/rust_fuzzer.log
+roundtrip_harness,pass,2207,log:/tmp/hetgpu-sass-proof-kimi-cubin-20260622/logs/roundtrip_harness.log
+ld_preload_roundtrip,pass,12370,log:/tmp/hetgpu-sass-proof-kimi-cubin-20260622/logs/ld_preload_roundtrip.log
+ld_preload_roundtrip_cases,pass,0,cases_11_csv:/tmp/hetgpu-sass-proof-kimi-cubin-20260622/ld_preload_roundtrip/bench.csv
+kimi_e2e,pass,13636,log:/tmp/hetgpu-sass-proof-kimi-cubin-20260622/logs/kimi_e2e.log
+kimi_e2e_child_status,pass,0,message_ok_csv:/tmp/hetgpu-sass-proof-kimi-cubin-20260622/kimi_e2e/bench_kimi_k26_e2e.csv
+kimi_numerical,pass,23941,log:/tmp/hetgpu-sass-proof-kimi-cubin-20260622/logs/kimi_numerical.log
+kimi_numerical_child_status,pass,0,message_stdout_sha_match_csv:/tmp/hetgpu-sass-proof-kimi-cubin-20260622/kimi_numerical/bench_kimi_k26_numerical.csv
+```
+
+The Kimi e2e child CSV was:
+
+```csv
+case,status,total_ms,exit_code,stdout_bytes,stderr_bytes,lifter_markers,lifted_ptx_files,lifted_ptx_bytes,message
+kimi_k26_iq1m,pass,10488,0,3,88251,14,1,2492,ok
+```
+
+The Kimi numerical child CSV was:
+
+```csv
+case,status,total_ms,baseline_exit_code,hooked_exit_code,baseline_stdout_sha256,hooked_stdout_sha256,baseline_stdout_bytes,hooked_stdout_bytes,ptx_source_markers,sass_lifter_markers,offloaded_layers,message
+kimi_k26_numerical,pass,20840,0,0,0673d69ff78439adfb40182f626c701aa63586c0f636a134a72a8cd425151a29,0673d69ff78439adfb40182f626c701aa63586c0f636a134a72a8cd425151a29,3,3,0,14,1/62,stdout_sha_match
+```
+
+Representative Kimi e2e stderr markers:
+
+```text
+[hetGPU SASS] selected fatbin CUBIN for NVIDIA module (sm=120, 310616 bytes)
+[hetGPU SASS] lifted CUBIN via Rust lifter: input=310616 bytes ptx=19160 bytes diagnostics=27
+[hetGPU SASS] selected fatbin CUBIN for NVIDIA module (sm=120, 2381912 bytes)
+[hetGPU SASS] lifted CUBIN via Rust lifter: input=2381912 bytes ptx=31826 bytes diagnostics=36
+```
+
+The real LD_PRELOAD synthetic round-trip child CSV passed 11/11 cases:
+
+```text
+int_add
+pred_select
+fma_bits
+popc_shf_mix
+global_offset_pair
+shared_reverse
+kimi_iq1m_unpack
+kimi_rmsnorm_bits
+kimi_swiglu_mix
+kimi_rope_mix
+kimi_attention_mask
+```
+
+## Current Proof Boundary
+
+Proven now:
+
+- The Rust fuzzer passes for the configured deterministic seed.
+- The shell regression harness passes, including fake real-cuBLAS forwarding and
+  cudart fatbin preference probes.
+- The real LD_PRELOAD synthetic round-trip suite passes 11/11 SM120 cases.
+- Kimi K2.6 strict cudart e2e exposes 14 fatbin/CUBIN modules to the Rust SASS
+  lifter and writes a lifted PTX dump.
+- Kimi K2.6 native CUDA vs strict cudart-shim
+  `LD_PRELOAD=target/debug/libhetgpu_cuda_shim.so:target/debug/libnvcuda.so`
+  produces byte-for-byte identical generated stdout with 1/62 GPU layers
+  offloaded and 14 SASS lifter markers.
+
+Still outside this proof:
+
+- This is a finite deterministic Kimi prompt/offload proof, not a universal proof
+  over every prompt, generation length, or model quantization.
+- The lifted PTX contains diagnostics for unsupported SASS opcodes; the proof
+  establishes capture, lifter execution, and deterministic Kimi output
+  preservation for this run, not complete semantic coverage of every SM120
+  opcode.

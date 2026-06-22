@@ -68,6 +68,11 @@ fn main() {
         if enable_logs {
             shim_build.arg("-DHETGPU_DEBUG_LOGS");
         }
+        if std::env::var("CARGO_FEATURE_NVIDIA").is_ok()
+            && std::env::var("CARGO_FEATURE_PACC").is_err()
+        {
+            shim_build.arg("-DHETGPU_SHIM_ENABLE_REAL_CUBLAS_BY_DEFAULT");
+        }
         shim_build.arg("-o");
         shim_build.arg(&shim_so);
         shim_build.arg("src/cudart_shim.c");

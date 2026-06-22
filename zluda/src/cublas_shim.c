@@ -21,13 +21,60 @@
 static void* real_cublas_handle = NULL;
 static void* real_cublaslt_handle_from_cublas = NULL;
 
-// Get real cuBLAS library handle - DISABLED for virtual device backend
-// Loading real cuBLAS causes recursive symbol resolution or initialization
-// that crashes with our virtual CUDA driver. Use fallback implementations instead.
+static int hetgpu_env_truthy_for_real_cublas(const char *value) {
+    if (!value || !*value) {
+        return -1;
+    }
+    if (strcmp(value, "0") == 0 ||
+        strcasecmp(value, "false") == 0 ||
+        strcasecmp(value, "no") == 0 ||
+        strcasecmp(value, "off") == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int hetgpu_cublas_real_forward_enabled(void) {
+    int env = hetgpu_env_truthy_for_real_cublas(getenv("HETGPU_CUBLAS_FORWARD_REAL"));
+    if (env >= 0) {
+        return env;
+    }
+#ifdef HETGPU_SHIM_ENABLE_REAL_CUBLAS_BY_DEFAULT
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+// Loading real cuBLAS is correct for the NVIDIA passthrough shim, but remains
+// opt-in for virtual/PACC backends where real cuBLAS would see fake contexts.
 static void* get_real_cublas() {
-    // Always return NULL to use our fallback implementations.
-    // The hetGPU virtual device doesn't support forwarding to real cuBLAS
-    // because real cuBLAS tries to initialize with our fake CUDA context.
+    if (!hetgpu_cublas_real_forward_enabled()) {
+        return NULL;
+    }
+    if (real_cublas_handle) {
+        return real_cublas_handle;
+    }
+
+    const char *override_path = getenv("HETGPU_REAL_CUBLAS_PATH");
+    if (override_path && *override_path) {
+        real_cublas_handle = dlopen(override_path, RTLD_LAZY | RTLD_LOCAL);
+        if (real_cublas_handle) {
+            return real_cublas_handle;
+        }
+    }
+
+    const char *names[] = {
+        "libcublas.so.12",
+        "libcublas.so",
+        NULL,
+    };
+    for (int i = 0; names[i]; ++i) {
+        real_cublas_handle = dlopen(names[i], RTLD_LAZY | RTLD_LOCAL);
+        if (real_cublas_handle) {
+            return real_cublas_handle;
+        }
+    }
     return NULL;
 }
 
@@ -138,6 +185,29 @@ static int hetgpu_pacc_dtype(cudaDataType type) {
         default:
             return (int)type;
     }
+}
+
+#define HETGPU_CUBLAS_STREAM_MAGIC UINT64_C(0x485447505354524d)
+typedef struct {
+    uint64_t magic;
+    int device;
+    unsigned int flags;
+    int priority;
+} HetgpuCublasCudaStream;
+
+static int hetgpu_cublas_stream_is_managed(void *stream) {
+    if (!stream) {
+        return 0;
+    }
+    const HetgpuCublasCudaStream *s = (const HetgpuCublasCudaStream *)stream;
+    return s->magic == HETGPU_CUBLAS_STREAM_MAGIC;
+}
+
+static void *hetgpu_cublas_driver_stream(void *stream) {
+    if (hetgpu_cublas_stream_is_managed(stream)) {
+        return NULL;
+    }
+    return stream;
 }
 
 static int hetgpu_cublas_trace_enabled(void) {
@@ -1839,46 +1909,85 @@ cublasStatus_t cublasDestroy_v2(cublasHandle_t handle) {
 
 cublasStatus_t cublasSetStream_v2(cublasHandle_t handle, void* streamId) {
     DEBUG_LOG("cublasSetStream_v2 called");
+    typedef cublasStatus_t (*func_type)(cublasHandle_t, void*);
+    GET_REAL_FUNC(cublasSetStream_v2, func_type);
+    if (real_cublasSetStream_v2) {
+        return real_cublasSetStream_v2(handle, hetgpu_cublas_driver_stream(streamId));
+    }
     return CUBLAS_STATUS_SUCCESS;
 }
 
 cublasStatus_t cublasGetStream_v2(cublasHandle_t handle, void** streamId) {
     DEBUG_LOG("cublasGetStream_v2 called");
+    typedef cublasStatus_t (*func_type)(cublasHandle_t, void**);
+    GET_REAL_FUNC(cublasGetStream_v2, func_type);
+    if (real_cublasGetStream_v2) {
+        return real_cublasGetStream_v2(handle, streamId);
+    }
     if (streamId) *streamId = NULL;
     return CUBLAS_STATUS_SUCCESS;
 }
 
 cublasStatus_t cublasSetPointerMode_v2(cublasHandle_t handle, cublasPointerMode_t mode) {
     DEBUG_LOG("cublasSetPointerMode_v2 called");
+    typedef cublasStatus_t (*func_type)(cublasHandle_t, cublasPointerMode_t);
+    GET_REAL_FUNC(cublasSetPointerMode_v2, func_type);
+    if (real_cublasSetPointerMode_v2) {
+        return real_cublasSetPointerMode_v2(handle, mode);
+    }
     return CUBLAS_STATUS_SUCCESS;
 }
 
 cublasStatus_t cublasGetPointerMode_v2(cublasHandle_t handle, cublasPointerMode_t *mode) {
     DEBUG_LOG("cublasGetPointerMode_v2 called");
+    typedef cublasStatus_t (*func_type)(cublasHandle_t, cublasPointerMode_t*);
+    GET_REAL_FUNC(cublasGetPointerMode_v2, func_type);
+    if (real_cublasGetPointerMode_v2) {
+        return real_cublasGetPointerMode_v2(handle, mode);
+    }
     if (mode) *mode = CUBLAS_POINTER_MODE_HOST;
     return CUBLAS_STATUS_SUCCESS;
 }
 
 cublasStatus_t cublasSetAtomicsMode(cublasHandle_t handle, cublasAtomicsMode_t mode) {
     DEBUG_LOG("cublasSetAtomicsMode called");
+    typedef cublasStatus_t (*func_type)(cublasHandle_t, cublasAtomicsMode_t);
+    GET_REAL_FUNC(cublasSetAtomicsMode, func_type);
+    if (real_cublasSetAtomicsMode) {
+        return real_cublasSetAtomicsMode(handle, mode);
+    }
     return CUBLAS_STATUS_SUCCESS;
 }
 
 cublasStatus_t cublasGetAtomicsMode(cublasHandle_t handle, cublasAtomicsMode_t *mode) {
     DEBUG_LOG("cublasGetAtomicsMode called");
+    typedef cublasStatus_t (*func_type)(cublasHandle_t, cublasAtomicsMode_t*);
+    GET_REAL_FUNC(cublasGetAtomicsMode, func_type);
+    if (real_cublasGetAtomicsMode) {
+        return real_cublasGetAtomicsMode(handle, mode);
+    }
     if (mode) *mode = CUBLAS_ATOMICS_NOT_ALLOWED;
     return CUBLAS_STATUS_SUCCESS;
 }
 
 cublasStatus_t cublasSetMathMode(cublasHandle_t handle, cublasMath_t mode) {
     DEBUG_LOG("cublasSetMathMode called: mode=%d", mode);
-    // Accept all math modes - PyTorch sets TF32/tensor op modes
+    typedef cublasStatus_t (*func_type)(cublasHandle_t, cublasMath_t);
+    GET_REAL_FUNC(cublasSetMathMode, func_type);
+    if (real_cublasSetMathMode) {
+        return real_cublasSetMathMode(handle, mode);
+    }
     g_math_mode = mode;
     return CUBLAS_STATUS_SUCCESS;
 }
 
 cublasStatus_t cublasGetMathMode(cublasHandle_t handle, cublasMath_t *mode) {
     DEBUG_LOG("cublasGetMathMode called");
+    typedef cublasStatus_t (*func_type)(cublasHandle_t, cublasMath_t*);
+    GET_REAL_FUNC(cublasGetMathMode, func_type);
+    if (real_cublasGetMathMode) {
+        return real_cublasGetMathMode(handle, mode);
+    }
     if (mode) *mode = g_math_mode;
     return CUBLAS_STATUS_SUCCESS;
 }

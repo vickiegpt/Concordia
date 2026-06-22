@@ -41,6 +41,7 @@ if [[ "${1:-}" == "--dry-run" ]]; then
     append_row roundtrip_harness dry_run 0 planned
     append_row ld_preload_roundtrip dry_run 0 planned
     append_row kimi_e2e dry_run 0 planned
+    append_row kimi_numerical dry_run 0 planned
     echo "[sass-proof] dry-run CSV: ${csv}"
     exit 0
 fi
@@ -107,6 +108,25 @@ append_kimi_e2e_csv_summary() {
     return 1
 }
 
+append_kimi_numerical_csv_summary() {
+    local child_csv="${WORK_DIR}/kimi_numerical/bench_kimi_k26_numerical.csv"
+    if [[ ! -s "${child_csv}" ]]; then
+        append_row kimi_numerical_child_status fail 0 "missing_csv:${child_csv}"
+        return 1
+    fi
+
+    local child_status child_message
+    child_status="$(awk -F, 'NR == 2 { print $2 }' "${child_csv}")"
+    child_message="$(awk -F, 'NR == 2 { print $13 }' "${child_csv}")"
+    if [[ "${child_status}" == "pass" ]]; then
+        append_row kimi_numerical_child_status pass 0 "message_${child_message}_csv:${child_csv}"
+        return 0
+    fi
+
+    append_row kimi_numerical_child_status fail 0 "status_${child_status}_message_${child_message}_csv:${child_csv}"
+    return 1
+}
+
 run_step rust_fuzzer \
     "${CARGO}" run -p ptx --bin sass_lifter_fuzz -- \
         --seed "${HETGPU_SASS_FUZZ_SEED:-1515524608}" \
@@ -136,6 +156,17 @@ if [[ "${HETGPU_SASS_PROOF_KIMI:-0}" == "1" ]]; then
 else
     append_row kimi_e2e skipped 0 "set HETGPU_SASS_PROOF_KIMI=1 to run slow Kimi capture"
     echo "[sass-proof] kimi_e2e: skipped"
+fi
+
+if [[ "${HETGPU_SASS_PROOF_KIMI_NUMERICAL:-0}" == "1" ]]; then
+    run_step kimi_numerical env \
+        HETGPU_KIMI_NUMERICAL_WORKDIR="${WORK_DIR}/kimi_numerical" \
+        HETGPU_KIMI_NUMERICAL_KEEP=1 \
+        "${SCRIPT_DIR}/run_kimi_k26_numerical_proof.sh"
+    append_kimi_numerical_csv_summary
+else
+    append_row kimi_numerical skipped 0 "set HETGPU_SASS_PROOF_KIMI_NUMERICAL=1 to run Kimi baseline-vs-hooked proof"
+    echo "[sass-proof] kimi_numerical: skipped"
 fi
 
 echo "[sass-proof] CSV: ${csv}"

@@ -29,6 +29,7 @@ pub struct SassLiftDiagnostic {
     pub address: Option<u64>,
     pub opcode: String,
     pub message: String,
+    pub instruction_text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,6 +400,7 @@ impl<'a> LiftContext<'a> {
                 &data_type_suffix(inst, SassDataType::U32),
             )),
             "SHF" => Some(shf_op(inst, &pred, self.scratch_gpr.as_deref())),
+            "LOP" if is_lop_lut(inst) => Some(lop3_lut_op(inst, &pred)),
             "LOP" if inst.src_operands.len() == 2 => Some(binary_op(inst, &pred, "and", "b32")),
             "LOP" => self.unsupported(inst, "logical operation lifting is not implemented"),
             "LOP3" if is_lop3_odd_predicate(inst) => Some(lop3_odd_predicate_op(
@@ -453,6 +455,8 @@ impl<'a> LiftContext<'a> {
             "SEL" => Some(sel_op(inst, &pred)),
             "PSETP" => self.unsupported(inst, "predicate set lifting is not implemented"),
             "BRA" | "BRX" | "JMP" => Some(branch_op(inst, &pred)),
+            "JMX" | "JMXU" if branch_target(inst).is_some() => Some(branch_op(inst, &pred)),
+            "JMX" | "JMXU" => self.unsupported(inst, "indirect branch lifting is not implemented"),
             "BAR" => Some(format!("{}bar.sync 0;", pred)),
             "DEPBAR" => Some("// depbar preserved from SASS;".to_string()),
             "MEMBAR" => Some(format!("{}membar.gl;", pred)),
@@ -472,6 +476,7 @@ impl<'a> LiftContext<'a> {
             address: Some(inst.address),
             opcode: inst.opcode.clone(),
             message: message.to_string(),
+            instruction_text: inst.instruction_text.clone(),
         });
         if self.options.emit_unsupported_comments {
             Some(format!(
@@ -1370,6 +1375,21 @@ fn is_lop3_lut(inst: &EnhancedSassInstruction) -> bool {
         )
 }
 
+fn is_lop_lut(inst: &EnhancedSassInstruction) -> bool {
+    inst.opcode == "LOP"
+        && inst.src_operands.len() >= 4
+        && matches!(inst.src_operands.get(3), Some(SassOperand::Immediate(_)))
+        && !matches!(
+            inst.dest_operands.first(),
+            Some(SassOperand::Register(reg))
+                if reg.prefix == "P" || reg.prefix == "UP" || reg.prefix == "PT"
+        )
+        && !matches!(
+            inst.dest_operands.first(),
+            Some(SassOperand::Predicate { .. })
+        )
+}
+
 fn is_lop3_binary_truth_table(inst: &EnhancedSassInstruction, lut: i64) -> bool {
     inst.opcode == "LOP3"
         && inst.src_operands.len() >= 4
@@ -1932,6 +1952,19 @@ Function : kernel
     }
 
     #[test]
+    fn sass_lifter_emits_static_jmx_as_branch() {
+        let mut jmx = EnhancedSassInstruction::new("JMX".to_string(), 0x10);
+        jmx.opcode_class = SassOpcodeClass::ConditionalBranch;
+        jmx.src_operands.push(SassOperand::Address(0x40));
+
+        let result = lift_instructions_to_ptx(&[jmx], &SassLiftOptions::default());
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("L_0040:\n"));
+        assert!(result.ptx.contains("bra L_0040;"));
+    }
+
+    #[test]
     fn sass_lifter_expands_three_source_iadd3_with_scratch_register() {
         let mut iadd3 = EnhancedSassInstruction::new("IADD3".to_string(), 0x0);
         iadd3.opcode_class = SassOpcodeClass::IntegerArithmetic;
@@ -1964,6 +1997,24 @@ Function : kernel
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.ptx.contains("lop3.b32 %r0, %r1, %r2, %r3, 0xca;"));
         assert!(!result.ptx.contains("and.b32"));
+    }
+
+    #[test]
+    fn sass_lifter_emits_generic_lop_lut_when_truth_table_is_present() {
+        let mut lop = EnhancedSassInstruction::new("LOP".to_string(), 0x0);
+        lop.opcode_class = SassOpcodeClass::IntegerLogical;
+        lop.data_type = Some(SassDataType::B32);
+        lop.dest_operands.push(reg(0));
+        lop.src_operands.push(reg(1));
+        lop.src_operands.push(reg(2));
+        lop.src_operands.push(reg(3));
+        lop.src_operands.push(SassOperand::Immediate(0xe2));
+
+        let result = lift_instructions_to_ptx(&[lop], &SassLiftOptions::default());
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("lop3.b32 %r0, %r1, %r2, %r3, 0xe2;"));
+        assert!(!result.ptx.contains("unsupported SASS LOP"));
     }
 
     #[test]
@@ -2017,5 +2068,20 @@ Function : kernel
             "tensor instruction lifting is not implemented"
         );
         assert!(result.ptx.contains("unsupported SASS HMMA at 0x0120"));
+    }
+
+    #[test]
+    fn sass_lifter_diagnostics_keep_original_instruction_text() {
+        let mut tex = EnhancedSassInstruction::new("TEX".to_string(), 0x80);
+        tex.instruction_text =
+            "/*0080*/ TEX R4, R5, R6, 0x2 ; /* 0x4000000000600504 */".to_string();
+
+        let result = lift_instructions_to_ptx(&[tex], &SassLiftOptions::default());
+
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(
+            result.diagnostics[0].instruction_text,
+            "/*0080*/ TEX R4, R5, R6, 0x2 ; /* 0x4000000000600504 */"
+        );
     }
 }

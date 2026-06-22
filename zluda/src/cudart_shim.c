@@ -326,6 +326,10 @@ static int hetgpu_cudart_defer_module_load_enabled(void) {
     return hetgpu_env_enabled_default("HETGPU_CUDART_DEFER_MODULE_LOAD", 0);
 }
 
+static int hetgpu_cudart_prefer_fatbin_cubin_for_sass(void) {
+    return hetgpu_env_enabled_default("HETGPU_CUDART_PREFER_FATBIN_CUBIN_FOR_SASS", 0);
+}
+
 static unsigned long long hetgpu_parse_env_ull_default(const char *name, unsigned long long default_value);
 
 static unsigned long long hetgpu_cudart_lazy_ptx_fail_open_log_limit(void) {
@@ -3648,11 +3652,21 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
     int payload_needs_free = 0;
     int defer_module_load = 0;
     int retain_deferred_payload = 0;
+    int prefer_fatbin_cubin_for_sass = hetgpu_cudart_prefer_fatbin_cubin_for_sass();
+    int saw_fatbin_elf_payload = 0;
+    void* fatbin_module_payload = NULL;
+    size_t fatbin_module_payload_size = 0;
 
     if (fatbin_header && fatbin_header->magic == FATBIN_MAGIC) {
         HETGPU_LOG("[cudart_shim] Valid FatbinHeader found (magic: 0x%08x)\n", fatbin_header->magic);
         HETGPU_LOG("[cudart_shim] Header size: %u, Files size: %lu\n",
                 fatbin_header->header_size, fatbin_header->files_size);
+        if (fatbin_header->header_size >= sizeof(FatbinHeader) &&
+                fatbin_header->files_size <= (uint64_t)(SIZE_MAX - fatbin_header->header_size)) {
+            fatbin_module_payload = fatbin_header;
+            fatbin_module_payload_size = (size_t)fatbin_header->header_size +
+                    (size_t)fatbin_header->files_size;
+        }
 
         // Start of file headers
         unsigned char* file_ptr = (unsigned char*)fatbin_header + fatbin_header->header_size;
@@ -3729,9 +3743,16 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
                     payload = ptx_payload;
                     payload_size = raw_size;
                 }
-                break;  // Prefer PTX, so break immediately
-            } else if (file_header->kind == FATBIN_KIND_ELF && payload == NULL) {
+                if (!prefer_fatbin_cubin_for_sass) {
+                    break;  // Prefer PTX, so break immediately unless SASS capture needs CUBIN.
+                }
+            } else if (file_header->kind == FATBIN_KIND_ELF) {
                 unsigned char* raw_payload = file_ptr + file_header->header_size;
+                saw_fatbin_elf_payload = 1;
+                if (payload != NULL) {
+                    file_ptr += file_header->padded_payload_size + file_header->header_size;
+                    continue;
+                }
 
                 // Debug: show first 20 bytes starting at different offsets to find ELF magic
                 HETGPU_LOG("[cudart_shim] Looking for ELF magic (7f 45 4c 46):\n");
@@ -3768,6 +3789,21 @@ void** __cudaRegisterFatBinary(void* fatCubin) {
 
             // Move to next file entry
             file_ptr += file_header->padded_payload_size + file_header->header_size;
+        }
+        if (prefer_fatbin_cubin_for_sass && saw_fatbin_elf_payload &&
+                fatbin_module_payload && fatbin_module_payload_size > 0) {
+            if (payload_needs_free && payload) {
+                free(payload);
+            }
+            payload = fatbin_module_payload;
+            payload_size = fatbin_module_payload_size;
+            payload_needs_free = 0;
+            retain_deferred_payload = 1;
+            if (!hetgpu_env_enabled_default("HETGPU_CUDART_EAGER_PTX", 0)) {
+                defer_module_load = 1;
+            }
+            HETGPU_LOG("[cudart_shim] SASS capture requested fatbin CUBIN exposure; using full fatbin payload (%zu bytes)\n",
+                    payload_size);
         }
     } else {
         HETGPU_LOG("[cudart_shim] Invalid or missing FatbinHeader, using data pointer directly\n");
