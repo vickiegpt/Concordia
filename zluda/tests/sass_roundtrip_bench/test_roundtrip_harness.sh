@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 
 cases="$("${SCRIPT_DIR}/run.sh" --list-cases)"
 grep -Fxq "int_add" <<<"${cases}"
@@ -77,6 +78,29 @@ rg -Fq '.target ${sm}' "${SCRIPT_DIR}/run.sh"
 rg -q 'rm -f "\$\{lifted\}"' "${SCRIPT_DIR}/run.sh"
 rg -q 'wrote lifted PTX dump' "${SCRIPT_DIR}/run.sh"
 rg -q 'HETGPU_SASS_LIFTER_CUOBJDUMP' "${SCRIPT_DIR}/run.sh"
+rg -q -- '--n-gpu-layers "\$\{gpu_layers\}"' "${REPO_ROOT}/tools/run_kimi_k26_iq1m_bitnet.sh"
+rg -q 'KIMI_EXTRA_LLAMA_ARGS' "${REPO_ROOT}/tools/run_kimi_k26_iq1m_bitnet.sh"
+rg -q 'LLAMA_ARG_N_GPU_LAYERS="\$\{kimi_gpu_layers\}"' "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
+rg -q 'HETGPU_KIMI_E2E_EXTRA_LLAMA_ARGS' "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
+rg -q 'skipped_no_cuda_offload' "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
+rg -q 'hetgpu_driver_stream' "${REPO_ROOT}/zluda/src/cudart_shim.c"
+rg -q 'CUstream driver_stream = hetgpu_driver_stream\(stream\);' "${REPO_ROOT}/zluda/src/cudart_shim.c"
+if rg -q '\(CUstream\)stream,' "${REPO_ROOT}/zluda/src/cudart_shim.c"; then
+    echo "cudart shim must not pass managed cudaStream_t wrappers directly to driver cuLaunchKernel" >&2
+    exit 1
+fi
+rg -q 'hetgpu_is_ggml_cuda_rms_norm_f32' "${REPO_ROOT}/zluda/src/cudart_shim.c"
+rg -q 'lazy PTX resolved named-only candidate' "${REPO_ROOT}/zluda/src/cudart_shim.c"
+rg -q 'float eps = \(args && args\[3\]\)' "${REPO_ROOT}/zluda/src/cudart_shim.c"
+if rg -q 'args\[[67]\]' "${REPO_ROOT}/zluda/src/cudart_shim.c"; then
+    echo "RMSNorm host fallback must not probe beyond the known four-argument ggml CUDA signature" >&2
+    exit 1
+fi
+rg -q 'try_extract_nvidia_cubin_from_fatbin' "${REPO_ROOT}/zluda/src/impl/module.rs"
+rg -q 'selected fatbin CUBIN for NVIDIA module' "${REPO_ROOT}/zluda/src/impl/module.rs"
+rg -q 'copy_nvidia_module_image_for_lifter' "${REPO_ROOT}/zluda/src/impl/module.rs"
+rg -q 'binary module image is neither ELF CUBIN nor CUDA fatbin' "${REPO_ROOT}/zluda/src/impl/module.rs"
+rg -q 'CUDA fatbin did not contain a raw NVIDIA CUBIN' "${REPO_ROOT}/zluda/src/impl/module.rs"
 
 proof_work_dir="$(mktemp -d /tmp/hetgpu-sass-proof-test.XXXXXX)"
 trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}"' EXIT
@@ -152,6 +176,108 @@ if [[ "${marker_status}" == "0" ]]; then
 fi
 e2e_marker_csv="${e2e_marker_work_dir}/bench_kimi_k26_e2e.csv"
 grep -Fq "kimi_k26_iq1m,missing_lifter_dump_marker" "${e2e_marker_csv}"
+
+e2e_no_cuda_work_dir="$(mktemp -d /tmp/hetgpu-kimi-e2e-no-cuda-test.XXXXXX)"
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_no_cuda_work_dir}"' EXIT
+fake_no_cuda_runner="${e2e_no_cuda_work_dir}/fake-no-cuda-llama-cli"
+{
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'printf "fake kimi output\n"'
+    printf '%s\n' 'printf "ggml_cuda_init: failed to initialize CUDA: cudaErrorUnknown\n" >&2'
+    printf '%s\n' 'printf "warning: not compiled with GPU offload support, --gpu-layers option will be ignored\n" >&2'
+} >"${fake_no_cuda_runner}"
+chmod +x "${fake_no_cuda_runner}"
+HETGPU_KIMI_E2E_WORKDIR="${e2e_no_cuda_work_dir}" \
+HETGPU_KIMI_E2E_ALLOW_FAILURES=1 \
+BITNET_LLAMA_CLI="${fake_no_cuda_runner}" \
+MODEL_DIR="${fake_model_dir}" \
+MODEL_PREFIX=moonshotai_Kimi-K2.6-IQ1_S \
+CARGO=/bin/true \
+    "${SCRIPT_DIR}/run_kimi_k26_e2e.sh" >/dev/null 2>&1
+e2e_no_cuda_csv="${e2e_no_cuda_work_dir}/bench_kimi_k26_e2e.csv"
+grep -Fq "kimi_k26_iq1m,skipped_no_cuda_offload" "${e2e_no_cuda_csv}"
+
+e2e_preload_work_dir="$(mktemp -d /tmp/hetgpu-kimi-e2e-preload-test.XXXXXX)"
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_no_cuda_work_dir}" "${e2e_preload_work_dir}"' EXIT
+fake_preload_model_dir="${e2e_preload_work_dir}/model"
+mkdir -p "${fake_preload_model_dir}"
+for shard in \
+    moonshotai_Kimi-K2.6-IQ1_S-00001-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00002-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00003-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00004-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00005-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00006-of-00006.gguf
+do
+    : >"${fake_preload_model_dir}/${shard}"
+done
+fake_preload_runner="${e2e_preload_work_dir}/fake-preload-llama-cli"
+{
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'printf "fake kimi output\n"'
+    printf '%s\n' 'printf "preload=%s\n" "${HETGPU_KIMI_E2E_EFFECTIVE_LD_PRELOAD:-}" >&2'
+    printf '%s\n' 'printf "defer=%s\n" "${HETGPU_CUDART_DEFER_MODULE_LOAD:-}" >&2'
+    printf '%s\n' 'printf "[hetGPU SASS] lifted fake marker\n" >&2'
+    printf '%s\n' 'printf ".version 8.8\n" >"${HETGPU_SASS_LIFTER_DUMP:?}"'
+} >"${fake_preload_runner}"
+chmod +x "${fake_preload_runner}"
+preload_probe="/lib/x86_64-linux-gnu/libc.so.6"
+if [[ ! -f "${preload_probe}" ]]; then
+    preload_probe="/usr/lib/x86_64-linux-gnu/libc.so.6"
+fi
+test -f "${preload_probe}"
+HETGPU_KIMI_E2E_WORKDIR="${e2e_preload_work_dir}" \
+HETGPU_KIMI_E2E_LD_PRELOAD="${preload_probe}" \
+HETGPU_KIMI_E2E_CUDART_DEFER_MODULE_LOAD=1 \
+BITNET_LLAMA_CLI="${fake_preload_runner}" \
+MODEL_DIR="${fake_preload_model_dir}" \
+MODEL_PREFIX=moonshotai_Kimi-K2.6-IQ1_S \
+CARGO=/bin/true \
+    "${SCRIPT_DIR}/run_kimi_k26_e2e.sh" >/dev/null 2>&1
+e2e_preload_csv="${e2e_preload_work_dir}/bench_kimi_k26_e2e.csv"
+grep -Fq "kimi_k26_iq1m,pass" "${e2e_preload_csv}"
+grep -Fq "preload=${preload_probe}" "${e2e_preload_work_dir}/logs/kimi.stderr"
+grep -Fq "defer=1" "${e2e_preload_work_dir}/logs/kimi.stderr"
+
+e2e_cudart_work_dir="$(mktemp -d /tmp/hetgpu-kimi-e2e-cudart-test.XXXXXX)"
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_no_cuda_work_dir}" "${e2e_preload_work_dir}" "${e2e_cudart_work_dir}"' EXIT
+fake_cudart_model_dir="${e2e_cudart_work_dir}/model"
+mkdir -p "${fake_cudart_model_dir}"
+for shard in \
+    moonshotai_Kimi-K2.6-IQ1_S-00001-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00002-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00003-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00004-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00005-of-00006.gguf \
+    moonshotai_Kimi-K2.6-IQ1_S-00006-of-00006.gguf
+do
+    : >"${fake_cudart_model_dir}/${shard}"
+done
+fake_cudart_runner="${e2e_cudart_work_dir}/fake-cudart-llama-cli"
+{
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'printf "fake kimi output\n"'
+    printf '%s\n' 'printf "preload=%s\n" "${HETGPU_KIMI_E2E_EFFECTIVE_LD_PRELOAD:-}" >&2'
+    printf '%s\n' 'printf "[hetGPU SASS] lifted fake marker\n" >&2'
+    printf '%s\n' 'printf ".version 8.8\n" >"${HETGPU_SASS_LIFTER_DUMP:?}"'
+} >"${fake_cudart_runner}"
+chmod +x "${fake_cudart_runner}"
+fake_cargo="${e2e_cudart_work_dir}/fake-cargo"
+{
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'printf "%s\n" "$*" >"${HETGPU_FAKE_CARGO_ARGS:?}"'
+} >"${fake_cargo}"
+chmod +x "${fake_cargo}"
+HETGPU_KIMI_E2E_WORKDIR="${e2e_cudart_work_dir}" \
+HETGPU_KIMI_E2E_USE_CUDART_SHIM=1 \
+HETGPU_FAKE_CARGO_ARGS="${e2e_cudart_work_dir}/cargo.args" \
+BITNET_LLAMA_CLI="${fake_cudart_runner}" \
+MODEL_DIR="${fake_cudart_model_dir}" \
+MODEL_PREFIX=moonshotai_Kimi-K2.6-IQ1_S \
+CARGO="${fake_cargo}" \
+    "${SCRIPT_DIR}/run_kimi_k26_e2e.sh" >/dev/null 2>&1
+grep -Fq -- "--features nvidia,embed_cudart" "${e2e_cudart_work_dir}/cargo.args"
+grep -Fq "libhetgpu_cuda_shim.so" "${e2e_cudart_work_dir}/logs/kimi.stderr"
 
 bar_line="$(rg -n 'bar\.sync 0' "${SCRIPT_DIR}/ptx/shared_reverse.ptx" | cut -d: -f1)"
 early_done_branch="$(

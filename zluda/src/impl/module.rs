@@ -1,6 +1,6 @@
+use super::ZludaObject;
 #[cfg(feature = "intel")]
 use super::ze_module;
-use super::ZludaObject;
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
@@ -352,7 +352,10 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
         }
 
         if result != ze_result_t::ZE_RESULT_SUCCESS || context.0.is_null() || device.0.is_null() {
-            eprintln!("[Intel Backend] Binary module load failed or virtual device detected ({:?}); attempting PTX extraction (binary_size={})", result, binary_size);
+            eprintln!(
+                "[Intel Backend] Binary module load failed or virtual device detected ({:?}); attempting PTX extraction (binary_size={})",
+                result, binary_size
+            );
 
             // Use the full binary for PTX extraction, not just first_bytes
             let full_binary = if binary_size > 0 && binary_size <= 10 * 1024 * 1024 {
@@ -571,7 +574,9 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
                         return Ok(());
                     }
                     Err(_) => {
-                        crate::r#impl::hetgpu_debug!("[TMatmul Backend] Sanitized PTX still failed; using placeholder module");
+                        crate::r#impl::hetgpu_debug!(
+                            "[TMatmul Backend] Sanitized PTX still failed; using placeholder module"
+                        );
                         let (context, device) = (ctx_handle, dev_handle);
                         let new_module = Module {
                             context,
@@ -1871,7 +1876,11 @@ fn try_extract_ptx_from_cubin(binary: &[u8]) -> Option<String> {
                 );
                 return Some(ptx);
             } else {
-                eprintln!("[PTX Extract] Extracted {} bytes from offset {} but doesn't look like valid PTX", ptx.len(), pos);
+                eprintln!(
+                    "[PTX Extract] Extracted {} bytes from offset {} but doesn't look like valid PTX",
+                    ptx.len(),
+                    pos
+                );
             }
         }
     }
@@ -2412,6 +2421,30 @@ unsafe impl Sync for Module {}
     not(feature = "tmatmul")
 ))]
 const HETGPU_SASS_MAX_CUBIN_BYTES: usize = 256 * 1024 * 1024;
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+const HETGPU_FATBIN_MAGIC: &[u8; 4] = b"\x50\xed\x55\xba";
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+const HETGPU_FATBIN_KIND_ELF: u16 = 0x02;
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+const HETGPU_FATBIN_FILE_HEADER_MIN_SIZE: usize = 64;
 
 #[cfg(all(
     feature = "nvidia",
@@ -2451,11 +2484,7 @@ fn env_os_value_requested(name: &str) -> Option<std::ffi::OsString> {
                 "0" | "false" | "no" | "off"
             )
     };
-    if enabled {
-        Some(value)
-    } else {
-        None
-    }
+    if enabled { Some(value) } else { None }
 }
 
 #[cfg(all(
@@ -2633,22 +2662,198 @@ unsafe fn copy_elf_cubin_image(image: *const std::ffi::c_void) -> Option<Vec<u8>
     not(feature = "tenstorrent"),
     not(feature = "tmatmul")
 ))]
+fn nvidia_cubin_payload_view(data: &[u8]) -> Option<&[u8]> {
+    if ptx::is_cubin(data) {
+        return Some(data);
+    }
+    if data.first() == Some(&0) && ptx::is_cubin(&data[1..]) {
+        return Some(&data[1..]);
+    }
+    None
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+unsafe fn nvidia_module_image_first16_hex(image: *const std::ffi::c_void) -> String {
+    std::slice::from_raw_parts(image as *const u8, 16)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+unsafe fn copy_nvidia_module_image_for_lifter(image: *const std::ffi::c_void) -> Option<Vec<u8>> {
+    let header = std::slice::from_raw_parts(image as *const u8, 16);
+    if header.get(0..4) == Some(b"\x7fELF".as_slice()) {
+        return copy_elf_cubin_image(image);
+    }
+    if header.get(0..4) != Some(HETGPU_FATBIN_MAGIC.as_slice()) {
+        return None;
+    }
+
+    let header_size = read_u16_le(header, 6)? as usize;
+    let files_size = usize::try_from(read_u64_le(header, 8)?).ok()?;
+    let len = header_size.checked_add(files_size)?;
+    if header_size < 16 || len > HETGPU_SASS_MAX_CUBIN_BYTES {
+        return None;
+    }
+    Some(std::slice::from_raw_parts(image as *const u8, len).to_vec())
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+fn try_extract_nvidia_cubin_from_fatbin(data: &[u8]) -> Option<Vec<u8>> {
+    if data.get(0..4) != Some(HETGPU_FATBIN_MAGIC.as_slice()) {
+        return None;
+    }
+
+    let header_size = read_u16_le(data, 6)? as usize;
+    let files_size = usize::try_from(read_u64_le(data, 8)?).ok()?;
+    let end = header_size.checked_add(files_size)?.min(data.len());
+    if header_size >= end {
+        return None;
+    }
+
+    let mut offset = header_size;
+    let mut best: Option<(u32, Vec<u8>)> = None;
+    while offset + HETGPU_FATBIN_FILE_HEADER_MIN_SIZE <= end {
+        let kind = read_u16_le(data, offset)?;
+        let entry_header_size = read_u32_le(data, offset + 4)? as usize;
+        let padded_payload_size = read_u32_le(data, offset + 8)? as usize;
+        let payload_size = read_u32_le(data, offset + 16)? as usize;
+        let sm_version = read_u32_le(data, offset + 28).unwrap_or(0);
+
+        if entry_header_size < HETGPU_FATBIN_FILE_HEADER_MIN_SIZE {
+            break;
+        }
+        let payload_start = offset.checked_add(entry_header_size)?;
+        let payload_end = payload_start.checked_add(payload_size)?;
+        if payload_start > end || payload_end > end {
+            break;
+        }
+
+        if kind == HETGPU_FATBIN_KIND_ELF {
+            let payload = &data[payload_start..payload_end];
+            if let Some(cubin) = nvidia_cubin_payload_view(payload) {
+                if best
+                    .as_ref()
+                    .map(|(best_sm, _)| sm_version >= *best_sm)
+                    .unwrap_or(true)
+                {
+                    best = Some((sm_version, cubin.to_vec()));
+                }
+            }
+        }
+
+        let entry_payload_span = if padded_payload_size > 0 {
+            padded_payload_size
+        } else {
+            (payload_size + 7) & !7
+        };
+        let next = offset
+            .checked_add(entry_header_size)?
+            .checked_add(entry_payload_span)?;
+        if next <= offset {
+            break;
+        }
+        offset = next;
+    }
+
+    if let Some((sm, cubin)) = best {
+        eprintln!(
+            "[hetGPU SASS] selected fatbin CUBIN for NVIDIA module (sm={}, {} bytes)",
+            sm,
+            cubin.len()
+        );
+        return Some(cubin);
+    }
+    None
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
+fn select_nvidia_cubin_for_sass_lifter<'a>(binary: &'a [u8]) -> Option<std::borrow::Cow<'a, [u8]>> {
+    if let Some(cubin) = nvidia_cubin_payload_view(binary) {
+        return Some(std::borrow::Cow::Borrowed(cubin));
+    }
+    if let Some(cubin) = try_extract_nvidia_cubin_from_fatbin(binary) {
+        return Some(std::borrow::Cow::Owned(cubin));
+    }
+    None
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent"),
+    not(feature = "tmatmul")
+))]
 fn try_lift_nvidia_cubin_image(image: *const std::ffi::c_void) -> Option<String> {
     if !sass_lifter_requested() {
         return None;
     }
 
-    let cubin = unsafe { copy_elf_cubin_image(image)? };
-    if !ptx::is_cubin(&cubin) {
+    let module_image = match unsafe { copy_nvidia_module_image_for_lifter(image) } {
+        Some(module_image) => module_image,
+        None => {
+            let first16 = unsafe { nvidia_module_image_first16_hex(image) };
+            eprintln!(
+                "[hetGPU SASS] binary module image is neither ELF CUBIN nor CUDA fatbin (first16={})",
+                first16
+            );
+            return None;
+        }
+    };
+    let cubin = match select_nvidia_cubin_for_sass_lifter(&module_image) {
+        Some(cubin) => cubin,
+        None => {
+            if module_image.get(0..4) == Some(HETGPU_FATBIN_MAGIC.as_slice()) {
+                eprintln!(
+                    "[hetGPU SASS] CUDA fatbin did not contain a raw NVIDIA CUBIN ({} bytes)",
+                    module_image.len()
+                );
+            } else {
+                eprintln!(
+                    "[hetGPU SASS] binary module did not contain an NVIDIA CUBIN ({} bytes)",
+                    module_image.len()
+                );
+            }
+            return None;
+        }
+    };
+    if !ptx::is_cubin(cubin.as_ref()) {
         eprintln!(
-            "[hetGPU SASS] binary module is ELF but not an NVIDIA CUBIN ({} bytes)",
+            "[hetGPU SASS] selected binary payload is not an NVIDIA CUBIN ({} bytes)",
             cubin.len()
         );
         return None;
     }
 
     match ptx::lift_cubin_to_ptx(
-        &cubin,
+        cubin.as_ref(),
         ptx::SassLiftOptions {
             sm_version: 0,
             kernel_name: String::new(),

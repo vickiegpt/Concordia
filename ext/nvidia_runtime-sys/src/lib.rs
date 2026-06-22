@@ -348,6 +348,7 @@ fn cuda_result_to_int(result: CUresult) -> i32 {
 }
 
 pub fn cuDeviceGetCount(count: *mut c_int) -> i32 {
+    let _ = init();
     eprintln!("[hetGPU-nvidia] cuDeviceGetCount called");
     if let Some(funcs) = get_cuda_funcs() {
         eprintln!("[hetGPU-nvidia] got cuda funcs");
@@ -370,6 +371,7 @@ pub fn cuDeviceGetCount(count: *mut c_int) -> i32 {
 }
 
 pub fn cuDeviceGet(device: *mut CUdevice, ordinal: c_int) -> i32 {
+    let _ = init();
     if let Some(funcs) = get_cuda_funcs() {
         if let Some(f) = funcs.cuDeviceGet {
             let result = unsafe { f(device, ordinal) };

@@ -81,14 +81,31 @@ for shard in "${required_shards[@]}"; do
     fi
 done
 
-echo "[kimi-k26-e2e] building libnvcuda.so with NVIDIA passthrough"
-if ! "${CARGO}" build -p zluda --no-default-features --features nvidia >"${WORK_DIR}/logs/cargo-build.log" 2>&1; then
+cargo_features="nvidia"
+if [[ "${HETGPU_KIMI_E2E_USE_CUDART_SHIM:-0}" == "1" ||
+      "${HETGPU_KIMI_E2E_LD_PRELOAD:-}" == *"libhetgpu_cuda_shim.so"* ]]; then
+    cargo_features="nvidia,embed_cudart"
+fi
+
+echo "[kimi-k26-e2e] building libnvcuda.so with features ${cargo_features}"
+if ! "${CARGO}" build -p zluda --no-default-features --features "${cargo_features}" >"${WORK_DIR}/logs/cargo-build.log" 2>&1; then
     cargo_log_bytes="$(stat -c%s "${WORK_DIR}/logs/cargo-build.log")"
     append_row "run_failed" 0 1 0 "${cargo_log_bytes}" 0 0 0 "cargo_build_failed"
     echo "[kimi-k26-e2e] CSV: ${csv}" >&2
     finish_non_pass "run_failed" "${WORK_DIR}/logs/cargo-build.log"
     exit 0
 fi
+
+if [[ -n "${HETGPU_KIMI_E2E_LD_PRELOAD:-}" ]]; then
+    kimi_ld_preload="${HETGPU_KIMI_E2E_LD_PRELOAD}"
+elif [[ "${HETGPU_KIMI_E2E_USE_CUDART_SHIM:-0}" == "1" ]]; then
+    kimi_ld_preload="${REPO_ROOT}/target/debug/libhetgpu_cuda_shim.so:${REPO_ROOT}/target/debug/libnvcuda.so"
+else
+    kimi_ld_preload="${REPO_ROOT}/target/debug/libnvcuda.so"
+fi
+kimi_cudart_defer_module_load="${HETGPU_KIMI_E2E_CUDART_DEFER_MODULE_LOAD:-${HETGPU_CUDART_DEFER_MODULE_LOAD:-0}}"
+kimi_gpu_layers="${HETGPU_KIMI_E2E_N_GPU_LAYERS:-${LLAMA_ARG_N_GPU_LAYERS:-1}}"
+kimi_extra_llama_args="${HETGPU_KIMI_E2E_EXTRA_LLAMA_ARGS:-${KIMI_EXTRA_LLAMA_ARGS:-}}"
 
 stdout_log="${WORK_DIR}/logs/kimi.stdout"
 stderr_log="${WORK_DIR}/logs/kimi.stderr"
@@ -98,12 +115,16 @@ prompt="${KIMI_PROMPT:-Say that you have started in one short sentence.}"
 start_ms="$(date +%s%3N)"
 set +e
 env \
-    LD_PRELOAD="${REPO_ROOT}/target/debug/libnvcuda.so" \
+    LD_PRELOAD="${kimi_ld_preload}" \
+    HETGPU_KIMI_E2E_EFFECTIVE_LD_PRELOAD="${kimi_ld_preload}" \
     HETGPU_SASS_LIFTER_LOG=1 \
     HETGPU_SASS_LIFTER_DUMP="${ptx_dump}" \
+    HETGPU_CUDART_DEFER_MODULE_LOAD="${kimi_cudart_defer_module_load}" \
     BITNET_LLAMA_CLI="${runner}" \
     MODEL_DIR="${model_dir}" \
     MODEL_PREFIX="${model_prefix}" \
+    LLAMA_ARG_N_GPU_LAYERS="${kimi_gpu_layers}" \
+    KIMI_EXTRA_LLAMA_ARGS="${kimi_extra_llama_args}" \
     "${REPO_ROOT}/tools/run_kimi_k26_iq1m_bitnet.sh" "${prompt}" \
     >"${stdout_log}" 2>"${stderr_log}"
 exit_code="$?"
@@ -130,6 +151,9 @@ if [[ "${exit_code}" != "0" ]]; then
 elif [[ "${stdout_bytes}" == "0" ]]; then
     status="empty_output"
     message="empty_stdout"
+elif grep -Eq 'ggml_cuda_init: failed to initialize CUDA|not compiled with GPU offload support|cuDeviceGetCount returned .*count=0|offloading 0 repeating layers|offloaded 0/' "${stderr_log}"; then
+    status="skipped_no_cuda_offload"
+    message="no_cuda_offload"
 elif [[ "${lifter_markers}" == "0" ]]; then
     status="missing_lifter_marker"
     message="no_lifter_marker"

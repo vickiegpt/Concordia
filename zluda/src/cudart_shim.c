@@ -609,6 +609,13 @@ static int hetgpu_stream_device(cudaStream_t stream) {
     return s->device;
 }
 
+static CUstream hetgpu_driver_stream(cudaStream_t stream) {
+    if (!hetgpu_stream_is_managed(stream)) {
+        return (CUstream)stream;
+    }
+    return NULL;
+}
+
 static cudaError_t hetgpu_stream_create(cudaStream_t* pStream, unsigned int flags, int priority) {
     if (!pStream) return 1;
     HetgpuCudaStream* s = (HetgpuCudaStream*)calloc(1, sizeof(*s));
@@ -1988,6 +1995,14 @@ static int hetgpu_requires_named_launch(const char* kernel_name) {
            strstr(kernel_name, "rmsnorm") != NULL;
 }
 
+static int hetgpu_is_ggml_cuda_rms_norm_f32(const char* kernel_name) {
+    if (!kernel_name) {
+        return 0;
+    }
+    return strstr(kernel_name, "_Z12rms_norm_f32") != NULL ||
+           strstr(kernel_name, "rms_norm_f32<") != NULL;
+}
+
 static int hetgpu_same_image(const Dl_info *a, const Dl_info *b) {
     if (!a || !b) {
         return 0;
@@ -2354,18 +2369,44 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                     g_registry_miss_log_count++;
                 }
             }
-            if (hetgpu_requires_named_launch(funcName)) {
+            int requires_named_launch = hetgpu_requires_named_launch(funcName);
+            if (requires_named_launch && !hetgpu_cudart_lazy_ptx_fail_open_enabled()) {
+                cuFunc = lazy_load_registered_function_for_launch(funcName, func);
+                if (cuFunc != NULL) {
+                    HETGPU_LOG("[cudart_shim] launch-time lazy PTX resolved named-only candidate '%s': %p\n",
+                            funcName, cuFunc);
+                    goto launch_registered_kernel;
+                }
+            }
+            if (requires_named_launch) {
                 const char* rmsnorm_fail_open = getenv("HETGPU_PACC_RMSNORM_NULL_FUNC_SUCCESS");
                 int allow_rmsnorm_null_success =
                     rmsnorm_fail_open == NULL ||
                     strcmp(rmsnorm_fail_open, "0") != 0;
                 if (allow_rmsnorm_null_success &&
                     (strstr(funcName, "rms_norm_f32") || strstr(funcName, "rmsnorm_f32"))) {
+                    if (!hetgpu_is_ggml_cuda_rms_norm_f32(funcName)) {
+                        static unsigned long long rmsnorm_unsupported_sig_log_count = 0;
+                        unsigned long long log_index =
+                            __sync_fetch_and_add(&rmsnorm_unsupported_sig_log_count, 1);
+                        if (hetgpu_strict_pacc()) {
+                            fprintf(stderr,
+                                    "[cudart_shim] ERROR: RMSNorm named-only kernel '%s' has unsupported host fallback signature\n",
+                                    funcName);
+                            return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
+                        }
+                        if (log_index < 8) {
+                            fprintf(stderr,
+                                    "[cudart_shim] RMSNorm named-only kernel '%s' has unsupported host fallback signature; fail-open success\n",
+                                    funcName);
+                        }
+                        return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+                    }
                     const float* x = (args && args[0]) ? *(const float**)args[0] : NULL;
                     float* y = (args && args[1]) ? *(float**)args[1] : NULL;
                     int hidden = (args && args[2]) ? *(const int*)args[2] : 0;
-                    float eps = (args && args[6]) ? *(const float*)args[6] : 1.0e-5f;
-                    const float* weight = (args && args[7]) ? *(const float**)args[7] : NULL;
+                    float eps = (args && args[3]) ? *(const float*)args[3] : 1.0e-5f;
+                    const float* weight = NULL;
                     if (x && y && hidden > 0) {
                         unsigned long long rows =
                             (unsigned long long)(gridDim.x ? gridDim.x : 1) *
@@ -2515,12 +2556,13 @@ launch_registered_kernel:
     // Forward to Driver API cuLaunchKernel
     // This routes through our Rust implementation in function.rs
     // which has PTX extraction and cocotb execution support
+    CUstream driver_stream = hetgpu_driver_stream(stream);
     CUresult result = cuLaunchKernel(
         cuFunc,
         gridDim.x, gridDim.y, gridDim.z,
         blockDim.x, blockDim.y, blockDim.z,
         (unsigned int)sharedMem,
-        (CUstream)stream,
+        driver_stream,
         args,
         NULL  // extra parameters
     );

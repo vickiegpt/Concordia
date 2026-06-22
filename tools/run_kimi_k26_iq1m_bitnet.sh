@@ -9,6 +9,7 @@ threads="${THREADS:-$(nproc)}"
 ctx_size="${CTX_SIZE:-4096}"
 predict="${N_PREDICT:-64}"
 temp="${TEMP:-0.6}"
+gpu_layers="${LLAMA_ARG_N_GPU_LAYERS:-${N_GPU_LAYERS:-}}"
 system_prompt="${SYSTEM_PROMPT:-You are Kimi, an AI assistant created by Moonshot AI.}"
 user_prompt="${1:-用一句中文说明你已经启动。}"
 
@@ -34,6 +35,13 @@ prompt="[BOS]<|im_system|>system<|im_middle|>${system_prompt}<|im_end|><|im_user
 extra_args=()
 if [[ "${NO_WARMUP:-0}" == "1" ]]; then
     extra_args+=(--no-warmup)
+fi
+if [[ -n "${gpu_layers}" ]]; then
+    extra_args+=(--n-gpu-layers "${gpu_layers}")
+fi
+if [[ -n "${KIMI_EXTRA_LLAMA_ARGS:-}" ]]; then
+    read -r -a kimi_extra_args <<<"${KIMI_EXTRA_LLAMA_ARGS}"
+    extra_args+=("${kimi_extra_args[@]}")
 fi
 
 exec "$runner" \
