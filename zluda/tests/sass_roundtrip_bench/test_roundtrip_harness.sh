@@ -8,6 +8,8 @@ cases="$("${SCRIPT_DIR}/run.sh" --list-cases)"
 grep -Fxq "int_add" <<<"${cases}"
 grep -Fxq "pred_select" <<<"${cases}"
 grep -Fxq "fma_bits" <<<"${cases}"
+grep -Fxq "popc_shf_mix" <<<"${cases}"
+grep -Fxq "global_offset_pair" <<<"${cases}"
 grep -Fxq "shared_reverse" <<<"${cases}"
 grep -Fxq "kimi_iq1m_unpack" <<<"${cases}"
 grep -Fxq "kimi_rmsnorm_bits" <<<"${cases}"
@@ -26,6 +28,8 @@ csv="${work_dir}/bench.csv"
 test -s "${csv}"
 head -n 1 "${csv}" | grep -Fxq "case,sm,status,cubin_bytes,lifted_ptx_bytes,lift_diagnostics,load_cubin_us,load_ptx_us,kernel_cubin_us,kernel_ptx_us,total_us,message"
 grep -Fq "int_add,sm_120,dry_run" "${csv}"
+grep -Fq "popc_shf_mix,sm_120,dry_run" "${csv}"
+grep -Fq "global_offset_pair,sm_120,dry_run" "${csv}"
 
 custom_work_dir="$(mktemp -d /tmp/hetgpu-roundtrip-custom-test.XXXXXX)"
 trap 'rm -rf "${work_dir}" "${custom_work_dir}"' EXIT
@@ -69,6 +73,18 @@ do
     grep -Fq ".param .u32 n" "${ptx_file}"
 done
 
+for scalar_case in \
+    popc_shf_mix \
+    global_offset_pair
+do
+    ptx_file="${SCRIPT_DIR}/ptx/${scalar_case}.ptx"
+    test -s "${ptx_file}"
+    grep -Fq ".visible .entry ${scalar_case}(" "${ptx_file}"
+    grep -Fq ".param .u64 out" "${ptx_file}"
+    grep -Fq ".param .u64 in" "${ptx_file}"
+    grep -Fq ".param .u32 n" "${ptx_file}"
+done
+
 if rg -q "list-gpu-code" "${SCRIPT_DIR}/run.sh"; then
     echo "round-trip bench should validate PTX support through ptxas, not nvcc --list-gpu-code" >&2
     exit 1
@@ -84,12 +100,26 @@ rg -q 'LLAMA_ARG_N_GPU_LAYERS="\$\{kimi_gpu_layers\}"' "${SCRIPT_DIR}/run_kimi_k
 rg -q 'HETGPU_KIMI_E2E_EXTRA_LLAMA_ARGS' "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
 rg -q 'HETGPU_KIMI_E2E_CUDART_COMPUTE_CAPABILITY' "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
 rg -q 'skipped_no_cuda_offload' "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
+rg -q 'HETGPU_ROUNDTRIP_WORKDIR="\$\{WORK_DIR\}/ld_preload_roundtrip"' "${SCRIPT_DIR}/run_correctness_suite.sh"
+rg -q 'HETGPU_KIMI_E2E_WORKDIR="\$\{WORK_DIR\}/kimi_e2e"' "${SCRIPT_DIR}/run_correctness_suite.sh"
+rg -q 'HETGPU_ROUNDTRIP_KEEP=1' "${SCRIPT_DIR}/run_correctness_suite.sh"
+rg -q 'HETGPU_KIMI_E2E_KEEP=1' "${SCRIPT_DIR}/run_correctness_suite.sh"
+rg -q 'append_roundtrip_csv_summary' "${SCRIPT_DIR}/run_correctness_suite.sh"
+rg -q 'append_kimi_e2e_csv_summary' "${SCRIPT_DIR}/run_correctness_suite.sh"
+rg -q 'kimi_e2e_child_status' "${SCRIPT_DIR}/run_correctness_suite.sh"
+rg -q 'ld_preload_roundtrip_cases' "${SCRIPT_DIR}/run_correctness_suite.sh"
 rg -q 'hetgpu_driver_stream' "${REPO_ROOT}/zluda/src/cudart_shim.c"
 rg -q 'CUstream driver_stream = hetgpu_driver_stream\(stream\);' "${REPO_ROOT}/zluda/src/cudart_shim.c"
 rg -q 'HETGPU_CUDART_COMPUTE_CAPABILITY' "${REPO_ROOT}/zluda/src/cudart_shim.c"
 rg -q 'hetgpu_cudart_compute_capability' "${REPO_ROOT}/zluda/src/cudart_shim.c"
 if rg -q '\(CUstream\)stream,' "${REPO_ROOT}/zluda/src/cudart_shim.c"; then
     echo "cudart shim must not pass managed cudaStream_t wrappers directly to driver cuLaunchKernel" >&2
+    exit 1
+fi
+rg -q 'hetgpu_resolve_pacc_submit_gemm_mmvf_small_n_fn' "${REPO_ROOT}/zluda/src/cublas_shim.c"
+rg -q 'hetgpu_pacc_submit_gemm_mmvf_small_n_checked' "${REPO_ROOT}/zluda/src/cublas_shim.c"
+if rg -q '^extern int hetgpu_pacc_submit_gemm' "${REPO_ROOT}/zluda/src/cublas_shim.c"; then
+    echo "cublas shim must resolve optional PACC GEMM submit symbols lazily, not require externs at load time" >&2
     exit 1
 fi
 rg -q 'hetgpu_is_ggml_cuda_rms_norm_f32' "${REPO_ROOT}/zluda/src/cudart_shim.c"
@@ -180,8 +210,22 @@ fi
 e2e_marker_csv="${e2e_marker_work_dir}/bench_kimi_k26_e2e.csv"
 grep -Fq "kimi_k26_iq1m,missing_lifter_dump_marker" "${e2e_marker_csv}"
 
+e2e_ptx_only_work_dir="$(mktemp -d /tmp/hetgpu-kimi-e2e-ptx-only-test.XXXXXX)"
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_ptx_only_work_dir}"' EXIT
+fake_ptx_only_runner="${e2e_ptx_only_work_dir}/fake-ptx-only-llama-cli"
+printf '#!/usr/bin/env bash\nprintf "fake kimi output\\n"\nprintf "[NVIDIA Backend] Detected PTX source (123 bytes)\\n" >&2\n' >"${fake_ptx_only_runner}"
+chmod +x "${fake_ptx_only_runner}"
+HETGPU_KIMI_E2E_WORKDIR="${e2e_ptx_only_work_dir}" \
+BITNET_LLAMA_CLI="${fake_ptx_only_runner}" \
+MODEL_DIR="${fake_model_dir}" \
+MODEL_PREFIX=moonshotai_Kimi-K2.6-IQ1_S \
+CARGO=/bin/true \
+    "${SCRIPT_DIR}/run_kimi_k26_e2e.sh" >/dev/null 2>&1
+e2e_ptx_only_csv="${e2e_ptx_only_work_dir}/bench_kimi_k26_e2e.csv"
+grep -Fq "kimi_k26_iq1m,pass_ptx_only" "${e2e_ptx_only_csv}"
+
 e2e_no_cuda_work_dir="$(mktemp -d /tmp/hetgpu-kimi-e2e-no-cuda-test.XXXXXX)"
-trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_no_cuda_work_dir}"' EXIT
+trap 'rm -rf "${work_dir}" "${custom_work_dir}" "${kimi_work_dir}" "${proof_work_dir}" "${e2e_work_dir}" "${e2e_model_work_dir}" "${e2e_comma_work_dir}" "${e2e_marker_work_dir}" "${e2e_ptx_only_work_dir}" "${e2e_no_cuda_work_dir}"' EXIT
 fake_no_cuda_runner="${e2e_no_cuda_work_dir}/fake-no-cuda-llama-cli"
 {
     printf '%s\n' '#!/usr/bin/env bash'

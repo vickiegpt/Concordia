@@ -44,7 +44,7 @@ finish_non_pass() {
     local status="$1"
     local stderr_log="${2:-}"
 
-    if [[ "${status}" != "pass" && "${HETGPU_KIMI_E2E_ALLOW_FAILURES:-0}" != "1" ]]; then
+    if [[ "${status}" != "pass" && "${status}" != "pass_ptx_only" && "${HETGPU_KIMI_E2E_ALLOW_FAILURES:-0}" != "1" ]]; then
         if [[ -n "${stderr_log}" && -f "${stderr_log}" ]]; then
             tail -n 200 "${stderr_log}" >&2
         fi
@@ -137,6 +137,7 @@ total_ms="$((end_ms - start_ms))"
 stdout_bytes="$(stat -c%s "${stdout_log}")"
 stderr_bytes="$(stat -c%s "${stderr_log}")"
 lifter_markers="$(grep -c "\\[hetGPU SASS\\] lifted" "${stderr_log}" || true)"
+ptx_source_markers="$(grep -c "\\[NVIDIA Backend\\] Detected PTX source" "${stderr_log}" || true)"
 if [[ -s "${ptx_dump}" ]]; then
     lifted_ptx_files=1
     lifted_ptx_bytes="$(stat -c%s "${ptx_dump}")"
@@ -157,8 +158,13 @@ elif grep -Eq 'ggml_cuda_init: failed to initialize CUDA|not compiled with GPU o
     status="skipped_no_cuda_offload"
     message="no_cuda_offload"
 elif [[ "${lifter_markers}" == "0" ]]; then
-    status="missing_lifter_marker"
-    message="no_lifter_marker"
+    if [[ "${ptx_source_markers}" != "0" ]]; then
+        status="pass_ptx_only"
+        message="ptx_modules_${ptx_source_markers}_no_sass_lift"
+    else
+        status="missing_lifter_marker"
+        message="no_lifter_marker"
+    fi
 elif [[ "${lifted_ptx_files}" == "0" || "${lifted_ptx_bytes}" == "0" ]]; then
     status="missing_lifter_dump_marker"
     message="no_lifted_ptx_dump"

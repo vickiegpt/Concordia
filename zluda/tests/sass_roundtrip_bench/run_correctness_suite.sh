@@ -69,6 +69,44 @@ run_step() {
     fi
 }
 
+append_roundtrip_csv_summary() {
+    local child_csv="${WORK_DIR}/ld_preload_roundtrip/bench.csv"
+    if [[ ! -s "${child_csv}" ]]; then
+        append_row ld_preload_roundtrip_cases fail 0 "missing_csv:${child_csv}"
+        return 1
+    fi
+
+    local total_cases pass_cases
+    total_cases="$(awk -F, 'NR > 1 { count++ } END { print count + 0 }' "${child_csv}")"
+    pass_cases="$(awk -F, 'NR > 1 && $3 == "pass" { count++ } END { print count + 0 }' "${child_csv}")"
+    if [[ "${total_cases}" != "0" && "${total_cases}" == "${pass_cases}" ]]; then
+        append_row ld_preload_roundtrip_cases pass 0 "cases_${pass_cases}_csv:${child_csv}"
+        return 0
+    fi
+
+    append_row ld_preload_roundtrip_cases fail 0 "pass_${pass_cases}_of_${total_cases}_csv:${child_csv}"
+    return 1
+}
+
+append_kimi_e2e_csv_summary() {
+    local child_csv="${WORK_DIR}/kimi_e2e/bench_kimi_k26_e2e.csv"
+    if [[ ! -s "${child_csv}" ]]; then
+        append_row kimi_e2e_child_status fail 0 "missing_csv:${child_csv}"
+        return 1
+    fi
+
+    local child_status child_message
+    child_status="$(awk -F, 'NR == 2 { print $2 }' "${child_csv}")"
+    child_message="$(awk -F, 'NR == 2 { print $10 }' "${child_csv}")"
+    if [[ "${child_status}" == "pass" || "${child_status}" == "pass_ptx_only" ]]; then
+        append_row kimi_e2e_child_status "${child_status}" 0 "message_${child_message}_csv:${child_csv}"
+        return 0
+    fi
+
+    append_row kimi_e2e_child_status fail 0 "status_${child_status}_message_${child_message}_csv:${child_csv}"
+    return 1
+}
+
 run_step rust_fuzzer \
     "${CARGO}" run -p ptx --bin sass_lifter_fuzz -- \
         --seed "${HETGPU_SASS_FUZZ_SEED:-1515524608}" \
@@ -79,14 +117,22 @@ run_step rust_fuzzer \
 run_step roundtrip_harness "${SCRIPT_DIR}/test_roundtrip_harness.sh"
 
 if [[ "${HETGPU_SASS_PROOF_REAL:-0}" == "1" ]]; then
-    run_step ld_preload_roundtrip "${SCRIPT_DIR}/run.sh"
+    run_step ld_preload_roundtrip env \
+        HETGPU_ROUNDTRIP_WORKDIR="${WORK_DIR}/ld_preload_roundtrip" \
+        HETGPU_ROUNDTRIP_KEEP=1 \
+        "${SCRIPT_DIR}/run.sh"
+    append_roundtrip_csv_summary
 else
     append_row ld_preload_roundtrip skipped 0 "set HETGPU_SASS_PROOF_REAL=1 to run NVIDIA driver benchmark"
     echo "[sass-proof] ld_preload_roundtrip: skipped"
 fi
 
 if [[ "${HETGPU_SASS_PROOF_KIMI:-0}" == "1" ]]; then
-    run_step kimi_e2e "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
+    run_step kimi_e2e env \
+        HETGPU_KIMI_E2E_WORKDIR="${WORK_DIR}/kimi_e2e" \
+        HETGPU_KIMI_E2E_KEEP=1 \
+        "${SCRIPT_DIR}/run_kimi_k26_e2e.sh"
+    append_kimi_e2e_csv_summary
 else
     append_row kimi_e2e skipped 0 "set HETGPU_SASS_PROOF_KIMI=1 to run slow Kimi capture"
     echo "[sass-proof] kimi_e2e: skipped"

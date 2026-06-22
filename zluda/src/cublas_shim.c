@@ -170,7 +170,7 @@ static int hetgpu_cublas_trace_enabled(void) {
 static cublasMath_t g_math_mode = CUBLAS_DEFAULT_MATH;
 static size_t host_dtype_size(cudaDataType type);
 
-extern int hetgpu_pacc_submit_gemm(
+typedef int (*hetgpu_pacc_submit_gemm_fn)(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -178,7 +178,7 @@ extern int hetgpu_pacc_submit_gemm(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType);
-extern int hetgpu_pacc_submit_gemm_staged(
+typedef int (*hetgpu_pacc_submit_gemm_staged_fn)(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -186,7 +186,7 @@ extern int hetgpu_pacc_submit_gemm_staged(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType);
-extern int hetgpu_pacc_submit_gemm_staged_on(
+typedef int (*hetgpu_pacc_submit_gemm_staged_on_fn)(
     int dev_id, int slot_id,
     int transa, int transb, int m, int n, int k,
     const void *alpha,
@@ -195,7 +195,7 @@ extern int hetgpu_pacc_submit_gemm_staged_on(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType);
-extern int hetgpu_pacc_submit_gemm_staged_tiled(
+typedef int (*hetgpu_pacc_submit_gemm_staged_tiled_fn)(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -204,7 +204,7 @@ extern int hetgpu_pacc_submit_gemm_staged_tiled(
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType,
     int max_m, int max_n, int max_k);
-extern int hetgpu_pacc_submit_gemm_mmvf_small_n(
+typedef int (*hetgpu_pacc_submit_gemm_mmvf_small_n_fn)(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -221,6 +221,177 @@ static void *hetgpu_resolve_runtime_symbol(const char *name) {
     dlerror();
     void *sym = dlsym(RTLD_DEFAULT, name);
     return sym;
+}
+
+static int hetgpu_pacc_missing_submit_symbol(const char *name) {
+    DEBUG_LOG("optional PACC GEMM submit symbol is unavailable: %s", name);
+    return -127;
+}
+
+static hetgpu_pacc_submit_gemm_fn hetgpu_resolve_pacc_submit_gemm_fn(void) {
+    static hetgpu_pacc_submit_gemm_fn fn = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        attempted = 1;
+        fn = (hetgpu_pacc_submit_gemm_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_pacc_submit_gemm");
+    }
+    return fn;
+}
+
+static hetgpu_pacc_submit_gemm_staged_fn hetgpu_resolve_pacc_submit_gemm_staged_fn(void) {
+    static hetgpu_pacc_submit_gemm_staged_fn fn = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        attempted = 1;
+        fn = (hetgpu_pacc_submit_gemm_staged_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_pacc_submit_gemm_staged");
+    }
+    return fn;
+}
+
+static hetgpu_pacc_submit_gemm_staged_on_fn hetgpu_resolve_pacc_submit_gemm_staged_on_fn(void) {
+    static hetgpu_pacc_submit_gemm_staged_on_fn fn = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        attempted = 1;
+        fn = (hetgpu_pacc_submit_gemm_staged_on_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_pacc_submit_gemm_staged_on");
+    }
+    return fn;
+}
+
+static hetgpu_pacc_submit_gemm_staged_tiled_fn hetgpu_resolve_pacc_submit_gemm_staged_tiled_fn(void) {
+    static hetgpu_pacc_submit_gemm_staged_tiled_fn fn = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        attempted = 1;
+        fn = (hetgpu_pacc_submit_gemm_staged_tiled_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_pacc_submit_gemm_staged_tiled");
+    }
+    return fn;
+}
+
+static hetgpu_pacc_submit_gemm_mmvf_small_n_fn hetgpu_resolve_pacc_submit_gemm_mmvf_small_n_fn(void) {
+    static hetgpu_pacc_submit_gemm_mmvf_small_n_fn fn = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        attempted = 1;
+        fn = (hetgpu_pacc_submit_gemm_mmvf_small_n_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_pacc_submit_gemm_mmvf_small_n");
+    }
+    return fn;
+}
+
+static int hetgpu_pacc_submit_gemm_checked(
+    int transa, int transb, int m, int n, int k,
+    const void *alpha,
+    const void *A, int Atype, int lda, long long strideA,
+    const void *B, int Btype, int ldb, long long strideB,
+    const void *beta,
+    void *C, int Ctype, int ldc, long long strideC,
+    int batchCount, int computeType) {
+    hetgpu_pacc_submit_gemm_fn fn = hetgpu_resolve_pacc_submit_gemm_fn();
+    if (!fn) {
+        return hetgpu_pacc_missing_submit_symbol("hetgpu_pacc_submit_gemm");
+    }
+    return fn(transa, transb, m, n, k,
+              alpha,
+              A, Atype, lda, strideA,
+              B, Btype, ldb, strideB,
+              beta,
+              C, Ctype, ldc, strideC,
+              batchCount, computeType);
+}
+
+static int hetgpu_pacc_submit_gemm_staged_checked(
+    int transa, int transb, int m, int n, int k,
+    const void *alpha,
+    const void *A, int Atype, int lda, long long strideA,
+    const void *B, int Btype, int ldb, long long strideB,
+    const void *beta,
+    void *C, int Ctype, int ldc, long long strideC,
+    int batchCount, int computeType) {
+    hetgpu_pacc_submit_gemm_staged_fn fn = hetgpu_resolve_pacc_submit_gemm_staged_fn();
+    if (!fn) {
+        return hetgpu_pacc_missing_submit_symbol("hetgpu_pacc_submit_gemm_staged");
+    }
+    return fn(transa, transb, m, n, k,
+              alpha,
+              A, Atype, lda, strideA,
+              B, Btype, ldb, strideB,
+              beta,
+              C, Ctype, ldc, strideC,
+              batchCount, computeType);
+}
+
+static int hetgpu_pacc_submit_gemm_staged_on_checked(
+    int dev_id, int slot_id,
+    int transa, int transb, int m, int n, int k,
+    const void *alpha,
+    const void *A, int Atype, int lda, long long strideA,
+    const void *B, int Btype, int ldb, long long strideB,
+    const void *beta,
+    void *C, int Ctype, int ldc, long long strideC,
+    int batchCount, int computeType) {
+    hetgpu_pacc_submit_gemm_staged_on_fn fn = hetgpu_resolve_pacc_submit_gemm_staged_on_fn();
+    if (!fn) {
+        return hetgpu_pacc_missing_submit_symbol("hetgpu_pacc_submit_gemm_staged_on");
+    }
+    return fn(dev_id, slot_id,
+              transa, transb, m, n, k,
+              alpha,
+              A, Atype, lda, strideA,
+              B, Btype, ldb, strideB,
+              beta,
+              C, Ctype, ldc, strideC,
+              batchCount, computeType);
+}
+
+static int hetgpu_pacc_submit_gemm_staged_tiled_checked(
+    int transa, int transb, int m, int n, int k,
+    const void *alpha,
+    const void *A, int Atype, int lda, long long strideA,
+    const void *B, int Btype, int ldb, long long strideB,
+    const void *beta,
+    void *C, int Ctype, int ldc, long long strideC,
+    int batchCount, int computeType,
+    int max_m, int max_n, int max_k) {
+    hetgpu_pacc_submit_gemm_staged_tiled_fn fn =
+        hetgpu_resolve_pacc_submit_gemm_staged_tiled_fn();
+    if (!fn) {
+        return hetgpu_pacc_missing_submit_symbol("hetgpu_pacc_submit_gemm_staged_tiled");
+    }
+    return fn(transa, transb, m, n, k,
+              alpha,
+              A, Atype, lda, strideA,
+              B, Btype, ldb, strideB,
+              beta,
+              C, Ctype, ldc, strideC,
+              batchCount, computeType,
+              max_m, max_n, max_k);
+}
+
+static int hetgpu_pacc_submit_gemm_mmvf_small_n_checked(
+    int transa, int transb, int m, int n, int k,
+    const void *alpha,
+    const void *A, int Atype, int lda, long long strideA,
+    const void *B, int Btype, int ldb, long long strideB,
+    const void *beta,
+    void *C, int Ctype, int ldc, long long strideC,
+    int batchCount, int computeType) {
+    hetgpu_pacc_submit_gemm_mmvf_small_n_fn fn =
+        hetgpu_resolve_pacc_submit_gemm_mmvf_small_n_fn();
+    if (!fn) {
+        return hetgpu_pacc_missing_submit_symbol("hetgpu_pacc_submit_gemm_mmvf_small_n");
+    }
+    return fn(transa, transb, m, n, k,
+              alpha,
+              A, Atype, lda, strideA,
+              B, Btype, ldb, strideB,
+              beta,
+              C, Ctype, ldc, strideC,
+              batchCount, computeType);
 }
 
 static hetgpu_pacc_resolve_device_addr_fn hetgpu_resolve_device_addr_fn(void) {
@@ -274,6 +445,11 @@ static size_t hetgpu_pacc_allocation_remaining_checked(const void *ptr) {
 #define hetgpu_pacc_resolve_device_addr hetgpu_pacc_resolve_device_addr_checked
 #define hetgpu_pacc_is_device_ptr hetgpu_pacc_is_device_ptr_checked
 #define hetgpu_pacc_allocation_remaining hetgpu_pacc_allocation_remaining_checked
+#define hetgpu_pacc_submit_gemm hetgpu_pacc_submit_gemm_checked
+#define hetgpu_pacc_submit_gemm_staged hetgpu_pacc_submit_gemm_staged_checked
+#define hetgpu_pacc_submit_gemm_staged_on hetgpu_pacc_submit_gemm_staged_on_checked
+#define hetgpu_pacc_submit_gemm_staged_tiled hetgpu_pacc_submit_gemm_staged_tiled_checked
+#define hetgpu_pacc_submit_gemm_mmvf_small_n hetgpu_pacc_submit_gemm_mmvf_small_n_checked
 extern cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind kind);
 
 static int hetgpu_env_is_one(const char *name) {

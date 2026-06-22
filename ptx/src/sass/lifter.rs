@@ -409,6 +409,7 @@ impl<'a> LiftContext<'a> {
             "LOP3" if is_lop3_and(inst) => Some(lop3_binary_op(inst, &pred, "and")),
             "LOP3" if is_lop3_or(inst) => Some(lop3_binary_op(inst, &pred, "or")),
             "LOP3" if is_lop3_xor(inst) => Some(lop3_xor_op(inst, &pred)),
+            "LOP3" if is_lop3_lut(inst) => Some(lop3_lut_op(inst, &pred)),
             "LOP3" => self.unsupported(inst, "LOP3 truth-table lifting is not implemented"),
             "POPC" => Some(unary_op(inst, &pred, "popc", "b32")),
             "FADD" => Some(float_binary_op(
@@ -798,6 +799,33 @@ fn iadd3_extended_op(inst: &EnhancedSassInstruction, pred: &str, ty: &str) -> St
 
 fn lop3_xor_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     lop3_binary_op(inst, pred, "xor")
+}
+
+fn lop3_lut_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src2 = inst
+        .src_operands
+        .get(2)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let lut = match inst.src_operands.get(3) {
+        Some(SassOperand::Immediate(value)) => value & 0xff,
+        _ => 0,
+    };
+    format!(
+        "{}lop3.b32 {}, {}, {}, {}, 0x{:02x};",
+        pred, dst, src0, src1, src2, lut
+    )
 }
 
 fn lop3_binary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str) -> String {
@@ -1325,6 +1353,21 @@ fn is_lop3_and(inst: &EnhancedSassInstruction) -> bool {
 
 fn is_lop3_or(inst: &EnhancedSassInstruction) -> bool {
     is_lop3_binary_truth_table(inst, 0xfc)
+}
+
+fn is_lop3_lut(inst: &EnhancedSassInstruction) -> bool {
+    inst.opcode == "LOP3"
+        && inst.src_operands.len() >= 4
+        && matches!(inst.src_operands.get(3), Some(SassOperand::Immediate(_)))
+        && !matches!(
+            inst.dest_operands.first(),
+            Some(SassOperand::Register(reg))
+                if reg.prefix == "P" || reg.prefix == "UP" || reg.prefix == "PT"
+        )
+        && !matches!(
+            inst.dest_operands.first(),
+            Some(SassOperand::Predicate { .. })
+        )
 }
 
 fn is_lop3_binary_truth_table(inst: &EnhancedSassInstruction, lut: i64) -> bool {
@@ -1907,7 +1950,7 @@ Function : kernel
     }
 
     #[test]
-    fn sass_lifter_reports_lop3_instead_of_lowering_to_and() {
+    fn sass_lifter_emits_generic_lop3_lut() {
         let mut lop3 = EnhancedSassInstruction::new("LOP3".to_string(), 0x0);
         lop3.data_type = Some(SassDataType::B32);
         lop3.dest_operands.push(reg(0));
@@ -1918,15 +1961,8 @@ Function : kernel
 
         let result = lift_instructions_to_ptx(&[lop3], &SassLiftOptions::default());
 
-        assert_eq!(result.diagnostics.len(), 1);
-        assert_eq!(result.diagnostics[0].opcode, "LOP3");
-        assert_eq!(
-            result.diagnostics[0].message,
-            "LOP3 truth-table lifting is not implemented"
-        );
-        assert!(result.ptx.contains(
-            "unsupported SASS LOP3 at 0x0000: LOP3 truth-table lifting is not implemented"
-        ));
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("lop3.b32 %r0, %r1, %r2, %r3, 0xca;"));
         assert!(!result.ptx.contains("and.b32"));
     }
 

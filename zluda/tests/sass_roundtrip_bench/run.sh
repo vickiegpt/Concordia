@@ -8,6 +8,8 @@ CASES=(
     int_add
     pred_select
     fma_bits
+    popc_shf_mix
+    global_offset_pair
     shared_reverse
     kimi_iq1m_unpack
     kimi_rmsnorm_bits
