@@ -60,6 +60,9 @@ pub mod ze_module;
 #[cfg(feature = "intel")]
 pub(crate) mod cxl_tmatmul;
 
+#[cfg(feature = "intel")]
+pub(crate) mod bitnet_disagg;
+
 // TMatmul assembly interpreter (virtual backend execution engine)
 #[cfg(feature = "intel")]
 pub(crate) mod tmatmul_interpreter;
