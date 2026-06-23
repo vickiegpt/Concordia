@@ -1922,6 +1922,7 @@ fn get_modes<T: ast::Operand>(inst: &ast::Instruction<T>) -> InstructionModes {
         | ast::Instruction::Not { .. }
         | ast::Instruction::Or { .. }
         | ast::Instruction::And { .. }
+        | ast::Instruction::Lop3 { .. }
         | ast::Instruction::Bra { .. }
         | ast::Instruction::Clz { .. }
         | ast::Instruction::Brev { .. }

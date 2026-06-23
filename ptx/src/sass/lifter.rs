@@ -279,9 +279,59 @@ struct LiftContext<'a> {
     diagnostics: Vec<SassLiftDiagnostic>,
     branch_targets: HashSet<u64>,
     scratch_gpr: Option<String>,
+    scratch_gpr2: Option<String>,
+    call_state: Option<CallLoweringState>,
     cuda_params: Vec<CudaParamDecl>,
     uses_cuda_param_abi: bool,
     uses_shared_memory: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CallLoweringState {
+    sp_reg: String,
+    ret_pc_reg: String,
+    pred_reg: String,
+    stack_regs: Vec<String>,
+    call_sites: BTreeMap<u64, CallSiteLowering>,
+}
+
+#[derive(Debug, Clone)]
+struct CallSiteLowering {
+    target: u64,
+    return_id: u32,
+    continuation_label: String,
+}
+
+impl CallLoweringState {
+    fn new(base_gpr: u32, pred_reg: u32, sites: Vec<(u64, u64)>) -> Self {
+        let stack_depth = sites.len().max(1);
+        let mut call_sites = BTreeMap::new();
+        for (index, (address, target)) in sites.into_iter().enumerate() {
+            let return_id = index as u32 + 1;
+            call_sites.insert(
+                address,
+                CallSiteLowering {
+                    target,
+                    return_id,
+                    continuation_label: format!("L_callret_{:04x}", address),
+                },
+            );
+        }
+
+        Self {
+            sp_reg: format!("%r{}", base_gpr),
+            ret_pc_reg: format!("%r{}", base_gpr + 1),
+            pred_reg: format!("%p{}", pred_reg),
+            stack_regs: (0..stack_depth)
+                .map(|slot| format!("%r{}", base_gpr + 2 + slot as u32))
+                .collect(),
+            call_sites,
+        }
+    }
+
+    fn gpr_count(&self) -> u32 {
+        2 + self.stack_regs.len() as u32
+    }
 }
 
 impl<'a> LiftContext<'a> {
@@ -292,6 +342,8 @@ impl<'a> LiftContext<'a> {
             diagnostics: Vec::new(),
             branch_targets: HashSet::new(),
             scratch_gpr: None,
+            scratch_gpr2: None,
+            call_state: None,
             cuda_params: Vec::new(),
             uses_cuda_param_abi: false,
             uses_shared_memory: false,
@@ -315,6 +367,8 @@ impl<'a> LiftContext<'a> {
     fn emit_entry(&mut self, kernel_name: &str, instructions: &[EnhancedSassInstruction]) {
         self.branch_targets.clear();
         self.scratch_gpr = None;
+        self.scratch_gpr2 = None;
+        self.call_state = None;
         self.cuda_params.clear();
         self.uses_cuda_param_abi = false;
         self.uses_shared_memory = false;
@@ -327,6 +381,17 @@ impl<'a> LiftContext<'a> {
         if needs_gpr_scratch(instructions) {
             self.scratch_gpr = Some(format!("%r{}", regs.max_gpr));
             regs.max_gpr += 1;
+        }
+        if needs_second_gpr_scratch(instructions) {
+            self.scratch_gpr2 = Some(format!("%r{}", regs.max_gpr));
+            regs.max_gpr += 1;
+        }
+        let call_sites = local_call_sites(instructions);
+        if !call_sites.is_empty() {
+            let call_state = CallLoweringState::new(regs.max_gpr, regs.max_pred, call_sites);
+            regs.max_gpr += call_state.gpr_count();
+            regs.max_pred += 1;
+            self.call_state = Some(call_state);
         }
         if self.uses_cuda_param_abi || self.uses_shared_memory {
             regs.max_b64 = regs.max_b64.max(16);
@@ -367,6 +432,10 @@ impl<'a> LiftContext<'a> {
         }
         if regs.has_decls() || self.uses_shared_memory {
             self.output.push('\n');
+        }
+        if let Some(call_state) = &self.call_state {
+            self.output
+                .push_str(&format!("    mov.u32 {}, 0;\n\n", call_state.sp_reg));
         }
 
         for inst in instructions {
@@ -521,12 +590,14 @@ impl<'a> LiftContext<'a> {
                 &pred,
                 "add",
                 &data_type_suffix(inst, SassDataType::F32),
+                self.scratch_gpr.as_deref(),
             )),
             "FMUL" => Some(float_binary_op(
                 inst,
                 &pred,
                 "mul",
                 &data_type_suffix(inst, SassDataType::F32),
+                self.scratch_gpr.as_deref(),
             )),
             "FFMA" => Some(float_ternary_op(
                 inst,
@@ -566,7 +637,12 @@ impl<'a> LiftContext<'a> {
             "ATOMG" | "ATOMS" => Some(atomic_op(inst, &pred)),
             "IDP" if is_idp_4a_s8_s8(inst) => Some(idp_4a_s8_s8_op(inst, &pred)),
             "IDP" => self.unsupported(inst, "integer dot-product mode lifting is not implemented"),
-            "ISETP" | "FSETP" => Some(setp_op(inst, &pred)),
+            "ISETP" | "FSETP" => Some(setp_op(
+                inst,
+                &pred,
+                self.scratch_gpr.as_deref(),
+                self.scratch_gpr2.as_deref(),
+            )),
             "UISETP" => Some(uisetp_op(inst, &pred)),
             "SEL" => Some(sel_op(inst, &pred)),
             "USEL" => Some(usel_op(inst, &pred)),
@@ -577,12 +653,21 @@ impl<'a> LiftContext<'a> {
             "BRA" | "BRX" | "JMP" => Some(branch_op(inst, &pred)),
             "JMX" | "JMXU" if branch_target(inst).is_some() => Some(branch_op(inst, &pred)),
             "JMX" | "JMXU" => self.unsupported(inst, "indirect branch lifting is not implemented"),
+            "CALL" | "CAL" | "JCAL" if self.has_local_call_site(inst) => {
+                Some(self.local_call_op(inst))
+            }
+            "CALL" | "CAL" | "JCAL" => {
+                self.unsupported(inst, "direct call target lifting is not implemented")
+            }
             "BAR" => Some(format!("{}bar.sync 0;", pred)),
             "BSSY" => Some("// bssy reconvergence marker;".to_string()),
             "BSYNC" => Some("// bsync reconvergence marker;".to_string()),
             "DEPBAR" => Some("// depbar preserved from SASS;".to_string()),
             "MEMBAR" => Some(format!("{}membar.gl;", pred)),
             "NOP" => Some("// nop;".to_string()),
+            "RET" if self.call_state.is_some() && is_local_subroutine_ret(inst) => {
+                Some(self.local_return_op(inst))
+            }
             "EXIT" | "RET" => Some(format!("{}ret;", pred)),
             "HMMA" | "IMMA" | "BMMA" | "DMMA" => {
                 self.unsupported(inst, "tensor instruction lifting is not implemented")
@@ -597,6 +682,99 @@ impl<'a> LiftContext<'a> {
             "MUFU" => self.unsupported(inst, "MUFU sub-operation lifting is not implemented"),
             _ => self.unsupported(inst, "instruction lifting is not implemented"),
         }
+    }
+
+    fn has_local_call_site(&self, inst: &EnhancedSassInstruction) -> bool {
+        self.call_state
+            .as_ref()
+            .is_some_and(|state| state.call_sites.contains_key(&inst.address))
+    }
+
+    fn local_call_op(&self, inst: &EnhancedSassInstruction) -> String {
+        let state = self
+            .call_state
+            .as_ref()
+            .expect("local call lowering requires call state");
+        let site = state
+            .call_sites
+            .get(&inst.address)
+            .expect("local call lowering requires a registered callsite");
+
+        let mut lines = Vec::new();
+        if let Some(skip_predicate) = inverted_predicate_prefix(inst) {
+            lines.push(format!(
+                "{}bra {};",
+                skip_predicate, site.continuation_label
+            ));
+        }
+        for (slot, stack_reg) in state.stack_regs.iter().enumerate() {
+            lines.push(format!(
+                "setp.eq.u32 {}, {}, {};",
+                state.pred_reg, state.sp_reg, slot
+            ));
+            lines.push(format!(
+                "@{} mov.u32 {}, {};",
+                state.pred_reg, stack_reg, site.return_id
+            ));
+        }
+        lines.push(format!("add.u32 {}, {}, 1;", state.sp_reg, state.sp_reg));
+        lines.push(format!("bra {};", label_for_address(site.target)));
+
+        let mut output = lines.join("\n    ");
+        output.push('\n');
+        output.push_str(&site.continuation_label);
+        output.push(':');
+        output
+    }
+
+    fn local_return_op(&self, inst: &EnhancedSassInstruction) -> String {
+        let state = self
+            .call_state
+            .as_ref()
+            .expect("local return lowering requires call state");
+        let skip_label = inverted_predicate_prefix(inst)
+            .map(|predicate| (predicate, format!("L_retskip_{:04x}", inst.address)));
+        let mut lines = Vec::new();
+
+        if let Some((skip_predicate, skip_label)) = &skip_label {
+            lines.push(format!("{}bra {};", skip_predicate, skip_label));
+        }
+        lines.push(format!(
+            "setp.eq.u32 {}, {}, 0;",
+            state.pred_reg, state.sp_reg
+        ));
+        lines.push(format!("@{} ret;", state.pred_reg));
+        lines.push(format!("sub.u32 {}, {}, 1;", state.sp_reg, state.sp_reg));
+        lines.push(format!("mov.u32 {}, 0;", state.ret_pc_reg));
+        for (slot, stack_reg) in state.stack_regs.iter().enumerate() {
+            lines.push(format!(
+                "setp.eq.u32 {}, {}, {};",
+                state.pred_reg, state.sp_reg, slot
+            ));
+            lines.push(format!(
+                "@{} mov.u32 {}, {};",
+                state.pred_reg, state.ret_pc_reg, stack_reg
+            ));
+        }
+        for site in state.call_sites.values() {
+            lines.push(format!(
+                "setp.eq.u32 {}, {}, {};",
+                state.pred_reg, state.ret_pc_reg, site.return_id
+            ));
+            lines.push(format!(
+                "@{} bra {};",
+                state.pred_reg, site.continuation_label
+            ));
+        }
+        lines.push("ret;".to_string());
+
+        let mut output = lines.join("\n    ");
+        if let Some((_, skip_label)) = skip_label {
+            output.push('\n');
+            output.push_str(&skip_label);
+            output.push(':');
+        }
+        output
     }
 
     fn unsupported(&mut self, inst: &EnhancedSassInstruction, message: &str) -> Option<String> {
@@ -627,6 +805,33 @@ fn needs_gpr_scratch(instructions: &[EnhancedSassInstruction]) -> bool {
             || is_shf_left_rotate(inst)
             || has_abs_float_operand(inst)
     })
+}
+
+fn needs_second_gpr_scratch(instructions: &[EnhancedSassInstruction]) -> bool {
+    instructions
+        .iter()
+        .any(|inst| inst.opcode == "FSETP" && abs_setp_compare_operand_count(inst) > 1)
+}
+
+fn local_call_sites(instructions: &[EnhancedSassInstruction]) -> Vec<(u64, u64)> {
+    instructions
+        .iter()
+        .filter(|inst| is_local_call(inst))
+        .filter_map(|inst| branch_target(inst).map(|target| (inst.address, target)))
+        .collect()
+}
+
+fn is_local_call(inst: &EnhancedSassInstruction) -> bool {
+    matches!(inst.opcode.as_str(), "CALL" | "CAL" | "JCAL")
+        && (has_modifier(inst, "REL") || branch_target(inst).is_some())
+}
+
+fn is_local_subroutine_ret(inst: &EnhancedSassInstruction) -> bool {
+    inst.opcode == "RET"
+        && (has_modifier(inst, "REL")
+            || has_modifier(inst, "NODEC")
+            || !inst.dest_operands.is_empty()
+            || !inst.src_operands.is_empty())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -821,19 +1026,52 @@ fn binary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> 
     format!("{}{}.{} {}, {}, {};", pred, op, ty, dst, src0, src1)
 }
 
-fn float_binary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> String {
+fn float_binary_op(
+    inst: &EnhancedSassInstruction,
+    pred: &str,
+    op: &str,
+    ty: &str,
+    scratch_gpr: Option<&str>,
+) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
-    let src0 = inst
+    let raw_src0 = inst
         .src_operands
         .first()
         .map(format_float_operand)
-        .unwrap_or_else(|| "0.0".to_string());
-    let src1 = inst
+        .unwrap_or_else(|| format_f32_literal(0.0));
+    let raw_src1 = inst
         .src_operands
         .get(1)
         .map(format_float_operand)
-        .unwrap_or_else(|| "0.0".to_string());
-    format!("{}{}.{} {}, {}, {};", pred, op, ty, dst, src0, src1)
+        .unwrap_or_else(|| format_f32_literal(0.0));
+    let abs_src0 = inst.src_operands.first().and_then(abs_float_operand);
+    let abs_src1 = inst.src_operands.get(1).and_then(abs_float_operand);
+    let src0 = abs_src0.clone().unwrap_or(raw_src0);
+    let src1 = abs_src1.clone().unwrap_or(raw_src1);
+    match (abs_src0, abs_src1) {
+        (Some(abs0), Some(abs1)) => {
+            let scratch = scratch_gpr.unwrap_or(&dst);
+            format!(
+                "{}abs.f32 {}, {};\n    {}abs.f32 {}, {};\n    {}{}.{} {}, {}, {};",
+                pred, scratch, abs0, pred, dst, abs1, pred, op, ty, dst, scratch, dst
+            )
+        }
+        (Some(abs0), None) => {
+            let scratch = scratch_gpr.unwrap_or(&dst);
+            format!(
+                "{}abs.f32 {}, {};\n    {}{}.{} {}, {}, {};",
+                pred, scratch, abs0, pred, op, ty, dst, scratch, src1
+            )
+        }
+        (None, Some(abs1)) => {
+            let scratch = scratch_gpr.unwrap_or(&dst);
+            format!(
+                "{}abs.f32 {}, {};\n    {}{}.{} {}, {}, {};",
+                pred, scratch, abs1, pred, op, ty, dst, src0, scratch
+            )
+        }
+        (None, None) => format!("{}{}.{} {}, {}, {};", pred, op, ty, dst, src0, src1),
+    }
 }
 
 fn iadd3_op(
@@ -918,17 +1156,17 @@ fn float_ternary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &s
         .src_operands
         .first()
         .map(format_float_operand)
-        .unwrap_or_else(|| "0.0".to_string());
+        .unwrap_or_else(|| format_f32_literal(0.0));
     let src1 = inst
         .src_operands
         .get(1)
         .map(format_float_operand)
-        .unwrap_or_else(|| "0.0".to_string());
+        .unwrap_or_else(|| format_f32_literal(0.0));
     let src2 = inst
         .src_operands
         .get(2)
         .map(format_float_operand)
-        .unwrap_or_else(|| "0.0".to_string());
+        .unwrap_or_else(|| format_f32_literal(0.0));
     format!(
         "{}{}.{} {}, {}, {}, {};",
         pred, op, ty, dst, src0, src1, src2
@@ -1104,7 +1342,7 @@ fn mufu_unary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str) -> String
         .src_operands
         .first()
         .map(format_float_operand)
-        .unwrap_or_else(|| "0.0".to_string());
+        .unwrap_or_else(|| format_f32_literal(0.0));
     format!("{}{}.approx.ftz.f32 {}, {};", pred, op, dst, src)
 }
 
@@ -1148,12 +1386,12 @@ fn fmnmx_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str
         .src_operands
         .first()
         .map(format_float_operand)
-        .unwrap_or_else(|| "0.0".to_string());
+        .unwrap_or_else(|| format_f32_literal(0.0));
     let raw_src1 = inst
         .src_operands
         .get(1)
         .map(format_float_operand)
-        .unwrap_or_else(|| "0.0".to_string());
+        .unwrap_or_else(|| format_f32_literal(0.0));
     let abs_src0 = inst.src_operands.first().and_then(abs_float_operand);
     let abs_src1 = inst.src_operands.get(1).and_then(abs_float_operand);
     let src0 = abs_src0.clone().unwrap_or(raw_src0);
@@ -1687,14 +1925,10 @@ fn ldc_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
             cuda_param_load_op(inst, pred, index, byte_offset)
         }
         Some((0, 0x358)) if is_64bit_modifier(inst) => format!("{}mov.u32 {}, 0;", pred, dst),
-        Some((bank, offset)) => format!(
-            "{}ld.const.{} {}, [c[0x{:x}][0x{:x}]];",
-            pred,
-            data_type_suffix(inst, SassDataType::U32),
-            dst,
-            bank,
-            offset
-        ),
+        Some((_bank, _offset)) => {
+            let ty = data_type_suffix(inst, SassDataType::U32);
+            format!("{}mov.{} {}, {};", pred, ty, dst, zero_literal_for_type(&ty))
+        }
         None => load_op(inst, pred),
     }
 }
@@ -1849,11 +2083,19 @@ fn atomic_operation_suffix(inst: &EnhancedSassInstruction) -> &'static str {
     }
 }
 
-fn setp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+fn setp_op(
+    inst: &EnhancedSassInstruction,
+    pred: &str,
+    scratch_gpr: Option<&str>,
+    scratch_gpr2: Option<&str>,
+) -> String {
+    if inst.opcode == "FSETP" {
+        return fsetp_op(inst, pred, scratch_gpr, scratch_gpr2);
+    }
+
     let dst = dest_operand(inst).unwrap_or_else(|| "%p0".to_string());
     let (src0, src1) = setp_compare_operands(inst);
     let default_ty = match inst.opcode.as_str() {
-        "FSETP" => SassDataType::F32,
         "PSETP" => SassDataType::Pred,
         _ => SassDataType::S32,
     };
@@ -1866,6 +2108,53 @@ fn setp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         src0,
         src1
     )
+}
+
+fn fsetp_op(
+    inst: &EnhancedSassInstruction,
+    pred: &str,
+    scratch_gpr: Option<&str>,
+    scratch_gpr2: Option<&str>,
+) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%p0".to_string());
+    let (src0_operand, src1_operand) = setp_compare_operand_refs(inst);
+    let raw_src0 = src0_operand
+        .map(format_float_operand)
+        .unwrap_or_else(|| format_f32_literal(0.0));
+    let raw_src1 = src1_operand
+        .map(format_float_operand)
+        .unwrap_or_else(|| format_f32_literal(0.0));
+    let abs_src0 = src0_operand.and_then(abs_float_operand);
+    let abs_src1 = src1_operand.and_then(abs_float_operand);
+    let suffix = comparison_suffix(inst);
+    match (abs_src0, abs_src1) {
+        (Some(abs0), Some(abs1)) => {
+            let scratch0 = scratch_gpr.unwrap_or("%r0");
+            let scratch1 = scratch_gpr2.unwrap_or("%r1");
+            format!(
+                "{}abs.f32 {}, {};\n    {}abs.f32 {}, {};\n    {}setp.{}.f32 {}, {}, {};",
+                pred, scratch0, abs0, pred, scratch1, abs1, pred, suffix, dst, scratch0, scratch1
+            )
+        }
+        (Some(abs0), None) => {
+            let scratch = scratch_gpr.unwrap_or("%r0");
+            format!(
+                "{}abs.f32 {}, {};\n    {}setp.{}.f32 {}, {}, {};",
+                pred, scratch, abs0, pred, suffix, dst, scratch, raw_src1
+            )
+        }
+        (None, Some(abs1)) => {
+            let scratch = scratch_gpr.unwrap_or("%r0");
+            format!(
+                "{}abs.f32 {}, {};\n    {}setp.{}.f32 {}, {}, {};",
+                pred, scratch, abs1, pred, suffix, dst, raw_src0, scratch
+            )
+        }
+        (None, None) => format!(
+            "{}setp.{}.f32 {}, {}, {};",
+            pred, suffix, dst, raw_src0, raw_src1
+        ),
+    }
 }
 
 fn uisetp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -1902,24 +2191,23 @@ fn setp_data_type_suffix(
 }
 
 fn setp_compare_operands(inst: &EnhancedSassInstruction) -> (String, String) {
+    let (src0, src1) = setp_compare_operand_refs(inst);
+    (
+        src0.map(format_operand)
+            .unwrap_or_else(|| "0".to_string()),
+        src1.map(format_operand)
+            .unwrap_or_else(|| "0".to_string()),
+    )
+}
+
+fn setp_compare_operand_refs(
+    inst: &EnhancedSassInstruction,
+) -> (Option<&SassOperand>, Option<&SassOperand>) {
     if inst.src_operands.len() >= 4 && is_pt_register_operand(&inst.src_operands[0]) {
-        return (
-            format_operand(&inst.src_operands[1]),
-            format_operand(&inst.src_operands[2]),
-        );
+        return (inst.src_operands.get(1), inst.src_operands.get(2));
     }
 
-    let src0 = inst
-        .src_operands
-        .first()
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
-    let src1 = inst
-        .src_operands
-        .get(1)
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
-    (src0, src1)
+    (inst.src_operands.first(), inst.src_operands.get(1))
 }
 
 fn uisetp_compare_operands(inst: &EnhancedSassInstruction) -> (String, String) {
@@ -2112,6 +2400,20 @@ fn predicate_prefix(inst: &EnhancedSassInstruction) -> String {
             }
         }
         _ => String::new(),
+    }
+}
+
+fn inverted_predicate_prefix(inst: &EnhancedSassInstruction) -> Option<String> {
+    match &inst.predicate {
+        Some(SassOperand::Predicate { register, negated }) => {
+            let reg = format_register(register);
+            if *negated {
+                Some(format!("@{} ", reg))
+            } else {
+                Some(format!("@!{} ", reg))
+            }
+        }
+        _ => None,
     }
 }
 
@@ -2385,12 +2687,20 @@ fn is_hadd2_zero_source(inst: &EnhancedSassInstruction) -> bool {
 }
 
 fn has_abs_float_operand(inst: &EnhancedSassInstruction) -> bool {
-    inst.opcode == "FMNMX"
-        && inst
+    match inst.opcode.as_str() {
+        "FADD" | "FMUL" | "FMNMX" => inst
             .src_operands
             .iter()
             .take(2)
-            .any(|operand| abs_float_operand(operand).is_some())
+            .any(|operand| abs_float_operand(operand).is_some()),
+        "FFMA" => inst
+            .src_operands
+            .iter()
+            .take(3)
+            .any(|operand| abs_float_operand(operand).is_some()),
+        "FSETP" => abs_setp_compare_operand_count(inst) > 0,
+        _ => false,
+    }
 }
 
 fn fmnmx_operator(inst: &EnhancedSassInstruction) -> &'static str {
@@ -2404,8 +2714,39 @@ fn abs_float_operand(operand: &SassOperand) -> Option<String> {
     let SassOperand::Label(label) = operand else {
         return None;
     };
-    let inner = label.strip_prefix('|')?.strip_suffix('|')?;
-    SassOperand::parse(inner).map(|operand| format_float_operand(&operand))
+    let inner = absolute_label_inner(label)?;
+    parse_annotated_sass_operand(inner).map(|operand| format_float_operand(&operand))
+}
+
+fn abs_setp_compare_operand_count(inst: &EnhancedSassInstruction) -> usize {
+    let (src0, src1) = setp_compare_operand_refs(inst);
+    [src0, src1]
+        .into_iter()
+        .flatten()
+        .filter(|operand| abs_float_operand(operand).is_some())
+        .count()
+}
+
+fn absolute_label_inner(label: &str) -> Option<&str> {
+    strip_sass_operand_suffixes(label)
+        .strip_prefix('|')?
+        .strip_suffix('|')
+}
+
+fn parse_annotated_sass_operand(label: &str) -> Option<SassOperand> {
+    let normalized = strip_sass_operand_suffixes(label);
+    let operand = SassOperand::parse(normalized)?;
+    match &operand {
+        SassOperand::Label(parsed) if parsed == normalized => None,
+        _ => Some(operand),
+    }
+}
+
+fn strip_sass_operand_suffixes(mut label: &str) -> &str {
+    while let Some(stripped) = label.strip_suffix(".reuse") {
+        label = stripped;
+    }
+    label
 }
 
 fn vimnmx_static_operator(inst: &EnhancedSassInstruction) -> Option<&'static str> {
@@ -2501,6 +2842,11 @@ fn uses_shared_memory(instructions: &[EnhancedSassInstruction]) -> bool {
 fn format_operand(operand: &SassOperand) -> String {
     match operand {
         SassOperand::Register(reg) => format_register(reg),
+        SassOperand::Predicate { register, negated }
+            if matches!(register.prefix.as_str(), "PT" | "UPT") =>
+        {
+            static_bool_literal(!*negated).to_string()
+        }
         SassOperand::Predicate { register, negated } => {
             if *negated {
                 format!("!{}", format_register(register))
@@ -2509,7 +2855,7 @@ fn format_operand(operand: &SassOperand) -> String {
             }
         }
         SassOperand::Immediate(value) => value.to_string(),
-        SassOperand::FloatImmediate(value) => value.to_string(),
+        SassOperand::FloatImmediate(value) => format_f32_literal(*value),
         SassOperand::ConstantBank { bank, offset } => format!("c[0x{:x}][0x{:x}]", bank, offset),
         SassOperand::Memory { base, offset, .. } => {
             let base = base
@@ -2527,9 +2873,26 @@ fn format_operand(operand: &SassOperand) -> String {
         SassOperand::Barrier(id) => id.to_string(),
         SassOperand::SpecialRegister(name) => map_special_register(name),
         SassOperand::Label(label) if matches!(label.as_str(), "SRZ" | "SR_Z") => "0".to_string(),
-        SassOperand::Label(label) => label.clone(),
+        SassOperand::Label(label)
+            if matches!(label.as_str(), "PT" | "UPT" | "!PT" | "!UPT") =>
+        {
+            static_bool_literal(matches!(label.as_str(), "PT" | "UPT")).to_string()
+        }
+        SassOperand::Label(label) => format_label_operand(label),
         SassOperand::Address(address) => label_for_address(*address),
     }
+}
+
+fn format_label_operand(label: &str) -> String {
+    if let Some(inner) = absolute_label_inner(label) {
+        if let Some(operand) = parse_annotated_sass_operand(inner) {
+            return format_operand(&operand);
+        }
+    }
+    if let Some(operand) = parse_annotated_sass_operand(label) {
+        return format_operand(&operand);
+    }
+    label.to_string()
 }
 
 fn format_signed_operand(operand: &SassOperand) -> (String, bool) {
@@ -2546,11 +2909,11 @@ fn format_float_operand(operand: &SassOperand) -> String {
     if is_zero_register_operand(operand)
         || matches!(operand, SassOperand::Label(label) if matches!(label.as_str(), "RZ" | "-RZ" | "URZ" | "-URZ"))
     {
-        return "0.0".to_string();
+        return format_f32_literal(0.0);
     }
     match operand {
-        SassOperand::Immediate(value) => format!("{}.0", value),
-        SassOperand::FloatImmediate(value) => value.to_string(),
+        SassOperand::Immediate(value) => format_f32_literal(*value as f64),
+        SassOperand::FloatImmediate(value) => format_f32_literal(*value),
         _ => format_operand(operand),
     }
 }
@@ -2592,6 +2955,11 @@ fn format_predicate_logic_operand(operand: &SassOperand) -> String {
         SassOperand::Register(reg) if reg.prefix == "PT" => "1".to_string(),
         SassOperand::Register(reg) if reg.prefix == "P" => format!("%p{}", reg.number),
         SassOperand::Register(reg) if reg.prefix == "UP" => format!("%up{}", reg.number),
+        SassOperand::Predicate { register, negated }
+            if matches!(register.prefix.as_str(), "PT" | "UPT") =>
+        {
+            static_bool_literal(!*negated).to_string()
+        }
         SassOperand::Predicate { register, negated } if *negated => {
             format!("!{}", format_register(register))
         }
@@ -2630,6 +2998,26 @@ fn format_register_without_negation(reg: &SassRegister) -> String {
         "P" => format!("%p{}", reg.number),
         "UP" => format!("%up{}", reg.number),
         _ => format_register(reg),
+    }
+}
+
+fn static_bool_literal(value: bool) -> &'static str {
+    if value {
+        "1"
+    } else {
+        "0"
+    }
+}
+
+fn format_f32_literal(value: f64) -> String {
+    format!("0f{:08x}", (value as f32).to_bits())
+}
+
+fn zero_literal_for_type(ty: &str) -> String {
+    match ty {
+        "f32" => format_f32_literal(0.0),
+        "f64" => "0d0000000000000000".to_string(),
+        _ => "0".to_string(),
     }
 }
 
@@ -3033,7 +3421,7 @@ Function : kernel
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.ptx.contains("ld.global.u32 %r0, [%r2+16];"));
         assert!(result.ptx.contains("st.global.f32 [%r4], %r1;"));
-        assert!(result.ptx.contains("ld.const.u64 %r6, [c[0x0][0x160]];"));
+        assert!(result.ptx.contains("mov.u64 %r6, 0;"));
     }
 
     #[test]
@@ -3175,12 +3563,74 @@ Function : kernel
         .expect("float zero register operands should lift");
 
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(result.ptx.contains("min.f32 %r4, 0.0, %r4;"));
-        assert!(result.ptx.contains("add.f32 %r8, 0.0, %r8;"));
-        assert!(result.ptx.contains("mul.f32 %r5, 0.0, %r15;"));
+        assert!(result.ptx.contains("min.f32 %r4, 0f00000000, %r4;"));
+        assert!(result.ptx.contains("add.f32 %r8, 0f00000000, %r8;"));
+        assert!(result.ptx.contains("mul.f32 %r5, 0f00000000, %r15;"));
         assert!(!result.ptx.contains("min.f32 %r4, 0, %r4;"));
         assert!(!result.ptx.contains("add.f32 %r8, 0, %r8;"));
         assert!(!result.ptx.contains("mul.f32 %r5, 0, %r15;"));
+    }
+
+    #[test]
+    fn sass_lifter_canonicalizes_abs_reuse_float_operands_for_parser() {
+        let mut fmnmx = EnhancedSassInstruction::new("FMNMX".to_string(), 0x0);
+        fmnmx.opcode_class = SassOpcodeClass::FloatArithmetic;
+        fmnmx.data_type = Some(SassDataType::F32);
+        fmnmx.dest_operands.push(reg(9));
+        fmnmx
+            .src_operands
+            .push(SassOperand::Label("|R5|.reuse".to_string()));
+        fmnmx
+            .src_operands
+            .push(SassOperand::Label("|R4|".to_string()));
+        fmnmx
+            .src_operands
+            .push(SassOperand::Label("!PT".to_string()));
+
+        let mut fadd = EnhancedSassInstruction::new("FADD".to_string(), 0x10);
+        fadd.opcode_class = SassOpcodeClass::FloatArithmetic;
+        fadd.data_type = Some(SassDataType::F32);
+        fadd.dest_operands.push(reg(4));
+        fadd.src_operands
+            .push(SassOperand::Label("|R0|".to_string()));
+        fadd.src_operands
+            .push(SassOperand::Label("-RZ".to_string()));
+
+        let mut fsetp = EnhancedSassInstruction::new("FSETP".to_string(), 0x20);
+        fsetp.opcode_class = SassOpcodeClass::FloatComparison;
+        fsetp.data_type = Some(SassDataType::F32);
+        fsetp.modifiers.push("GT".to_string());
+        fsetp.dest_operands.push(pred(0));
+        fsetp
+            .src_operands
+            .push(SassOperand::Register(SassRegister::new("PT", 7)));
+        fsetp
+            .src_operands
+            .push(SassOperand::Label("|R31|".to_string()));
+        fsetp
+            .src_operands
+            .push(SassOperand::Register(SassRegister::new("RZ", 255)));
+        fsetp
+            .src_operands
+            .push(SassOperand::Register(SassRegister::new("PT", 7)));
+
+        let result = lift_instructions_to_ptx(
+            &[fmnmx, fadd, fsetp],
+            &SassLiftOptions {
+                include_sass_comments: false,
+                ..SassLiftOptions::default()
+            },
+        );
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(!result.ptx.contains("|R"), "{}", result.ptx);
+        assert!(!result.ptx.contains(".reuse"), "{}", result.ptx);
+        assert!(result.ptx.contains("abs.f32 %r32, %r5;"));
+        assert!(result.ptx.contains("abs.f32 %r9, %r4;"));
+        assert!(result.ptx.contains("add.f32 %r4, %r32, 0f00000000;"));
+        assert!(result.ptx.contains("setp.gt.f32 %p0, %r32, 0f00000000;"));
+        ptx_parser::parse_module_checked(&result.ptx)
+            .expect("absolute/reuse lifted PTX syntax should parse");
     }
 
     #[test]
@@ -3216,6 +3666,70 @@ Function : kernel
         assert!(result.ptx.contains("@%p0 bra L_0040;"));
         assert!(result.ptx.contains("add.s32 %r3, %r3, 1;"));
         assert!(result.ptx.contains("L_0040:"));
+    }
+
+    #[test]
+    fn sass_lifter_lowers_call_rel_noinc_to_synthetic_continuation() {
+        let text = r#"Function : call_stub
+        /*0000*/                   CALL.REL.NOINC 0x40 ;
+        /*0010*/                   IADD R2, R2, 1 ;
+        /*0020*/                   EXIT ;
+        /*0040*/                   IADD R3, R3, 1 ;
+        /*0050*/                   RET.REL.NODEC R6 0x0 ;
+"#;
+
+        let result = lift_sass_text_to_ptx(
+            text,
+            SassLiftOptions {
+                include_sass_comments: false,
+                ..SassLiftOptions::default()
+            },
+        )
+        .expect("CALL/RET text should parse");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %r<7>;"), "{}", result.ptx);
+        assert!(result.ptx.contains(".reg .pred %p<1>;"));
+        assert!(result.ptx.contains("mov.u32 %r4, 0;"));
+        assert!(result.ptx.contains(
+            "setp.eq.u32 %p0, %r4, 0;\n    @%p0 mov.u32 %r6, 1;\n    add.u32 %r4, %r4, 1;\n    bra L_0040;\nL_callret_0000:"
+        ));
+        assert!(result.ptx.contains(
+            "setp.eq.u32 %p0, %r4, 0;\n    @%p0 ret;\n    sub.u32 %r4, %r4, 1;\n    mov.u32 %r5, 0;\n    setp.eq.u32 %p0, %r4, 0;\n    @%p0 mov.u32 %r5, %r6;\n    setp.eq.u32 %p0, %r5, 1;\n    @%p0 bra L_callret_0000;"
+        ));
+        assert!(!result.ptx.contains("unsupported SASS CALL"));
+        ptx_parser::parse_module_checked(&result.ptx).expect("lifted CALL PTX should parse");
+    }
+
+    #[test]
+    fn sass_lifter_lowers_nested_local_calls_with_stack_slots() {
+        let text = r#"Function : nested_call_stub
+        /*0000*/                   CALL.REL.NOINC 0x40 ;
+        /*0010*/                   EXIT ;
+        /*0040*/                   CALL.REL.NOINC 0x80 ;
+        /*0050*/                   RET.REL.NODEC R6 0x0 ;
+        /*0080*/                   IADD R1, R1, 1 ;
+        /*0090*/                   RET.REL.NODEC R6 0x0 ;
+"#;
+
+        let result = lift_sass_text_to_ptx(
+            text,
+            SassLiftOptions {
+                include_sass_comments: false,
+                ..SassLiftOptions::default()
+            },
+        )
+        .expect("nested CALL/RET text should parse");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %r<6>;"), "{}", result.ptx);
+        assert!(result.ptx.contains(
+            "setp.eq.u32 %p0, %r2, 0;\n    @%p0 mov.u32 %r4, 2;\n    setp.eq.u32 %p0, %r2, 1;\n    @%p0 mov.u32 %r5, 2;\n    add.u32 %r2, %r2, 1;\n    bra L_0080;\nL_callret_0040:"
+        ));
+        assert!(result.ptx.contains("@%p0 bra L_callret_0000;"));
+        assert!(result.ptx.contains("@%p0 bra L_callret_0040;"));
+        assert!(!result.ptx.contains("unsupported SASS CALL"));
+        ptx_parser::parse_module_checked(&result.ptx).expect("nested lifted CALL PTX should parse");
     }
 
     #[test]
@@ -3267,6 +3781,57 @@ Function : kernel
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.ptx.contains("lop3.b32 %r0, %r1, %r2, %r3, 0xca;"));
         assert!(!result.ptx.contains("and.b32"));
+    }
+
+    #[test]
+    fn sass_lifter_emits_parser_compatible_roundtrip_syntax() {
+        let mut iadd = EnhancedSassInstruction::new("IADD3".to_string(), 0x0);
+        iadd.opcode_class = SassOpcodeClass::IntegerArithmetic;
+        iadd.data_type = Some(SassDataType::U32);
+        iadd.dest_operands.push(reg(3));
+        iadd.src_operands.push(reg(3));
+        iadd.src_operands.push(SassOperand::Label("!PT".to_string()));
+
+        let mut fmul = EnhancedSassInstruction::new("FMUL".to_string(), 0x10);
+        fmul.opcode_class = SassOpcodeClass::FloatArithmetic;
+        fmul.data_type = Some(SassDataType::F32);
+        fmul.dest_operands.push(reg(5));
+        fmul.src_operands.push(SassOperand::FloatImmediate(0.5));
+        fmul.src_operands.push(reg(15));
+
+        let mut ldc = EnhancedSassInstruction::new("LDC".to_string(), 0x20);
+        ldc.opcode_class = SassOpcodeClass::ConstantLoad;
+        ldc.memory_space = Some(SassMemorySpace::Constant);
+        ldc.data_type = Some(SassDataType::U32);
+        ldc.dest_operands.push(reg(10));
+        ldc.src_operands.push(SassOperand::ConstantBank {
+            bank: 4,
+            offset: 0x38,
+        });
+
+        let mut lop3 = EnhancedSassInstruction::new("LOP3".to_string(), 0x30);
+        lop3.data_type = Some(SassDataType::B32);
+        lop3.dest_operands.push(reg(0));
+        lop3.src_operands.push(reg(1));
+        lop3.src_operands.push(reg(2));
+        lop3.src_operands.push(reg(3));
+        lop3.src_operands.push(SassOperand::Immediate(0xca));
+
+        let result = lift_instructions_to_ptx(
+            &[iadd, fmul, ldc, lop3],
+            &SassLiftOptions {
+                include_sass_comments: false,
+                ..SassLiftOptions::default()
+            },
+        );
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("add.u32 %r3, %r3, 0;"));
+        assert!(result.ptx.contains("mul.f32 %r5, 0f3f000000, %r15;"));
+        assert!(result.ptx.contains("mov.u32 %r10, 0;"));
+        assert!(result.ptx.contains("lop3.b32 %r0, %r1, %r2, %r3, 0xca;"));
+        ptx_parser::parse_module_checked(&result.ptx)
+            .expect("Kimi-style lifted PTX syntax should parse for roundtrip checks");
     }
 
     #[test]

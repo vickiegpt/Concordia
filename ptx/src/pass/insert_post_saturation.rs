@@ -72,6 +72,7 @@ fn run_instruction<'input>(
             ..
         }
         | ast::Instruction::And { .. }
+        | ast::Instruction::Lop3 { .. }
         | ast::Instruction::Atom { .. }
         | ast::Instruction::AtomCas { .. }
         | ast::Instruction::BarWarp { .. }

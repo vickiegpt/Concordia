@@ -2600,6 +2600,15 @@ derive_parser!(
     }
     .type: ScalarType = { .pred, .b16, .b32, .b64 };
 
+    // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#logic-and-shift-instructions-lop3
+    lop3.type d, a, b, c, imm => {
+        ast::Instruction::Lop3 {
+            data: type_,
+            arguments: Lop3Args { dst: d, src1: a, src2: b, src3: c, src_lut: imm }
+        }
+    }
+    .type: ScalarType = { .b32, .b64 };
+
     // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#control-flow-instructions-bra
     bra <= { bra(stream) }
 
@@ -2617,11 +2626,11 @@ derive_parser!(
     // cvt.frnd2{.relu}{.satfinite}.f16.f32       d, a;
     // cvt.frnd2{.relu}{.satfinite}.f16x2.f32     d, a, b;
     // cvt.frnd2{.relu}{.satfinite}.bf16.f32      d, a;
-    cvt.frnd2{.relu}{.satfinite}.bf16x2.f32    d, a, b => {
+    cvt.frnd2{.relu}{.satfinite}.packed16x2.f32 d, a, b => {
         if relu || satfinite {
             state.errors.push(PtxError::Todo);
         }
-        let data = ast::CvtDetails::new(&mut state.errors, Some(frnd2), false, false, ScalarType::BF16x2, ScalarType::F32);
+        let data = ast::CvtDetails::new(&mut state.errors, Some(frnd2), false, false, packed16x2, ScalarType::F32);
         ast::Instruction::Cvt {
             data,
             arguments:  ast::CvtArgs { dst: d, src: a, src2: Some(b) }
@@ -2654,6 +2663,7 @@ derive_parser!(
     .ifrnd: RawRoundingMode =   { .rn,  .rz,  .rm,  .rp,  .rni, .rzi, .rmi, .rpi };
     .frnd2: RawRoundingMode =   { .rn,  .rz };
     RawRoundingMode =           { .rn };
+    .packed16x2: ScalarType =   { .f16x2, .bf16x2 };
     .dtype: ScalarType =        { .u8,   .u16, .u32, .u64,
                                   .s8,   .s16, .s32, .s64,
                                   .bf16, .f16, .f32, .f64 };
@@ -4413,6 +4423,36 @@ mod tests {
             .address_size 64
             .file 1 \"kernel.cu\"
             .section .debug_info { }
+        ";
+        assert!(parse_module_checked(text).is_ok());
+    }
+
+    #[test]
+    fn parse_lop3_instruction() {
+        let text = "
+            .version 8.7
+            .target sm_120
+            .address_size 64
+            .visible .entry k() {
+                .reg .b32 %r<4>;
+                lop3.b32 %r0, %r1, %r2, %r3, 0xca;
+                ret;
+            }
+        ";
+        assert!(parse_module_checked(text).is_ok());
+    }
+
+    #[test]
+    fn parse_cvt_f16x2_f32_two_source_instruction() {
+        let text = "
+            .version 8.7
+            .target sm_120
+            .address_size 64
+            .visible .entry k() {
+                .reg .b32 %r<3>;
+                cvt.rn.f16x2.f32 %r0, 0f00000000, %r1;
+                ret;
+            }
         ";
         assert!(parse_module_checked(text).is_ok());
     }

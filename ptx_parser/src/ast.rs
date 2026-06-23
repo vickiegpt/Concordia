@@ -89,6 +89,20 @@ ptx_parser_macros::generate_instruction_type!(
                 src2: T,
             }
         },
+        Lop3 {
+            data: ScalarType,
+            type: { Type::Scalar(data.clone()) },
+            arguments<T>: {
+                dst: T,
+                src1: T,
+                src2: T,
+                src3: T,
+                src_lut: {
+                    repr: T,
+                    type: Type::Scalar(ScalarType::B32)
+                },
+            }
+        },
         Atom {
             type: &data.type_,
             data: AtomDetails,

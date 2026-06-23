@@ -817,6 +817,7 @@ impl<'a> MethodEmitContext<'a> {
             | ast::Instruction::Bar { .. }
             | ast::Instruction::BarRed { .. }
             | ast::Instruction::Bfi { .. }
+            | ast::Instruction::Lop3 { .. }
             | ast::Instruction::Activemask { .. }
             | ast::Instruction::ShflSync { .. }
             | ast::Instruction::Vote { .. }
