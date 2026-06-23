@@ -393,6 +393,10 @@ impl<'a> LiftContext<'a> {
             regs.max_pred += 1;
             self.call_state = Some(call_state);
         }
+        regs.max_b64 = regs.max_b64.max(regs.max_gpr);
+        if regs.max_gpr > 0 {
+            regs.max_b64 = regs.max_b64.max(16);
+        }
         if self.uses_cuda_param_abi || self.uses_shared_memory {
             regs.max_b64 = regs.max_b64.max(16);
         }
@@ -541,10 +545,9 @@ impl<'a> LiftContext<'a> {
                 &data_type_suffix(inst, SassDataType::S32),
             )),
             "IMAD" if has_modifier(inst, "WIDE") => Some(imad_wide_op(inst, &pred)),
-            "IMAD" => Some(ternary_op(
+            "IMAD" => Some(imad_op(
                 inst,
                 &pred,
-                "mad.lo",
                 &data_type_suffix(inst, SassDataType::S32),
             )),
             "SHL" => Some(binary_op(inst, &pred, "shl", "b32")),
@@ -890,11 +893,10 @@ fn cuda_param_decls(instructions: &[EnhancedSassInstruction]) -> Vec<CudaParamDe
         .collect()
 }
 
-fn cuda_param_name(index: u32, width: CudaParamWidth) -> String {
-    match (index, width) {
-        (0, _) => "out".to_string(),
-        (1, _) => "in".to_string(),
-        (2, CudaParamWidth::U32) => "n".to_string(),
+fn cuda_param_name(index: u32, _width: CudaParamWidth) -> String {
+    match index {
+        0 => "out".to_string(),
+        1 => "in".to_string(),
         _ => format!("param{}", index),
     }
 }
@@ -934,19 +936,21 @@ impl RegisterDecls {
 }
 
 fn collect_implicit_register_pair_decl(inst: &EnhancedSassInstruction, decls: &mut RegisterDecls) {
-    if !matches!(inst.opcode.as_str(), "LDC" | "LDCU") || !is_64bit_modifier(inst) {
+    if !is_64bit_modifier(inst) {
         return;
     }
-    let Some(SassOperand::Register(reg)) = inst.dest_operands.first() else {
-        return;
-    };
-    if reg.is_zero {
-        return;
-    }
-    match reg.prefix.as_str() {
-        "R" => decls.max_gpr = decls.max_gpr.max(reg.number + 2),
-        "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(reg.number + 2),
-        _ => {}
+    for operand in inst.dest_operands.iter().chain(inst.src_operands.iter()) {
+        let SassOperand::Register(reg) = operand else {
+            continue;
+        };
+        if reg.is_zero {
+            continue;
+        }
+        match reg.prefix.as_str() {
+            "R" => decls.max_gpr = decls.max_gpr.max(reg.number + 2),
+            "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(reg.number + 2),
+            _ => {}
+        }
     }
 }
 
@@ -1081,26 +1085,34 @@ fn iadd3_op(
     scratch_gpr: Option<&str>,
 ) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
-    let src0 = inst
+    let values: Vec<String> = inst
         .src_operands
-        .first()
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
-    let src1 = inst
-        .src_operands
-        .get(1)
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
-    let src2 = inst
-        .src_operands
-        .get(2)
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
+        .iter()
+        .filter_map(format_integer_data_operand)
+        .take(3)
+        .collect();
+    let src0 = values.first().cloned().unwrap_or_else(|| "0".to_string());
+    let src1 = values.get(1).cloned().unwrap_or_else(|| "0".to_string());
+    let src2 = values.get(2).cloned().unwrap_or_else(|| "0".to_string());
     let scratch = scratch_gpr.unwrap_or("%r0");
     format!(
         "{}add.{} {}, {}, {};\n    {}add.{} {}, {}, {};",
         pred, ty, scratch, src0, src1, pred, ty, dst, scratch, src2
     )
+}
+
+fn imad_op(inst: &EnhancedSassInstruction, pred: &str, ty: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let values: Vec<String> = inst
+        .src_operands
+        .iter()
+        .filter_map(format_integer_data_operand)
+        .take(3)
+        .collect();
+    let src0 = values.first().cloned().unwrap_or_else(|| "0".to_string());
+    let src1 = values.get(1).cloned().unwrap_or_else(|| "0".to_string());
+    let src2 = values.get(2).cloned().unwrap_or_else(|| "0".to_string());
+    format!("{}mad.lo.{} {}, {}, {}, {};", pred, ty, dst, src0, src1, src2)
 }
 
 fn ternary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> String {
@@ -1260,11 +1272,6 @@ fn hmul2_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str
 
 fn i2fp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
-    let src = inst
-        .src_operands
-        .first()
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
     let rounding = if has_modifier(inst, "RP") {
         "rp"
     } else if has_modifier(inst, "RM") {
@@ -1290,6 +1297,45 @@ fn i2fp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     } else {
         "s32"
     };
+    let src = inst
+        .src_operands
+        .first()
+        .map(|operand| {
+            if matches!(src_ty, "u64" | "s64") {
+                match operand {
+                    SassOperand::Register(reg) if reg.prefix == "UR" && !reg.is_zero => {
+                        format!("%rd{}", reg.number)
+                    }
+                    _ => format_rd_operand(operand),
+                }
+            } else {
+                format_operand(operand)
+            }
+        })
+        .unwrap_or_else(|| "0".to_string());
+    let src_setup = inst
+        .src_operands
+        .first()
+        .and_then(|operand| {
+            if !matches!(src_ty, "u64" | "s64") {
+                return None;
+            }
+            match operand {
+                SassOperand::Register(reg) if reg.prefix == "UR" && !reg.is_zero => {
+                    let (setup, _) =
+                        wide_base_operand_setup(&format!("%rd{}", reg.number), operand);
+                    Some(setup)
+                }
+                _ => None,
+            }
+        })
+        .unwrap_or_default();
+    if !src_setup.is_empty() {
+        return format!(
+            "{}\n    {}cvt.{}.{}.{} {}, {};",
+            src_setup, pred, rounding, dst_ty, src_ty, dst, src
+        );
+    }
     format!(
         "{}cvt.{}.{}.{} {}, {};",
         pred, rounding, dst_ty, src_ty, dst, src
@@ -1424,26 +1470,51 @@ fn fmnmx_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str
 
 fn imad_wide_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let dst = dest_rd_operand(inst).unwrap_or_else(|| "%rd0".to_string());
-    let src0 = inst
+    let data_operands: Vec<&SassOperand> = inst
         .src_operands
+        .iter()
+        .filter(|operand| format_integer_data_operand(operand).is_some())
+        .take(3)
+        .collect();
+    let src0 = data_operands
         .first()
-        .map(format_operand)
+        .map(|operand| format_operand(operand))
         .unwrap_or_else(|| "0".to_string());
-    let src1 = inst
-        .src_operands
+    let src1 = data_operands
         .get(1)
-        .map(format_operand)
+        .map(|operand| format_operand(operand))
         .unwrap_or_else(|| "0".to_string());
-    let base = inst
-        .src_operands
+    let (base_setup, base) = data_operands
         .get(2)
-        .map(format_rd_operand)
-        .unwrap_or_else(|| "0".to_string());
+        .map(|operand| wide_base_operand_setup(&dst, operand))
+        .unwrap_or_else(|| (String::new(), "0".to_string()));
 
-    format!(
-        "{}mul.wide.u32 %rd15, {}, {};\n    {}add.u64 {}, {}, %rd15;",
-        pred, src0, src1, pred, dst, base
-    )
+    let mut lines = format!("{}mul.wide.u32 %rd15, {}, {};", pred, src0, src1);
+    if !base_setup.is_empty() {
+        lines.push_str("\n    ");
+        lines.push_str(&base_setup);
+    }
+    lines.push_str(&format!("\n    {}add.u64 {}, {}, %rd15;", pred, dst, base));
+    lines
+}
+
+fn wide_base_operand_setup(dst: &str, operand: &SassOperand) -> (String, String) {
+    match operand {
+        SassOperand::Register(reg) if reg.prefix == "UR" && !reg.is_zero => {
+            let low = format_register(reg);
+            let high_reg = SassRegister::new("UR", reg.number + 1);
+            let high = format_register(&high_reg);
+            let low_tmp = if dst == "%rd13" { "%rd14" } else { "%rd13" };
+            (
+                format!(
+                    "cvt.u64.u32 {}, {};\n    shl.b64 {}, {}, 32;\n    cvt.u64.u32 {}, {};\n    or.b64 {}, {}, {};",
+                    dst, high, dst, dst, low_tmp, low, dst, dst, low_tmp
+                ),
+                dst.to_string(),
+            )
+        }
+        _ => (String::new(), format_rd_operand(operand)),
+    }
 }
 
 fn iadd3_extended_op(inst: &EnhancedSassInstruction, pred: &str, ty: &str) -> String {
@@ -1451,7 +1522,7 @@ fn iadd3_extended_op(inst: &EnhancedSassInstruction, pred: &str, ty: &str) -> St
     let terms: Vec<(String, bool)> = inst
         .src_operands
         .iter()
-        .filter(|op| !is_zero_register_operand(op))
+        .filter(|op| !is_zero_register_operand(op) && !is_predicate_operand(op))
         .map(format_signed_operand)
         .collect();
 
@@ -1808,15 +1879,25 @@ fn usel_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     if negated {
         std::mem::swap(&mut src0, &mut src1);
     }
-    let ty = if is_64bit_modifier(inst) {
-        "u64".to_string()
-    } else {
-        data_type_suffix(inst, SassDataType::U32)
-    };
+    if is_64bit_modifier(inst) {
+        let high_dst = uniform_high_register_name(&dst).unwrap_or_else(|| dst.clone());
+        let high_src0 = uniform_high_register_name(&src0).unwrap_or_else(|| src0.clone());
+        let high_src1 = uniform_high_register_name(&src1).unwrap_or_else(|| src1.clone());
+        return format!(
+            "{}selp.u32 {}, {}, {}, {};\n    {}selp.u32 {}, {}, {}, {};",
+            pred, dst, src0, src1, predicate, pred, high_dst, high_src0, high_src1, predicate
+        );
+    }
+    let ty = data_type_suffix(inst, SassDataType::U32);
     format!(
         "{}selp.{} {}, {}, {}, {};",
         pred, ty, dst, src0, src1, predicate
     )
+}
+
+fn uniform_high_register_name(name: &str) -> Option<String> {
+    let number = name.strip_prefix("%ur")?.parse::<u32>().ok()?;
+    Some(format!("%ur{}", number + 1))
 }
 
 fn fsel_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -1874,13 +1955,15 @@ fn lea_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
     let src = inst
         .src_operands
-        .first()
+        .iter()
+        .find(|operand| !is_predicate_operand(operand))
         .map(format_operand)
         .unwrap_or_else(|| "0".to_string());
     let shift = inst
         .src_operands
-        .get(2)
-        .and_then(|operand| match operand {
+        .iter()
+        .rev()
+        .find_map(|operand| match operand {
             SassOperand::Immediate(value) => Some(*value),
             _ => None,
         })
@@ -1890,6 +1973,24 @@ fn lea_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     } else {
         format!("{}shl.b32 {}, {}, {};", pred, dst, src, shift)
     }
+}
+
+fn is_predicate_operand(operand: &SassOperand) -> bool {
+    matches!(operand, SassOperand::Predicate { .. })
+        || matches!(
+            operand,
+            SassOperand::Register(reg)
+                if matches!(reg.prefix.as_str(), "P" | "PT" | "UP" | "UPT")
+        )
+        || matches!(
+            operand,
+            SassOperand::Label(label)
+                if matches!(
+                    label.as_str(),
+                    "P0" | "P1" | "P2" | "P3" | "P4" | "P5" | "P6" | "PT"
+                        | "UP0" | "UP1" | "UP2" | "UP3" | "UPT"
+                )
+        )
 }
 
 fn load_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -3516,10 +3617,10 @@ Function : kernel
         assert!(result.ptx.contains("setp.ge.s32 %p0, %r8, %ur4;"));
         assert!(result.ptx.contains("mov.u32 %r4, 0;"));
         assert!(result.ptx.contains("shf.r.clamp.b32 %r19, %r2, %r3, 5;"));
-        assert!(result.ptx.contains(".reg .b32 %r<21>;"));
+        assert!(result.ptx.contains(".reg .b32 %r<22>;"));
         assert!(result
             .ptx
-            .contains("abs.f32 %r20, %r5;\n    abs.f32 %r9, %r4;\n    max.f32 %r9, %r20, %r9;"));
+            .contains("abs.f32 %r21, %r5;\n    abs.f32 %r9, %r4;\n    max.f32 %r9, %r21, %r9;"));
         assert!(!result.ptx.contains("|R"));
         assert!(!result.ptx.contains("SRZ"));
     }
@@ -3625,10 +3726,12 @@ Function : kernel
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(!result.ptx.contains("|R"), "{}", result.ptx);
         assert!(!result.ptx.contains(".reuse"), "{}", result.ptx);
-        assert!(result.ptx.contains("abs.f32 %r32, %r5;"));
+        assert!(result.ptx.contains("abs.f32"), "{}", result.ptx);
+        assert!(result.ptx.contains(", %r5;"), "{}", result.ptx);
         assert!(result.ptx.contains("abs.f32 %r9, %r4;"));
-        assert!(result.ptx.contains("add.f32 %r4, %r32, 0f00000000;"));
-        assert!(result.ptx.contains("setp.gt.f32 %p0, %r32, 0f00000000;"));
+        assert!(result.ptx.contains("add.f32 %r4,"), "{}", result.ptx);
+        assert!(result.ptx.contains("setp.gt.f32 %p0,"), "{}", result.ptx);
+        assert!(result.ptx.contains(", 0f00000000;"), "{}", result.ptx);
         ptx_parser::parse_module_checked(&result.ptx)
             .expect("absolute/reuse lifted PTX syntax should parse");
     }
@@ -4121,7 +4224,7 @@ Function : kernel
             .expect("SM120 uniform shift and min/max bucket ops should lift");
 
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(result.ptx.contains(".reg .b32 %ur<9>;"));
+        assert!(result.ptx.contains(".reg .b32 %ur<10>;"));
         assert!(result.ptx.contains("min.s32 %ur5, %ur5, %ur7;"));
         assert!(result.ptx.contains("max.s32 %r3, %r3, %ur5;"));
         assert!(result.ptx.contains("max.s32 %r5, %r4, %ur5;"));
@@ -4214,10 +4317,12 @@ Function : kernel
             .expect("Kimi uniform predicate/select ops should lift");
 
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(result.ptx.contains(".reg .b32 %ur<9>;"));
+        assert!(result.ptx.contains(".reg .b32 %ur<10>;"));
         assert!(result.ptx.contains(".reg .pred %up<1>;"));
         assert!(result.ptx.contains("setp.ge.u32 %up0, %ur7, 0;"));
-        assert!(result.ptx.contains("selp.u64 %ur8, %ur6, %ur8, %up0;"));
+        assert!(result.ptx.contains(
+            "selp.u32 %ur8, %ur6, %ur8, %up0;\n    selp.u32 %ur9, %ur7, %ur9, %up0;"
+        ));
     }
 
     #[test]

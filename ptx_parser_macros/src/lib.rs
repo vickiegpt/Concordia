@@ -29,7 +29,7 @@ static POSTFIX_TYPES: &[&str] = &["ScalarType", "VectorPrefix"];
 
 struct OpcodeDefinitions {
     definitions: Vec<SingleOpcodeDefinition>,
-    block_selection: Vec<Vec<(Option<Vec<parser::DotModifier>>, usize)>>,
+    block_selection: Vec<Vec<(Option<Vec<Vec<parser::DotModifier>>>, usize)>>,
 }
 
 impl OpcodeDefinitions {
@@ -96,9 +96,43 @@ impl OpcodeDefinitions {
                             value.alternatives.iter().cloned().collect::<Vec<_>>()
                         }
                     };
-                    selections[i] = Some((Some(candidate_vec), generation));
+                    selections[i] = Some((Some(vec![candidate_vec]), generation));
                     selected_something = true;
                     continue 'check_definitions;
+                }
+            }
+            if !selected_something {
+                'check_definitions_by_group: for i in unselected.iter().copied() {
+                    let candidate_groups = Self::required_modifier_groups(&definitions[i]);
+                    for group_count in 2..=candidate_groups.len() {
+                        let mut selected_groups = None;
+                        Self::visit_modifier_group_combinations(
+                            &candidate_groups,
+                            group_count,
+                            0,
+                            &mut Vec::new(),
+                            &mut |groups| {
+                                if selected_groups.is_some() {
+                                    return;
+                                }
+                                let unique = unselected.iter().copied().all(|j| {
+                                    if i == j {
+                                        true
+                                    } else {
+                                        !Self::definition_can_match_groups(&definitions[j], groups)
+                                    }
+                                });
+                                if unique {
+                                    selected_groups = Some(groups.to_vec());
+                                }
+                            },
+                        );
+                        if let Some(groups) = selected_groups {
+                            selections[i] = Some((Some(groups), generation));
+                            selected_something = true;
+                            continue 'check_definitions_by_group;
+                        }
+                    }
                 }
             }
             if !selected_something {
@@ -146,6 +180,70 @@ impl OpcodeDefinitions {
         Self {
             definitions,
             block_selection,
+        }
+    }
+
+    fn required_modifier_groups(
+        definition: &SingleOpcodeDefinition,
+    ) -> Vec<Vec<parser::DotModifier>> {
+        definition
+            .unordered_modifiers
+            .iter()
+            .chain(definition.ordered_modifiers.iter())
+            .filter_map(|modifier| match modifier {
+                DotModifierRef::Direct {
+                    optional: false,
+                    value,
+                    ..
+                } => Some(vec![value.clone()]),
+                DotModifierRef::Indirect {
+                    optional: false,
+                    value,
+                    ..
+                } => Some(value.alternatives.iter().cloned().collect::<Vec<_>>()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn definition_can_match_groups(
+        definition: &SingleOpcodeDefinition,
+        groups: &[Vec<parser::DotModifier>],
+    ) -> bool {
+        groups.iter().all(|group| {
+            group
+                .iter()
+                .any(|modifier| definition.possible_modifiers.contains(modifier))
+        })
+    }
+
+    fn visit_modifier_group_combinations<F>(
+        groups: &[Vec<parser::DotModifier>],
+        target_len: usize,
+        start: usize,
+        current: &mut Vec<Vec<parser::DotModifier>>,
+        visitor: &mut F,
+    ) where
+        F: FnMut(&[Vec<parser::DotModifier>]),
+    {
+        if current.len() == target_len {
+            visitor(current);
+            return;
+        }
+        let remaining = target_len - current.len();
+        if groups.len().saturating_sub(start) < remaining {
+            return;
+        }
+        for idx in start..=groups.len() - remaining {
+            current.push(groups[idx].clone());
+            Self::visit_modifier_group_combinations(
+                groups,
+                target_len,
+                idx + 1,
+                current,
+                visitor,
+            );
+            current.pop();
         }
     }
 
@@ -502,9 +600,14 @@ fn emit_parse_function(
                 let def_parser = emit_definition_parser(type_name,  (opcode,*selected_definition), &def.definitions[*selected_definition]);
                 match selection_key {
                     Some(selection_keys) => {
-                        let selection_keys = selection_keys.iter().map(|k| k.dot_capitalized());
+                        let selection_groups = selection_keys.iter().map(|group| {
+                            let group_keys = group.iter().map(|k| k.dot_capitalized());
+                            quote! {
+                                modifiers.iter().any(|(t, _)| false #(|| *t == #type_name :: #group_keys)*)
+                            }
+                        });
                         quote! {
-                            else if false #(|| modifiers.iter().any(|(t, _)| *t == #type_name :: #selection_keys))* {
+                            else if true #(&& #selection_groups)* {
                                 #def_parser
                             }
                         }
