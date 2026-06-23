@@ -1344,12 +1344,97 @@ fn sass_diagnostic_instruction_for_log(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "nvidia",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent"),
+        not(feature = "tmatmul")
+    )
+))]
+static SASS_LIFTER_CUBIN_DUMP_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "nvidia",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent"),
+        not(feature = "tmatmul")
+    )
+))]
+fn dump_sass_lifter_cubin_if_requested(dir: Option<std::ffi::OsString>, label: &str, cubin: &[u8]) {
+    let Some(dir) = dir else {
+        return;
+    };
+
+    let dir = std::path::PathBuf::from(dir);
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "[hetGPU SASS] failed to create CUBIN dump dir {}: {}",
+            dir.display(),
+            err
+        );
+        return;
+    }
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&cubin.len(), &mut hasher);
+    std::hash::Hash::hash(
+        &cubin.get(..cubin.len().min(4096)).unwrap_or(cubin),
+        &mut hasher,
+    );
+    let hash = std::hash::Hasher::finish(&hasher);
+    let index = SASS_LIFTER_CUBIN_DUMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let safe_label: String = label
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(96)
+        .collect();
+    let safe_label = if safe_label.is_empty() {
+        "module".to_string()
+    } else {
+        safe_label
+    };
+    let path = dir.join(format!(
+        "{:06}_{}_{}_0x{:016x}.cubin",
+        index,
+        safe_label,
+        cubin.len(),
+        hash
+    ));
+
+    if let Err(err) = std::fs::write(&path, cubin) {
+        eprintln!(
+            "[hetGPU SASS] failed to write captured CUBIN dump to {}: {}",
+            path.display(),
+            err
+        );
+    } else {
+        eprintln!(
+            "[hetGPU SASS] wrote captured CUBIN dump to {}",
+            path.display()
+        );
+    }
+}
+
 #[cfg(feature = "intel")]
 fn intel_sass_lifter_requested() -> bool {
     intel_env_flag_enabled("HETGPU_TMATMUL_SASS_FALLBACK")
         || intel_env_flag_enabled("HETGPU_TMATMUL_HARDWARE_MATMUL")
         || intel_env_flag_enabled("HETGPU_SASS_LIFTER_LOG")
         || intel_env_os_value_requested("HETGPU_SASS_LIFTER_DUMP").is_some()
+        || intel_env_os_value_requested("HETGPU_SASS_LIFTER_CUBIN_DUMP_DIR").is_some()
 }
 
 #[cfg(feature = "intel")]
@@ -1603,6 +1688,11 @@ pub(crate) fn lift_cubin_to_ptx_for_kernel(binary: &[u8], kernel_name: &str) -> 
             return None;
         }
     };
+    dump_sass_lifter_cubin_if_requested(
+        intel_env_os_value_requested("HETGPU_SASS_LIFTER_CUBIN_DUMP_DIR"),
+        kernel_name,
+        cubin.as_ref(),
+    );
 
     match ptx::lift_cubin_to_ptx(
         cubin.as_ref(),
@@ -2544,6 +2634,7 @@ fn env_os_value_requested(name: &str) -> Option<std::ffi::OsString> {
 fn sass_lifter_requested() -> bool {
     env_flag_enabled("HETGPU_SASS_LIFTER_LOG")
         || env_os_value_requested("HETGPU_SASS_LIFTER_DUMP").is_some()
+        || env_os_value_requested("HETGPU_SASS_LIFTER_CUBIN_DUMP_DIR").is_some()
 }
 
 #[cfg(all(
@@ -3195,6 +3286,11 @@ fn try_lift_nvidia_cubin_image(image: *const std::ffi::c_void) -> Option<String>
         );
         return None;
     }
+    dump_sass_lifter_cubin_if_requested(
+        env_os_value_requested("HETGPU_SASS_LIFTER_CUBIN_DUMP_DIR"),
+        "module",
+        cubin.as_ref(),
+    );
 
     match ptx::lift_cubin_to_ptx(
         cubin.as_ref(),

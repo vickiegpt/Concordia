@@ -7,6 +7,11 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 CSV_HEADER="case,status,total_ms,exit_code,stdout_bytes,stderr_bytes,lifter_markers,lifted_ptx_files,lifted_ptx_bytes,message"
 CASE_NAME="kimi_k26_iq1m"
 CARGO="${CARGO:-cargo}"
+if [[ -x /usr/local/cuda-12.8/bin/cuobjdump ]]; then
+    CUOBJDUMP="${CUOBJDUMP:-/usr/local/cuda-12.8/bin/cuobjdump}"
+else
+    CUOBJDUMP="${CUOBJDUMP:-cuobjdump}"
+fi
 
 WORK_DIR="${HETGPU_KIMI_E2E_WORKDIR:-$(mktemp -d /tmp/hetgpu-kimi-k26-e2e.XXXXXX)}"
 if [[ "${HETGPU_KIMI_E2E_KEEP:-0}" != "1" && -z "${HETGPU_KIMI_E2E_WORKDIR:-}" ]]; then
@@ -121,6 +126,7 @@ env \
     HETGPU_KIMI_E2E_EFFECTIVE_LD_PRELOAD="${kimi_ld_preload}" \
     HETGPU_SASS_LIFTER_LOG=1 \
     HETGPU_SASS_LIFTER_DUMP="${ptx_dump}" \
+    HETGPU_SASS_LIFTER_CUOBJDUMP="${CUOBJDUMP}" \
     HETGPU_CUDART_DEFER_MODULE_LOAD="${kimi_cudart_defer_module_load}" \
     HETGPU_CUDART_COMPUTE_CAPABILITY="${kimi_cudart_compute_capability}" \
     HETGPU_CUDART_PREFER_FATBIN_CUBIN_FOR_SASS="${kimi_cudart_prefer_fatbin_cubin_for_sass}" \

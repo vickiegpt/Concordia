@@ -7,6 +7,11 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 CASE_NAME="kimi_k26_numerical"
 CSV_HEADER="case,status,total_ms,baseline_exit_code,hooked_exit_code,baseline_stdout_sha256,hooked_stdout_sha256,baseline_stdout_bytes,hooked_stdout_bytes,ptx_source_markers,sass_lifter_markers,offloaded_layers,message"
 CARGO="${CARGO:-cargo}"
+if [[ -x /usr/local/cuda-12.8/bin/cuobjdump ]]; then
+    CUOBJDUMP="${CUOBJDUMP:-/usr/local/cuda-12.8/bin/cuobjdump}"
+else
+    CUOBJDUMP="${CUOBJDUMP:-cuobjdump}"
+fi
 
 WORK_DIR="${HETGPU_KIMI_NUMERICAL_WORKDIR:-$(mktemp -d /tmp/hetgpu-kimi-k26-numerical.XXXXXX)}"
 if [[ "${HETGPU_KIMI_NUMERICAL_KEEP:-0}" != "1" && -z "${HETGPU_KIMI_NUMERICAL_WORKDIR:-}" ]]; then
@@ -179,6 +184,7 @@ run_role() {
         env_args+=(
             HETGPU_KIMI_NUMERICAL_EFFECTIVE_LD_PRELOAD="${ld_preload}"
             HETGPU_SASS_LIFTER_LOG=1
+            HETGPU_SASS_LIFTER_CUOBJDUMP="${CUOBJDUMP}"
             HETGPU_CUDART_DEFER_MODULE_LOAD="${HETGPU_KIMI_NUMERICAL_CUDART_DEFER_MODULE_LOAD:-${HETGPU_CUDART_DEFER_MODULE_LOAD:-0}}"
             HETGPU_CUDART_COMPUTE_CAPABILITY="${HETGPU_KIMI_NUMERICAL_CUDART_COMPUTE_CAPABILITY:-${HETGPU_CUDART_COMPUTE_CAPABILITY:-}}"
             HETGPU_CUDART_PREFER_FATBIN_CUBIN_FOR_SASS="${HETGPU_KIMI_NUMERICAL_PREFER_FATBIN_CUBIN_FOR_SASS:-${HETGPU_CUDART_PREFER_FATBIN_CUBIN_FOR_SASS:-0}}"

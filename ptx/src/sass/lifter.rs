@@ -538,6 +538,7 @@ impl<'a> LiftContext<'a> {
             "F2FP" if has_modifier(inst, "PACK_AB") => Some(f2fp_pack_ab_op(inst, &pred)),
             "F2FP" => self.unsupported(inst, "F2FP sub-operation lifting is not implemented"),
             "HADD2" => Some(hadd2_op(inst, &pred, self.scratch_gpr.as_deref())),
+            "HMUL2" => Some(hmul2_op(inst, &pred, self.scratch_gpr.as_deref())),
             "IABS" => Some(unary_op(inst, &pred, "abs", "s32")),
             "I2F" | "I2FP" | "UI2F" | "UI2FP" => Some(i2fp_op(inst, &pred)),
             "UIMAD" => Some(ternary_op(inst, &pred, "mad.lo", "u32")),
@@ -546,6 +547,7 @@ impl<'a> LiftContext<'a> {
             "FRND" if has_modifier(inst, "TRUNC") => Some(frnd_trunc_op(inst, &pred)),
             "FRND" => self.unsupported(inst, "floating round mode lifting is not implemented"),
             "FMNMX" => Some(fmnmx_op(inst, &pred, self.scratch_gpr.as_deref())),
+            "FSEL" => Some(fsel_op(inst, &pred)),
             "FABS" => Some(unary_op(
                 inst,
                 &pred,
@@ -560,12 +562,18 @@ impl<'a> LiftContext<'a> {
             )),
             "LDG" | "LDS" | "LDL" => Some(load_op(inst, &pred)),
             "LDC" | "LDCU" => Some(ldc_op(inst, &pred)),
-            "STG" | "STS" | "STL" => Some(store_op(inst, &pred)),
+            "ST" | "STG" | "STS" | "STL" => Some(store_op(inst, &pred)),
+            "ATOMG" | "ATOMS" => Some(atomic_op(inst, &pred)),
+            "IDP" if is_idp_4a_s8_s8(inst) => Some(idp_4a_s8_s8_op(inst, &pred)),
+            "IDP" => self.unsupported(inst, "integer dot-product mode lifting is not implemented"),
             "ISETP" | "FSETP" => Some(setp_op(inst, &pred)),
+            "UISETP" => Some(uisetp_op(inst, &pred)),
             "SEL" => Some(sel_op(inst, &pred)),
+            "USEL" => Some(usel_op(inst, &pred)),
             "PLOP3" if is_plop3_binary_lut(inst) => Some(plop3_binary_lut_op(inst, &pred)),
             "PLOP3" => self.unsupported(inst, "predicate LOP3 lifting is not implemented"),
             "PSETP" => self.unsupported(inst, "predicate set lifting is not implemented"),
+            "R2P" => Some(r2p_op(inst, &pred, self.scratch_gpr.as_deref())),
             "BRA" | "BRX" | "JMP" => Some(branch_op(inst, &pred)),
             "JMX" | "JMXU" if branch_target(inst).is_some() => Some(branch_op(inst, &pred)),
             "JMX" | "JMXU" => self.unsupported(inst, "indirect branch lifting is not implemented"),
@@ -582,6 +590,10 @@ impl<'a> LiftContext<'a> {
             "SHFL" if has_modifier(inst, "BFLY") => Some(shfl_bfly_op(inst, &pred)),
             "MUFU" if has_modifier(inst, "RSQ") => Some(mufu_rsq_op(inst, &pred)),
             "MUFU" if has_modifier(inst, "RCP") => Some(mufu_rcp_op(inst, &pred)),
+            "MUFU" if has_modifier(inst, "LG2") => Some(mufu_unary_op(inst, &pred, "lg2")),
+            "MUFU" if has_modifier(inst, "EX2") => Some(mufu_unary_op(inst, &pred, "ex2")),
+            "MUFU" if has_modifier(inst, "SIN") => Some(mufu_unary_op(inst, &pred, "sin")),
+            "MUFU" if has_modifier(inst, "COS") => Some(mufu_unary_op(inst, &pred, "cos")),
             "MUFU" => self.unsupported(inst, "MUFU sub-operation lifting is not implemented"),
             _ => self.unsupported(inst, "instruction lifting is not implemented"),
         }
@@ -611,6 +623,7 @@ fn needs_gpr_scratch(instructions: &[EnhancedSassInstruction]) -> bool {
             || is_lop3_odd_predicate(inst)
             || is_lop3_predicate_lut(inst)
             || is_hadd2_zero_source(inst)
+            || inst.opcode == "R2P"
             || is_shf_left_rotate(inst)
             || has_abs_float_operand(inst)
     })
@@ -701,6 +714,7 @@ impl RegisterDecls {
                 collect_register_decl(predicate, &mut decls);
             }
             collect_implicit_register_pair_decl(inst, &mut decls);
+            collect_implicit_r2p_predicate_decl(inst, &mut decls);
         }
         decls
     }
@@ -729,6 +743,20 @@ fn collect_implicit_register_pair_decl(inst: &EnhancedSassInstruction, decls: &m
         "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(reg.number + 2),
         _ => {}
     }
+}
+
+fn collect_implicit_r2p_predicate_decl(inst: &EnhancedSassInstruction, decls: &mut RegisterDecls) {
+    if inst.opcode != "R2P" {
+        return;
+    }
+    let Some(mask) = r2p_mask(inst) else {
+        return;
+    };
+    if mask == 0 {
+        return;
+    }
+    let highest_bit = u32::BITS - 1 - mask.leading_zeros();
+    decls.max_pred = decls.max_pred.max(highest_bit + 1);
 }
 
 fn collect_register_decl(operand: &SassOperand, decls: &mut RegisterDecls) {
@@ -961,6 +989,37 @@ fn hadd2_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str
     }
 }
 
+fn hmul2_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str>) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src0_is_zero = inst
+        .src_operands
+        .first()
+        .map(is_half2_zero_operand)
+        .unwrap_or(true);
+    let src1_is_zero = inst
+        .src_operands
+        .get(1)
+        .map(is_half2_zero_operand)
+        .unwrap_or(true);
+    let scratch = scratch_gpr.unwrap_or("%r0");
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(|operand| format_half2_operand(operand, scratch))
+        .unwrap_or_else(|| scratch.to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(|operand| format_half2_operand(operand, scratch))
+        .unwrap_or_else(|| scratch.to_string());
+    let mul = format!("{}mul.rn.f16x2 {}, {}, {};", pred, dst, src0, src1);
+    if src0_is_zero || src1_is_zero {
+        format!("{}mov.b32 {}, 0;\n    {}", pred, scratch, mul)
+    } else {
+        mul
+    }
+}
+
 fn i2fp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
     let src = inst
@@ -1037,6 +1096,49 @@ fn mufu_rcp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         .map(format_operand)
         .unwrap_or_else(|| "0".to_string());
     format!("{}rcp.approx.ftz.f32 {}, {};", pred, dst, src)
+}
+
+fn mufu_unary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src = inst
+        .src_operands
+        .first()
+        .map(format_float_operand)
+        .unwrap_or_else(|| "0.0".to_string());
+    format!("{}{}.approx.ftz.f32 {}, {};", pred, op, dst, src)
+}
+
+fn r2p_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str>) -> String {
+    let src = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let mask = r2p_mask(inst).unwrap_or(0);
+    let scratch = scratch_gpr.unwrap_or("%r0");
+    let mut lines = Vec::new();
+    for bit in 0..8 {
+        let bit_mask = 1u32 << bit;
+        if mask & bit_mask == 0 {
+            continue;
+        }
+        lines.push(format!(
+            "{}and.b32 {}, {}, 0x{:x};\n    {}setp.ne.u32 %p{}, {}, 0;",
+            pred, scratch, src, bit_mask, pred, bit, scratch
+        ));
+    }
+    if lines.is_empty() {
+        format!("{}// r2p mask empty;", pred)
+    } else {
+        lines.join("\n    ")
+    }
+}
+
+fn r2p_mask(inst: &EnhancedSassInstruction) -> Option<u32> {
+    match inst.src_operands.get(1)? {
+        SassOperand::Immediate(value) if *value >= 0 => Some(*value as u32),
+        _ => None,
+    }
 }
 
 fn fmnmx_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str>) -> String {
@@ -1448,6 +1550,83 @@ fn sel_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     )
 }
 
+fn usel_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%ur0".to_string());
+    let mut src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let mut src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let (predicate, negated) = inst
+        .src_operands
+        .get(2)
+        .map(format_sel_predicate_operand)
+        .unwrap_or_else(|| ("%up0".to_string(), false));
+    if negated {
+        std::mem::swap(&mut src0, &mut src1);
+    }
+    let ty = if is_64bit_modifier(inst) {
+        "u64".to_string()
+    } else {
+        data_type_suffix(inst, SassDataType::U32)
+    };
+    format!(
+        "{}selp.{} {}, {}, {}, {};",
+        pred, ty, dst, src0, src1, predicate
+    )
+}
+
+fn fsel_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let mut src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let mut src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let (predicate, negated) = inst
+        .src_operands
+        .get(2)
+        .map(format_sel_predicate_operand)
+        .unwrap_or_else(|| ("%p0".to_string(), false));
+    if negated {
+        std::mem::swap(&mut src0, &mut src1);
+    }
+    format!(
+        "{}selp.b32 {}, {}, {}, {};",
+        pred, dst, src0, src1, predicate
+    )
+}
+
+fn idp_4a_s8_s8_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
+    let src0 = inst
+        .src_operands
+        .first()
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let src1 = inst
+        .src_operands
+        .get(1)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    let acc = inst
+        .src_operands
+        .get(2)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+    format!("{}dp4a.s32.s32 {}, {}, {}, {};", pred, dst, src0, src1, acc)
+}
+
 fn ulea_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%ur0".to_string());
     format!("{}mov.u32 {}, 0;", pred, dst)
@@ -1600,6 +1779,76 @@ fn shared_address_setup(operand: &SassOperand) -> String {
     }
 }
 
+fn atomic_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let first_dest_is_true_predicate = inst
+        .dest_operands
+        .first()
+        .map(is_predicate_true_operand)
+        .unwrap_or(false);
+    let (dst, addr_idx, value_idx) = if first_dest_is_true_predicate && inst.src_operands.len() >= 3
+    {
+        (
+            inst.src_operands
+                .first()
+                .map(format_operand)
+                .unwrap_or_else(|| "%r0".to_string()),
+            1,
+            2,
+        )
+    } else {
+        (
+            dest_operand(inst).unwrap_or_else(|| "%r0".to_string()),
+            0,
+            1,
+        )
+    };
+    let addr = inst
+        .src_operands
+        .get(addr_idx)
+        .map(|operand| format_memory_address_operand(inst, operand))
+        .unwrap_or_else(|| "[0]".to_string());
+    let value = inst
+        .src_operands
+        .get(value_idx)
+        .map(format_operand)
+        .unwrap_or_else(|| "0".to_string());
+
+    format!(
+        "{}atom.{}.{}.{} {}, {}, {};",
+        pred,
+        memory_space_suffix(inst),
+        atomic_operation_suffix(inst),
+        data_type_suffix(inst, SassDataType::U32),
+        dst,
+        addr,
+        value
+    )
+}
+
+fn atomic_operation_suffix(inst: &EnhancedSassInstruction) -> &'static str {
+    if has_modifier(inst, "ADD") {
+        "add"
+    } else if has_modifier(inst, "MIN") {
+        "min"
+    } else if has_modifier(inst, "MAX") {
+        "max"
+    } else if has_modifier(inst, "AND") {
+        "and"
+    } else if has_modifier(inst, "OR") {
+        "or"
+    } else if has_modifier(inst, "XOR") {
+        "xor"
+    } else if has_modifier(inst, "EXCH") {
+        "exch"
+    } else if has_modifier(inst, "INC") {
+        "inc"
+    } else if has_modifier(inst, "DEC") {
+        "dec"
+    } else {
+        "add"
+    }
+}
+
 fn setp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%p0".to_string());
     let (src0, src1) = setp_compare_operands(inst);
@@ -1613,6 +1862,20 @@ fn setp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         pred,
         comparison_suffix(inst),
         setp_data_type_suffix(inst, default_ty, &src0, &src1),
+        dst,
+        src0,
+        src1
+    )
+}
+
+fn uisetp_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+    let dst = dest_operand(inst).unwrap_or_else(|| "%up0".to_string());
+    let (src0, src1) = uisetp_compare_operands(inst);
+    format!(
+        "{}setp.{}.{} {}, {}, {};",
+        pred,
+        comparison_suffix(inst),
+        setp_data_type_suffix(inst, SassDataType::U32, &src0, &src1),
         dst,
         src0,
         src1
@@ -1657,6 +1920,17 @@ fn setp_compare_operands(inst: &EnhancedSassInstruction) -> (String, String) {
         .map(format_operand)
         .unwrap_or_else(|| "0".to_string());
     (src0, src1)
+}
+
+fn uisetp_compare_operands(inst: &EnhancedSassInstruction) -> (String, String) {
+    if inst.src_operands.len() >= 4 && static_predicate_value(&inst.src_operands[0]).is_some() {
+        return (
+            format_operand(&inst.src_operands[1]),
+            format_operand(&inst.src_operands[2]),
+        );
+    }
+
+    setp_compare_operands(inst)
 }
 
 fn branch_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -1704,7 +1978,7 @@ fn data_type_suffix(inst: &EnhancedSassInstruction, default: SassDataType) -> St
 
 fn memory_space_suffix(inst: &EnhancedSassInstruction) -> String {
     let space = inst.memory_space.or(match inst.opcode.as_str() {
-        "LDG" | "STG" => Some(SassMemorySpace::Global),
+        "LDG" | "ST" | "STG" => Some(SassMemorySpace::Global),
         "LDS" | "STS" => Some(SassMemorySpace::Shared),
         "LDL" | "STL" => Some(SassMemorySpace::Local),
         "LDC" => Some(SassMemorySpace::Constant),
@@ -1990,6 +2264,12 @@ fn is_ulop3_lut(inst: &EnhancedSassInstruction) -> bool {
         && matches!(inst.src_operands.get(3), Some(SassOperand::Immediate(_)))
 }
 
+fn is_idp_4a_s8_s8(inst: &EnhancedSassInstruction) -> bool {
+    inst.opcode == "IDP"
+        && has_modifier(inst, "4A")
+        && inst.modifiers.iter().filter(|m| m.as_str() == "S8").count() >= 2
+}
+
 fn is_plop3_binary_lut(inst: &EnhancedSassInstruction) -> bool {
     plop3_binary_lut_operator(inst).is_some()
 }
@@ -2180,7 +2460,35 @@ fn desc_address_to_ptx(label: &str) -> Option<String> {
         return None;
     }
     let reg_num = digits.parse::<u32>().ok()?;
-    Some(format!("[%rd{}]", reg_num))
+    let tail = rest[digits.len()..].split(']').next().unwrap_or_default();
+    let offset = tail
+        .char_indices()
+        .find(|(_, ch)| matches!(ch, '+' | '-'))
+        .and_then(|(idx, _)| parse_signed_hex_or_dec(&tail[idx..]))
+        .unwrap_or(0);
+    if offset > 0 {
+        Some(format!("[%rd{}+{}]", reg_num, offset))
+    } else if offset < 0 {
+        Some(format!("[%rd{}{}]", reg_num, offset))
+    } else {
+        Some(format!("[%rd{}]", reg_num))
+    }
+}
+
+fn parse_signed_hex_or_dec(value: &str) -> Option<i64> {
+    let value = value.trim();
+    let (sign, digits) = match value.as_bytes().first().copied() {
+        Some(b'+') => (1i64, &value[1..]),
+        Some(b'-') => (-1i64, &value[1..]),
+        _ => (1i64, value),
+    };
+    let magnitude = digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+        .map(|hex| i64::from_str_radix(hex, 16))
+        .unwrap_or_else(|| digits.parse::<i64>())
+        .ok()?;
+    Some(sign * magnitude)
 }
 
 fn uses_shared_memory(instructions: &[EnhancedSassInstruction]) -> bool {
@@ -2330,8 +2638,40 @@ fn format_sel_predicate_operand(operand: &SassOperand) -> (String, bool) {
         SassOperand::Predicate { register, negated } => (format_register(register), *negated),
         SassOperand::Register(reg) if reg.prefix == "P" => (format_register(reg), false),
         SassOperand::Register(reg) if reg.prefix == "!P" => (format!("%p{}", reg.number), true),
+        SassOperand::Register(reg) if reg.prefix == "UP" => (format_register(reg), false),
+        SassOperand::Register(reg) if reg.prefix == "!UP" => (format!("%up{}", reg.number), true),
+        SassOperand::Label(label) if label == "PT" => ("1".to_string(), false),
+        SassOperand::Label(label) if label == "!PT" => ("1".to_string(), true),
+        SassOperand::Label(label) if label == "UPT" => ("1".to_string(), false),
+        SassOperand::Label(label) if label == "!UPT" => ("1".to_string(), true),
+        SassOperand::Label(label) if is_predicate_label(label) => {
+            (format!("%p{}", &label[1..]), false)
+        }
+        SassOperand::Label(label) if label.starts_with("!P") && is_predicate_label(&label[1..]) => {
+            (format!("%p{}", &label[2..]), true)
+        }
+        SassOperand::Label(label) if is_uniform_predicate_label(label) => {
+            (format!("%up{}", &label[2..]), false)
+        }
+        SassOperand::Label(label)
+            if label.starts_with("!UP") && is_uniform_predicate_label(&label[1..]) =>
+        {
+            (format!("%up{}", &label[3..]), true)
+        }
         _ => (format_operand(operand), false),
     }
+}
+
+fn is_predicate_label(label: &str) -> bool {
+    label
+        .strip_prefix('P')
+        .is_some_and(|number| !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn is_uniform_predicate_label(label: &str) -> bool {
+    label
+        .strip_prefix("UP")
+        .is_some_and(|number| !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 fn format_register(reg: &SassRegister) -> String {
@@ -3223,5 +3563,123 @@ Function : kernel
         assert!(result.ptx.contains("max.s32 %r7, %r6, %ur5;"));
         assert!(result.ptx.contains("shf.r.clamp.b32 %ur8, %ur8, %ur6, 5;"));
         assert!(result.ptx.contains("shf.r.clamp.b32 %ur6, 0, %ur6, 5;"));
+    }
+
+    #[test]
+    fn sass_lifter_lifts_kimi_idp_and_fsel_bucket_ops() {
+        let text = r#"Function : kimi_idp_fsel
+        /*1dc0*/                   IDP.4A.S8.S8 R91, R88, R77.reuse, RZ ?trans1; /* 0x0000004d585b7226 */
+        /*0a20*/                   FSEL R8, R8, R9, !P1 ?trans2; /* 0x0000000908087208 */
+        /*0ab0*/               @P1 FSEL R10, R31, RZ, P0 ?trans2; /* 0x000000ff1f0a1208 */
+        /*1dd0*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("Kimi IDP/FSEL bucket ops should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("dp4a.s32.s32 %r91, %r88, %r77, 0;"));
+        assert!(result.ptx.contains("selp.b32 %r8, %r9, %r8, %p1;"));
+        assert!(result.ptx.contains("@%p1 selp.b32 %r10, %r31, 0, %p0;"));
+    }
+
+    #[test]
+    fn sass_lifter_lifts_kimi_descriptor_store_with_offset() {
+        let text = r#"Function : kimi_store
+        /*1150*/                   ST.E.U16 desc[UR8][R32.64+0x40], R21 &rd=0x0 ?trans1; /* 0x0000401520007985 */
+        /*1160*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("Kimi descriptor store should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("st.global.u16 [%rd32+64], %r21;"));
+    }
+
+    #[test]
+    fn sass_lifter_lifts_kimi_mufu_bucket_ops() {
+        let text = r#"Function : kimi_mufu
+        /*0460*/                   MUFU.LG2 R10, UR7 &req={3} &wr=0x2 ?trans1; /* 0x00000007000a7d08 */
+        /*04e0*/                   MUFU.EX2 R3, R3 &wr=0x1 ?trans3; /* 0x0000000300037308 */
+        /*0620*/                   MUFU.SIN R11, R12 &wr=0x2 ?trans1; /* 0x0000000c000b7308 */
+        /*0640*/               @P0 MUFU.COS R3, R12 &wr=0x3 ?trans3; /* 0x0000000c00037308 */
+        /*0650*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("Kimi MUFU bucket ops should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("lg2.approx.ftz.f32 %r10, %ur7;"));
+        assert!(result.ptx.contains("ex2.approx.ftz.f32 %r3, %r3;"));
+        assert!(result.ptx.contains("sin.approx.ftz.f32 %r11, %r12;"));
+        assert!(result.ptx.contains("@%p0 cos.approx.ftz.f32 %r3, %r12;"));
+    }
+
+    #[test]
+    fn sass_lifter_lifts_kimi_r2p_bucket_op() {
+        let text = r#"Function : kimi_r2p
+        /*0460*/                   R2P PR, R9, 0x7e ?trans1; /* 0x0000007e09007804 */
+        /*0470*/                   EXIT ;
+"#;
+
+        let result =
+            lift_sass_text_to_ptx(text, SassLiftOptions::default()).expect("R2P should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %r<11>;"));
+        assert!(result.ptx.contains(".reg .pred %p<7>;"));
+        assert!(result.ptx.contains("and.b32 %r10, %r9, 0x2;"));
+        assert!(result.ptx.contains("setp.ne.u32 %p1, %r10, 0;"));
+        assert!(result.ptx.contains("and.b32 %r10, %r9, 0x40;"));
+        assert!(result.ptx.contains("setp.ne.u32 %p6, %r10, 0;"));
+        assert!(!result.ptx.contains("%p0, %r10"));
+    }
+
+    #[test]
+    fn sass_lifter_lifts_kimi_uniform_setp_and_sel_bucket_ops() {
+        let text = r#"Function : kimi_uniform_pred
+        /*07a0*/                   UISETP.GE.AND UP0, UPT, UR7, URZ, UPT ?WAIT4_END_GROUP; /* 0x000000ff0700728c */
+        /*07b0*/                   USEL.64 UR8, UR8, UR6, !UP0 ?WAIT9_END_GROUP; /* 0x0000000608087c87 */
+        /*07c0*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("Kimi uniform predicate/select ops should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %ur<9>;"));
+        assert!(result.ptx.contains(".reg .pred %up<1>;"));
+        assert!(result.ptx.contains("setp.ge.u32 %up0, %ur7, 0;"));
+        assert!(result.ptx.contains("selp.u64 %ur8, %ur6, %ur8, %up0;"));
+    }
+
+    #[test]
+    fn sass_lifter_lifts_kimi_global_atomic_add_bucket_op() {
+        let text = r#"Function : kimi_atomic_add
+        /*0310*/                   ATOMG.E.ADD.STRONG.GPU PT, R9, desc[UR6][R8.64], R3 &req={0} &wr=0x2 ?trans1; /* 0x80000003080979a8 */
+        /*0320*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("Kimi global atomic add should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("atom.global.add.u32 %r9, [%rd8], %r3;"));
+    }
+
+    #[test]
+    fn sass_lifter_lifts_kimi_hmul2_bucket_op() {
+        let text = r#"Function : kimi_hmul2
+        /*0af0*/                   HMUL2 R7, R14, R7.H0_H0 ?WAIT5_END_GROUP; /* 0x200000070e077232 */
+        /*0b00*/                   EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("Kimi HMUL2 bucket op should lift");
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("mul.rn.f16x2 %r7, %r14, %r7;"));
     }
 }

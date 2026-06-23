@@ -329,8 +329,8 @@ impl SassDisassembler {
         EnhancedSassInstruction {
             opcode: opcode_name.to_string(),
             instruction_text: format!(
-                "/*{:04x}*/ {} R{}, R{}, R{} ;",
-                address, opcode_name, dest_reg, src1_reg, src2_reg
+                "/*{:04x}*/ {} R{}, R{}, R{} ; /* 0x{:016x} */",
+                address, opcode_name, dest_reg, src1_reg, src2_reg, encoding
             ),
             address,
             size: 8,
@@ -425,8 +425,8 @@ impl SassDisassembler {
         EnhancedSassInstruction {
             opcode: opcode_name.to_string(),
             instruction_text: format!(
-                "/*{:04x}*/ {} R{}, R{}, R{} ;",
-                address, opcode_name, dest_reg, src1_reg, src2_reg
+                "/*{:04x}*/ {} R{}, R{}, R{} ; /* 0x{:016x} */ /* ctrl=0x{:016x} */",
+                address, opcode_name, dest_reg, src1_reg, src2_reg, encoding_lo, encoding_hi
             ),
             address,
             size: 16,
@@ -824,6 +824,22 @@ impl ControlFlowAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disassembler_includes_raw_encoding_in_128bit_instruction_text() {
+        let disassembler = SassDisassembler::new(120).unwrap();
+        let bytes = [
+            0x10, 0x78, 0x00, 0x00, 0xf0, 0x72, 0x00, 0x00, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ];
+
+        let inst = disassembler.decode_instruction(&bytes, 0x120);
+
+        assert!(inst.instruction_text.contains("/* 0x000072f000007810 */"));
+        assert!(inst
+            .instruction_text
+            .contains("/* ctrl=0x000000000000008f */"));
+    }
 
     #[test]
     fn test_sm_version_parse() {
