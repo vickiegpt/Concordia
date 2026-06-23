@@ -1,3 +1,8 @@
+use serde::Deserialize;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
+
 const BUILTIN_GPU_MARKERS: &[&str] = &[
     "attention",
     "attn",
@@ -91,8 +96,68 @@ pub(crate) struct BitnetRouteConfig {
     pub(crate) manifest: Option<BitnetRouteManifest>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BitnetRouteManifest;
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub(crate) struct BitnetRouteManifest {
+    pub(crate) version: u32,
+    #[serde(default = "default_manifest_route")]
+    pub(crate) default: ManifestRouteName,
+    #[serde(default)]
+    pub(crate) routes: Vec<BitnetRouteManifestEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub(crate) struct BitnetRouteManifestEntry {
+    #[serde(rename = "match")]
+    pub(crate) match_text: String,
+    pub(crate) route: ManifestRouteName,
+    pub(crate) reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManifestRouteName {
+    #[serde(alias = "cxl")]
+    CxlTmatmul,
+    #[serde(alias = "gpu_native")]
+    Gpu,
+    Fallback,
+    Reject,
+}
+
+impl Default for ManifestRouteName {
+    fn default() -> Self {
+        Self::Fallback
+    }
+}
+
+impl ManifestRouteName {
+    fn to_route(self) -> BitnetRoute {
+        match self {
+            Self::CxlTmatmul => BitnetRoute::CxlTmatmul,
+            Self::Gpu => BitnetRoute::GpuNative,
+            Self::Fallback => BitnetRoute::Fallback,
+            Self::Reject => BitnetRoute::Reject,
+        }
+    }
+}
+
+fn default_manifest_route() -> ManifestRouteName {
+    ManifestRouteName::Fallback
+}
+
+pub(crate) fn load_manifest_file(path: &Path) -> Result<BitnetRouteManifest, String> {
+    let text =
+        std::fs::read_to_string(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let manifest: BitnetRouteManifest =
+        serde_json::from_str(&text).map_err(|err| format!("parse {}: {err}", path.display()))?;
+    if manifest.version != 1 {
+        return Err(format!(
+            "unsupported manifest version {}, expected 1",
+            manifest.version
+        ));
+    }
+    Ok(manifest)
+}
 
 pub(crate) fn classify_kernel_name(
     kernel_name: &str,
@@ -179,17 +244,74 @@ fn normalize_kernel_name(kernel_name: &str) -> String {
 
 fn find_marker<'a>(name_lower: &str, markers: impl Iterator<Item = &'a str>) -> Option<String> {
     markers
-        .filter(|marker| !marker.is_empty())
-        .find(|marker| name_lower.contains(*marker))
-        .map(str::to_string)
+        .filter_map(normalize_marker)
+        .find(|marker| name_lower.contains(marker.as_str()))
+}
+
+fn normalize_marker(marker: &str) -> Option<String> {
+    let marker = marker.trim();
+    if marker.is_empty() {
+        None
+    } else {
+        Some(marker.to_ascii_lowercase())
+    }
 }
 
 fn classify_manifest(
-    _kernel_name: &str,
-    _name_lower: &str,
-    _config: &BitnetRouteConfig,
+    kernel_name: &str,
+    name_lower: &str,
+    config: &BitnetRouteConfig,
 ) -> Option<BitnetRouteDecision> {
+    let manifest = config.manifest.as_ref()?;
+    for entry in &manifest.routes {
+        let marker = entry.match_text.trim().to_ascii_lowercase();
+        if !marker.is_empty() && name_lower.contains(&marker) {
+            return Some(decision(
+                kernel_name,
+                entry.route.to_route(),
+                BitnetRouteSource::Manifest,
+                Some(marker),
+                entry.reason.clone(),
+                config.strict,
+            ));
+        }
+    }
+
+    if manifest.default != ManifestRouteName::Fallback {
+        return Some(decision(
+            kernel_name,
+            manifest.default.to_route(),
+            BitnetRouteSource::Manifest,
+            None,
+            None,
+            config.strict,
+        ));
+    }
     None
+}
+
+pub(crate) fn append_route_log(
+    path: &Path,
+    decision: &BitnetRouteDecision,
+    cxl_enabled: bool,
+    hardware_matmul_enabled: bool,
+) -> Result<(), String> {
+    let record = serde_json::json!({
+        "kernel": decision.kernel.as_str(),
+        "route": decision.route.as_str(),
+        "source": decision.source.as_str(),
+        "matched": decision.matched.as_deref(),
+        "reason": decision.reason.as_deref(),
+        "strict": decision.strict,
+        "cxl_enabled": cxl_enabled,
+        "hardware_matmul_enabled": hardware_matmul_enabled,
+    });
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|err| format!("open route log {}: {err}", path.display()))?;
+    writeln!(file, "{record}").map_err(|err| format!("write route log {}: {err}", path.display()))
 }
 
 fn decision(
@@ -260,6 +382,18 @@ mod tests {
     }
 
     #[test]
+    fn explicit_gpu_markers_are_trimmed_and_lowercased() {
+        let mut cfg = config(true);
+        cfg.gpu_markers = vec![" FORCE_GPU ".to_string()];
+        cfg.cxl_markers = vec!["ffn_gate".to_string()];
+
+        let decision = classify_kernel_name("layer_force_gpu_ffn_gate", &cfg);
+        assert_eq!(decision.route, BitnetRoute::GpuNative);
+        assert_eq!(decision.source, BitnetRouteSource::ExplicitGpuEnv);
+        assert_eq!(decision.matched.as_deref(), Some("force_gpu"));
+    }
+
+    #[test]
     fn explicit_cxl_markers_override_builtin_gpu_markers_only_after_gpu_env() {
         let mut cfg = config(true);
         cfg.cxl_markers = vec!["attention_ffn_probe".to_string()];
@@ -285,5 +419,128 @@ mod tests {
         let decision = classify_kernel_name("layer_07_layernorm", &cfg);
         assert_eq!(decision.route, BitnetRoute::Reject);
         assert_eq!(decision.source, BitnetRouteSource::Default);
+    }
+
+    #[test]
+    fn manifest_routes_kernel_by_substring() {
+        let manifest = BitnetRouteManifest {
+            version: 1,
+            default: ManifestRouteName::Fallback,
+            routes: vec![BitnetRouteManifestEntry {
+                match_text: "ffn_gate".to_string(),
+                route: ManifestRouteName::CxlTmatmul,
+                reason: Some("manifest ffn".to_string()),
+            }],
+        };
+        let mut cfg = config(true);
+        cfg.manifest = Some(manifest);
+
+        let decision = classify_kernel_name("layer_0_ffn_gate_mul_mat", &cfg);
+        assert_eq!(decision.route, BitnetRoute::CxlTmatmul);
+        assert_eq!(decision.source, BitnetRouteSource::Manifest);
+        assert_eq!(decision.matched.as_deref(), Some("ffn_gate"));
+        assert_eq!(decision.reason.as_deref(), Some("manifest ffn"));
+    }
+
+    #[test]
+    fn manifest_default_rejects_when_requested() {
+        let manifest = BitnetRouteManifest {
+            version: 1,
+            default: ManifestRouteName::Reject,
+            routes: Vec::new(),
+        };
+        let mut cfg = config(true);
+        cfg.manifest = Some(manifest);
+
+        let decision = classify_kernel_name("layer_0_unknown", &cfg);
+        assert_eq!(decision.route, BitnetRoute::Reject);
+        assert_eq!(decision.source, BitnetRouteSource::Manifest);
+    }
+
+    #[test]
+    fn loads_manifest_from_json_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routes.json");
+        std::fs::write(
+            &path,
+            r#"{
+            "version": 1,
+            "default": "fallback",
+            "routes": [
+                {"match": "flash_attn", "route": "gpu", "reason": "attention"}
+            ]
+        }"#,
+        )
+        .unwrap();
+
+        let manifest = load_manifest_file(&path).unwrap();
+        assert_eq!(manifest.routes.len(), 1);
+        assert_eq!(manifest.routes[0].match_text, "flash_attn");
+        assert_eq!(manifest.routes[0].route, ManifestRouteName::Gpu);
+    }
+
+    #[test]
+    fn rejects_manifest_version_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routes.json");
+        std::fs::write(
+            &path,
+            r#"{"version": 2, "default": "fallback", "routes": []}"#,
+        )
+        .unwrap();
+
+        let err = load_manifest_file(&path).unwrap_err();
+        assert!(err.contains("unsupported manifest version"));
+    }
+
+    #[test]
+    fn appends_jsonl_route_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routes.jsonl");
+        let decision = BitnetRouteDecision {
+            kernel: "layer_0_ffn_gate_mul_mat".to_string(),
+            route: BitnetRoute::CxlTmatmul,
+            source: BitnetRouteSource::BuiltinFfnMarker,
+            matched: Some("ffn".to_string()),
+            reason: Some("FFN ternary matmul candidate".to_string()),
+            strict: false,
+        };
+
+        append_route_log(&path, &decision, true, true).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(value["kernel"], "layer_0_ffn_gate_mul_mat");
+        assert_eq!(value["route"], "cxl_tmatmul");
+        assert_eq!(value["source"], "builtin_ffn_marker");
+        assert_eq!(value["matched"], "ffn");
+        assert_eq!(value["cxl_enabled"], true);
+    }
+
+    #[test]
+    fn route_and_source_as_str_values_are_stable() {
+        assert_eq!(BitnetRoute::CxlTmatmul.as_str(), "cxl_tmatmul");
+        assert_eq!(BitnetRoute::GpuNative.as_str(), "gpu");
+        assert_eq!(BitnetRoute::Fallback.as_str(), "fallback");
+        assert_eq!(BitnetRoute::Reject.as_str(), "reject");
+
+        assert_eq!(BitnetRouteSource::Disabled.as_str(), "disabled");
+        assert_eq!(
+            BitnetRouteSource::ExplicitGpuEnv.as_str(),
+            "explicit_gpu_env"
+        );
+        assert_eq!(BitnetRouteSource::Manifest.as_str(), "manifest");
+        assert_eq!(
+            BitnetRouteSource::ExplicitCxlEnv.as_str(),
+            "explicit_cxl_env"
+        );
+        assert_eq!(
+            BitnetRouteSource::BuiltinGpuMarker.as_str(),
+            "builtin_gpu_marker"
+        );
+        assert_eq!(
+            BitnetRouteSource::BuiltinFfnMarker.as_str(),
+            "builtin_ffn_marker"
+        );
+        assert_eq!(BitnetRouteSource::Default.as_str(), "default");
     }
 }
