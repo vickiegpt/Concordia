@@ -1236,11 +1236,20 @@ unsafe fn submit_cxl_hardware_matmul_fallback(
 #[cfg(all(test, feature = "intel"))]
 static TMATMUL_EMULATOR_FALLBACK_TEST_COUNT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+#[cfg(all(test, feature = "intel"))]
+static TMATMUL_NAMED_FALLBACK_TEST_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(feature = "intel")]
 fn note_tmatmul_emulator_fallback_for_test() {
     #[cfg(test)]
     TMATMUL_EMULATOR_FALLBACK_TEST_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(feature = "intel")]
+fn note_tmatmul_named_fallback_for_test() {
+    #[cfg(test)]
+    TMATMUL_NAMED_FALLBACK_TEST_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[cfg(feature = "intel")]
@@ -1439,6 +1448,41 @@ mod tmatmul_hardware_matmul_tests {
     }
 
     #[test]
+    fn bitnet_fallback_route_continues_to_named_fallback() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_NAMED_FALLBACK", Some("1")),
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_FFN_CXL", None),
+            ("HETGPU_TMATMUL_BITNET_DISAGGREGATE", None),
+            ("HETGPU_BITNET_DISAGG_STRICT", None),
+            ("HETGPU_BITNET_CXL_KERNELS", None),
+            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", None),
+        ]);
+        let mut kernel_params = [std::ptr::null_mut(); 16];
+        let before = TMATMUL_NAMED_FALLBACK_TEST_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+
+        unsafe {
+            execute_kernel_name_fallback(
+                "unknown_matmul_probe",
+                kernel_params.as_mut_ptr(),
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            );
+        }
+
+        let after = TMATMUL_NAMED_FALLBACK_TEST_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
     fn bitnet_default_disaggregation_keeps_attention_on_gpu() {
         let mut cfg = super::super::bitnet_disagg::BitnetRouteConfig::default();
         cfg.enabled = true;
@@ -1519,6 +1563,7 @@ unsafe fn execute_kernel_name_fallback(
 
     if tmatmul_hardware_matmul_enabled() && tmatmul_is_matmul_kernel_name(&name_lower) {
         let mut strict_cxl_submit_failure = false;
+        let mut run_hardware_matmul = true;
         if super::bitnet_disagg::enabled_from_env() {
             let route_config = super::bitnet_disagg::config_from_env();
             let decision = super::bitnet_disagg::classify_kernel_name(kernel_name, &route_config);
@@ -1560,7 +1605,7 @@ unsafe fn execute_kernel_name_fallback(
                         kernel_name,
                         decision.source.as_str()
                     );
-                    return;
+                    run_hardware_matmul = false;
                 }
                 super::bitnet_disagg::BitnetRoute::Reject => {
                     eprintln!(
@@ -1572,18 +1617,21 @@ unsafe fn execute_kernel_name_fallback(
                 }
             }
         }
-        execute_tmatmul_hardware_matmul_fallback(
-            kernel_name,
-            &name_lower,
-            kernel_params,
-            strict_cxl_submit_failure,
-        );
-        return;
+        if run_hardware_matmul {
+            execute_tmatmul_hardware_matmul_fallback(
+                kernel_name,
+                &name_lower,
+                kernel_params,
+                strict_cxl_submit_failure,
+            );
+            return;
+        }
     }
 
     if !tmatmul_named_fallback_enabled() {
         return;
     }
+    note_tmatmul_named_fallback_for_test();
 
     // Handle different kernel types
     if name_lower.contains("reduce_kernel") {
