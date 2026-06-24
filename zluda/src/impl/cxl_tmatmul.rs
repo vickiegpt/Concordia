@@ -18,6 +18,15 @@ pub(crate) const TMATMUL_PROGRAM_BYTES: usize = 96;
 const DEFAULT_DEVICE_PATH: &str = "/dev/cxl_tmatmul3b000";
 const DEFAULT_DAX_PATH: &str = "/dev/dax0.0";
 const DEFAULT_TIMEOUT_MS: u32 = 10_000;
+const DEFAULT_PCI_ADDR: &str = "0000:3b:00.0";
+const DEFAULT_BAR_INDEX: u32 = 0;
+const DEFAULT_CSR_BASE: u32 = 0x1c0000;
+const TMATMUL_CSR_DEV_ID: u32 = 0x544D4D31;
+const CSR_PROBE_ADDR: usize = 0x10;
+const CSR_PROBE_WDATA: usize = 0x14;
+const CSR_PROBE_CTRL: usize = 0x18;
+const CSR_PROBE_RDATA: usize = 0x1C;
+const CSR_PROBE_STATUS: usize = 0x24;
 const CXL_TYPE2_TMATMUL_RESULT_STALLED: u32 = 1 << 0;
 const CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR: u32 = 1 << 2;
 
@@ -109,6 +118,13 @@ struct CxlType2TmatmulCsrRun {
     reserved1: [u64; 4],
 }
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StagingBackend {
+    Mmap,
+    CsrProbe,
+}
+
 impl From<&CxlType2TmatmulCsrRun> for CxlTmatmulRunStatus {
     fn from(run: &CxlType2TmatmulCsrRun) -> Self {
         Self {
@@ -120,6 +136,27 @@ impl From<&CxlType2TmatmulCsrRun> for CxlTmatmulRunStatus {
             result_flags: run.result_flags,
         }
     }
+}
+
+#[cfg(unix)]
+fn parse_staging_backend(value: Option<&str>) -> Result<StagingBackend, CxlTmatmulError> {
+    match value.unwrap_or("mmap") {
+        "" | "mmap" | "dax" | "hpa" => Ok(StagingBackend::Mmap),
+        "csr" | "csr_probe" | "probe" => Ok(StagingBackend::CsrProbe),
+        other => Err(CxlTmatmulError::Io(format!(
+            "invalid HETGPU_CXL_TMATMUL_STAGING={other:?}, expected mmap or csr_probe"
+        ))),
+    }
+}
+
+#[cfg(unix)]
+fn cxl_tmatmul_staging_backend() -> Result<StagingBackend, CxlTmatmulError> {
+    parse_staging_backend(
+        std::env::var("HETGPU_CXL_TMATMUL_STAGING")
+            .or_else(|_| std::env::var("HETGPU_TMATMUL_STAGING"))
+            .ok()
+            .as_deref(),
+    )
 }
 
 pub(crate) fn cxl_tmatmul_enabled() -> bool {
@@ -634,8 +671,8 @@ fn submit_prepared_hardware_matmul(
     .max()
     .ok_or(CxlTmatmulError::SizeOverflow)?;
 
-    let staging = StagingMap::open(used_len)?;
-    unsafe {
+    let mut staging = StagingMap::open(used_len)?;
+    {
         let matrix_key = (matrix.as_ptr() as usize, matrix.len());
         let assume_static_matrix = env_flag("HETGPU_CXL_TMATMUL_ASSUME_STATIC_MATRIX");
         let matrix_already_staged = assume_static_matrix
@@ -644,21 +681,16 @@ fn submit_prepared_hardware_matmul(
                 .map(|cache| *cache == Some(matrix_key))
                 .unwrap_or(false);
         if !matrix_already_staged {
-            stage_bytes(staging.ptr, TMATMUL_DPA_MATRIX, matrix)?;
+            staging.stage_bytes(TMATMUL_DPA_MATRIX, matrix)?;
             if assume_static_matrix {
                 if let Ok(mut cache) = MATRIX_STAGE_CACHE.lock() {
                     *cache = Some(matrix_key);
                 }
             }
         }
-        stage_bytes(staging.ptr, TMATMUL_DPA_INPUT, input)?;
-        ptr::write_bytes(
-            staging.ptr.add(TMATMUL_DPA_OUTPUT as usize),
-            0xa5,
-            output.len(),
-        );
-        flush_range(staging.ptr.add(TMATMUL_DPA_OUTPUT as usize), output.len());
-        stage_bytes(staging.ptr, TMATMUL_DPA_PROGRAM, program)?;
+        staging.stage_bytes(TMATMUL_DPA_INPUT, input)?;
+        staging.fill_bytes(TMATMUL_DPA_OUTPUT, 0xa5, output.len())?;
+        staging.stage_bytes(TMATMUL_DPA_PROGRAM, program)?;
     }
 
     let mut run = CxlType2TmatmulCsrRun {
@@ -699,28 +731,32 @@ fn submit_prepared_hardware_matmul(
         )));
     }
 
-    unsafe {
-        invalidate_range(staging.ptr.add(TMATMUL_DPA_OUTPUT as usize), output.len());
-        ptr::copy_nonoverlapping(
-            staging.ptr.add(TMATMUL_DPA_OUTPUT as usize),
-            output.as_mut_ptr(),
-            output.len(),
-        );
-    }
+    staging.read_bytes(TMATMUL_DPA_OUTPUT, output)?;
 
     Ok(status)
 }
 
 #[cfg(unix)]
-struct StagingMap {
-    ptr: *mut u8,
-    map_ptr: *mut u8,
-    map_len: usize,
+enum StagingMap {
+    Mmap {
+        ptr: *mut u8,
+        map_ptr: *mut u8,
+        map_len: usize,
+    },
+    CsrProbe {
+        bar: *mut u8,
+        map_len: usize,
+        csr_base: u32,
+    },
 }
 
 #[cfg(unix)]
 impl StagingMap {
     fn open(used_len: usize) -> Result<Self, CxlTmatmulError> {
+        if cxl_tmatmul_staging_backend()? == StagingBackend::CsrProbe {
+            return Self::open_csr_probe(used_len);
+        }
+
         if let Some(hpa_base) = cxl_tmatmul_hpa_base()? {
             let hpa_size = cxl_tmatmul_hpa_size()?;
             if let Some(hpa_size) = hpa_size {
@@ -760,9 +796,16 @@ impl StagingMap {
                 .checked_add(page_offset)
                 .ok_or(CxlTmatmulError::SizeOverflow)?,
         )?;
-        let mut map = Self::mmap_file(path, map_offset, map_len, "physical hpa")?;
-        map.ptr = unsafe { map.map_ptr.add(page_offset) };
-        Ok(map)
+        match Self::mmap_file(path, map_offset, map_len, "physical hpa")? {
+            Self::Mmap {
+                map_ptr, map_len, ..
+            } => Ok(Self::Mmap {
+                ptr: unsafe { map_ptr.add(page_offset) },
+                map_ptr,
+                map_len,
+            }),
+            Self::CsrProbe { .. } => unreachable!(),
+        }
     }
 
     fn open_file_window(
@@ -811,11 +854,218 @@ impl StagingMap {
                 std::io::Error::last_os_error()
             )));
         }
-        Ok(Self {
+        Ok(Self::Mmap {
             ptr: ptr.cast(),
             map_ptr: ptr.cast(),
             map_len,
         })
+    }
+
+    fn open_csr_probe(used_len: usize) -> Result<Self, CxlTmatmulError> {
+        if used_len > u32::MAX as usize {
+            return Err(CxlTmatmulError::AllocationTooSmall {
+                name: "csr probe address window",
+                have: u32::MAX as usize,
+                need: used_len,
+            });
+        }
+
+        let device_path = cxl_tmatmul_device_path();
+        let pci_addr = cxl_tmatmul_pci_addr(&device_path);
+        let bar_index = cxl_tmatmul_bar_index()?;
+        let csr_base = cxl_tmatmul_csr_base()?;
+        let resource_path = format!("/sys/bus/pci/devices/{pci_addr}/resource{bar_index}");
+
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).custom_flags(libc::O_SYNC);
+        let file = options
+            .open(&resource_path)
+            .map_err(|e| CxlTmatmulError::Io(format!("open {resource_path}: {e}")))?;
+        let map_len = usize::try_from(
+            file.metadata()
+                .map_err(|e| CxlTmatmulError::Io(format!("metadata {resource_path}: {e}")))?
+                .len(),
+        )
+        .map_err(|_| CxlTmatmulError::SizeOverflow)?;
+        if (csr_base as usize)
+            .checked_add(0x200)
+            .ok_or(CxlTmatmulError::SizeOverflow)?
+            > map_len
+        {
+            return Err(CxlTmatmulError::Io(format!(
+                "BAR{bar_index} too small for CSR base 0x{csr_base:x}: size=0x{map_len:x}"
+            )));
+        }
+        let ptr = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                map_len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        drop(file);
+        if ptr == libc::MAP_FAILED {
+            return Err(CxlTmatmulError::Io(format!(
+                "mmap csr probe {resource_path} len=0x{map_len:x}: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let map = Self::CsrProbe {
+            bar: ptr.cast(),
+            map_len,
+            csr_base,
+        };
+        let dev_id = map.csr_mmio_rd32(0)?;
+        if dev_id != TMATMUL_CSR_DEV_ID {
+            return Err(CxlTmatmulError::Device(format!(
+                "tmatmul CSR not found at {pci_addr} BAR{bar_index}+0x{csr_base:x}: dev_id=0x{dev_id:08x}"
+            )));
+        }
+        Ok(map)
+    }
+
+    fn stage_bytes(&mut self, offset: u64, data: &[u8]) -> Result<(), CxlTmatmulError> {
+        match self {
+            Self::Mmap { ptr, .. } => {
+                let offset = usize::try_from(offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+                unsafe {
+                    ptr::copy_nonoverlapping(data.as_ptr(), ptr.add(offset), data.len());
+                    flush_range(ptr.add(offset), data.len());
+                }
+                Ok(())
+            }
+            Self::CsrProbe { .. } => self.csr_write_bytes(offset, data),
+        }
+    }
+
+    fn fill_bytes(&mut self, offset: u64, value: u8, len: usize) -> Result<(), CxlTmatmulError> {
+        match self {
+            Self::Mmap { ptr, .. } => {
+                let offset = usize::try_from(offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+                unsafe {
+                    ptr::write_bytes(ptr.add(offset), value, len);
+                    flush_range(ptr.add(offset), len);
+                }
+                Ok(())
+            }
+            Self::CsrProbe { .. } => self.csr_fill_bytes(offset, value, len),
+        }
+    }
+
+    fn read_bytes(&mut self, offset: u64, out: &mut [u8]) -> Result<(), CxlTmatmulError> {
+        match self {
+            Self::Mmap { ptr, .. } => {
+                let offset = usize::try_from(offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+                unsafe {
+                    invalidate_range(ptr.add(offset), out.len());
+                    ptr::copy_nonoverlapping(ptr.add(offset), out.as_mut_ptr(), out.len());
+                }
+                Ok(())
+            }
+            Self::CsrProbe { .. } => self.csr_read_bytes(offset, out),
+        }
+    }
+
+    fn csr_write_bytes(&self, offset: u64, data: &[u8]) -> Result<(), CxlTmatmulError> {
+        require_csr_word_aligned(offset, data.len(), "write")?;
+        let base = u32::try_from(offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+        for (i, chunk) in data.chunks_exact(4).enumerate() {
+            let addr = base
+                .checked_add(u32::try_from(i * 4).map_err(|_| CxlTmatmulError::SizeOverflow)?)
+                .ok_or(CxlTmatmulError::SizeOverflow)?;
+            let value = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            self.csr_write_word(addr, value)?;
+        }
+        Ok(())
+    }
+
+    fn csr_fill_bytes(&self, offset: u64, value: u8, len: usize) -> Result<(), CxlTmatmulError> {
+        require_csr_word_aligned(offset, len, "fill")?;
+        let base = u32::try_from(offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+        let word = u32::from_le_bytes([value; 4]);
+        for i in 0..(len / 4) {
+            let addr = base
+                .checked_add(u32::try_from(i * 4).map_err(|_| CxlTmatmulError::SizeOverflow)?)
+                .ok_or(CxlTmatmulError::SizeOverflow)?;
+            self.csr_write_word(addr, word)?;
+        }
+        Ok(())
+    }
+
+    fn csr_read_bytes(&self, offset: u64, out: &mut [u8]) -> Result<(), CxlTmatmulError> {
+        require_csr_word_aligned(offset, out.len(), "read")?;
+        let base = u32::try_from(offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+        for (i, chunk) in out.chunks_exact_mut(4).enumerate() {
+            let addr = base
+                .checked_add(u32::try_from(i * 4).map_err(|_| CxlTmatmulError::SizeOverflow)?)
+                .ok_or(CxlTmatmulError::SizeOverflow)?;
+            chunk.copy_from_slice(&self.csr_read_word(addr)?.to_le_bytes());
+        }
+        Ok(())
+    }
+
+    fn csr_write_word(&self, addr: u32, value: u32) -> Result<(), CxlTmatmulError> {
+        self.csr_mmio_wr32(CSR_PROBE_ADDR, addr)?;
+        self.csr_mmio_wr32(CSR_PROBE_WDATA, value)?;
+        self.csr_mmio_wr32(CSR_PROBE_CTRL, 0x3)?;
+        let status = self.wait_probe_status()?;
+        if (status & 0x3) != 2 {
+            return Err(CxlTmatmulError::Device(format!(
+                "CSR DDR probe write failed at 0x{addr:x}: status=0x{status:08x}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn csr_read_word(&self, addr: u32) -> Result<u32, CxlTmatmulError> {
+        self.csr_mmio_wr32(CSR_PROBE_ADDR, addr)?;
+        self.csr_mmio_wr32(CSR_PROBE_CTRL, 0x1)?;
+        let status = self.wait_probe_status()?;
+        if (status & 0x3) != 2 {
+            return Err(CxlTmatmulError::Device(format!(
+                "CSR DDR probe read failed at 0x{addr:x}: status=0x{status:08x}"
+            )));
+        }
+        self.csr_mmio_rd32(CSR_PROBE_RDATA)
+    }
+
+    fn wait_probe_status(&self) -> Result<u32, CxlTmatmulError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        loop {
+            let status = self.csr_mmio_rd32(CSR_PROBE_STATUS)?;
+            if (status & 0x3) != 1 || std::time::Instant::now() >= deadline {
+                return Ok(status);
+            }
+            std::hint::spin_loop();
+        }
+    }
+
+    fn csr_mmio_rd32(&self, off: usize) -> Result<u32, CxlTmatmulError> {
+        match self {
+            Self::CsrProbe { bar, csr_base, .. } => {
+                Ok(unsafe { ptr::read_volatile(bar.add(*csr_base as usize + off).cast::<u32>()) })
+            }
+            Self::Mmap { .. } => Err(CxlTmatmulError::Device(
+                "CSR probe access requested for mmap staging".to_string(),
+            )),
+        }
+    }
+
+    fn csr_mmio_wr32(&self, off: usize, value: u32) -> Result<(), CxlTmatmulError> {
+        match self {
+            Self::CsrProbe { bar, csr_base, .. } => {
+                unsafe {
+                    ptr::write_volatile(bar.add(*csr_base as usize + off).cast::<u32>(), value);
+                }
+                Ok(())
+            }
+            Self::Mmap { .. } => Err(CxlTmatmulError::Device(
+                "CSR probe access requested for mmap staging".to_string(),
+            )),
+        }
     }
 }
 
@@ -823,16 +1073,27 @@ impl StagingMap {
 impl Drop for StagingMap {
     fn drop(&mut self) {
         unsafe {
-            libc::munmap(self.map_ptr.cast(), self.map_len);
+            match self {
+                Self::Mmap {
+                    map_ptr, map_len, ..
+                } => {
+                    libc::munmap((*map_ptr).cast(), *map_len);
+                }
+                Self::CsrProbe { bar, map_len, .. } => {
+                    libc::munmap((*bar).cast(), *map_len);
+                }
+            }
         }
     }
 }
 
 #[cfg(unix)]
-unsafe fn stage_bytes(base: *mut u8, offset: u64, data: &[u8]) -> Result<(), CxlTmatmulError> {
-    let offset = usize::try_from(offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
-    ptr::copy_nonoverlapping(data.as_ptr(), base.add(offset), data.len());
-    flush_range(base.add(offset), data.len());
+fn require_csr_word_aligned(offset: u64, len: usize, op: &str) -> Result<(), CxlTmatmulError> {
+    if (offset & 0x3) != 0 || (len & 0x3) != 0 {
+        return Err(CxlTmatmulError::Device(format!(
+            "csr_probe {op} requires 4-byte aligned offset/len: offset=0x{offset:x} len=0x{len:x}"
+        )));
+    }
     Ok(())
 }
 
@@ -870,6 +1131,57 @@ fn cxl_tmatmul_device_path() -> String {
         .or_else(|_| std::env::var("HETGPU_TMATMUL_DEVICE"))
         .or_else(|_| std::env::var("CXL_TMATMUL_DEVICE"))
         .unwrap_or_else(|_| DEFAULT_DEVICE_PATH.to_string())
+}
+
+#[cfg(unix)]
+fn cxl_tmatmul_pci_addr(device_path: &str) -> String {
+    std::env::var("HETGPU_CXL_TMATMUL_PCI_ADDR")
+        .or_else(|_| std::env::var("HETGPU_TMATMUL_PCI_ADDR"))
+        .or_else(|_| std::env::var("TMATMUL_PCI_ADDR"))
+        .ok()
+        .or_else(|| pci_addr_from_tmatmul_devnode(device_path))
+        .unwrap_or_else(|| DEFAULT_PCI_ADDR.to_string())
+}
+
+#[cfg(unix)]
+fn pci_addr_from_tmatmul_devnode(dev_path: &str) -> Option<String> {
+    let base = dev_path.rsplit('/').next().unwrap_or(dev_path);
+    let suffix = base.strip_prefix("cxl_tmatmul")?;
+    if suffix.len() != 5 || !suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(format!(
+        "0000:{}{}:{}{}.{}",
+        &suffix[0..1],
+        &suffix[1..2],
+        &suffix[2..3],
+        &suffix[3..4],
+        &suffix[4..5]
+    ))
+}
+
+#[cfg(unix)]
+fn cxl_tmatmul_bar_index() -> Result<u32, CxlTmatmulError> {
+    env_u32_any(
+        &[
+            "HETGPU_CXL_TMATMUL_BAR",
+            "HETGPU_TMATMUL_BAR",
+            "TMATMUL_BAR",
+        ],
+        DEFAULT_BAR_INDEX,
+    )
+}
+
+#[cfg(unix)]
+fn cxl_tmatmul_csr_base() -> Result<u32, CxlTmatmulError> {
+    env_u32_any(
+        &[
+            "HETGPU_CXL_TMATMUL_CSR_BASE",
+            "HETGPU_TMATMUL_CSR_BASE",
+            "TMATMUL_CSR_BASE",
+        ],
+        DEFAULT_CSR_BASE,
+    )
 }
 
 #[cfg(unix)]
@@ -923,6 +1235,24 @@ fn env_u64_any(keys: &[&str]) -> Result<Option<u64>, CxlTmatmulError> {
         }
     }
     Ok(None)
+}
+
+fn env_u32_any(keys: &[&str], fallback: u32) -> Result<u32, CxlTmatmulError> {
+    for key in keys {
+        match std::env::var(key) {
+            Ok(value) => {
+                let parsed = parse_u64_text(&value).ok_or_else(|| {
+                    CxlTmatmulError::Io(format!("invalid {key}={value:?}, expected integer"))
+                })?;
+                return u32::try_from(parsed).map_err(|_| CxlTmatmulError::SizeOverflow);
+            }
+            Err(std::env::VarError::NotPresent) => {}
+            Err(e) => {
+                return Err(CxlTmatmulError::Io(format!("read {key}: {e}")));
+            }
+        }
+    }
+    Ok(fallback)
 }
 
 fn page_size() -> usize {

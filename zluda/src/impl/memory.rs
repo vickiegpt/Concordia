@@ -102,6 +102,20 @@ pub(crate) fn get_alloc_size(addr: usize) -> Option<usize> {
     }
 }
 
+#[cfg(feature = "intel")]
+fn virtual_alloc_range(addr: usize, bytes: usize) -> Option<(usize, usize)> {
+    let map = VIRTUAL_ALLOC_MAP.lock().ok()?;
+    let req_end = addr.checked_add(bytes)?;
+    map.iter().find_map(|(&base, &size)| {
+        let end = base.checked_add(size)?;
+        if addr >= base && addr < end && req_end <= end {
+            Some((base, size))
+        } else {
+            None
+        }
+    })
+}
+
 #[cfg(any(
     feature = "intel",
     all(
@@ -174,6 +188,185 @@ fn tmatmul_vmm_ranges_overlap(
     let a_end = a_start.saturating_add(a_size);
     let b_end = b_start.saturating_add(b_size);
     a_start < b_end && b_start < a_end
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+fn tmatmul_vmm_mapped_range(addr: usize, bytes: usize) -> Option<(usize, usize)> {
+    let req_end = addr.checked_add(bytes)?;
+    let reservations = TMATMUL_VMM_RESERVATIONS.lock().ok()?;
+    let (reservation_base, reservation) = reservations
+        .iter()
+        .find(|(base, reservation)| tmatmul_vmm_contains(**base, reservation.size, addr, bytes))?;
+    let offset = addr.checked_sub(*reservation_base)?;
+    let offset_end = offset.checked_add(bytes)?;
+    if bytes == 0 {
+        return reservation
+            .mapped_ranges
+            .iter()
+            .find_map(|(mapped_offset, mapped_size)| {
+                let mapped_end = mapped_offset.checked_add(*mapped_size)?;
+                (offset >= *mapped_offset && offset < mapped_end)
+                    .then_some((*reservation_base + *mapped_offset, *mapped_size))
+            });
+    }
+
+    let mut ranges = reservation
+        .mapped_ranges
+        .iter()
+        .filter_map(|(mapped_offset, mapped_size)| {
+            let mapped_end = mapped_offset.checked_add(*mapped_size)?;
+            (*mapped_offset < offset_end && mapped_end > offset).then_some((
+                *reservation_base + *mapped_offset,
+                *reservation_base + mapped_end,
+            ))
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_unstable_by_key(|(base, _)| *base);
+
+    let mut cursor = addr;
+    let mut first_base = None;
+    for (base, end) in ranges {
+        if base > cursor || end <= cursor {
+            continue;
+        }
+        first_base.get_or_insert(base);
+        cursor = end;
+        if cursor >= req_end {
+            return Some((
+                first_base.unwrap_or(base),
+                req_end - first_base.unwrap_or(base),
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+fn tmatmul_mapped_range(addr: usize, bytes: usize) -> Option<(usize, usize)> {
+    let req_end = addr.checked_add(bytes)?;
+    {
+        let map = TMATMUL_ALLOC_MAP.lock().ok()?;
+        if let Some(range) = map.iter().find_map(|(&base, &size)| {
+            let end = base.checked_add(size)?;
+            if addr >= base && addr < end && req_end <= end {
+                Some((base, size))
+            } else {
+                None
+            }
+        }) {
+            return Some(range);
+        }
+
+        if bytes != 0 {
+            let mut ranges = map
+                .iter()
+                .filter_map(|(&base, &size)| {
+                    let end = base.checked_add(size)?;
+                    (base < req_end && end > addr).then_some((base, end))
+                })
+                .collect::<Vec<_>>();
+            ranges.sort_unstable_by_key(|(base, _)| *base);
+
+            let mut cursor = addr;
+            let mut first_base = None;
+            for (base, end) in ranges {
+                if base > cursor || end <= cursor {
+                    continue;
+                }
+                first_base.get_or_insert(base);
+                cursor = end;
+                if cursor >= req_end {
+                    return Some((
+                        first_base.unwrap_or(base),
+                        req_end - first_base.unwrap_or(base),
+                    ));
+                }
+            }
+        }
+    }
+    tmatmul_vmm_mapped_range(addr, bytes)
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+fn tmatmul_debug_host_backed_miss(label: &str, addr: usize, bytes: usize) {
+    if !crate::r#impl::debug_logs_enabled() {
+        return;
+    }
+    let virtual_summary = VIRTUAL_ALLOC_MAP
+        .lock()
+        .ok()
+        .map(|map| {
+            let containing = map.iter().find_map(|(&base, &size)| {
+                let end = base.checked_add(size)?;
+                (addr >= base && addr < end).then_some((base, size, addr - base))
+            });
+            (map.len(), containing)
+        })
+        .unwrap_or((0, None));
+    let tmatmul_summary = TMATMUL_ALLOC_MAP
+        .lock()
+        .ok()
+        .map(|map| {
+            let containing = map.iter().find_map(|(&base, &size)| {
+                let end = base.checked_add(size)?;
+                (addr >= base && addr < end).then_some((base, size, addr - base))
+            });
+            (map.len(), containing)
+        })
+        .unwrap_or((0, None));
+    let reservation_summary = TMATMUL_VMM_RESERVATIONS
+        .lock()
+        .ok()
+        .map(|reservations| {
+            let containing = reservations.iter().find_map(|(&base, reservation)| {
+                let end = base.checked_add(reservation.size)?;
+                (addr >= base && addr < end).then(|| {
+                    let mapped_preview = reservation
+                        .mapped_ranges
+                        .iter()
+                        .take(4)
+                        .copied()
+                        .collect::<Vec<_>>();
+                    (
+                        base,
+                        reservation.size,
+                        addr - base,
+                        reservation.mapped_ranges.len(),
+                        mapped_preview,
+                    )
+                })
+            });
+            (reservations.len(), containing)
+        })
+        .unwrap_or((0, None));
+    crate::r#impl::hetgpu_debug!(
+        "[DEBUG {label}] host-backed miss addr=0x{addr:x} bytes={} virtual={:?} tmatmul_alloc={:?} reservations={:?}",
+        bytes,
+        virtual_summary,
+        tmatmul_summary,
+        reservation_summary
+    );
 }
 
 #[cfg(any(
@@ -292,6 +485,12 @@ pub(crate) fn address_reserve(
     unsafe {
         *ptr = CUdeviceptr_v2(reserved as *mut _);
     }
+    crate::r#impl::hetgpu_debug!(
+        "[DEBUG cuMemAddressReserve] base=0x{:x} size={} align={}",
+        reserved as usize,
+        size,
+        align
+    );
     Ok(())
 }
 
@@ -353,6 +552,12 @@ pub(crate) fn map(
         .lock()
         .map_err(|_| CUerror::UNKNOWN)?
         .insert(addr, size);
+    crate::r#impl::hetgpu_debug!(
+        "[DEBUG cuMemMap] addr=0x{:x} size={} handle={}",
+        addr,
+        size,
+        handle
+    );
     Ok(())
 }
 
@@ -770,6 +975,18 @@ pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
         return Ok(());
     }
 
+    let addr = dptr.0 as usize;
+    if let Ok(mut map) = VIRTUAL_ALLOC_MAP.lock() {
+        if let Some(bytesize) = map.remove(&addr) {
+            if let Ok(layout) = std::alloc::Layout::from_size_align(bytesize, 128) {
+                unsafe {
+                    std::alloc::dealloc(dptr.0 as *mut u8, layout);
+                }
+            }
+            return Ok(());
+        }
+    }
+
     // Get the current ZE context
     let ze_context = match context::get_current_ze() {
         Ok(ctx) => ctx,
@@ -781,10 +998,9 @@ pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
         // Virtual device: free host memory using tracked allocation size
         use std::alloc::{dealloc, Layout};
 
-        let addr = dptr.0 as usize;
         if let Ok(mut map) = VIRTUAL_ALLOC_MAP.lock() {
             if let Some(bytesize) = map.remove(&addr) {
-                if let Ok(layout) = Layout::from_size_align(bytesize, 64) {
+                if let Ok(layout) = Layout::from_size_align(bytesize, 128) {
                     unsafe {
                         dealloc(dptr.0 as *mut u8, layout);
                     }
@@ -814,6 +1030,28 @@ pub(crate) fn copy_dto_h_v2(
     src_device: CUdeviceptr,
     byte_count: usize,
 ) -> CUresult {
+    if dst_host.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    if byte_count == 0 {
+        return Ok(());
+    }
+    if src_device.0.is_null() || src_device.0 == 0x1 as *mut _ {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    if virtual_alloc_range(src_device.0 as usize, byte_count).is_some()
+        || tmatmul_mapped_range(src_device.0 as usize, byte_count).is_some()
+    {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src_device.0 as *const u8,
+                dst_host as *mut u8,
+                byte_count,
+            );
+        }
+        return Ok(());
+    }
+
     // Get current context
     let ctx = match context::get_current_ze() {
         Ok(ctx) => ctx,
@@ -823,13 +1061,6 @@ pub(crate) fn copy_dto_h_v2(
     // Check if this is a virtual device (null handle)
     if ctx.device.0.is_null() {
         // Virtual device: simple memcpy from device (host) memory to host memory
-        if src_device.0.is_null() || src_device.0 == 0x1 as *mut _ {
-            return Err(CUerror::INVALID_VALUE);
-        }
-        if dst_host.is_null() {
-            return Err(CUerror::INVALID_VALUE);
-        }
-
         unsafe {
             std::ptr::copy_nonoverlapping(
                 src_device.0 as *const u8,
@@ -883,6 +1114,28 @@ pub(crate) fn copy_hto_d_v2(
     src_host: *const ::core::ffi::c_void,
     byte_count: usize,
 ) -> CUresult {
+    if src_host.is_null() {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    if byte_count == 0 {
+        return Ok(());
+    }
+    if dst_device.0.is_null() || dst_device.0 == 0x1 as *mut _ {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    if virtual_alloc_range(dst_device.0 as usize, byte_count).is_some()
+        || tmatmul_mapped_range(dst_device.0 as usize, byte_count).is_some()
+    {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src_host as *const u8,
+                dst_device.0 as *mut u8,
+                byte_count,
+            );
+        }
+        return Ok(());
+    }
+
     // Get current context
     let ctx = match context::get_current_ze() {
         Ok(ctx) => ctx,
@@ -892,13 +1145,6 @@ pub(crate) fn copy_hto_d_v2(
     // Check if this is a virtual device (null handle)
     if ctx.device.0.is_null() {
         // Virtual device: simple memcpy from host memory to device (host) memory
-        if dst_device.0.is_null() || dst_device.0 == 0x1 as *mut _ {
-            return Err(CUerror::INVALID_VALUE);
-        }
-        if src_host.is_null() {
-            return Err(CUerror::INVALID_VALUE);
-        }
-
         unsafe {
             std::ptr::copy_nonoverlapping(
                 src_host as *const u8,
@@ -952,6 +1198,22 @@ pub(crate) fn get_address_range_v2(
     psize: *mut usize,
     dptr: CUdeviceptr,
 ) -> CUresult {
+    if let Some((base, size)) =
+        virtual_alloc_range(dptr.0 as usize, 0).or_else(|| tmatmul_mapped_range(dptr.0 as usize, 0))
+    {
+        if !pbase.is_null() {
+            unsafe {
+                *pbase = CUdeviceptr_v2(base as *mut _);
+            }
+        }
+        if !psize.is_null() {
+            unsafe {
+                *psize = size;
+            }
+        }
+        return Ok(());
+    }
+
     // Intel Level Zero doesn't have a direct equivalent to hipMemGetAddressRange
     // In a production implementation, you would need to track allocations and their sizes
     // For now, return the same pointer as the base and assume we don't know the size
@@ -979,6 +1241,24 @@ pub(crate) fn set_d32_v2(dst: hipDeviceptr_t, ui: ::core::ffi::c_uint, n: usize)
 
 #[cfg(feature = "intel")]
 pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) -> CUresult {
+    if n == 0 {
+        return Ok(());
+    }
+    if dst.0.is_null() || dst.0 == 0x1 as *mut _ {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    let byte_count = n
+        .checked_mul(std::mem::size_of::<::core::ffi::c_uint>())
+        .ok_or(CUerror::INVALID_VALUE)?;
+    if virtual_alloc_range(dst.0 as usize, byte_count).is_some()
+        || tmatmul_mapped_range(dst.0 as usize, byte_count).is_some()
+    {
+        unsafe {
+            std::slice::from_raw_parts_mut(dst.0 as *mut u32, n).fill(ui);
+        }
+        return Ok(());
+    }
+
     // Get current context
     let ctx = match context::get_current_ze() {
         Ok(ctx) => ctx,
@@ -1027,6 +1307,22 @@ pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize)
         n
     );
 
+    if n == 0 {
+        return Ok(());
+    }
+    if dst.0.is_null() || dst.0 == 0x1 as *mut _ {
+        return Err(CUerror::INVALID_VALUE);
+    }
+    if virtual_alloc_range(dst.0 as usize, n).is_some()
+        || tmatmul_mapped_range(dst.0 as usize, n).is_some()
+    {
+        unsafe {
+            std::ptr::write_bytes(dst.0 as *mut u8, value, n);
+        }
+        return Ok(());
+    }
+    tmatmul_debug_host_backed_miss("set_d8_v2", dst.0 as usize, n);
+
     // Get current context
     let ctx = match context::get_current_ze() {
         Ok(ctx) => ctx,
@@ -1040,11 +1336,6 @@ pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize)
     if ctx.device.0.is_null() {
         crate::r#impl::hetgpu_debug!("[DEBUG set_d8_v2] Using virtual device path");
         // Virtual device: use memset on host memory
-        if dst.0.is_null() || dst.0 == 0x1 as *mut _ {
-            crate::r#impl::hetgpu_debug!("[DEBUG set_d8_v2] Skipping null/sentinel pointer");
-            return Ok(());
-        }
-
         unsafe {
             std::ptr::write_bytes(dst.0 as *mut u8, value, n);
         }
