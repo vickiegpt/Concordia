@@ -403,6 +403,7 @@ pub(crate) unsafe fn launch_kernel(
             );
         }
         let ptx_source = runtime_ptx.or(lifted_ptx.as_deref());
+        let mut continue_native_launch = false;
         match super::cxl_tmatmul::compile_ptx_to_tmatmul_assembly(ptx_source) {
             Ok(compiled) => {
                 let ptx_source = ptx_source.expect("compile requires PTX source");
@@ -473,7 +474,7 @@ pub(crate) unsafe fn launch_kernel(
                     "[TMatmul Backend] PTX JIT unavailable for '{}': {}; trying kernel-name fallback if enabled",
                     f.name, e
                 );
-                execute_kernel_name_fallback(
+                match execute_kernel_name_fallback(
                     &f.name,
                     kernel_params,
                     grid_dim_x,
@@ -482,12 +483,33 @@ pub(crate) unsafe fn launch_kernel(
                     block_dim_x,
                     block_dim_y,
                     block_dim_z,
-                );
+                ) {
+                    KernelNameFallbackStatus::Handled | KernelNameFallbackStatus::Rejected => {}
+                    KernelNameFallbackStatus::ContinueNative => {
+                        continue_native_launch = true;
+                    }
+                }
             }
         }
 
-        super::checkpoint::end_kernel_execution(exec_id);
-        return ze_result_t::ZE_RESULT_SUCCESS;
+        if !continue_native_launch {
+            super::checkpoint::end_kernel_execution(exec_id);
+            return ze_result_t::ZE_RESULT_SUCCESS;
+        }
+
+        if f.kernel.0.is_null() || virtual_backend {
+            eprintln!(
+                "[TMatmul Backend] Kernel '{}' requested native GPU path, but no native Level Zero kernel is available",
+                f.name
+            );
+            super::checkpoint::end_kernel_execution(exec_id);
+            return ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+        }
+
+        eprintln!(
+            "[TMatmul Backend] Kernel '{}' continuing on native Level Zero path",
+            f.name
+        );
     }
 
     // Set the group size (equivalent to CUDA block dimensions)
@@ -1328,11 +1350,13 @@ mod tmatmul_hardware_matmul_tests {
     static FALLBACK_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
         previous: Vec<(&'static str, Option<String>)>,
     }
 
     impl EnvGuard {
         fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
+            let lock = super::super::test_env::lock();
             let previous = vars
                 .iter()
                 .map(|(name, _)| (*name, std::env::var(name).ok()))
@@ -1343,7 +1367,10 @@ mod tmatmul_hardware_matmul_tests {
                     None => std::env::remove_var(name),
                 }
             }
-            Self { previous }
+            Self {
+                _lock: lock,
+                previous,
+            }
         }
     }
 
@@ -1360,9 +1387,8 @@ mod tmatmul_hardware_matmul_tests {
 
     #[test]
     fn hardware_matmul_env_gate_accepts_truthy_values() {
-        std::env::set_var("HETGPU_TMATMUL_HARDWARE_MATMUL", "1");
+        let _guard = EnvGuard::set(&[("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1"))]);
         assert!(tmatmul_hardware_matmul_enabled());
-        std::env::remove_var("HETGPU_TMATMUL_HARDWARE_MATMUL");
     }
 
     #[test]
@@ -1483,6 +1509,88 @@ mod tmatmul_hardware_matmul_tests {
     }
 
     #[test]
+    fn bitnet_gpu_route_requests_native_continuation() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_NAMED_FALLBACK", Some("1")),
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_FFN_CXL", None),
+            ("HETGPU_TMATMUL_BITNET_DISAGGREGATE", None),
+            ("HETGPU_BITNET_DISAGG_STRICT", None),
+            ("HETGPU_BITNET_CXL_KERNELS", None),
+            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", None),
+        ]);
+        let mut kernel_params = [std::ptr::null_mut(); 16];
+        let before = TMATMUL_NAMED_FALLBACK_TEST_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+
+        let status = unsafe {
+            execute_kernel_name_fallback(
+                "_z13flash_attn_mul_mat_q",
+                kernel_params.as_mut_ptr(),
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            )
+        };
+
+        assert_eq!(status, KernelNameFallbackStatus::ContinueNative);
+        let after = TMATMUL_NAMED_FALLBACK_TEST_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn bitnet_gpu_route_does_not_succeed_in_virtual_fallback() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_NAMED_FALLBACK", Some("1")),
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_FFN_CXL", None),
+            ("HETGPU_TMATMUL_BITNET_DISAGGREGATE", None),
+            ("HETGPU_BITNET_DISAGG_STRICT", None),
+            ("HETGPU_BITNET_CXL_KERNELS", None),
+            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", None),
+        ]);
+        let kernel = super::super::module::ZeKernel {
+            context: ze_context_handle_t(std::ptr::null_mut()),
+            device: ze_device_handle_t(std::ptr::null_mut()),
+            module: ze_module_handle_t(std::ptr::null_mut()),
+            kernel: ze_kernel_handle_t(std::ptr::null_mut()),
+            name: "_z13flash_attn_mul_mat_q".to_string(),
+            ptx_source: None,
+            cubin_binary: None,
+            module_handle: 0,
+        };
+        let mut kernel_params = [std::ptr::null_mut(); 16];
+
+        let result = unsafe {
+            launch_kernel(
+                &kernel,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                ze_command_queue_handle_t(std::ptr::null_mut()),
+                kernel_params.as_mut_ptr(),
+                std::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE);
+    }
+
+    #[test]
     fn bitnet_default_disaggregation_keeps_attention_on_gpu() {
         let mut cfg = super::super::bitnet_disagg::BitnetRouteConfig::default();
         cfg.enabled = true;
@@ -1537,6 +1645,14 @@ mod tmatmul_hardware_matmul_tests {
 }
 
 #[cfg(feature = "intel")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KernelNameFallbackStatus {
+    Handled,
+    ContinueNative,
+    Rejected,
+}
+
+#[cfg(feature = "intel")]
 unsafe fn execute_kernel_name_fallback(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
@@ -1546,9 +1662,9 @@ unsafe fn execute_kernel_name_fallback(
     _block_dim_x: u32,
     _block_dim_y: u32,
     _block_dim_z: u32,
-) {
+) -> KernelNameFallbackStatus {
     if !tmatmul_named_fallback_enabled() && !tmatmul_hardware_matmul_enabled() {
-        return;
+        return KernelNameFallbackStatus::ContinueNative;
     }
 
     if kernel_params.is_null() {
@@ -1556,7 +1672,7 @@ unsafe fn execute_kernel_name_fallback(
             "[TMatmul Fallback] Kernel '{}' - null kernel_params, skipping",
             kernel_name
         );
-        return;
+        return KernelNameFallbackStatus::ContinueNative;
     }
 
     let name_lower = kernel_name.to_lowercase();
@@ -1578,7 +1694,7 @@ unsafe fn execute_kernel_name_fallback(
                 if decision.strict
                     && decision.route == super::bitnet_disagg::BitnetRoute::CxlTmatmul
                 {
-                    return;
+                    return KernelNameFallbackStatus::Rejected;
                 }
             }
 
@@ -1597,7 +1713,7 @@ unsafe fn execute_kernel_name_fallback(
                         kernel_name,
                         decision.source.as_str()
                     );
-                    return;
+                    return KernelNameFallbackStatus::ContinueNative;
                 }
                 super::bitnet_disagg::BitnetRoute::Fallback => {
                     eprintln!(
@@ -1613,7 +1729,7 @@ unsafe fn execute_kernel_name_fallback(
                         kernel_name,
                         decision.source.as_str()
                     );
-                    return;
+                    return KernelNameFallbackStatus::Rejected;
                 }
             }
         }
@@ -1624,32 +1740,32 @@ unsafe fn execute_kernel_name_fallback(
                 kernel_params,
                 strict_cxl_submit_failure,
             );
-            return;
+            return KernelNameFallbackStatus::Handled;
         }
     }
 
     if !tmatmul_named_fallback_enabled() {
-        return;
+        return KernelNameFallbackStatus::ContinueNative;
     }
     note_tmatmul_named_fallback_for_test();
 
     // Handle different kernel types
     if name_lower.contains("reduce_kernel") {
         execute_reduce_kernel_fallback(kernel_name, &name_lower, kernel_params);
-        return;
+        return KernelNameFallbackStatus::Handled;
     }
     if name_lower.contains("softmax") || name_lower.contains("soft_max") {
         execute_softmax_kernel_fallback(kernel_name, &name_lower, kernel_params);
-        return;
+        return KernelNameFallbackStatus::Handled;
     }
     if name_lower.contains("indexselect") || name_lower.contains("index_select") {
         execute_indexselect_kernel_fallback(kernel_name, kernel_params);
-        return;
+        return KernelNameFallbackStatus::Handled;
     }
     if name_lower.contains("gemm") || name_lower.contains("matmul") || name_lower.contains("cublas")
     {
         execute_matmul_kernel_fallback(kernel_name, kernel_params);
-        return;
+        return KernelNameFallbackStatus::Handled;
     }
     if name_lower.contains("layernorm")
         || name_lower.contains("layer_norm")
@@ -1658,7 +1774,7 @@ unsafe fn execute_kernel_name_fallback(
         || name_lower.contains("welford")
     {
         execute_norm_kernel_fallback(kernel_name, &name_lower, kernel_params);
-        return;
+        return KernelNameFallbackStatus::Handled;
     }
 
     // Handle vectorized_elementwise_kernel from PyTorch.
@@ -1674,7 +1790,7 @@ unsafe fn execute_kernel_name_fallback(
             "[TMatmul Fallback] Unhandled kernel '{}' - no-op",
             kernel_name
         );
-        return;
+        return KernelNameFallbackStatus::ContinueNative;
     }
 
     // Determine the operation and number of data pointers
@@ -1686,7 +1802,7 @@ unsafe fn execute_kernel_name_fallback(
                 "[TMatmul Fallback] Unrecognized op in '{}' - no-op",
                 kernel_name
             );
-            return;
+            return KernelNameFallbackStatus::Handled;
         }
     };
 
@@ -1694,7 +1810,7 @@ unsafe fn execute_kernel_name_fallback(
     let numel_param = *kernel_params.add(0);
     if numel_param.is_null() {
         eprintln!("[TMatmul Fallback] kernel_params[0] is null");
-        return;
+        return KernelNameFallbackStatus::Handled;
     }
     let numel = (numel_param as *const i32).read_unaligned() as usize;
     if numel == 0 || numel > 64 * 1024 * 1024 {
@@ -1702,14 +1818,14 @@ unsafe fn execute_kernel_name_fallback(
             "[TMatmul Fallback] Invalid numel={} for '{}'",
             numel, kernel_name
         );
-        return;
+        return KernelNameFallbackStatus::Handled;
     }
 
     // Read tensor pointers from the std::array at kernel_params[2]
     let data_param = *kernel_params.add(2);
     if data_param.is_null() {
         eprintln!("[TMatmul Fallback] kernel_params[2] (data array) is null");
-        return;
+        return KernelNameFallbackStatus::Handled;
     }
 
     let mut data_ptrs: Vec<*mut u8> = Vec::new();
@@ -1733,7 +1849,7 @@ unsafe fn execute_kernel_name_fallback(
             "[TMatmul Fallback] Missing output or input pointer for '{}'",
             kernel_name
         );
-        return;
+        return KernelNameFallbackStatus::Handled;
     }
 
     // Detect element size from kernel name (float16=2, float32/float=4, double=8)
@@ -1796,7 +1912,7 @@ unsafe fn execute_kernel_name_fallback(
         "add" => {
             if data_ptrs.len() < 3 || data_ptrs[2].is_null() {
                 eprintln!("[TMatmul Fallback] add needs 3 valid pointers");
-                return;
+                return KernelNameFallbackStatus::Handled;
             }
             let alpha = functor_f32;
             let out = data_ptrs[0];
@@ -1811,7 +1927,7 @@ unsafe fn execute_kernel_name_fallback(
         "mul" | "div" => {
             if data_ptrs.len() < 3 || data_ptrs[2].is_null() {
                 eprintln!("[TMatmul Fallback] Binary op needs 3 valid pointers");
-                return;
+                return KernelNameFallbackStatus::Handled;
             }
             let out = data_ptrs[0];
             let in1 = data_ptrs[1];
@@ -1957,6 +2073,7 @@ unsafe fn execute_kernel_name_fallback(
         "[TMatmul Fallback] Kernel '{}' executed successfully ({} elements, {}B)",
         kernel_name, numel, elem_size
     );
+    KernelNameFallbackStatus::Handled
 }
 
 /// Execute PyTorch arange_cuda_out fallback.

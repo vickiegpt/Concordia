@@ -63,6 +63,19 @@ pub(crate) mod cxl_tmatmul;
 #[cfg(feature = "intel")]
 pub(crate) mod bitnet_disagg;
 
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    pub(crate) fn lock() -> MutexGuard<'static, ()> {
+        ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+}
+
 // TMatmul assembly interpreter (virtual backend execution engine)
 #[cfg(feature = "intel")]
 pub(crate) mod tmatmul_interpreter;

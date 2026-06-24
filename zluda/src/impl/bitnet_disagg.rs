@@ -530,11 +530,13 @@ mod tests {
     ];
 
     struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
         previous: Vec<(&'static str, Option<String>)>,
     }
 
     impl EnvGuard {
         fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
+            let lock = super::super::test_env::lock();
             let previous = BITNET_DISAGG_ENV_VARS
                 .iter()
                 .map(|name| (*name, std::env::var(name).ok()))
@@ -548,7 +550,10 @@ mod tests {
                     None => std::env::remove_var(name),
                 }
             }
-            Self { previous }
+            Self {
+                _lock: lock,
+                previous,
+            }
         }
     }
 
