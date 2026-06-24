@@ -1,8 +1,9 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 const BUILTIN_GPU_MARKERS: &[&str] = &[
     "attention",
@@ -35,6 +36,21 @@ const BUILTIN_FFN_MARKERS: &[&str] = &[
 ];
 
 static ROUTE_LOG_MUTEX: Mutex<()> = Mutex::new(());
+static MANIFEST_LOAD_CACHE: OnceLock<Mutex<HashMap<ManifestCacheKey, ManifestCacheEntry>>> =
+    OnceLock::new();
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ManifestCacheKey {
+    path: PathBuf,
+    strict: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ManifestCacheEntry {
+    manifest: Option<BitnetRouteManifest>,
+    error: Option<String>,
+    diagnostic_emitted: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BitnetRoute {
@@ -180,23 +196,67 @@ pub(crate) fn config_from_env() -> BitnetRouteConfig {
     };
 
     if let Ok(path) = std::env::var("HETGPU_BITNET_ROUTE_MANIFEST") {
-        if !path.trim().is_empty() {
-            match load_manifest_file(Path::new(path.trim())) {
-                Ok(manifest) => config.manifest = Some(manifest),
-                Err(err) => {
-                    eprintln!("[BitNet Disagg] manifest disabled: {err}");
-                    if strict {
-                        config.manifest = Some(BitnetRouteManifest {
-                            version: 1,
-                            default: ManifestRouteName::Reject,
-                            routes: Vec::new(),
-                        });
-                    }
-                }
-            }
-        }
+        config.manifest = cached_manifest_from_path(path.trim(), strict);
     }
     config
+}
+
+fn cached_manifest_from_path(path_text: &str, strict: bool) -> Option<BitnetRouteManifest> {
+    if path_text.is_empty() {
+        return None;
+    }
+
+    let load_path = Path::new(path_text);
+    let key = ManifestCacheKey {
+        path: normalize_manifest_path(load_path),
+        strict,
+    };
+    let mut cache = manifest_load_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = cache
+        .entry(key)
+        .or_insert_with(|| ManifestCacheEntry::load(load_path, strict));
+    if let Some(err) = entry.error.as_ref() {
+        if !entry.diagnostic_emitted {
+            eprintln!("[BitNet Disagg] manifest disabled: {err}");
+            entry.diagnostic_emitted = true;
+        }
+    }
+    entry.manifest.clone()
+}
+
+fn manifest_load_cache() -> &'static Mutex<HashMap<ManifestCacheKey, ManifestCacheEntry>> {
+    MANIFEST_LOAD_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn normalize_manifest_path(path: &Path) -> PathBuf {
+    path.components().collect()
+}
+
+impl ManifestCacheEntry {
+    fn load(path: &Path, strict: bool) -> Self {
+        match load_manifest_file(path) {
+            Ok(manifest) => Self {
+                manifest: Some(manifest),
+                error: None,
+                diagnostic_emitted: false,
+            },
+            Err(err) => Self {
+                manifest: if strict {
+                    Some(BitnetRouteManifest {
+                        version: 1,
+                        default: ManifestRouteName::Reject,
+                        routes: Vec::new(),
+                    })
+                } else {
+                    None
+                },
+                error: Some(err),
+                diagnostic_emitted: false,
+            },
+        }
+    }
 }
 
 pub(crate) fn enabled_from_env() -> bool {
@@ -458,16 +518,30 @@ fn env_list(name: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    const BITNET_DISAGG_ENV_VARS: &[&str] = &[
+        "HETGPU_BITNET_DISAGGREGATE",
+        "HETGPU_BITNET_FFN_CXL",
+        "HETGPU_TMATMUL_BITNET_DISAGGREGATE",
+        "HETGPU_BITNET_DISAGG_STRICT",
+        "HETGPU_BITNET_CXL_KERNELS",
+        "HETGPU_BITNET_GPU_KERNELS",
+        "HETGPU_BITNET_ROUTE_MANIFEST",
+        "HETGPU_BITNET_ROUTE_LOG",
+    ];
+
     struct EnvGuard {
         previous: Vec<(&'static str, Option<String>)>,
     }
 
     impl EnvGuard {
         fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
-            let previous = vars
+            let previous = BITNET_DISAGG_ENV_VARS
                 .iter()
-                .map(|(name, _)| (*name, std::env::var(name).ok()))
+                .map(|name| (*name, std::env::var(name).ok()))
                 .collect::<Vec<_>>();
+            for name in BITNET_DISAGG_ENV_VARS {
+                std::env::remove_var(name);
+            }
             for (name, value) in vars {
                 match value {
                     Some(value) => std::env::set_var(name, value),
@@ -764,6 +838,69 @@ mod tests {
     }
 
     #[test]
+    fn config_from_env_caches_valid_manifest_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routes.json");
+        std::fs::write(
+            &path,
+            r#"{
+            "version": 1,
+            "default": "reject",
+            "routes": [
+                {"match": "flash_attn", "route": "gpu", "reason": "attention"}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let path_text = path.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", Some(&path_text)),
+        ]);
+
+        let first = config_from_env();
+        let first_decision = classify_kernel_name("layer_0_flash_attn_mul_mat", &first);
+        assert_eq!(first_decision.route, BitnetRoute::GpuNative);
+        assert_eq!(first_decision.source, BitnetRouteSource::Manifest);
+        assert_eq!(first_decision.reason.as_deref(), Some("attention"));
+
+        std::fs::remove_file(&path).unwrap();
+        let second = config_from_env();
+        assert_eq!(second.manifest, first.manifest);
+        let second_decision = classify_kernel_name("layer_0_flash_attn_mul_mat", &second);
+        assert_eq!(second_decision.route, BitnetRoute::GpuNative);
+        assert_eq!(second_decision.source, BitnetRouteSource::Manifest);
+        assert_eq!(second_decision.reason.as_deref(), Some("attention"));
+    }
+
+    #[test]
+    fn malformed_manifest_without_strict_stays_disabled_from_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, r#"{"version": 9, "routes": []}"#).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", Some(&path_text)),
+        ]);
+
+        let first = config_from_env();
+        assert!(first.manifest.is_none());
+
+        std::fs::write(
+            &path,
+            r#"{
+            "version": 1,
+            "default": "reject",
+            "routes": [{"match": "flash_attn", "route": "gpu"}]
+        }"#,
+        )
+        .unwrap();
+        let second = config_from_env();
+        assert!(second.manifest.is_none());
+    }
+
+    #[test]
     fn malformed_manifest_sets_strict_reject_default() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.json");
@@ -778,6 +915,44 @@ mod tests {
         let cfg = config_from_env();
         let decision = classify_kernel_name("layer_unknown", &cfg);
         assert_eq!(decision.route, BitnetRoute::Reject);
+    }
+
+    #[test]
+    fn strict_malformed_manifest_cache_keeps_reject_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, r#"{"version": 9, "routes": []}"#).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", Some(&path_text)),
+        ]);
+
+        let first = config_from_env();
+        assert_eq!(
+            first.manifest,
+            Some(BitnetRouteManifest {
+                version: 1,
+                default: ManifestRouteName::Reject,
+                routes: Vec::new(),
+            })
+        );
+
+        std::fs::write(
+            &path,
+            r#"{
+            "version": 1,
+            "default": "fallback",
+            "routes": [{"match": "flash_attn", "route": "gpu"}]
+        }"#,
+        )
+        .unwrap();
+        let second = config_from_env();
+        assert_eq!(second.manifest, first.manifest);
+        let decision = classify_kernel_name("layer_unknown", &second);
+        assert_eq!(decision.route, BitnetRoute::Reject);
+        assert_eq!(decision.source, BitnetRouteSource::Manifest);
     }
 
     #[test]
