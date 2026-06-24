@@ -1150,8 +1150,9 @@ cudaError_t cudaGetDeviceProperties(cudaDeviceProp_t prop, int device) {
         "HETGPU_PACC_VRAM_BYTES",
         4ULL * 1024 * 1024 * 1024
     );
-    p.sharedMemPerBlock = 48 * 1024;               // 48KB
-    p.sharedMemPerMultiprocessor = 64 * 1024;      // 64KB
+    p.sharedMemPerBlock = 48 * 1024;               // 48KB portable default
+    p.sharedMemPerMultiprocessor = 167936;         // Ampere-class SM shared memory
+    p.sharedMemPerBlockOptin = 167936;             // llama.cpp MMQ uses this directly
     p.totalConstMem = 64 * 1024;                   // 64KB
     p.memPitch = 2147483647;
     p.textureAlignment = 512;
@@ -1777,7 +1778,7 @@ cudaError_t cudaFuncGetAttributes(void* attr, const void* func) {
     attrs->ptxVersion = 80;                 // PTX 8.0
     attrs->binaryVersion = 80;              // Binary version 8.0
     attrs->cacheModeCA = 0;                 // Default cache mode
-    attrs->maxDynamicSharedSizeBytes = 48 * 1024;  // 48KB dynamic shared
+    attrs->maxDynamicSharedSizeBytes = 167936;     // Ampere-class dynamic shared memory
     attrs->preferredShmemCarveout = -1;     // Driver default
 
     fprintf(stderr, "[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=%d, numRegs=%d\n",

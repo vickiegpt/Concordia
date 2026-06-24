@@ -1143,8 +1143,8 @@ fn tmatmul_hardware_matmul_layout(name_lower: &str) -> Option<TmatmulHardwareMat
             name: "mul_mat_q",
             matrix_param: 0,
             vector_param: 1,
-            output_param: 4,
-            pointer_params: 6,
+            output_param: 2,
+            pointer_params: 4,
         }
     } else {
         TmatmulHardwareMatmulLayout {
@@ -1513,19 +1513,19 @@ mod tmatmul_hardware_matmul_tests {
     }
 
     #[test]
-    fn ggml_iq1s_mul_mat_q_layout_uses_param4_output() {
+    fn ggml_iq1s_mul_mat_q_layout_uses_param2_output() {
         let layout = tmatmul_hardware_matmul_layout("_z9mul_mat_qil10ggml_type41eevpkc...iq1_s")
             .expect("mul_mat_q should have a hardware fallback layout");
         assert_eq!(layout.name, "mul_mat_q");
         assert_eq!(layout.matrix_param, 0);
         assert_eq!(layout.vector_param, 1);
-        assert_eq!(layout.output_param, 4);
-        assert_eq!(layout.pointer_params, 6);
+        assert_eq!(layout.output_param, 2);
+        assert_eq!(layout.pointer_params, 4);
 
         let asm = tmatmul_generate_hardware_matmul_assembly("kernel", layout);
         assert!(asm.contains("ldv v0,PARAM_1"));
         assert!(asm.contains("tmatmul_go PARAM_0"));
-        assert!(asm.contains("sv v1,PARAM_4"));
+        assert!(asm.contains("sv v1,PARAM_2"));
     }
 
     #[test]
@@ -1818,7 +1818,7 @@ mod tmatmul_hardware_matmul_tests {
             (dst.as_ptr() as usize, dst.len()),
             (
                 ptrs_src.as_mut_ptr() as usize,
-                ptrs_src.len() * std::mem::size_of::<u64>(),
+                64 * std::mem::size_of::<u64>(),
             ),
             (
                 ptrs_dst.as_mut_ptr() as usize,
@@ -1831,7 +1831,7 @@ mod tmatmul_hardware_matmul_tests {
         let mut p2 = dst.as_ptr() as u64;
         let mut p3 = ptrs_src.as_mut_ptr() as u64;
         let mut p4 = ptrs_dst.as_mut_ptr() as u64;
-        let mut ne12 = [0u32, 0, 2];
+        let mut ne12 = 2i64;
         let mut ne13 = 3i64;
         let mut ne23 = 6i64;
         let mut nb02 = 10u64;
@@ -1848,7 +1848,7 @@ mod tmatmul_hardware_matmul_tests {
             &mut p2 as *mut _ as *mut ::core::ffi::c_void,
             &mut p3 as *mut _ as *mut ::core::ffi::c_void,
             &mut p4 as *mut _ as *mut ::core::ffi::c_void,
-            ne12.as_mut_ptr() as *mut ::core::ffi::c_void,
+            &mut ne12 as *mut _ as *mut ::core::ffi::c_void,
             &mut ne13 as *mut _ as *mut ::core::ffi::c_void,
             &mut ne23 as *mut _ as *mut ::core::ffi::c_void,
             &mut nb02 as *mut _ as *mut ::core::ffi::c_void,
@@ -1881,6 +1881,86 @@ mod tmatmul_hardware_matmul_tests {
         assert_eq!(ptrs_src[11], src1.as_ptr() as u64 + 420);
         assert_eq!(ptrs_dst[0], dst.as_ptr() as u64);
         assert_eq!(ptrs_dst[5], dst.as_ptr() as u64 + 630);
+    }
+
+    #[test]
+    fn compute_batched_ptrs_reads_ne12_as_kernel_i64() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", None),
+            ("HETGPU_TMATMUL_NAMED_FALLBACK", None),
+        ]);
+        let src0 = vec![0u8; 1024];
+        let src1 = vec![0u8; 1024];
+        let dst = vec![0u8; 1024];
+        let mut ptrs_src = vec![0u64; 128];
+        let mut ptrs_dst = vec![0u64; 64];
+        let _alloc_guard = VirtualAllocGuard::insert(&[
+            (src0.as_ptr() as usize, src0.len()),
+            (src1.as_ptr() as usize, src1.len()),
+            (dst.as_ptr() as usize, dst.len()),
+            (
+                ptrs_src.as_mut_ptr() as usize,
+                ptrs_src.len() * std::mem::size_of::<u64>(),
+            ),
+            (
+                ptrs_dst.as_mut_ptr() as usize,
+                ptrs_dst.len() * std::mem::size_of::<u64>(),
+            ),
+        ]);
+
+        let mut p0 = src0.as_ptr() as u64;
+        let mut p1 = src1.as_ptr() as u64;
+        let mut p2 = dst.as_ptr() as u64;
+        let mut p3 = ptrs_src.as_mut_ptr() as u64;
+        let mut p4 = ptrs_dst.as_mut_ptr() as u64;
+        let mut ne12_storage = [64i64, 1i64];
+        let mut ne13 = 1i64;
+        let mut ne23 = 64i64;
+        let mut nb02 = 4u64;
+        let mut nb03 = 400u64;
+        let mut nb12 = 8u64;
+        let mut nb13 = 800u64;
+        let mut nbd2 = 12u64;
+        let mut nbd3 = 1200u64;
+        let mut r2 = 1i64;
+        let mut r3 = 1i64;
+        let mut kernel_params = [
+            &mut p0 as *mut _ as *mut ::core::ffi::c_void,
+            &mut p1 as *mut _ as *mut ::core::ffi::c_void,
+            &mut p2 as *mut _ as *mut ::core::ffi::c_void,
+            &mut p3 as *mut _ as *mut ::core::ffi::c_void,
+            &mut p4 as *mut _ as *mut ::core::ffi::c_void,
+            ne12_storage.as_mut_ptr() as *mut ::core::ffi::c_void,
+            &mut ne13 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne23 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb02 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb03 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb12 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb13 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nbd2 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nbd3 as *mut _ as *mut ::core::ffi::c_void,
+            &mut r2 as *mut _ as *mut ::core::ffi::c_void,
+            &mut r3 as *mut _ as *mut ::core::ffi::c_void,
+        ];
+
+        let status = unsafe {
+            execute_kernel_name_fallback(
+                "_Z22k_compute_batched_ptrsPK6__halfS1_PcPPKvPPvlllmmmmmmll",
+                kernel_params.as_mut_ptr(),
+                1,
+                1,
+                1,
+                1,
+                64,
+                1,
+            )
+        };
+
+        assert_eq!(status, KernelNameFallbackStatus::Handled);
+        assert_eq!(ptrs_src[63], src0.as_ptr() as u64 + 63 * 4);
+        assert_eq!(ptrs_src[127], src1.as_ptr() as u64 + 63 * 8);
+        assert_eq!(ptrs_dst[63], dst.as_ptr() as u64 + 63 * 12);
     }
 
     #[test]
@@ -2876,6 +2956,56 @@ fn tmatmul_virtual_alloc_has_elems<T>(ptr: *const T, elems: usize) -> bool {
 }
 
 #[cfg(feature = "intel")]
+fn tmatmul_process_range_has_perms(addr: usize, len: usize, need_write: bool) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let Some(end_addr) = addr.checked_add(len) else {
+        return false;
+    };
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return false;
+    };
+    for line in maps.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(range) = parts.next() else {
+            continue;
+        };
+        let Some(perms) = parts.next() else {
+            continue;
+        };
+        if !perms.starts_with('r') || (need_write && perms.as_bytes().get(1).copied() != Some(b'w'))
+        {
+            continue;
+        }
+        let Some((start_hex, end_hex)) = range.split_once('-') else {
+            continue;
+        };
+        let Ok(start) = usize::from_str_radix(start_hex, 16) else {
+            continue;
+        };
+        let Ok(end) = usize::from_str_radix(end_hex, 16) else {
+            continue;
+        };
+        if addr >= start && end_addr <= end {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(feature = "intel")]
+fn tmatmul_pointer_table_has_elems<T>(ptr: *const T, elems: usize) -> bool {
+    elems
+        .checked_mul(std::mem::size_of::<T>())
+        .map(|bytes| {
+            tmatmul_virtual_alloc_has_bytes(ptr as u64, bytes)
+                || tmatmul_process_range_has_perms(ptr as usize, bytes, true)
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "intel")]
 unsafe fn execute_tmatmul_compute_batched_ptrs_fallback(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
@@ -2915,7 +3045,7 @@ unsafe fn execute_tmatmul_compute_batched_ptrs_fallback(
         );
         return KernelNameFallbackStatus::Rejected;
     };
-    let Some(ne12) = tmatmul_read_param_uint3_z(kernel_params, 5).map(|v| v as usize) else {
+    let Some(ne12) = tmatmul_read_param_i64(kernel_params, 5).map(|v| v.max(0) as usize) else {
         eprintln!(
             "[TMatmul Fallback] compute_batched_ptrs '{}' missing ne12",
             kernel_name
@@ -2990,8 +3120,8 @@ unsafe fn execute_tmatmul_compute_batched_ptrs_fallback(
         return KernelNameFallbackStatus::Rejected;
     };
 
-    if !tmatmul_virtual_alloc_has_elems(ptrs_src_host as *const u64, ptrs_src_count)
-        || !tmatmul_virtual_alloc_has_elems(ptrs_dst_host as *const u64, table_count)
+    if !tmatmul_pointer_table_has_elems(ptrs_src_host as *const u64, ptrs_src_count)
+        || !tmatmul_pointer_table_has_elems(ptrs_dst_host as *const u64, table_count)
     {
         eprintln!(
             "[TMatmul Fallback] compute_batched_ptrs '{}' rejected pointer table ranges ptrs_src={:p} ptrs_dst={:p} src_count={} dst_count={} ne12={} ne13={} ne23={}",
@@ -11117,7 +11247,7 @@ unsafe fn execute_compute_batched_ptrs_fallback(
     let dst = read_param_u64(kernel_params, 2)?;
     let ptrs_src = read_param_u64(kernel_params, 3)?;
     let ptrs_dst = read_param_u64(kernel_params, 4)?;
-    let ne12 = read_param_uint3_z(kernel_params, 5)? as usize;
+    let ne12 = read_param_i64(kernel_params, 5)?.max(0) as usize;
     let ne13 = read_param_i64(kernel_params, 6)?.max(0) as usize;
     let ne23 = read_param_i64(kernel_params, 7)?.max(0) as usize;
     let nb02 = read_param_u64(kernel_params, 8)? as usize;

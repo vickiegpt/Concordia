@@ -27,6 +27,17 @@ const CSR_PROBE_WDATA: usize = 0x14;
 const CSR_PROBE_CTRL: usize = 0x18;
 const CSR_PROBE_RDATA: usize = 0x1C;
 const CSR_PROBE_STATUS: usize = 0x24;
+const CSR_INST_BASE: usize = 0x100;
+const CSR_INST_STALL_STATUS: usize = CSR_INST_BASE;
+const CSR_INST_STALL_CLEAR: usize = CSR_INST_BASE + 0x04;
+const CSR_INST_RST_TRIGGER: usize = CSR_INST_BASE + 0x08;
+const CSR_INST_INSTR_SRC_LO: usize = CSR_INST_BASE + 0x10;
+const CSR_INST_INSTR_SRC_HI: usize = CSR_INST_BASE + 0x14;
+const CSR_INST_INSTR_LEN: usize = CSR_INST_BASE + 0x18;
+const CSR_INST_INSTR_START: usize = CSR_INST_BASE + 0x1c;
+const CSR_INST_INSTR_STATUS: usize = CSR_INST_BASE + 0x1c;
+const CSR_INST_DBG_INSTR_CNT: usize = CSR_INST_BASE + 0x40;
+const TMATMUL_DMA_ERROR_STATUS: u32 = 0xff;
 const CXL_TYPE2_TMATMUL_RESULT_STALLED: u32 = 1 << 0;
 const CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR: u32 = 1 << 2;
 
@@ -693,8 +704,15 @@ fn submit_prepared_hardware_matmul(
         staging.stage_bytes(TMATMUL_DPA_PROGRAM, program)?;
     }
 
+    if cxl_tmatmul_bar_run_enabled() {
+        let status = run_prepared_hardware_matmul_via_bar(program.len(), timeout_ms, dim_d)?;
+        staging.read_bytes(TMATMUL_DPA_OUTPUT, output)?;
+        return Ok(status);
+    }
+
     let max_retries = cxl_tmatmul_run_retries();
     for run_attempt in 0..=max_retries {
+        staging.reset_instruction_engine_before_run()?;
         let mut run = CxlType2TmatmulCsrRun {
             timeout_ms: timeout_ms_or_default(timeout_ms),
             ..Default::default()
@@ -716,12 +734,24 @@ fn submit_prepared_hardware_matmul(
             if should_retry_csr_run_timeout(&saved_error, &status, run_attempt, max_retries, dim_d)
             {
                 eprintln!(
-                    "[CXL TMatmul] RUN_CSR_ONLY timed out without progress; retrying {}/{}; status={:?}",
+                    "[CXL TMatmul] RUN_CSR_ONLY timed out before stall; retrying {}/{}; status={:?}",
                     run_attempt + 1,
                     max_retries,
                     status
                 );
                 continue;
+            }
+            if should_fallback_to_bar_run(&saved_error, &status, dim_d)
+                && !cxl_tmatmul_bar_fallback_disabled()
+            {
+                eprintln!(
+                    "[CXL TMatmul] RUN_CSR_ONLY unavailable or stuck before stall; using BAR launch fallback; status={:?}",
+                    status
+                );
+                let status =
+                    run_prepared_hardware_matmul_via_bar(program.len(), timeout_ms, dim_d)?;
+                staging.read_bytes(TMATMUL_DPA_OUTPUT, output)?;
+                return Ok(status);
             }
             return Err(CxlTmatmulError::Device(format!(
                 "CXL_TYPE2_TMATMUL_RUN_CSR_ONLY: {saved_error}; status={status:?}"
@@ -751,6 +781,17 @@ fn submit_prepared_hardware_matmul(
     Err(CxlTmatmulError::Device(
         "RUN_CSR_ONLY retry loop exited unexpectedly".to_string(),
     ))
+}
+
+#[cfg(unix)]
+fn run_prepared_hardware_matmul_via_bar(
+    program_len: usize,
+    timeout_ms: u32,
+    dim_d: u32,
+) -> Result<CxlTmatmulRunStatus, CxlTmatmulError> {
+    let program_len = u32::try_from(program_len).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+    let bar = StagingMap::open_csr_probe(0)?;
+    bar.run_instance0_program(TMATMUL_DPA_PROGRAM, program_len, timeout_ms, dim_d)
 }
 
 #[cfg(unix)]
@@ -1084,6 +1125,77 @@ impl StagingMap {
             )),
         }
     }
+
+    fn reset_instruction_engine_before_run(&self) -> Result<(), CxlTmatmulError> {
+        if !matches!(self, Self::CsrProbe { .. }) {
+            return Ok(());
+        }
+        for (off, value) in csr_probe_prelaunch_reset_sequence() {
+            self.csr_mmio_wr32(off, value)?;
+            if off == CSR_INST_RST_TRIGGER {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+        Ok(())
+    }
+
+    fn run_instance0_program(
+        &self,
+        instr_addr: u64,
+        instr_len: u32,
+        timeout_ms: u32,
+        dim_d: u32,
+    ) -> Result<CxlTmatmulRunStatus, CxlTmatmulError> {
+        if !matches!(self, Self::CsrProbe { .. }) {
+            return Err(CxlTmatmulError::Device(
+                "BAR launch requested without CSR BAR mapping".to_string(),
+            ));
+        }
+
+        let timeout_ms = timeout_ms_or_default(timeout_ms);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
+        self.csr_mmio_wr32(CSR_INST_STALL_CLEAR, 1)?;
+        while self.csr_mmio_rd32(CSR_INST_STALL_STATUS)? != 0 {
+            if std::time::Instant::now() >= deadline {
+                let dma_status = self.csr_mmio_rd32(CSR_INST_INSTR_STATUS)?;
+                let instr_count = self.csr_mmio_rd32(CSR_INST_DBG_INSTR_CNT)?;
+                let status = bar_run_status(timeout_ms, dma_status, 1, instr_count, dim_d);
+                return Err(CxlTmatmulError::Device(format!(
+                    "BAR launch stall clear timed out; status={status:?}"
+                )));
+            }
+            std::hint::spin_loop();
+        }
+
+        self.csr_mmio_wr32(CSR_INST_INSTR_SRC_LO, instr_addr as u32)?;
+        self.csr_mmio_wr32(CSR_INST_INSTR_SRC_HI, (instr_addr >> 32) as u32)?;
+        self.csr_mmio_wr32(CSR_INST_INSTR_LEN, instr_len)?;
+        let before_count = self.csr_mmio_rd32(CSR_INST_DBG_INSTR_CNT)?;
+        self.csr_mmio_wr32(CSR_INST_INSTR_START, 1)?;
+
+        loop {
+            let stall_status = self.csr_mmio_rd32(CSR_INST_STALL_STATUS)?;
+            let dma_status = self.csr_mmio_rd32(CSR_INST_INSTR_STATUS)?;
+            let after_count = self.csr_mmio_rd32(CSR_INST_DBG_INSTR_CNT)?;
+            let instr_delta = after_count.wrapping_sub(before_count);
+            let status = bar_run_status(timeout_ms, dma_status, stall_status, instr_delta, dim_d);
+            if (status.result_flags & CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR) != 0 {
+                return Err(CxlTmatmulError::Device(format!(
+                    "BAR launch reported DMA_ERROR; status={status:?}"
+                )));
+            }
+            if (status.result_flags & CXL_TYPE2_TMATMUL_RESULT_STALLED) != 0 {
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(CxlTmatmulError::Device(format!(
+                    "BAR launch timed out before stall; status={status:?}"
+                )));
+            }
+            std::hint::spin_loop();
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -1312,6 +1424,51 @@ fn timeout_ms_or_default(timeout_ms: u32) -> u32 {
 }
 
 #[cfg(unix)]
+fn cxl_tmatmul_bar_run_enabled() -> bool {
+    env_flag("HETGPU_CXL_TMATMUL_BAR_RUN") || env_flag("HETGPU_TMATMUL_BAR_RUN")
+}
+
+#[cfg(unix)]
+fn cxl_tmatmul_bar_fallback_disabled() -> bool {
+    env_flag("HETGPU_CXL_TMATMUL_DISABLE_BAR_FALLBACK")
+        || env_flag("HETGPU_TMATMUL_DISABLE_BAR_FALLBACK")
+}
+
+#[cfg(unix)]
+fn bar_run_status(
+    timeout_ms: u32,
+    dma_status: u32,
+    stall_status: u32,
+    instr_count: u32,
+    dim_d: u32,
+) -> CxlTmatmulRunStatus {
+    let mut result_flags = 0;
+    if stall_status != 0 {
+        result_flags |= CXL_TYPE2_TMATMUL_RESULT_STALLED;
+    }
+    if dma_status == TMATMUL_DMA_ERROR_STATUS {
+        result_flags |= CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR;
+    }
+    CxlTmatmulRunStatus {
+        timeout_ms,
+        dma_status,
+        stall_status,
+        instr_count,
+        dim_d,
+        result_flags,
+    }
+}
+
+#[cfg(unix)]
+fn csr_probe_prelaunch_reset_sequence() -> [(usize, u32); 3] {
+    [
+        (CSR_INST_STALL_CLEAR, 1),
+        (CSR_INST_RST_TRIGGER, 1),
+        (CSR_INST_STALL_CLEAR, 1),
+    ]
+}
+
+#[cfg(unix)]
 fn cxl_tmatmul_run_retries() -> usize {
     for key in [
         "HETGPU_CXL_TMATMUL_RUN_RETRIES",
@@ -1340,9 +1497,24 @@ fn should_retry_csr_run_timeout(
     run_attempt < max_retries
         && err.raw_os_error() == Some(libc::ETIMEDOUT)
         && status.stall_status == 0
-        && status.instr_count == 0
         && status.dim_d == expected_dim
         && (status.result_flags & CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR) == 0
+        && (status.result_flags & CXL_TYPE2_TMATMUL_RESULT_STALLED) == 0
+}
+
+#[cfg(unix)]
+fn should_fallback_to_bar_run(
+    err: &std::io::Error,
+    status: &CxlTmatmulRunStatus,
+    expected_dim: u32,
+) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(libc::ENOTTY) | Some(libc::ETIMEDOUT)
+    ) && status.stall_status == 0
+        && status.dim_d == expected_dim
+        && (status.result_flags & CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR) == 0
+        && (status.result_flags & CXL_TYPE2_TMATMUL_RESULT_STALLED) == 0
 }
 
 #[cfg(unix)]
@@ -1599,6 +1771,15 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn csr_probe_prelaunch_reset_sequence_matches_bridge() {
+        assert_eq!(
+            csr_probe_prelaunch_reset_sequence(),
+            [(0x104, 1), (0x108, 1), (0x104, 1)]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn run_csr_only_ioctl_requests_cover_known_abis() {
         let requests = cxl_type2_tmatmul_run_csr_only_ioctl_requests();
 
@@ -1625,7 +1806,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn csr_run_retry_policy_rejects_progress_dma_error_or_wrong_dim() {
+    fn csr_run_retry_policy_accepts_timeout_before_stall_without_dma_error() {
         let err = std::io::Error::from_raw_os_error(libc::ETIMEDOUT);
         let base = CxlTmatmulRunStatus {
             timeout_ms: DEFAULT_TIMEOUT_MS,
@@ -1637,8 +1818,12 @@ mod tests {
         };
 
         let mut progressed = base.clone();
-        progressed.instr_count = 1;
-        assert!(!should_retry_csr_run_timeout(&err, &progressed, 0, 1, 2048));
+        progressed.instr_count = 5;
+        assert!(should_retry_csr_run_timeout(&err, &progressed, 0, 1, 2048));
+
+        let mut stalled = base.clone();
+        stalled.stall_status = 1;
+        assert!(!should_retry_csr_run_timeout(&err, &stalled, 0, 1, 2048));
 
         let mut dma_error = base.clone();
         dma_error.result_flags = CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR;
@@ -1647,6 +1832,59 @@ mod tests {
         let mut wrong_dim = base;
         wrong_dim.dim_d = 1024;
         assert!(!should_retry_csr_run_timeout(&err, &wrong_dim, 0, 1, 2048));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn csr_run_errors_that_leave_no_stall_use_bar_fallback() {
+        let base = CxlTmatmulRunStatus {
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            dma_status: 1,
+            stall_status: 0,
+            instr_count: 0,
+            dim_d: 2048,
+            result_flags: 0,
+        };
+
+        assert!(should_fallback_to_bar_run(
+            &std::io::Error::from_raw_os_error(libc::ENOTTY),
+            &base,
+            2048
+        ));
+        assert!(should_fallback_to_bar_run(
+            &std::io::Error::from_raw_os_error(libc::ETIMEDOUT),
+            &base,
+            2048
+        ));
+
+        let mut stalled = base.clone();
+        stalled.result_flags = CXL_TYPE2_TMATMUL_RESULT_STALLED;
+        assert!(!should_fallback_to_bar_run(
+            &std::io::Error::from_raw_os_error(libc::ETIMEDOUT),
+            &stalled,
+            2048
+        ));
+
+        let mut dma_error = base;
+        dma_error.result_flags = CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR;
+        assert!(!should_fallback_to_bar_run(
+            &std::io::Error::from_raw_os_error(libc::ETIMEDOUT),
+            &dma_error,
+            2048
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bar_run_status_marks_stall_and_dma_error_flags() {
+        let stalled = bar_run_status(DEFAULT_TIMEOUT_MS, 0, 2, 7, 2048);
+
+        assert_eq!(stalled.stall_status, 2);
+        assert_eq!(stalled.instr_count, 7);
+        assert_eq!(stalled.result_flags, CXL_TYPE2_TMATMUL_RESULT_STALLED);
+
+        let dma_error = bar_run_status(DEFAULT_TIMEOUT_MS, 0xff, 0, 0, 2048);
+        assert_eq!(dma_error.result_flags, CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR);
     }
 
     #[cfg(unix)]
