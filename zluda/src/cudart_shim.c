@@ -531,6 +531,24 @@ static cudaError_t hetgpu_cuda_memcpy_host_backed_fallback(
     return HETGPU_CUDA_SUCCESS;
 }
 
+static cudaError_t hetgpu_cuda_memset_host_backed_fallback(
+    void *dst,
+    int value,
+    size_t count,
+    cudaError_t err
+) {
+    if (err == HETGPU_CUDA_SUCCESS) return err;
+    if (!hetgpu_env_flag_default_true("HETGPU_CUDART_HOST_BACKED_MEMSET_FALLBACK")) return err;
+    if (!hetgpu_cuda_host_backed_ptr(dst) || !hetgpu_host_range_writable(dst, count)) return err;
+    if (getenv("HETGPU_CUDART_MEMSET_FALLBACK_TRACE")) {
+        fprintf(stderr,
+                "[cudart_shim] cudaMemset driver fill failed (%d); using host-backed memset dst=%p bytes=%zu\n",
+                err, dst, count);
+    }
+    memset(dst, value, count);
+    return HETGPU_CUDA_SUCCESS;
+}
+
 static int hetgpu_likely_device_ptr(const void* ptr) {
     if (hetgpu_pacc_is_device_ptr && hetgpu_pacc_is_device_ptr(ptr)) {
         return 1;
@@ -4626,9 +4644,10 @@ cudaError_t cudaFreeAsync(void* devPtr, cudaStream_t stream) {
 
 cudaError_t cudaMemset(void* devPtr, int value, size_t count) {
     if (!devPtr || devPtr == (void*)0x1 || count == 0) return 0;
-    return hetgpu_set_last_error(
-        hetgpu_cuda_from_cu(cuMemsetD8_v2((CUdeviceptr)devPtr, (unsigned char)value, count))
-    );
+    cudaError_t err =
+        hetgpu_cuda_from_cu(cuMemsetD8_v2((CUdeviceptr)devPtr, (unsigned char)value, count));
+    err = hetgpu_cuda_memset_host_backed_fallback(devPtr, value, count, err);
+    return hetgpu_set_last_error(err);
 }
 
 cudaError_t cudaMemsetAsync(void* devPtr, int value, size_t count, cudaStream_t stream) {

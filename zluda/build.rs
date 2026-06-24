@@ -15,24 +15,12 @@ fn main() {
         let cargo_manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         let tools_dir = std::path::Path::new(&cargo_manifest_dir).parent().unwrap();
 
-        println!(
-            "cargo:rerun-if-changed={}",
-            tools_dir
-                .join("tools/cudart_shim/cudart_shim.map")
-                .display()
-        );
-        println!(
-            "cargo:rerun-if-changed={}",
-            tools_dir
-                .join("tools/cublas_shim/cublas_shim.map")
-                .display()
-        );
-        println!(
-            "cargo:rerun-if-changed={}",
-            tools_dir
-                .join("tools/cublaslt_shim/cublaslt_shim.map")
-                .display()
-        );
+        let cudart_map = tools_dir.join("tools/cudart_shim/cudart_shim.map");
+        let cublas_map = tools_dir.join("tools/cublas_shim/cublas_shim.map");
+        let cublaslt_map = tools_dir.join("tools/cublaslt_shim/cublaslt_shim.map");
+        println!("cargo:rerun-if-changed={}", cudart_map.display());
+        println!("cargo:rerun-if-changed={}", cublas_map.display());
+        println!("cargo:rerun-if-changed={}", cublaslt_map.display());
 
         let out_dir = std::env::var("OUT_DIR").unwrap();
         let profile_dir = std::path::Path::new(&out_dir)
@@ -53,6 +41,18 @@ fn main() {
         } else {
             "libhetgpu_cuda_shim.so"
         });
+        let version_script = profile_dir.join("hetgpu_cuda_shim.map");
+        if !is_macos {
+            let mut combined_version_script = String::new();
+            for map in [&cudart_map, &cublas_map, &cublaslt_map] {
+                combined_version_script.push_str(
+                    &std::fs::read_to_string(map).expect("failed to read CUDA shim version map"),
+                );
+                combined_version_script.push('\n');
+            }
+            std::fs::write(&version_script, combined_version_script)
+                .expect("failed to write combined CUDA shim version map");
+        }
         let compiler = cc::Build::new().get_compiler();
         let mut shim_build = compiler.to_command();
         if is_macos {
@@ -84,6 +84,7 @@ fn main() {
         shim_build.arg("src/torch_abi_shim.c");
         if !is_macos {
             shim_build.arg("-Wl,-soname,libhetgpu_cuda_shim.so");
+            shim_build.arg(format!("-Wl,--version-script={}", version_script.display()));
             shim_build.arg("-ldl");
         }
         shim_build.arg("-lz");

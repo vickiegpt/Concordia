@@ -1189,6 +1189,13 @@ fn tmatmul_generate_hardware_matmul_assembly(
 
 #[cfg(feature = "intel")]
 #[allow(dead_code)]
+fn tmatmul_expected_vector_bytes() -> usize {
+    let dim = tmatmul_env_usize("HETGPU_TMATMUL_NUMEL").unwrap_or(2048);
+    super::cxl_tmatmul::vector_bytes(dim).unwrap_or(4096)
+}
+
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
 unsafe fn tmatmul_read_device_pointer_param(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
@@ -1216,7 +1223,21 @@ unsafe fn tmatmul_read_device_pointer_param(
 
     let ptr_value = (param_addr as *const u64).read_unaligned() as usize;
     let alloc_size = super::memory::get_alloc_size(ptr_value).unwrap_or(0);
-    if ptr_value < 0x1000 || alloc_size == 0 {
+    if ptr_value < 0x1000 {
+        return Err(super::cxl_tmatmul::CxlTmatmulError::Device(format!(
+            "kernel '{kernel_name}' PARAM_{index} has invalid pointer value {ptr_value:#x}"
+        )));
+    }
+    if alloc_size == 0 {
+        if index == 1 {
+            let expected_bytes = tmatmul_expected_vector_bytes();
+            if is_memory_readable(ptr_value as *const u8, expected_bytes) {
+                return Ok((ptr_value, expected_bytes));
+            }
+            return Err(super::cxl_tmatmul::CxlTmatmulError::Device(format!(
+                "kernel '{kernel_name}' PARAM_{index} ptr={ptr_value:#x} is not a tracked hetGPU allocation and is not readable for {expected_bytes} bytes"
+            )));
+        }
         return Err(super::cxl_tmatmul::CxlTmatmulError::Device(format!(
             "kernel '{kernel_name}' PARAM_{index} ptr={ptr_value:#x} is not a tracked hetGPU allocation"
         )));
@@ -1522,6 +1543,42 @@ mod tmatmul_hardware_matmul_tests {
         assert!(asm.contains("ldv v0,PARAM_1"));
         assert!(asm.contains("tmatmul_go PARAM_0"));
         assert!(asm.contains("sv v1,PARAM_2"));
+    }
+
+    #[test]
+    fn hardware_matmul_param1_accepts_readable_untracked_vector_only() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[("HETGPU_TMATMUL_NUMEL", Some("2048"))]);
+        let vector = vec![0x5au8; 4096];
+        let output = vec![0xa5u8; 4096];
+        let mut vector_param = vector.as_ptr() as u64;
+        let mut output_param = output.as_ptr() as u64;
+        let mut kernel_params = [
+            std::ptr::null_mut(),
+            (&mut vector_param as *mut u64).cast::<::core::ffi::c_void>(),
+            (&mut output_param as *mut u64).cast::<::core::ffi::c_void>(),
+        ];
+
+        let vector_resolved = unsafe {
+            tmatmul_read_device_pointer_param(
+                kernel_params.as_mut_ptr(),
+                1,
+                "_Z13mul_mat_vec_qIL9ggml_type20ELi1EEvPKvS2_Pfiiii",
+            )
+        }
+        .expect("readable host vector pointer should be accepted");
+        assert_eq!(vector_resolved, (vector.as_ptr() as usize, vector.len()));
+
+        let output_err = unsafe {
+            tmatmul_read_device_pointer_param(
+                kernel_params.as_mut_ptr(),
+                2,
+                "_Z13mul_mat_vec_qIL9ggml_type20ELi1EEvPKvS2_Pfiiii",
+            )
+        }
+        .expect_err("untracked output pointer must remain rejected");
+        assert!(output_err.to_string().contains("PARAM_2"));
+        assert!(output_err.to_string().contains("not a tracked"));
     }
 
     fn cxl_submit_failure_env<'a>(asm_path: &'a str) -> [(&'static str, Option<&'a str>); 6] {

@@ -111,6 +111,8 @@ libcudart.so.12 {
     cudaFree;
     cudaMemcpy;
     cudaMemcpyAsync;
+    cudaMemcpy2DAsync;
+    cudaMemcpy3DPeerAsync;
     cudaMemcpyBatchAsync;
     cudaMemcpyPeerAsync;
     cudaMemcpyToSymbol;
@@ -121,6 +123,8 @@ libcudart.so.12 {
     cudaGetSymbolSize;
     cudaGetFuncBySymbol;
     cudaMallocAsync;
+    cudaMallocManaged;
+    cudaMallocHost;
     cudaFreeAsync;
     cudaMemset;
     cudaMemsetAsync;

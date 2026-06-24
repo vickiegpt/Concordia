@@ -693,47 +693,64 @@ fn submit_prepared_hardware_matmul(
         staging.stage_bytes(TMATMUL_DPA_PROGRAM, program)?;
     }
 
-    let mut run = CxlType2TmatmulCsrRun {
-        timeout_ms: timeout_ms_or_default(timeout_ms),
-        ..Default::default()
-    };
-    let mut rc = -1;
-    let mut saved_error = std::io::Error::from_raw_os_error(0);
-    for request in cxl_type2_tmatmul_run_csr_only_ioctl_requests() {
-        let mut attempt = run;
-        rc = unsafe { libc::ioctl(device.as_raw_fd(), request, &mut attempt) };
-        saved_error = std::io::Error::last_os_error();
-        run = attempt;
-        if rc == 0 || saved_error.raw_os_error() != Some(libc::ENOTTY) {
-            break;
+    let max_retries = cxl_tmatmul_run_retries();
+    for run_attempt in 0..=max_retries {
+        let mut run = CxlType2TmatmulCsrRun {
+            timeout_ms: timeout_ms_or_default(timeout_ms),
+            ..Default::default()
+        };
+        let mut rc = -1;
+        let mut saved_error = std::io::Error::from_raw_os_error(0);
+        for request in cxl_type2_tmatmul_run_csr_only_ioctl_requests() {
+            let mut attempt = run;
+            rc = unsafe { libc::ioctl(device.as_raw_fd(), request, &mut attempt) };
+            saved_error = std::io::Error::last_os_error();
+            run = attempt;
+            if rc == 0 || saved_error.raw_os_error() != Some(libc::ENOTTY) {
+                break;
+            }
         }
-    }
-    let status = CxlTmatmulRunStatus::from(&run);
-    if rc != 0 {
-        return Err(CxlTmatmulError::Device(format!(
-            "CXL_TYPE2_TMATMUL_RUN_CSR_ONLY: {saved_error}; status={status:?}"
-        )));
-    }
-    if (run.result_flags & CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR) != 0 {
-        return Err(CxlTmatmulError::Device(format!(
-            "DMA_ERROR after RUN_CSR_ONLY; status={status:?}"
-        )));
-    }
-    if (run.result_flags & CXL_TYPE2_TMATMUL_RESULT_STALLED) == 0 {
-        return Err(CxlTmatmulError::Device(format!(
-            "device did not reach stall; status={status:?}"
-        )));
-    }
-    if run.dim_d != dim_d {
-        return Err(CxlTmatmulError::Device(format!(
-            "RUN_CSR_ONLY dim changed from {dim_d} to {}; status={status:?}",
-            run.dim_d
-        )));
+
+        let status = CxlTmatmulRunStatus::from(&run);
+        if rc != 0 {
+            if should_retry_csr_run_timeout(&saved_error, &status, run_attempt, max_retries, dim_d)
+            {
+                eprintln!(
+                    "[CXL TMatmul] RUN_CSR_ONLY timed out without progress; retrying {}/{}; status={:?}",
+                    run_attempt + 1,
+                    max_retries,
+                    status
+                );
+                continue;
+            }
+            return Err(CxlTmatmulError::Device(format!(
+                "CXL_TYPE2_TMATMUL_RUN_CSR_ONLY: {saved_error}; status={status:?}"
+            )));
+        }
+        if (run.result_flags & CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR) != 0 {
+            return Err(CxlTmatmulError::Device(format!(
+                "DMA_ERROR after RUN_CSR_ONLY; status={status:?}"
+            )));
+        }
+        if (run.result_flags & CXL_TYPE2_TMATMUL_RESULT_STALLED) == 0 {
+            return Err(CxlTmatmulError::Device(format!(
+                "device did not reach stall; status={status:?}"
+            )));
+        }
+        if run.dim_d != dim_d {
+            return Err(CxlTmatmulError::Device(format!(
+                "RUN_CSR_ONLY dim changed from {dim_d} to {}; status={status:?}",
+                run.dim_d
+            )));
+        }
+
+        staging.read_bytes(TMATMUL_DPA_OUTPUT, output)?;
+        return Ok(status);
     }
 
-    staging.read_bytes(TMATMUL_DPA_OUTPUT, output)?;
-
-    Ok(status)
+    Err(CxlTmatmulError::Device(
+        "RUN_CSR_ONLY retry loop exited unexpectedly".to_string(),
+    ))
 }
 
 #[cfg(unix)]
@@ -1295,6 +1312,40 @@ fn timeout_ms_or_default(timeout_ms: u32) -> u32 {
 }
 
 #[cfg(unix)]
+fn cxl_tmatmul_run_retries() -> usize {
+    for key in [
+        "HETGPU_CXL_TMATMUL_RUN_RETRIES",
+        "HETGPU_TMATMUL_RUN_RETRIES",
+        "TMATMUL_RUN_RETRIES",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            if let Some(parsed) =
+                parse_u64_text(&value).and_then(|value| usize::try_from(value).ok())
+            {
+                return parsed;
+            }
+        }
+    }
+    1
+}
+
+#[cfg(unix)]
+fn should_retry_csr_run_timeout(
+    err: &std::io::Error,
+    status: &CxlTmatmulRunStatus,
+    run_attempt: usize,
+    max_retries: usize,
+    expected_dim: u32,
+) -> bool {
+    run_attempt < max_retries
+        && err.raw_os_error() == Some(libc::ETIMEDOUT)
+        && status.stall_status == 0
+        && status.instr_count == 0
+        && status.dim_d == expected_dim
+        && (status.result_flags & CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR) == 0
+}
+
+#[cfg(unix)]
 const fn ioctl_request(dir: u64, ty: u64, nr: u64, size: u64) -> libc::c_ulong {
     const IOC_NRBITS: u64 = 8;
     const IOC_TYPEBITS: u64 = 8;
@@ -1553,6 +1604,49 @@ mod tests {
 
         assert_eq!(requests[0], 0xC040CE02 as libc::c_ulong);
         assert_eq!(requests[1], 0xC040CE03 as libc::c_ulong);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn csr_run_timeout_without_progress_is_retryable_once() {
+        let err = std::io::Error::from_raw_os_error(libc::ETIMEDOUT);
+        let status = CxlTmatmulRunStatus {
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            dma_status: 1,
+            stall_status: 0,
+            instr_count: 0,
+            dim_d: 2048,
+            result_flags: 0,
+        };
+
+        assert!(should_retry_csr_run_timeout(&err, &status, 0, 1, 2048));
+        assert!(!should_retry_csr_run_timeout(&err, &status, 1, 1, 2048));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn csr_run_retry_policy_rejects_progress_dma_error_or_wrong_dim() {
+        let err = std::io::Error::from_raw_os_error(libc::ETIMEDOUT);
+        let base = CxlTmatmulRunStatus {
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            dma_status: 1,
+            stall_status: 0,
+            instr_count: 0,
+            dim_d: 2048,
+            result_flags: 0,
+        };
+
+        let mut progressed = base.clone();
+        progressed.instr_count = 1;
+        assert!(!should_retry_csr_run_timeout(&err, &progressed, 0, 1, 2048));
+
+        let mut dma_error = base.clone();
+        dma_error.result_flags = CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR;
+        assert!(!should_retry_csr_run_timeout(&err, &dma_error, 0, 1, 2048));
+
+        let mut wrong_dim = base;
+        wrong_dim.dim_d = 1024;
+        assert!(!should_retry_csr_run_timeout(&err, &wrong_dim, 0, 1, 2048));
     }
 
     #[cfg(unix)]
