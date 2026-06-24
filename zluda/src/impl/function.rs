@@ -1233,12 +1233,23 @@ unsafe fn submit_cxl_hardware_matmul_fallback(
     )
 }
 
+#[cfg(all(test, feature = "intel"))]
+static TMATMUL_EMULATOR_FALLBACK_TEST_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(feature = "intel")]
+fn note_tmatmul_emulator_fallback_for_test() {
+    #[cfg(test)]
+    TMATMUL_EMULATOR_FALLBACK_TEST_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
 #[cfg(feature = "intel")]
 #[allow(dead_code)]
 unsafe fn execute_tmatmul_hardware_matmul_fallback(
     kernel_name: &str,
     name_lower: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
+    strict_cxl_submit_failure: bool,
 ) {
     let Some(layout) = tmatmul_hardware_matmul_layout(name_lower) else {
         eprintln!(
@@ -1267,18 +1278,30 @@ unsafe fn execute_tmatmul_hardware_matmul_fallback(
 
     if super::cxl_tmatmul::cxl_tmatmul_enabled() {
         match submit_cxl_hardware_matmul_fallback(kernel_name, layout, &assembly, kernel_params) {
-            Ok(status) => eprintln!(
-                "[CXL TMatmul] Kernel '{}' executed via RUN_CSR_ONLY: {:?}",
-                kernel_name, status
-            ),
-            Err(err) => eprintln!(
-                "[CXL TMatmul] Kernel '{}' RUN_CSR_ONLY submit failed: {}",
-                kernel_name, err
-            ),
+            Ok(status) => {
+                eprintln!(
+                    "[CXL TMatmul] Kernel '{}' executed via RUN_CSR_ONLY: {:?}",
+                    kernel_name, status
+                );
+                return;
+            }
+            Err(err) => {
+                eprintln!(
+                    "[CXL TMatmul] Kernel '{}' RUN_CSR_ONLY submit failed: {}",
+                    kernel_name, err
+                );
+                if strict_cxl_submit_failure {
+                    return;
+                }
+                eprintln!(
+                    "[CXL TMatmul] Falling back to TMatmul emulator for '{}'",
+                    kernel_name
+                );
+            }
         }
-        return;
     }
 
+    note_tmatmul_emulator_fallback_for_test();
     invoke_emulator_bridge(
         &asm_path,
         kernel_params,
@@ -1291,6 +1314,40 @@ unsafe fn execute_tmatmul_hardware_matmul_fallback(
 #[cfg(all(test, feature = "intel"))]
 mod tmatmul_hardware_matmul_tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static FALLBACK_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        previous: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
+            let previous = vars
+                .iter()
+                .map(|(name, _)| (*name, std::env::var(name).ok()))
+                .collect::<Vec<_>>();
+            for (name, value) in vars {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in self.previous.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 
     #[test]
     fn hardware_matmul_env_gate_accepts_truthy_values() {
@@ -1322,6 +1379,63 @@ mod tmatmul_hardware_matmul_tests {
         assert!(asm.contains("ldv v0,PARAM_1"));
         assert!(asm.contains("tmatmul_go PARAM_0"));
         assert!(asm.contains("sv v1,PARAM_4"));
+    }
+
+    fn cxl_submit_failure_env<'a>(asm_path: &'a str) -> [(&'static str, Option<&'a str>); 6] {
+        [
+            ("HETGPU_CXL_TMATMUL", Some("1")),
+            ("HETGPU_TMATMUL_CXL", None),
+            ("HETGPU_TMATMUL_ASM_PATH", Some(asm_path)),
+            ("HETGPU_TMATMUL_NUMEL", Some("1")),
+            ("HETGPU_CXL_TMATMUL_DEV", None),
+            ("HETGPU_CXL_TMATMUL_DEVICE", None),
+        ]
+    }
+
+    #[test]
+    fn cxl_submit_failure_falls_back_to_emulator_by_default() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let asm_path = dir.path().join("kernel.S");
+        let asm_text = asm_path.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&cxl_submit_failure_env(&asm_text));
+        let mut kernel_params = [std::ptr::null_mut(); 3];
+        let before = TMATMUL_EMULATOR_FALLBACK_TEST_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+
+        unsafe {
+            execute_tmatmul_hardware_matmul_fallback(
+                "layer_0_ffn_gate_mul_mat",
+                "layer_0_ffn_gate_mul_mat",
+                kernel_params.as_mut_ptr(),
+                false,
+            );
+        }
+
+        let after = TMATMUL_EMULATOR_FALLBACK_TEST_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn strict_cxl_submit_failure_skips_emulator_fallback() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let asm_path = dir.path().join("kernel.S");
+        let asm_text = asm_path.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&cxl_submit_failure_env(&asm_text));
+        let mut kernel_params = [std::ptr::null_mut(); 3];
+        let before = TMATMUL_EMULATOR_FALLBACK_TEST_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+
+        unsafe {
+            execute_tmatmul_hardware_matmul_fallback(
+                "layer_0_ffn_gate_mul_mat",
+                "layer_0_ffn_gate_mul_mat",
+                kernel_params.as_mut_ptr(),
+                true,
+            );
+        }
+
+        let after = TMATMUL_EMULATOR_FALLBACK_TEST_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(after, before);
     }
 
     #[test]
@@ -1404,6 +1518,7 @@ unsafe fn execute_kernel_name_fallback(
     let name_lower = kernel_name.to_lowercase();
 
     if tmatmul_hardware_matmul_enabled() && tmatmul_is_matmul_kernel_name(&name_lower) {
+        let mut strict_cxl_submit_failure = false;
         if super::bitnet_disagg::enabled_from_env() {
             let route_config = super::bitnet_disagg::config_from_env();
             let decision = super::bitnet_disagg::classify_kernel_name(kernel_name, &route_config);
@@ -1424,6 +1539,7 @@ unsafe fn execute_kernel_name_fallback(
 
             match decision.route {
                 super::bitnet_disagg::BitnetRoute::CxlTmatmul => {
+                    strict_cxl_submit_failure = decision.strict;
                     eprintln!(
                         "[BitNet Disagg] Routing '{}' to CXL tmatmul candidate via {}",
                         kernel_name,
@@ -1456,7 +1572,12 @@ unsafe fn execute_kernel_name_fallback(
                 }
             }
         }
-        execute_tmatmul_hardware_matmul_fallback(kernel_name, &name_lower, kernel_params);
+        execute_tmatmul_hardware_matmul_fallback(
+            kernel_name,
+            &name_lower,
+            kernel_params,
+            strict_cxl_submit_failure,
+        );
         return;
     }
 
