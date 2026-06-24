@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Mutex;
 
 const BUILTIN_GPU_MARKERS: &[&str] = &[
     "attention",
@@ -32,6 +33,8 @@ const BUILTIN_FFN_MARKERS: &[&str] = &[
     "mul_mat_q",
     "mul_mat_f",
 ];
+
+static ROUTE_LOG_MUTEX: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BitnetRoute {
@@ -156,6 +159,12 @@ pub(crate) fn load_manifest_file(path: &Path) -> Result<BitnetRouteManifest, Str
             manifest.version
         ));
     }
+    if manifest.default == ManifestRouteName::CxlTmatmul {
+        return Err(
+            "cxl_tmatmul is not allowed as manifest default; use fallback, gpu, or reject"
+                .to_string(),
+        );
+    }
     Ok(manifest)
 }
 
@@ -242,19 +251,33 @@ fn normalize_kernel_name(kernel_name: &str) -> String {
     kernel_name.trim().to_ascii_lowercase()
 }
 
-fn find_marker<'a>(name_lower: &str, markers: impl Iterator<Item = &'a str>) -> Option<String> {
-    markers
-        .filter_map(normalize_marker)
-        .find(|marker| name_lower.contains(marker.as_str()))
+fn find_marker<'a>(name_lower: &str, mut markers: impl Iterator<Item = &'a str>) -> Option<String> {
+    markers.find_map(|marker| normalized_marker_match(name_lower, marker))
 }
 
-fn normalize_marker(marker: &str) -> Option<String> {
+fn normalized_marker_match(name_lower: &str, marker: &str) -> Option<String> {
     let marker = marker.trim();
     if marker.is_empty() {
-        None
-    } else {
-        Some(marker.to_ascii_lowercase())
+        return None;
     }
+
+    if marker_is_ascii_lowercase(marker) {
+        if name_lower.contains(marker) {
+            return Some(marker.to_string());
+        }
+        return None;
+    }
+
+    let marker_lower = marker.to_ascii_lowercase();
+    if name_lower.contains(marker_lower.as_str()) {
+        Some(marker_lower)
+    } else {
+        None
+    }
+}
+
+fn marker_is_ascii_lowercase(marker: &str) -> bool {
+    marker.bytes().all(|byte| !byte.is_ascii_uppercase())
 }
 
 fn classify_manifest(
@@ -264,8 +287,7 @@ fn classify_manifest(
 ) -> Option<BitnetRouteDecision> {
     let manifest = config.manifest.as_ref()?;
     for entry in &manifest.routes {
-        let marker = entry.match_text.trim().to_ascii_lowercase();
-        if !marker.is_empty() && name_lower.contains(&marker) {
+        if let Some(marker) = normalized_marker_match(name_lower, entry.match_text.as_str()) {
             return Some(decision(
                 kernel_name,
                 entry.route.to_route(),
@@ -275,6 +297,17 @@ fn classify_manifest(
                 config.strict,
             ));
         }
+    }
+
+    if manifest.default == ManifestRouteName::CxlTmatmul {
+        return Some(decision(
+            kernel_name,
+            BitnetRoute::Fallback,
+            BitnetRouteSource::Manifest,
+            None,
+            Some("cxl_tmatmul manifest default is not allowed; falling back".to_string()),
+            config.strict,
+        ));
     }
 
     if manifest.default != ManifestRouteName::Fallback {
@@ -306,12 +339,20 @@ pub(crate) fn append_route_log(
         "cxl_enabled": cxl_enabled,
         "hardware_matmul_enabled": hardware_matmul_enabled,
     });
+    let mut line = serde_json::to_string(&record)
+        .map_err(|err| format!("serialize route log {}: {err}", path.display()))?;
+    line.push('\n');
+
+    let _guard = ROUTE_LOG_MUTEX
+        .lock()
+        .map_err(|_| format!("lock route log {}: mutex poisoned", path.display()))?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .map_err(|err| format!("open route log {}: {err}", path.display()))?;
-    writeln!(file, "{record}").map_err(|err| format!("write route log {}: {err}", path.display()))
+    file.write_all(line.as_bytes())
+        .map_err(|err| format!("write route log {}: {err}", path.display()))
 }
 
 fn decision(
@@ -480,6 +521,87 @@ mod tests {
     }
 
     #[test]
+    fn rejects_cxl_manifest_default_from_json() {
+        for default in ["cxl_tmatmul", "cxl"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("routes.json");
+            std::fs::write(
+                &path,
+                format!(r#"{{"version": 1, "default": "{default}", "routes": []}}"#),
+            )
+            .unwrap();
+
+            let err = load_manifest_file(&path).unwrap_err();
+            assert!(
+                err.contains("cxl_tmatmul is not allowed as manifest default"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn allows_manifest_route_aliases_from_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routes.json");
+        std::fs::write(
+            &path,
+            r#"{
+            "version": 1,
+            "default": "fallback",
+            "routes": [
+                {"match": "ffn_gate", "route": "cxl", "reason": "alias cxl"},
+                {"match": "flash_attn", "route": "gpu_native", "reason": "alias gpu"}
+            ]
+        }"#,
+        )
+        .unwrap();
+
+        let manifest = load_manifest_file(&path).unwrap();
+        assert_eq!(manifest.routes[0].route, ManifestRouteName::CxlTmatmul);
+        assert_eq!(manifest.routes[1].route, ManifestRouteName::Gpu);
+
+        let mut cfg = config(true);
+        cfg.manifest = Some(manifest);
+
+        let cxl = classify_kernel_name("layer_0_ffn_gate_mul_mat", &cfg);
+        assert_eq!(cxl.route, BitnetRoute::CxlTmatmul);
+        assert_eq!(cxl.source, BitnetRouteSource::Manifest);
+        assert_eq!(cxl.matched.as_deref(), Some("ffn_gate"));
+        assert_eq!(cxl.reason.as_deref(), Some("alias cxl"));
+
+        let gpu = classify_kernel_name("layer_0_flash_attn_mul_mat", &cfg);
+        assert_eq!(gpu.route, BitnetRoute::GpuNative);
+        assert_eq!(gpu.source, BitnetRouteSource::Manifest);
+        assert_eq!(gpu.matched.as_deref(), Some("flash_attn"));
+        assert_eq!(gpu.reason.as_deref(), Some("alias gpu"));
+    }
+
+    #[test]
+    fn omitted_manifest_default_is_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routes.json");
+        std::fs::write(&path, r#"{"version": 1, "routes": []}"#).unwrap();
+
+        let manifest = load_manifest_file(&path).unwrap();
+        assert_eq!(manifest.default, ManifestRouteName::Fallback);
+    }
+
+    #[test]
+    fn manual_manifest_default_cxl_does_not_route_unmatched_kernel_to_cxl() {
+        let manifest = BitnetRouteManifest {
+            version: 1,
+            default: ManifestRouteName::CxlTmatmul,
+            routes: Vec::new(),
+        };
+        let mut cfg = config(true);
+        cfg.manifest = Some(manifest);
+
+        let decision = classify_kernel_name("layer_0_unknown", &cfg);
+        assert_eq!(decision.route, BitnetRoute::Fallback);
+        assert_eq!(decision.source, BitnetRouteSource::Manifest);
+    }
+
+    #[test]
     fn rejects_manifest_version_mismatch() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("routes.json");
@@ -513,7 +635,30 @@ mod tests {
         assert_eq!(value["route"], "cxl_tmatmul");
         assert_eq!(value["source"], "builtin_ffn_marker");
         assert_eq!(value["matched"], "ffn");
+        assert_eq!(value["reason"], "FFN ternary matmul candidate");
+        assert_eq!(value["strict"], false);
         assert_eq!(value["cxl_enabled"], true);
+        assert_eq!(value["hardware_matmul_enabled"], true);
+
+        let fallback = BitnetRouteDecision {
+            kernel: "layer_0_layernorm".to_string(),
+            route: BitnetRoute::Fallback,
+            source: BitnetRouteSource::Default,
+            matched: None,
+            reason: None,
+            strict: true,
+        };
+        append_route_log(&path, &fallback, false, false).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let values = text
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), 2);
+        assert!(values[1]["matched"].is_null());
+        assert!(values[1]["reason"].is_null());
+        assert_eq!(values[1]["strict"], true);
+        assert_eq!(values[1]["hardware_matmul_enabled"], false);
     }
 
     #[test]
