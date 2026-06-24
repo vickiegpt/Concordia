@@ -75,7 +75,7 @@ struct TmatmulVmmHandle {
 struct TmatmulVmmReservation {
     size: usize,
     align: usize,
-    mapped: bool,
+    mapped_ranges: Vec<(usize, usize)>,
 }
 
 /// Look up the allocation containing the given address.
@@ -143,6 +143,37 @@ fn tmatmul_vmm_contains(base: usize, len: usize, addr: usize, size: usize) -> bo
         return false;
     };
     addr >= base && addr_end <= base_end
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+fn tmatmul_vmm_range_end(start: usize, size: usize) -> Result<usize, CUerror> {
+    start.checked_add(size).ok_or(CUerror::INVALID_VALUE)
+}
+
+#[cfg(any(
+    feature = "intel",
+    all(
+        feature = "tmatmul",
+        not(feature = "amd"),
+        not(feature = "tenstorrent")
+    )
+))]
+fn tmatmul_vmm_ranges_overlap(
+    a_start: usize,
+    a_size: usize,
+    b_start: usize,
+    b_size: usize,
+) -> bool {
+    let a_end = a_start.saturating_add(a_size);
+    let b_end = b_start.saturating_add(b_size);
+    a_start < b_end && b_start < a_end
 }
 
 #[cfg(any(
@@ -255,7 +286,7 @@ pub(crate) fn address_reserve(
             TmatmulVmmReservation {
                 size,
                 align,
-                mapped: false,
+                mapped_ranges: Vec::new(),
             },
         );
     unsafe {
@@ -298,13 +329,25 @@ pub(crate) fn map(
         let mut reservations = TMATMUL_VMM_RESERVATIONS
             .lock()
             .map_err(|_| CUerror::UNKNOWN)?;
-        let Some(reservation) = reservations.get_mut(&addr) else {
+        let Some((base, reservation)) = reservations
+            .iter_mut()
+            .find(|(base, reservation)| tmatmul_vmm_contains(**base, reservation.size, addr, size))
+        else {
             return Err(CUerror::INVALID_VALUE);
         };
-        if reservation.mapped || size > reservation.size {
+        let offset = addr.checked_sub(*base).ok_or(CUerror::INVALID_VALUE)?;
+        let end = tmatmul_vmm_range_end(offset, size)?;
+        if end > reservation.size
+            || reservation
+                .mapped_ranges
+                .iter()
+                .any(|(mapped_offset, mapped_size)| {
+                    tmatmul_vmm_ranges_overlap(offset, size, *mapped_offset, *mapped_size)
+                })
+        {
             return Err(CUerror::INVALID_VALUE);
         }
-        reservation.mapped = true;
+        reservation.mapped_ranges.push((offset, size));
     }
     TMATMUL_ALLOC_MAP
         .lock()
@@ -334,10 +377,19 @@ pub(crate) fn set_access(
     let reservations = TMATMUL_VMM_RESERVATIONS
         .lock()
         .map_err(|_| CUerror::UNKNOWN)?;
-    if reservations
-        .iter()
-        .any(|(base, r)| r.mapped && tmatmul_vmm_contains(*base, r.size, addr, size))
-    {
+    if reservations.iter().any(|(base, r)| {
+        if !tmatmul_vmm_contains(*base, r.size, addr, size) {
+            return false;
+        }
+        let offset = addr.saturating_sub(*base);
+        let Ok(end) = tmatmul_vmm_range_end(offset, size) else {
+            return false;
+        };
+        r.mapped_ranges.iter().any(|(mapped_offset, mapped_size)| {
+            let mapped_end = mapped_offset.saturating_add(*mapped_size);
+            offset >= *mapped_offset && end <= mapped_end
+        })
+    }) {
         Ok(())
     } else {
         Err(CUerror::INVALID_VALUE)
@@ -361,18 +413,39 @@ pub(crate) fn unmap(ptr: CUdeviceptr, size: usize) -> CUresult {
         let mut reservations = TMATMUL_VMM_RESERVATIONS
             .lock()
             .map_err(|_| CUerror::UNKNOWN)?;
-        let Some(reservation) = reservations.get_mut(&addr) else {
+        let Some((base, reservation)) = reservations
+            .iter_mut()
+            .find(|(base, reservation)| tmatmul_vmm_contains(**base, reservation.size, addr, size))
+        else {
             return Err(CUerror::INVALID_VALUE);
         };
-        if !reservation.mapped || size > reservation.size {
+        let offset = addr.checked_sub(*base).ok_or(CUerror::INVALID_VALUE)?;
+        let unmap_end = tmatmul_vmm_range_end(offset, size)?;
+        let mut updated_ranges = Vec::with_capacity(reservation.mapped_ranges.len());
+        let mut removed_any = false;
+        for (mapped_offset, mapped_size) in reservation.mapped_ranges.drain(..) {
+            let mapped_end = tmatmul_vmm_range_end(mapped_offset, mapped_size)?;
+            if !tmatmul_vmm_ranges_overlap(offset, size, mapped_offset, mapped_size) {
+                updated_ranges.push((mapped_offset, mapped_size));
+                continue;
+            }
+            removed_any = true;
+            if mapped_offset < offset {
+                updated_ranges.push((mapped_offset, offset - mapped_offset));
+            }
+            if mapped_end > unmap_end {
+                updated_ranges.push((unmap_end, mapped_end - unmap_end));
+            }
+        }
+        if !removed_any {
             return Err(CUerror::INVALID_VALUE);
         }
-        reservation.mapped = false;
+        reservation.mapped_ranges = updated_ranges;
     }
     TMATMUL_ALLOC_MAP
         .lock()
         .map_err(|_| CUerror::UNKNOWN)?
-        .remove(&addr);
+        .retain(|base, mapped_size| !tmatmul_vmm_ranges_overlap(addr, size, *base, *mapped_size));
     Ok(())
 }
 
@@ -404,7 +477,7 @@ pub(crate) fn address_free(ptr: CUdeviceptr, size: usize) -> CUresult {
     TMATMUL_ALLOC_MAP
         .lock()
         .map_err(|_| CUerror::UNKNOWN)?
-        .remove(&addr);
+        .retain(|base, mapped_size| !tmatmul_vmm_ranges_overlap(addr, size, *base, *mapped_size));
     if let Ok(layout) = std::alloc::Layout::from_size_align(reservation.size, reservation.align) {
         unsafe {
             std::alloc::dealloc(addr as *mut u8, layout);
@@ -2160,7 +2233,13 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
         if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
             eprintln!(
                 "[PACC Backend] shared-DDR CUDA heap mmap {} phys=0x{:x} offset=0x{:x} bytes={} heap=[0x{:x},0x{:x}) kernel_reserve={}",
-                path, phys.saturating_add(heap_offset as u64), heap_offset, window_bytes, control_reserved, heap_end, kernel_reserved
+                path,
+                phys.saturating_add(heap_offset as u64),
+                heap_offset,
+                window_bytes,
+                control_reserved,
+                heap_end,
+                kernel_reserved
             );
         }
         pacc_alloc_trace(b"[pacc_alloc] shared guard before");

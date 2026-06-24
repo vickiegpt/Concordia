@@ -771,7 +771,11 @@ impl StagingMap {
         used_len: usize,
         kind: &str,
     ) -> Result<Self, CxlTmatmulError> {
-        let map_len = page_align_len(used_len)?;
+        let map_len = if kind == "dax" {
+            align_len(used_len, read_dax_align(path)?)?
+        } else {
+            page_align_len(used_len)?
+        };
         Self::mmap_file(path, offset, map_len, kind)
     }
 
@@ -842,6 +846,20 @@ fn read_dax_size(path: &str) -> Result<usize, CxlTmatmulError> {
         .map_err(|e| CxlTmatmulError::Io(format!("read {sysfs}: {e}")))?;
     let value = parse_u64_text(text.trim()).ok_or_else(|| {
         CxlTmatmulError::Io(format!("invalid dax size in {sysfs}: {:?}", text.trim()))
+    })?;
+    usize::try_from(value).map_err(|_| CxlTmatmulError::SizeOverflow)
+}
+
+#[cfg(unix)]
+fn read_dax_align(path: &str) -> Result<usize, CxlTmatmulError> {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    let sysfs = format!("/sys/bus/dax/devices/{base}/align");
+    let mut text = String::new();
+    File::open(&sysfs)
+        .and_then(|mut f| f.read_to_string(&mut text))
+        .map_err(|e| CxlTmatmulError::Io(format!("read {sysfs}: {e}")))?;
+    let value = parse_u64_text(text.trim()).ok_or_else(|| {
+        CxlTmatmulError::Io(format!("invalid dax align in {sysfs}: {:?}", text.trim()))
     })?;
     usize::try_from(value).map_err(|_| CxlTmatmulError::SizeOverflow)
 }
@@ -919,9 +937,18 @@ fn page_size() -> usize {
 }
 
 fn page_align_len(len: usize) -> Result<usize, CxlTmatmulError> {
-    let page = page_size();
-    len.checked_add(page - 1)
-        .map(|value| value & !(page - 1))
+    align_len(len, page_size())
+}
+
+fn align_len(len: usize, align: usize) -> Result<usize, CxlTmatmulError> {
+    if align == 0 {
+        return Err(CxlTmatmulError::SizeOverflow);
+    }
+    let rem = len % align;
+    if rem == 0 {
+        return Ok(len);
+    }
+    len.checked_add(align - rem)
         .ok_or(CxlTmatmulError::SizeOverflow)
 }
 
@@ -1198,6 +1225,35 @@ mod tests {
         assert_eq!(requests[1], 0xC040CE03 as libc::c_ulong);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn staging_backend_parser_accepts_csr_probe_mode() {
+        assert_eq!(parse_staging_backend(None).unwrap(), StagingBackend::Mmap);
+        assert_eq!(
+            parse_staging_backend(Some("csr_probe")).unwrap(),
+            StagingBackend::CsrProbe
+        );
+        assert_eq!(
+            parse_staging_backend(Some("csr")).unwrap(),
+            StagingBackend::CsrProbe
+        );
+        assert!(parse_staging_backend(Some("bogus")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tmatmul_devnode_maps_to_pci_bdf() {
+        assert_eq!(
+            pci_addr_from_tmatmul_devnode("/dev/cxl_tmatmul3b000").as_deref(),
+            Some("0000:3b:00.0")
+        );
+        assert_eq!(
+            pci_addr_from_tmatmul_devnode("cxl_tmatmulaf001").as_deref(),
+            Some("0000:af:00.1")
+        );
+        assert!(pci_addr_from_tmatmul_devnode("/dev/not_tmatmul").is_none());
+    }
+
     #[test]
     fn staging_map_len_is_page_aligned() {
         let page = page_size();
@@ -1205,6 +1261,12 @@ mod tests {
         assert_eq!(page_align_len(1).unwrap(), page);
         assert_eq!(page_align_len(page).unwrap(), page);
         assert_eq!(page_align_len(page + 1).unwrap(), page * 2);
+    }
+
+    #[test]
+    fn staging_map_len_can_use_dax_alignment() {
+        assert_eq!(align_len(0x301000, 0x200000).unwrap(), 0x400000);
+        assert_eq!(align_len(0x400000, 0x200000).unwrap(), 0x400000);
     }
 
     #[cfg(unix)]

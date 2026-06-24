@@ -1112,7 +1112,10 @@ fn imad_op(inst: &EnhancedSassInstruction, pred: &str, ty: &str) -> String {
     let src0 = values.first().cloned().unwrap_or_else(|| "0".to_string());
     let src1 = values.get(1).cloned().unwrap_or_else(|| "0".to_string());
     let src2 = values.get(2).cloned().unwrap_or_else(|| "0".to_string());
-    format!("{}mad.lo.{} {}, {}, {}, {};", pred, ty, dst, src0, src1, src2)
+    format!(
+        "{}mad.lo.{} {}, {}, {}, {};",
+        pred, ty, dst, src0, src1, src2
+    )
 }
 
 fn ternary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> String {
@@ -2028,7 +2031,13 @@ fn ldc_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         Some((0, 0x358)) if is_64bit_modifier(inst) => format!("{}mov.u32 {}, 0;", pred, dst),
         Some((_bank, _offset)) => {
             let ty = data_type_suffix(inst, SassDataType::U32);
-            format!("{}mov.{} {}, {};", pred, ty, dst, zero_literal_for_type(&ty))
+            format!(
+                "{}mov.{} {}, {};",
+                pred,
+                ty,
+                dst,
+                zero_literal_for_type(&ty)
+            )
         }
         None => load_op(inst, pred),
     }
@@ -2294,10 +2303,8 @@ fn setp_data_type_suffix(
 fn setp_compare_operands(inst: &EnhancedSassInstruction) -> (String, String) {
     let (src0, src1) = setp_compare_operand_refs(inst);
     (
-        src0.map(format_operand)
-            .unwrap_or_else(|| "0".to_string()),
-        src1.map(format_operand)
-            .unwrap_or_else(|| "0".to_string()),
+        src0.map(format_operand).unwrap_or_else(|| "0".to_string()),
+        src1.map(format_operand).unwrap_or_else(|| "0".to_string()),
     )
 }
 
@@ -2974,9 +2981,7 @@ fn format_operand(operand: &SassOperand) -> String {
         SassOperand::Barrier(id) => id.to_string(),
         SassOperand::SpecialRegister(name) => map_special_register(name),
         SassOperand::Label(label) if matches!(label.as_str(), "SRZ" | "SR_Z") => "0".to_string(),
-        SassOperand::Label(label)
-            if matches!(label.as_str(), "PT" | "UPT" | "!PT" | "!UPT") =>
-        {
+        SassOperand::Label(label) if matches!(label.as_str(), "PT" | "UPT" | "!PT" | "!UPT") => {
             static_bool_literal(matches!(label.as_str(), "PT" | "UPT")).to_string()
         }
         SassOperand::Label(label) => format_label_operand(label),
@@ -3893,7 +3898,8 @@ Function : kernel
         iadd.data_type = Some(SassDataType::U32);
         iadd.dest_operands.push(reg(3));
         iadd.src_operands.push(reg(3));
-        iadd.src_operands.push(SassOperand::Label("!PT".to_string()));
+        iadd.src_operands
+            .push(SassOperand::Label("!PT".to_string()));
 
         let mut fmul = EnhancedSassInstruction::new("FMUL".to_string(), 0x10);
         fmul.opcode_class = SassOpcodeClass::FloatArithmetic;
@@ -4320,9 +4326,9 @@ Function : kernel
         assert!(result.ptx.contains(".reg .b32 %ur<10>;"));
         assert!(result.ptx.contains(".reg .pred %up<1>;"));
         assert!(result.ptx.contains("setp.ge.u32 %up0, %ur7, 0;"));
-        assert!(result.ptx.contains(
-            "selp.u32 %ur8, %ur6, %ur8, %up0;\n    selp.u32 %ur9, %ur7, %ur9, %up0;"
-        ));
+        assert!(result
+            .ptx
+            .contains("selp.u32 %ur8, %ur6, %ur8, %up0;\n    selp.u32 %ur9, %ur7, %ur9, %up0;"));
     }
 
     #[test]
