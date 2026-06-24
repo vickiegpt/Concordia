@@ -987,90 +987,6 @@ fn tmatmul_hardware_matmul_enabled() -> bool {
 }
 
 #[cfg(feature = "intel")]
-#[allow(dead_code)]
-fn bitnet_disaggregation_enabled() -> bool {
-    tmatmul_env_truthy("HETGPU_BITNET_DISAGGREGATE")
-        || tmatmul_env_truthy("HETGPU_BITNET_FFN_CXL")
-        || tmatmul_env_truthy("HETGPU_TMATMUL_BITNET_DISAGGREGATE")
-}
-
-#[cfg(feature = "intel")]
-#[allow(dead_code)]
-fn tmatmul_env_list(name: &str) -> Vec<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| {
-            value
-                .split(',')
-                .map(|item| item.trim().to_ascii_lowercase())
-                .filter(|item| !item.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-#[cfg(feature = "intel")]
-#[allow(dead_code)]
-fn bitnet_name_matches_any(name_lower: &str, markers: &[String]) -> bool {
-    markers.iter().any(|marker| name_lower.contains(marker))
-}
-
-#[cfg(feature = "intel")]
-#[allow(dead_code)]
-fn bitnet_attention_or_gpu_kernel_name(name_lower: &str) -> bool {
-    const GPU_MARKERS: &[&str] = &[
-        "attention",
-        "attn",
-        "flash",
-        "softmax",
-        "soft_max",
-        "rope",
-        "kq",
-        "qk",
-        "qkv",
-        "query",
-        "key",
-        "value",
-    ];
-    GPU_MARKERS.iter().any(|marker| name_lower.contains(marker))
-}
-
-#[cfg(feature = "intel")]
-#[allow(dead_code)]
-fn bitnet_default_cxl_ffn_kernel_name(name_lower: &str) -> bool {
-    if bitnet_attention_or_gpu_kernel_name(name_lower) {
-        return false;
-    }
-    name_lower.contains("ffn")
-        || name_lower.contains("feed_forward")
-        || name_lower.contains("mlp")
-        || name_lower.contains("gate_proj")
-        || name_lower.contains("up_proj")
-        || name_lower.contains("down_proj")
-        || name_lower.contains("expert")
-        || name_lower.contains("moe")
-        || name_lower.contains("mul_mat_vec_q")
-        || name_lower.contains("mul_mat_q")
-        || name_lower.contains("mul_mat_f")
-}
-
-#[cfg(feature = "intel")]
-#[allow(dead_code)]
-fn bitnet_cxl_ffn_kernel_name(name_lower: &str) -> bool {
-    let gpu_markers = tmatmul_env_list("HETGPU_BITNET_GPU_KERNELS");
-    if bitnet_name_matches_any(name_lower, &gpu_markers) {
-        return false;
-    }
-
-    let cxl_markers = tmatmul_env_list("HETGPU_BITNET_CXL_KERNELS");
-    if !cxl_markers.is_empty() {
-        return bitnet_name_matches_any(name_lower, &cxl_markers);
-    }
-
-    bitnet_default_cxl_ffn_kernel_name(name_lower)
-}
-
-#[cfg(feature = "intel")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TmatmulHardwareMatmulLayout {
     name: &'static str,
@@ -1410,35 +1326,55 @@ mod tmatmul_hardware_matmul_tests {
 
     #[test]
     fn bitnet_default_disaggregation_keeps_attention_on_gpu() {
-        assert!(bitnet_default_cxl_ffn_kernel_name(
-            "_z13mul_mat_vec_q_bitnet_ffn_gate_iq1_s"
-        ));
-        assert!(bitnet_default_cxl_ffn_kernel_name(
-            "_z9mul_mat_qil10ggml_type41e_iq1_s"
-        ));
-        assert!(!bitnet_default_cxl_ffn_kernel_name(
-            "_z13flash_attn_mul_mat_q"
-        ));
-        assert!(!bitnet_default_cxl_ffn_kernel_name(
-            "_z17rope_neox_attention"
-        ));
-        assert!(!bitnet_default_cxl_ffn_kernel_name(
-            "_z21softmax_warp_forward"
-        ));
+        let mut cfg = super::super::bitnet_disagg::BitnetRouteConfig::default();
+        cfg.enabled = true;
+
+        assert_eq!(
+            super::super::bitnet_disagg::classify_kernel_name(
+                "_z13mul_mat_vec_q_bitnet_ffn_gate_iq1_s",
+                &cfg
+            )
+            .route,
+            super::super::bitnet_disagg::BitnetRoute::CxlTmatmul
+        );
+        assert_eq!(
+            super::super::bitnet_disagg::classify_kernel_name("_z13flash_attn_mul_mat_q", &cfg)
+                .route,
+            super::super::bitnet_disagg::BitnetRoute::GpuNative
+        );
+        assert_eq!(
+            super::super::bitnet_disagg::classify_kernel_name("_z17rope_neox_attention", &cfg)
+                .route,
+            super::super::bitnet_disagg::BitnetRoute::GpuNative
+        );
     }
 
     #[test]
-    fn bitnet_disaggregation_env_lists_override_default_routing() {
-        std::env::set_var("HETGPU_BITNET_CXL_KERNELS", "ffn_gate,mlp_up");
-        std::env::set_var("HETGPU_BITNET_GPU_KERNELS", "force_gpu");
+    fn bitnet_disaggregation_config_markers_override_default_routing() {
+        let mut cfg = super::super::bitnet_disagg::BitnetRouteConfig::default();
+        cfg.enabled = true;
+        cfg.cxl_markers = vec!["ffn_gate".to_string(), "mlp_up".to_string()];
+        cfg.gpu_markers = vec!["force_gpu".to_string()];
 
-        assert!(bitnet_cxl_ffn_kernel_name("layer_03_ffn_gate_mul_mat"));
-        assert!(bitnet_cxl_ffn_kernel_name("layer_04_mlp_up_mul_mat"));
-        assert!(!bitnet_cxl_ffn_kernel_name("layer_05_mul_mat_q"));
-        assert!(!bitnet_cxl_ffn_kernel_name("layer_06_force_gpu_ffn_gate"));
-
-        std::env::remove_var("HETGPU_BITNET_CXL_KERNELS");
-        std::env::remove_var("HETGPU_BITNET_GPU_KERNELS");
+        assert_eq!(
+            super::super::bitnet_disagg::classify_kernel_name("layer_03_ffn_gate_mul_mat", &cfg)
+                .route,
+            super::super::bitnet_disagg::BitnetRoute::CxlTmatmul
+        );
+        assert_eq!(
+            super::super::bitnet_disagg::classify_kernel_name("layer_04_mlp_up_mul_mat", &cfg)
+                .route,
+            super::super::bitnet_disagg::BitnetRoute::CxlTmatmul
+        );
+        assert_eq!(
+            super::super::bitnet_disagg::classify_kernel_name("layer_05_mul_mat_q", &cfg).route,
+            super::super::bitnet_disagg::BitnetRoute::CxlTmatmul
+        );
+        assert_eq!(
+            super::super::bitnet_disagg::classify_kernel_name("layer_06_force_gpu_ffn_gate", &cfg)
+                .route,
+            super::super::bitnet_disagg::BitnetRoute::GpuNative
+        );
     }
 }
 
@@ -1468,12 +1404,57 @@ unsafe fn execute_kernel_name_fallback(
     let name_lower = kernel_name.to_lowercase();
 
     if tmatmul_hardware_matmul_enabled() && tmatmul_is_matmul_kernel_name(&name_lower) {
-        if bitnet_disaggregation_enabled() && !bitnet_cxl_ffn_kernel_name(&name_lower) {
-            eprintln!(
-                "[BitNet Disagg] Keeping '{}' on GPU path; not classified as FFN/ternary-linear CXL work",
-                kernel_name
-            );
-            return;
+        if super::bitnet_disagg::enabled_from_env() {
+            let route_config = super::bitnet_disagg::config_from_env();
+            let decision = super::bitnet_disagg::classify_kernel_name(kernel_name, &route_config);
+            let cxl_enabled = super::cxl_tmatmul::cxl_tmatmul_enabled();
+            if let Err(err) =
+                super::bitnet_disagg::append_route_log_from_env(&decision, cxl_enabled, true)
+            {
+                eprintln!(
+                    "[BitNet Disagg] route log failed for '{}': {}",
+                    kernel_name, err
+                );
+                if decision.strict
+                    && decision.route == super::bitnet_disagg::BitnetRoute::CxlTmatmul
+                {
+                    return;
+                }
+            }
+
+            match decision.route {
+                super::bitnet_disagg::BitnetRoute::CxlTmatmul => {
+                    eprintln!(
+                        "[BitNet Disagg] Routing '{}' to CXL tmatmul candidate via {}",
+                        kernel_name,
+                        decision.source.as_str()
+                    );
+                }
+                super::bitnet_disagg::BitnetRoute::GpuNative => {
+                    eprintln!(
+                        "[BitNet Disagg] Keeping '{}' on GPU path via {}",
+                        kernel_name,
+                        decision.source.as_str()
+                    );
+                    return;
+                }
+                super::bitnet_disagg::BitnetRoute::Fallback => {
+                    eprintln!(
+                        "[BitNet Disagg] Leaving '{}' on fallback/native path via {}",
+                        kernel_name,
+                        decision.source.as_str()
+                    );
+                    return;
+                }
+                super::bitnet_disagg::BitnetRoute::Reject => {
+                    eprintln!(
+                        "[BitNet Disagg] Strict mode rejected '{}' via {}",
+                        kernel_name,
+                        decision.source.as_str()
+                    );
+                    return;
+                }
+            }
         }
         execute_tmatmul_hardware_matmul_fallback(kernel_name, &name_lower, kernel_params);
         return;

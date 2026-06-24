@@ -168,6 +168,43 @@ pub(crate) fn load_manifest_file(path: &Path) -> Result<BitnetRouteManifest, Str
     Ok(manifest)
 }
 
+pub(crate) fn config_from_env() -> BitnetRouteConfig {
+    let enabled = enabled_from_env();
+    let strict = env_truthy("HETGPU_BITNET_DISAGG_STRICT");
+    let mut config = BitnetRouteConfig {
+        enabled,
+        strict,
+        gpu_markers: env_list("HETGPU_BITNET_GPU_KERNELS"),
+        cxl_markers: env_list("HETGPU_BITNET_CXL_KERNELS"),
+        manifest: None,
+    };
+
+    if let Ok(path) = std::env::var("HETGPU_BITNET_ROUTE_MANIFEST") {
+        if !path.trim().is_empty() {
+            match load_manifest_file(Path::new(path.trim())) {
+                Ok(manifest) => config.manifest = Some(manifest),
+                Err(err) => {
+                    eprintln!("[BitNet Disagg] manifest disabled: {err}");
+                    if strict {
+                        config.manifest = Some(BitnetRouteManifest {
+                            version: 1,
+                            default: ManifestRouteName::Reject,
+                            routes: Vec::new(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    config
+}
+
+pub(crate) fn enabled_from_env() -> bool {
+    env_truthy("HETGPU_BITNET_DISAGGREGATE")
+        || env_truthy("HETGPU_BITNET_FFN_CXL")
+        || env_truthy("HETGPU_TMATMUL_BITNET_DISAGGREGATE")
+}
+
 pub(crate) fn classify_kernel_name(
     kernel_name: &str,
     config: &BitnetRouteConfig,
@@ -323,6 +360,25 @@ fn classify_manifest(
     None
 }
 
+pub(crate) fn append_route_log_from_env(
+    decision: &BitnetRouteDecision,
+    cxl_enabled: bool,
+    hardware_matmul_enabled: bool,
+) -> Result<(), String> {
+    let Ok(path) = std::env::var("HETGPU_BITNET_ROUTE_LOG") else {
+        return Ok(());
+    };
+    if path.trim().is_empty() {
+        return Ok(());
+    }
+    append_route_log(
+        Path::new(path.trim()),
+        decision,
+        cxl_enabled,
+        hardware_matmul_enabled,
+    )
+}
+
 pub(crate) fn append_route_log(
     path: &Path,
     decision: &BitnetRouteDecision,
@@ -373,9 +429,65 @@ fn decision(
     }
 }
 
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn env_list(name: &str) -> Vec<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(|item| item.trim().to_ascii_lowercase())
+                .filter(|item| !item.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct EnvGuard {
+        previous: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
+            let previous = vars
+                .iter()
+                .map(|(name, _)| (*name, std::env::var(name).ok()))
+                .collect::<Vec<_>>();
+            for (name, value) in vars {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in self.previous.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 
     fn config(enabled: bool) -> BitnetRouteConfig {
         BitnetRouteConfig {
@@ -613,6 +725,59 @@ mod tests {
 
         let err = load_manifest_file(&path).unwrap_err();
         assert!(err.contains("unsupported manifest version"));
+    }
+
+    #[test]
+    fn config_from_env_accepts_all_enable_flags() {
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("0")),
+            ("HETGPU_BITNET_FFN_CXL", Some("yes")),
+            ("HETGPU_TMATMUL_BITNET_DISAGGREGATE", None),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("on")),
+            ("HETGPU_BITNET_CXL_KERNELS", Some("ffn_gate, mlp_up")),
+            ("HETGPU_BITNET_GPU_KERNELS", Some("rope, softmax")),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+        ]);
+
+        let cfg = config_from_env();
+        assert!(cfg.enabled);
+        assert!(cfg.strict);
+        assert_eq!(cfg.cxl_markers, vec!["ffn_gate", "mlp_up"]);
+        assert_eq!(cfg.gpu_markers, vec!["rope", "softmax"]);
+    }
+
+    #[test]
+    fn malformed_manifest_is_ignored_without_strict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, r#"{"version": 9, "routes": []}"#).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", Some(&path_text)),
+        ]);
+
+        let cfg = config_from_env();
+        assert!(cfg.enabled);
+        assert!(cfg.manifest.is_none());
+    }
+
+    #[test]
+    fn malformed_manifest_sets_strict_reject_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, r#"{"version": 9, "routes": []}"#).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", Some(&path_text)),
+        ]);
+
+        let cfg = config_from_env();
+        let decision = classify_kernel_name("layer_unknown", &cfg);
+        assert_eq!(decision.route, BitnetRoute::Reject);
     }
 
     #[test]
