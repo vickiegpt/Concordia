@@ -404,6 +404,7 @@ pub(crate) unsafe fn launch_kernel(
         }
         let ptx_source = runtime_ptx.or(lifted_ptx.as_deref());
         let mut continue_native_launch = false;
+        let mut rejected_launch = false;
         match super::cxl_tmatmul::compile_ptx_to_tmatmul_assembly(ptx_source) {
             Ok(compiled) => {
                 let ptx_source = ptx_source.expect("compile requires PTX source");
@@ -484,12 +485,24 @@ pub(crate) unsafe fn launch_kernel(
                     block_dim_y,
                     block_dim_z,
                 ) {
-                    KernelNameFallbackStatus::Handled | KernelNameFallbackStatus::Rejected => {}
+                    KernelNameFallbackStatus::Handled => {}
+                    KernelNameFallbackStatus::Rejected => {
+                        rejected_launch = true;
+                    }
                     KernelNameFallbackStatus::ContinueNative => {
                         continue_native_launch = true;
                     }
                 }
             }
+        }
+
+        if rejected_launch {
+            eprintln!(
+                "[TMatmul Backend] Kernel '{}' rejected by strict fallback routing",
+                f.name
+            );
+            super::checkpoint::end_kernel_execution(exec_id);
+            return ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
         }
 
         if !continue_native_launch {
@@ -1281,13 +1294,17 @@ unsafe fn execute_tmatmul_hardware_matmul_fallback(
     name_lower: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     strict_cxl_submit_failure: bool,
-) {
+) -> KernelNameFallbackStatus {
     let Some(layout) = tmatmul_hardware_matmul_layout(name_lower) else {
         eprintln!(
             "[TMatmul HW Matmul] Kernel '{}' is not a supported matmul layout, skipping",
             kernel_name
         );
-        return;
+        return if strict_cxl_submit_failure {
+            KernelNameFallbackStatus::Rejected
+        } else {
+            KernelNameFallbackStatus::ContinueNative
+        };
     };
 
     let asm_path = std::env::var("HETGPU_TMATMUL_ASM_PATH")
@@ -1298,7 +1315,11 @@ unsafe fn execute_tmatmul_hardware_matmul_fallback(
             "[TMatmul HW Matmul] Failed to write assembly '{}': {}",
             asm_path, err
         );
-        return;
+        return if strict_cxl_submit_failure {
+            KernelNameFallbackStatus::Rejected
+        } else {
+            KernelNameFallbackStatus::ContinueNative
+        };
     }
 
     let numel = tmatmul_env_usize("HETGPU_TMATMUL_NUMEL").unwrap_or(2048);
@@ -1314,7 +1335,7 @@ unsafe fn execute_tmatmul_hardware_matmul_fallback(
                     "[CXL TMatmul] Kernel '{}' executed via RUN_CSR_ONLY: {:?}",
                     kernel_name, status
                 );
-                return;
+                return KernelNameFallbackStatus::Handled;
             }
             Err(err) => {
                 eprintln!(
@@ -1322,7 +1343,7 @@ unsafe fn execute_tmatmul_hardware_matmul_fallback(
                     kernel_name, err
                 );
                 if strict_cxl_submit_failure {
-                    return;
+                    return KernelNameFallbackStatus::Rejected;
                 }
                 eprintln!(
                     "[CXL TMatmul] Falling back to TMatmul emulator for '{}'",
@@ -1340,6 +1361,7 @@ unsafe fn execute_tmatmul_hardware_matmul_fallback(
         kernel_name,
         layout.pointer_params,
     );
+    KernelNameFallbackStatus::Handled
 }
 
 #[cfg(all(test, feature = "intel"))]
@@ -1591,6 +1613,107 @@ mod tmatmul_hardware_matmul_tests {
     }
 
     #[test]
+    fn bitnet_strict_reject_does_not_succeed_in_virtual_fallback() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_NAMED_FALLBACK", Some("1")),
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
+            ("HETGPU_BITNET_FFN_CXL", None),
+            ("HETGPU_TMATMUL_BITNET_DISAGGREGATE", None),
+            ("HETGPU_BITNET_CXL_KERNELS", None),
+            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", None),
+        ]);
+        let kernel = super::super::module::ZeKernel {
+            context: ze_context_handle_t(std::ptr::null_mut()),
+            device: ze_device_handle_t(std::ptr::null_mut()),
+            module: ze_module_handle_t(std::ptr::null_mut()),
+            kernel: ze_kernel_handle_t(std::ptr::null_mut()),
+            name: "unknown_matmul_probe".to_string(),
+            ptx_source: None,
+            cubin_binary: None,
+            module_handle: 0,
+        };
+        let mut kernel_params = [std::ptr::null_mut(); 16];
+
+        let result = unsafe {
+            launch_kernel(
+                &kernel,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                ze_command_queue_handle_t(std::ptr::null_mut()),
+                kernel_params.as_mut_ptr(),
+                std::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE);
+    }
+
+    #[test]
+    fn strict_cxl_submit_failure_does_not_succeed_in_virtual_fallback() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let asm_path = dir.path().join("kernel.S");
+        let asm_text = asm_path.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_NAMED_FALLBACK", Some("1")),
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
+            ("HETGPU_BITNET_FFN_CXL", None),
+            ("HETGPU_TMATMUL_BITNET_DISAGGREGATE", None),
+            ("HETGPU_BITNET_CXL_KERNELS", None),
+            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", None),
+            ("HETGPU_CXL_TMATMUL", Some("1")),
+            ("HETGPU_TMATMUL_CXL", None),
+            ("HETGPU_TMATMUL_ASM_PATH", Some(&asm_text)),
+            ("HETGPU_TMATMUL_NUMEL", Some("1")),
+            ("HETGPU_CXL_TMATMUL_DEV", None),
+            ("HETGPU_CXL_TMATMUL_DEVICE", None),
+        ]);
+        let kernel = super::super::module::ZeKernel {
+            context: ze_context_handle_t(std::ptr::null_mut()),
+            device: ze_device_handle_t(std::ptr::null_mut()),
+            module: ze_module_handle_t(std::ptr::null_mut()),
+            kernel: ze_kernel_handle_t(std::ptr::null_mut()),
+            name: "layer_0_ffn_gate_mul_mat".to_string(),
+            ptx_source: None,
+            cubin_binary: None,
+            module_handle: 0,
+        };
+        let mut kernel_params = [std::ptr::null_mut(); 16];
+
+        let result = unsafe {
+            launch_kernel(
+                &kernel,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                ze_command_queue_handle_t(std::ptr::null_mut()),
+                kernel_params.as_mut_ptr(),
+                std::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE);
+    }
+
+    #[test]
     fn bitnet_default_disaggregation_keeps_attention_on_gpu() {
         let mut cfg = super::super::bitnet_disagg::BitnetRouteConfig::default();
         cfg.enabled = true;
@@ -1734,13 +1857,18 @@ unsafe fn execute_kernel_name_fallback(
             }
         }
         if run_hardware_matmul {
-            execute_tmatmul_hardware_matmul_fallback(
+            let status = execute_tmatmul_hardware_matmul_fallback(
                 kernel_name,
                 &name_lower,
                 kernel_params,
                 strict_cxl_submit_failure,
             );
-            return KernelNameFallbackStatus::Handled;
+            match status {
+                KernelNameFallbackStatus::Handled | KernelNameFallbackStatus::Rejected => {
+                    return status;
+                }
+                KernelNameFallbackStatus::ContinueNative => {}
+            }
         }
     }
 
