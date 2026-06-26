@@ -384,6 +384,46 @@ pub(crate) unsafe fn launch_kernel(
             eprintln!("[TMatmul Backend] WARNING: zero grid dimension detected");
         }
 
+        if tmatmul_pre_jit_named_fallback_enabled()
+            && (super::cxl_tmatmul::cxl_tmatmul_enabled()
+                || tmatmul_named_fallback_enabled()
+                || tmatmul_hardware_matmul_enabled())
+        {
+            match execute_kernel_name_fallback(
+                &f.name,
+                kernel_params,
+                grid_dim_x,
+                grid_dim_y,
+                grid_dim_z,
+                block_dim_x,
+                block_dim_y,
+                block_dim_z,
+            ) {
+                KernelNameFallbackStatus::Handled => {
+                    eprintln!(
+                        "[TMatmul Backend] Kernel '{}' handled by pre-JIT named fallback",
+                        f.name
+                    );
+                    super::checkpoint::end_kernel_execution(exec_id);
+                    return ze_result_t::ZE_RESULT_SUCCESS;
+                }
+                KernelNameFallbackStatus::Rejected => {
+                    eprintln!(
+                        "[TMatmul Backend] Kernel '{}' rejected by pre-JIT fallback routing",
+                        f.name
+                    );
+                    super::checkpoint::end_kernel_execution(exec_id);
+                    return ze_result_t::ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+                }
+                KernelNameFallbackStatus::ContinueNative => {
+                    eprintln!(
+                        "[TMatmul Backend] Kernel '{}' not handled by pre-JIT named fallback; continuing to PTX JIT",
+                        f.name
+                    );
+                }
+            }
+        }
+
         let runtime_ptx = f.ptx_source.as_deref().map(String::as_str);
         let lifted_ptx = if runtime_ptx.is_none() {
             super::module::recover_ptx_source_with_sass_fallback(
@@ -870,6 +910,27 @@ unsafe fn invoke_emulator_bridge(
         let size_bytes = count * 4;
         let data_ptr = p.value as *const u8;
 
+        if matrix_param == Some(i) && super::cxl_tmatmul::matrix_stage_cuda_dax_enabled() {
+            let dim = tmatmul_env_usize("HETGPU_TMATMUL_NUMEL").unwrap_or(actual_numel);
+            let stage_bytes = super::cxl_tmatmul::matrix_bytes(dim).unwrap_or(size_bytes);
+            match super::cxl_tmatmul::cuda_dax_bridge_param_json(p.value, stage_bytes, count) {
+                Ok(json) => params_json.push_str(&json),
+                Err(e) => {
+                    eprintln!(
+                        "[TMatmul Emulator] Param {} cuda_dax serialization failed: {}",
+                        i, e
+                    );
+                    let _ = write!(params_json, r#"{{"file":"","count":0,"is_pointer":true}}"#);
+                }
+            }
+            param_infos.push(ParamInfo {
+                host_ptr: std::ptr::null_mut(),
+                file_path: String::new(),
+                count: 0,
+            });
+            continue;
+        }
+
         // Validate: tracked allocations are preferred, but some ggml CUDA
         // params are readable host pointers that never enter VIRTUAL_ALLOC_MAP.
         let ptr_val = p.value as usize;
@@ -1067,6 +1128,12 @@ fn tmatmul_env_enabled_default(name: &str, default_value: bool) -> bool {
 #[allow(dead_code)]
 fn tmatmul_named_fallback_enabled() -> bool {
     tmatmul_env_truthy("HETGPU_TMATMUL_NAMED_FALLBACK")
+}
+
+#[cfg(feature = "intel")]
+#[allow(dead_code)]
+fn tmatmul_pre_jit_named_fallback_enabled() -> bool {
+    tmatmul_env_truthy("HETGPU_TMATMUL_PRE_JIT_NAMED_FALLBACK")
 }
 
 #[cfg(feature = "intel")]
@@ -1307,6 +1374,7 @@ unsafe fn tmatmul_read_device_pointer_param(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
     kernel_name: &str,
+    allow_unreadable_cuda_device: bool,
 ) -> Result<(usize, usize), super::cxl_tmatmul::CxlTmatmulError> {
     if kernel_params.is_null() {
         return Err(super::cxl_tmatmul::CxlTmatmulError::Device(format!(
@@ -1336,6 +1404,10 @@ unsafe fn tmatmul_read_device_pointer_param(
         )));
     }
     if alloc_size == 0 {
+        if allow_unreadable_cuda_device {
+            let alloc_hint = tmatmul_env_usize("HETGPU_TMATMUL_MATRIX_BYTES").unwrap_or(usize::MAX);
+            return Ok((ptr_value, alloc_hint));
+        }
         if index == 1 {
             let expected_bytes = tmatmul_expected_vector_bytes();
             if is_memory_readable(ptr_value as *const u8, expected_bytes) {
@@ -1350,6 +1422,9 @@ unsafe fn tmatmul_read_device_pointer_param(
         )));
     }
     if !is_memory_readable(ptr_value as *const u8, alloc_size.min(4096)) {
+        if allow_unreadable_cuda_device {
+            return Ok((ptr_value, alloc_size));
+        }
         return Err(super::cxl_tmatmul::CxlTmatmulError::Device(format!(
             "kernel '{kernel_name}' PARAM_{index} ptr={ptr_value:#x} allocation is not readable"
         )));
@@ -1369,18 +1444,21 @@ unsafe fn submit_cxl_hardware_matmul_fallback(
     #[cfg(test)]
     TMATMUL_CXL_SUBMIT_TEST_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    let (matrix_ptr, matrix_alloc) =
-        tmatmul_read_device_pointer_param(kernel_params, layout.matrix_param, kernel_name)?;
+    let allow_cuda_dax_matrix = super::cxl_tmatmul::matrix_stage_cuda_dax_enabled();
+    let (matrix_ptr, matrix_alloc) = tmatmul_read_device_pointer_param(
+        kernel_params,
+        layout.matrix_param,
+        kernel_name,
+        allow_cuda_dax_matrix,
+    )?;
     let (input_ptr, input_alloc) =
-        tmatmul_read_device_pointer_param(kernel_params, layout.vector_param, kernel_name)?;
+        tmatmul_read_device_pointer_param(kernel_params, layout.vector_param, kernel_name, false)?;
     let (output_ptr, output_alloc) =
-        tmatmul_read_device_pointer_param(kernel_params, layout.output_param, kernel_name)?;
+        tmatmul_read_device_pointer_param(kernel_params, layout.output_param, kernel_name, false)?;
 
+    let matrix_offset = super::cxl_tmatmul::matrix_dpa_offset()?;
     let labels = std::collections::HashMap::from([
-        (
-            format!("PARAM_{}", layout.matrix_param),
-            super::cxl_tmatmul::TMATMUL_DPA_MATRIX,
-        ),
+        (format!("PARAM_{}", layout.matrix_param), matrix_offset),
         (
             format!("PARAM_{}", layout.vector_param),
             super::cxl_tmatmul::TMATMUL_DPA_INPUT,
@@ -1694,6 +1772,7 @@ mod tmatmul_hardware_matmul_tests {
                 kernel_params.as_mut_ptr(),
                 1,
                 "_Z13mul_mat_vec_qIL9ggml_type20ELi1EEvPKvS2_Pfiiii",
+                false,
             )
         }
         .expect("readable host vector pointer should be accepted");
@@ -1704,6 +1783,7 @@ mod tmatmul_hardware_matmul_tests {
                 kernel_params.as_mut_ptr(),
                 2,
                 "_Z13mul_mat_vec_qIL9ggml_type20ELi1EEvPKvS2_Pfiiii",
+                false,
             )
         }
         .expect_err("untracked output pointer must remain rejected");
@@ -2492,6 +2572,56 @@ mod tmatmul_hardware_matmul_tests {
     }
 
     #[test]
+    fn ggml_sigmoid_f32_fallback_matches_cuda_unary_kernel() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", None),
+            ("HETGPU_TMATMUL_NAMED_FALLBACK", Some("1")),
+            ("HETGPU_BITNET_DISAGGREGATE", None),
+        ]);
+
+        let mut input = vec![-2.0f32, 0.0, 2.0];
+        let mut output = vec![0.0f32; input.len()];
+        let mut input_ptr = input.as_mut_ptr() as u64;
+        let mut output_ptr = output.as_mut_ptr() as u64;
+        let mut k = input.len() as i32;
+        let _alloc_guard = VirtualAllocGuard::insert(&[
+            (
+                input.as_ptr() as usize,
+                input.len() * std::mem::size_of::<f32>(),
+            ),
+            (
+                output.as_ptr() as usize,
+                output.len() * std::mem::size_of::<f32>(),
+            ),
+        ]);
+        let mut kernel_params = [
+            &mut input_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut output_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut k as *mut _ as *mut ::core::ffi::c_void,
+        ];
+
+        let status = unsafe {
+            execute_kernel_name_fallback(
+                "_Z11sigmoid_f32PKfPfi",
+                kernel_params.as_mut_ptr(),
+                1,
+                1,
+                1,
+                256,
+                1,
+                1,
+            )
+        };
+
+        assert_eq!(status, KernelNameFallbackStatus::Handled);
+        for (actual, input) in output.iter().zip(input.iter()) {
+            let expected = 1.0 / (1.0 + (-*input).exp());
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
     fn ggml_get_rows_float_fallback_gathers_indexed_rows() {
         let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
         let _guard = EnvGuard::set(&[
@@ -2621,6 +2751,182 @@ mod tmatmul_hardware_matmul_tests {
     }
 
     #[test]
+    fn pre_jit_named_fallback_handles_concat_without_staging_artifacts() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let artifact_dir = tempfile::tempdir().unwrap();
+        let artifact_dir_text = artifact_dir.path().to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", None),
+            ("HETGPU_TMATMUL_NAMED_FALLBACK", Some("1")),
+            ("HETGPU_TMATMUL_PRE_JIT_NAMED_FALLBACK", Some("1")),
+            ("HETGPU_TMATMUL_INTERPRETER", None),
+            ("HETGPU_CXL_TMATMUL", None),
+            ("HETGPU_TMATMUL_CXL", None),
+            ("HETGPU_TMATMUL_ARTIFACT_DIR", Some(&artifact_dir_text)),
+            ("HETGPU_BITNET_DISAGGREGATE", None),
+        ]);
+
+        let mut x = vec![1.0f32, 2.0, 10.0, 20.0];
+        let mut y = vec![3.0f32, 4.0, 5.0, 30.0, 40.0, 50.0];
+        let mut dst = vec![0.0f32; 10];
+        let mut x_ptr = x.as_mut_ptr() as u64;
+        let mut y_ptr = y.as_mut_ptr() as u64;
+        let mut dst_ptr = dst.as_mut_ptr() as u64;
+        let mut ne0 = 5i32;
+        let mut ne00 = 2i32;
+        let _alloc_guard = VirtualAllocGuard::insert(&[
+            (x.as_ptr() as usize, x.len() * std::mem::size_of::<f32>()),
+            (y.as_ptr() as usize, y.len() * std::mem::size_of::<f32>()),
+            (
+                dst.as_ptr() as usize,
+                dst.len() * std::mem::size_of::<f32>(),
+            ),
+        ]);
+        let mut kernel_params = [
+            &mut x_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut y_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut dst_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne0 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne00 as *mut _ as *mut ::core::ffi::c_void,
+        ];
+        let kernel = super::super::module::ZeKernel {
+            context: ze_context_handle_t(std::ptr::null_mut()),
+            device: ze_device_handle_t(std::ptr::null_mut()),
+            module: ze_module_handle_t(std::ptr::null_mut()),
+            kernel: ze_kernel_handle_t(std::ptr::null_mut()),
+            name: "_Z15concat_f32_dim0PKfS0_Pfii".to_string(),
+            ptx_source: Some(std::sync::Arc::new(SIMPLE_PTX.to_string())),
+            cubin_binary: None,
+            module_handle: 0,
+        };
+
+        let result = unsafe {
+            launch_kernel(
+                &kernel,
+                1,
+                2,
+                1,
+                256,
+                1,
+                1,
+                0,
+                ze_command_queue_handle_t(std::ptr::null_mut()),
+                kernel_params.as_mut_ptr(),
+                std::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, ze_result_t::ZE_RESULT_SUCCESS);
+        assert_eq!(
+            dst,
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0]
+        );
+        assert_eq!(artifact_dir.path().read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn ggml_concat_f32_non_cont_fallback_concatenates_dim1() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", None),
+            ("HETGPU_TMATMUL_NAMED_FALLBACK", Some("1")),
+            ("HETGPU_BITNET_DISAGGREGATE", None),
+        ]);
+
+        let mut src0 = vec![1.0f32, 2.0];
+        let mut src1 = vec![10.0f32, 20.0, 30.0, 40.0];
+        let mut dst = vec![0.0f32; 6];
+        let mut src0_ptr = src0.as_mut_ptr() as u64;
+        let mut src1_ptr = src1.as_mut_ptr() as u64;
+        let mut dst_ptr = dst.as_mut_ptr() as u64;
+        let mut ne00 = 2i64;
+        let mut ne01 = 1i64;
+        let mut ne02 = 1i64;
+        let mut ne03 = 1i64;
+        let mut nb00 = 4u64;
+        let mut nb01 = 8u64;
+        let mut nb02 = 8u64;
+        let mut nb03 = 8u64;
+        let mut ne10 = 2i64;
+        let mut ne11 = 2i64;
+        let mut ne12 = 1i64;
+        let mut ne13 = 1i64;
+        let mut nb10 = 4u64;
+        let mut nb11 = 8u64;
+        let mut nb12 = 16u64;
+        let mut nb13 = 16u64;
+        let mut ne0 = 2i64;
+        let mut ne1 = 3i64;
+        let mut ne2 = 1i64;
+        let mut ne3 = 1i64;
+        let mut nb0 = 4u64;
+        let mut nb1 = 8u64;
+        let mut nb2 = 24u64;
+        let mut nb3 = 24u64;
+        let mut dim = 1i32;
+        let _alloc_guard = VirtualAllocGuard::insert(&[
+            (
+                src0.as_ptr() as usize,
+                src0.len() * std::mem::size_of::<f32>(),
+            ),
+            (
+                src1.as_ptr() as usize,
+                src1.len() * std::mem::size_of::<f32>(),
+            ),
+            (
+                dst.as_ptr() as usize,
+                dst.len() * std::mem::size_of::<f32>(),
+            ),
+        ]);
+        let mut kernel_params = [
+            &mut src0_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut src1_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut dst_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne00 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne01 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne02 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne03 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb00 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb01 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb02 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb03 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne10 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne11 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne12 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne13 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb10 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb11 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb12 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb13 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne0 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne1 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne2 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne3 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb0 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb1 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb2 as *mut _ as *mut ::core::ffi::c_void,
+            &mut nb3 as *mut _ as *mut ::core::ffi::c_void,
+            &mut dim as *mut _ as *mut ::core::ffi::c_void,
+        ];
+
+        let status = unsafe {
+            execute_kernel_name_fallback(
+                "_Z19concat_f32_non_contPKcS0_Pcllllmmmmllllmmmmllllmmmmi",
+                kernel_params.as_mut_ptr(),
+                3,
+                1,
+                1,
+                256,
+                1,
+                1,
+            )
+        };
+
+        assert_eq!(status, KernelNameFallbackStatus::Handled);
+        assert_eq!(dst, vec![1.0, 2.0, 10.0, 20.0, 30.0, 40.0]);
+    }
+
+    #[test]
     fn emulator_bridge_serializes_matmul_matrix_param_at_square_extent() {
         let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
         let _guard = EnvGuard::set(&[
@@ -2675,6 +2981,69 @@ mod tmatmul_hardware_matmul_tests {
         );
         assert!(
             config.contains(r#""file":"/tmp/hetgpu_param_2.bin","count":4"#),
+            "{config}"
+        );
+        let _ = std::fs::remove_file("/tmp/tmatmul_bridge_config.json");
+    }
+
+    #[test]
+    fn emulator_bridge_serializes_cuda_dax_matrix_param_without_host_read() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_PYTHON", Some("/bin/true")),
+            ("HETGPU_TMATMUL_BRIDGE", Some("/bin/true")),
+            ("HETGPU_TMATMUL_NUMEL", Some("4")),
+            ("HETGPU_TMATMUL_MATRIX_STAGE", Some("cuda_dax")),
+            ("HETGPU_TMATMUL_MATRIX_CXL_OFFSET", Some("0x400000")),
+            ("HETGPU_TMATMUL_CUDA_GPU", Some("2")),
+            ("CXL_DAX_PATH", Some("/dev/dax12.0")),
+        ]);
+        let _ = std::fs::remove_file("/tmp/tmatmul_bridge_config.json");
+
+        let mut matrix_ptr = 0x7f00_0000_0000u64;
+        let mut vector = vec![2.0f32; 4];
+        let mut output = vec![0.0f32; 4];
+        let mut vector_ptr = vector.as_mut_ptr() as u64;
+        let mut output_ptr = output.as_mut_ptr() as u64;
+        let _alloc_guard = VirtualAllocGuard::insert(&[
+            (
+                vector.as_ptr() as usize,
+                vector.len() * std::mem::size_of::<f32>(),
+            ),
+            (
+                output.as_ptr() as usize,
+                output.len() * std::mem::size_of::<f32>(),
+            ),
+        ]);
+        let mut kernel_params = [
+            &mut matrix_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut vector_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut output_ptr as *mut _ as *mut ::core::ffi::c_void,
+        ];
+
+        unsafe {
+            invoke_emulator_bridge(
+                "/tmp/tmatmul_kernel.S",
+                kernel_params.as_mut_ptr(),
+                4,
+                "_Z13mul_mat_vec_qIL9ggml_type12ELi1EEvPKvS2_Pfiiii",
+                3,
+            );
+        }
+
+        let config = std::fs::read_to_string("/tmp/tmatmul_bridge_config.json")
+            .expect("bridge config should be written");
+        assert!(config.contains(r#""stage":"cuda_dax""#), "{config}");
+        assert!(
+            config.contains(r#""cuda_device_ptr":"0x7f0000000000""#),
+            "{config}"
+        );
+        assert!(config.contains(r#""bytes":4"#), "{config}");
+        assert!(config.contains(r#""gpu":2"#), "{config}");
+        assert!(config.contains(r#""dax_path":"/dev/dax12.0""#), "{config}");
+        assert!(config.contains(r#""cxl_offset":4194304"#), "{config}");
+        assert!(
+            !config.contains(r#""file":"/tmp/hetgpu_param_0.bin""#),
             "{config}"
         );
         let _ = std::fs::remove_file("/tmp/tmatmul_bridge_config.json");
@@ -2743,6 +3112,66 @@ mod tmatmul_hardware_matmul_tests {
             dst[15 * mmq_y + 127],
             5.0 + 1000.0 + (15 * mmq_y + 127) as f32
         );
+    }
+
+    #[test]
+    fn ggml_mul_mat_q_stream_k_fixup_handles_iq4_nl_qk32() {
+        let _lock = FALLBACK_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", None),
+            ("HETGPU_TMATMUL_NAMED_FALLBACK", Some("1")),
+            ("HETGPU_BITNET_DISAGGREGATE", None),
+        ]);
+
+        let mmq_x = 16usize;
+        let mmq_y = 128usize;
+        let mut dst = vec![7.0f32; mmq_x * mmq_y];
+        let mut tmp = vec![0.0f32; 3 * mmq_x * mmq_y];
+        for i in 0..(mmq_x * mmq_y) {
+            tmp[mmq_x * mmq_y + i] = 2000.0 + i as f32;
+        }
+        let mut dst_ptr = dst.as_mut_ptr() as u64;
+        let mut tmp_ptr = tmp.as_mut_ptr() as u64;
+        let mut ne00 = 64i32;
+        let mut ne01 = 128i32;
+        let mut ne11 = 16i32;
+        let mut ne0 = 128i32;
+        let mut block_num_mmq = 3i32;
+        let _alloc_guard = VirtualAllocGuard::insert(&[
+            (
+                dst.as_ptr() as usize,
+                dst.len() * std::mem::size_of::<f32>(),
+            ),
+            (
+                tmp.as_ptr() as usize,
+                tmp.len() * std::mem::size_of::<f32>(),
+            ),
+        ]);
+        let mut kernel_params = [
+            &mut dst_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut tmp_ptr as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne00 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne01 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne11 as *mut _ as *mut ::core::ffi::c_void,
+            &mut ne0 as *mut _ as *mut ::core::ffi::c_void,
+            &mut block_num_mmq as *mut _ as *mut ::core::ffi::c_void,
+        ];
+
+        let status = unsafe {
+            execute_kernel_name_fallback(
+                "_Z24mul_mat_q_stream_k_fixupIL9ggml_type20ELi16ELi8ELb0EEvPfPKfiiiii",
+                kernel_params.as_mut_ptr(),
+                1,
+                1,
+                1,
+                32,
+                8,
+                1,
+            )
+        };
+
+        assert_eq!(status, KernelNameFallbackStatus::Handled);
+        assert!(dst.iter().all(|value| *value == 7.0));
     }
 
     #[test]
@@ -3460,6 +3889,16 @@ unsafe fn execute_kernel_name_fallback(
         );
         return KernelNameFallbackStatus::ContinueNative;
     }
+    if tmatmul_direct_unary_f32_op(&name_lower).is_some() {
+        if execute_tmatmul_direct_unary_f32_fallback(kernel_name, &name_lower, kernel_params) {
+            return KernelNameFallbackStatus::Handled;
+        }
+        eprintln!(
+            "[TMatmul Fallback] direct unary f32 '{}' not handled by host fallback",
+            kernel_name
+        );
+        return KernelNameFallbackStatus::ContinueNative;
+    }
     if name_lower.contains("k_get_rows_float") {
         if execute_tmatmul_get_rows_float_fallback(
             kernel_name,
@@ -3473,6 +3912,16 @@ unsafe fn execute_kernel_name_fallback(
         }
         eprintln!(
             "[TMatmul Fallback] k_get_rows_float '{}' not handled by host fallback",
+            kernel_name
+        );
+        return KernelNameFallbackStatus::ContinueNative;
+    }
+    if name_lower.contains("concat_f32_non_cont") {
+        if execute_tmatmul_concat_f32_non_cont_fallback(kernel_name, kernel_params) {
+            return KernelNameFallbackStatus::Handled;
+        }
+        eprintln!(
+            "[TMatmul Fallback] concat_f32_non_cont '{}' not handled by host fallback",
             kernel_name
         );
         return KernelNameFallbackStatus::ContinueNative;
@@ -5195,8 +5644,10 @@ fn tmatmul_ggml_qk_from_kernel_name(kernel_name: &str) -> Option<usize> {
     match tmatmul_parse_digits_after(kernel_name, "ggml_type")? {
         // Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q8_1 use 32-element blocks.
         2 | 3 | 6 | 7 | 8 | 9 => Some(32),
-        // K-quants and IQ quants in this BitNet llama.cpp tree use QK_K=256.
-        10..=23 => Some(256),
+        // IQ4_NL is a non-linear 4-bit type with QK4_NL=32.
+        20 => Some(32),
+        // K-quants and the remaining IQ quants in this BitNet llama.cpp tree use QK_K=256.
+        10..=19 | 21..=23 => Some(256),
         _ => None,
     }
 }
@@ -6029,6 +6480,121 @@ unsafe fn execute_tmatmul_convert_unary_fallback(
 }
 
 #[cfg(feature = "intel")]
+fn tmatmul_direct_unary_f32_op(name_lower: &str) -> Option<&'static str> {
+    if name_lower.contains("hardsigmoid_f32") {
+        Some("hardsigmoid")
+    } else if name_lower.contains("hardswish_f32") {
+        Some("hardswish")
+    } else if name_lower.contains("gelu_quick_f32") {
+        Some("gelu_quick")
+    } else if name_lower.contains("sigmoid_f32") {
+        Some("sigmoid")
+    } else if name_lower.contains("silu_f32") {
+        Some("silu")
+    } else if name_lower.contains("gelu_f32") {
+        Some("gelu")
+    } else if name_lower.contains("relu_f32") {
+        Some("relu")
+    } else if name_lower.contains("tanh_f32") {
+        Some("tanh")
+    } else if name_lower.contains("exp_f32") {
+        Some("exp")
+    } else if name_lower.contains("sqrt_f32") {
+        Some("sqrt")
+    } else if name_lower.contains("sqr_f32") {
+        Some("sqr")
+    } else if name_lower.contains("sin_f32") {
+        Some("sin")
+    } else if name_lower.contains("cos_f32") {
+        Some("cos")
+    } else if name_lower.contains("neg_f32") {
+        Some("neg")
+    } else if name_lower.contains("step_f32") {
+        Some("step")
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "intel")]
+unsafe fn execute_tmatmul_direct_unary_f32_fallback(
+    kernel_name: &str,
+    name_lower: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> bool {
+    let Some(op) = tmatmul_direct_unary_f32_op(name_lower) else {
+        return false;
+    };
+    let Some(src_addr) = tmatmul_read_param_u64(kernel_params, 0) else {
+        return false;
+    };
+    let Some(dst_addr) = tmatmul_read_param_u64(kernel_params, 1) else {
+        return false;
+    };
+    let Some(k) = tmatmul_read_param_i32(kernel_params, 2) else {
+        return false;
+    };
+    if src_addr == 0 || dst_addr == 0 || k < 0 {
+        return false;
+    }
+    let Ok(ne) = usize::try_from(k) else {
+        return false;
+    };
+    let Some(bytes) = ne.checked_mul(std::mem::size_of::<f32>()) else {
+        return false;
+    };
+    if !tmatmul_host_or_virtual_alloc_has_bytes(src_addr, bytes, false)
+        || !tmatmul_host_or_virtual_alloc_has_bytes(dst_addr, bytes, true)
+    {
+        eprintln!(
+            "[TMatmul Fallback] direct unary f32 '{}' rejected ranges src=0x{:x}/{} dst=0x{:x}/{}",
+            kernel_name, src_addr, bytes, dst_addr, bytes
+        );
+        return false;
+    }
+
+    let src = src_addr as *const f32;
+    let dst = dst_addr as *mut f32;
+    for i in 0..ne {
+        let x = src.add(i).read_unaligned();
+        let y = match op {
+            "hardsigmoid" => ((x + 3.0) / 6.0).clamp(0.0, 1.0),
+            "hardswish" => x * ((x + 3.0) / 6.0).clamp(0.0, 1.0),
+            "gelu_quick" => x / (1.0 + (-1.702 * x).exp()),
+            "sigmoid" => 1.0 / (1.0 + (-x).exp()),
+            "silu" => x / (1.0 + (-x).exp()),
+            "gelu" => {
+                let c = 0.7978845608028654_f32;
+                0.5 * x * (1.0 + (c * x * (1.0 + 0.044715 * x * x)).tanh())
+            }
+            "relu" => x.max(0.0),
+            "tanh" => x.tanh(),
+            "exp" => x.exp(),
+            "sqrt" => x.sqrt(),
+            "sqr" => x * x,
+            "sin" => x.sin(),
+            "cos" => x.cos(),
+            "neg" => -x,
+            "step" => {
+                if x > 0.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            _ => return false,
+        };
+        dst.add(i).write_unaligned(y);
+    }
+
+    eprintln!(
+        "[TMatmul Fallback] direct unary f32 '{}' executed op={} ne={}",
+        kernel_name, op, ne
+    );
+    true
+}
+
+#[cfg(feature = "intel")]
 fn tmatmul_parse_get_rows_float_element_sizes(kernel_name: &str) -> Option<(usize, usize)> {
     let marker = "k_get_rows_floatI";
     let mut offset = kernel_name.find(marker)? + marker.len();
@@ -6413,6 +6979,254 @@ unsafe fn execute_tmatmul_concat_f32_dim_fallback(
     eprintln!(
         "[TMatmul Fallback] concat_f32_dim '{}' executed dim={} ne0={} split={} grid_y={} grid_z={}",
         kernel_name, dim, ne0, split, ne1, ne2
+    );
+    true
+}
+
+#[cfg(feature = "intel")]
+unsafe fn execute_tmatmul_concat_f32_non_cont_fallback(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> bool {
+    let Some(src0_addr) = tmatmul_read_param_u64(kernel_params, 0) else {
+        return false;
+    };
+    let Some(src1_addr) = tmatmul_read_param_u64(kernel_params, 1) else {
+        return false;
+    };
+    let Some(dst_addr) = tmatmul_read_param_u64(kernel_params, 2) else {
+        return false;
+    };
+    let Some(ne00) = tmatmul_read_param_i64(kernel_params, 3) else {
+        return false;
+    };
+    let Some(ne01) = tmatmul_read_param_i64(kernel_params, 4) else {
+        return false;
+    };
+    let Some(ne02) = tmatmul_read_param_i64(kernel_params, 5) else {
+        return false;
+    };
+    let Some(ne03) = tmatmul_read_param_i64(kernel_params, 6) else {
+        return false;
+    };
+    let Some(nb00) = tmatmul_read_param_u64(kernel_params, 7) else {
+        return false;
+    };
+    let Some(nb01) = tmatmul_read_param_u64(kernel_params, 8) else {
+        return false;
+    };
+    let Some(nb02) = tmatmul_read_param_u64(kernel_params, 9) else {
+        return false;
+    };
+    let Some(nb03) = tmatmul_read_param_u64(kernel_params, 10) else {
+        return false;
+    };
+    let Some(ne10) = tmatmul_read_param_i64(kernel_params, 11) else {
+        return false;
+    };
+    let Some(ne11) = tmatmul_read_param_i64(kernel_params, 12) else {
+        return false;
+    };
+    let Some(ne12) = tmatmul_read_param_i64(kernel_params, 13) else {
+        return false;
+    };
+    let Some(ne13) = tmatmul_read_param_i64(kernel_params, 14) else {
+        return false;
+    };
+    let Some(nb10) = tmatmul_read_param_u64(kernel_params, 15) else {
+        return false;
+    };
+    let Some(nb11) = tmatmul_read_param_u64(kernel_params, 16) else {
+        return false;
+    };
+    let Some(nb12) = tmatmul_read_param_u64(kernel_params, 17) else {
+        return false;
+    };
+    let Some(nb13) = tmatmul_read_param_u64(kernel_params, 18) else {
+        return false;
+    };
+    let Some(ne0) = tmatmul_read_param_i64(kernel_params, 19) else {
+        return false;
+    };
+    let Some(ne1) = tmatmul_read_param_i64(kernel_params, 20) else {
+        return false;
+    };
+    let Some(ne2) = tmatmul_read_param_i64(kernel_params, 21) else {
+        return false;
+    };
+    let Some(ne3) = tmatmul_read_param_i64(kernel_params, 22) else {
+        return false;
+    };
+    let Some(nb0) = tmatmul_read_param_u64(kernel_params, 23) else {
+        return false;
+    };
+    let Some(nb1) = tmatmul_read_param_u64(kernel_params, 24) else {
+        return false;
+    };
+    let Some(nb2) = tmatmul_read_param_u64(kernel_params, 25) else {
+        return false;
+    };
+    let Some(nb3) = tmatmul_read_param_u64(kernel_params, 26) else {
+        return false;
+    };
+    let Some(dim) = tmatmul_read_param_i32(kernel_params, 27) else {
+        return false;
+    };
+
+    if src0_addr == 0 || src1_addr == 0 || dst_addr == 0 || !(0..=3).contains(&dim) {
+        return false;
+    }
+    let dims = [
+        ne00, ne01, ne02, ne03, ne10, ne11, ne12, ne13, ne0, ne1, ne2, ne3,
+    ];
+    if dims.iter().any(|&value| value < 0) {
+        return false;
+    }
+    if ne0 == 0 || ne1 == 0 || ne2 == 0 || ne3 == 0 {
+        return true;
+    }
+
+    let Ok(ne00) = usize::try_from(ne00) else {
+        return false;
+    };
+    let Ok(ne01) = usize::try_from(ne01) else {
+        return false;
+    };
+    let Ok(ne02) = usize::try_from(ne02) else {
+        return false;
+    };
+    let Ok(ne03) = usize::try_from(ne03) else {
+        return false;
+    };
+    let Ok(ne10) = usize::try_from(ne10) else {
+        return false;
+    };
+    let Ok(ne11) = usize::try_from(ne11) else {
+        return false;
+    };
+    let Ok(ne12) = usize::try_from(ne12) else {
+        return false;
+    };
+    let Ok(ne13) = usize::try_from(ne13) else {
+        return false;
+    };
+    let Ok(ne0) = usize::try_from(ne0) else {
+        return false;
+    };
+    let Ok(ne1) = usize::try_from(ne1) else {
+        return false;
+    };
+    let Ok(ne2) = usize::try_from(ne2) else {
+        return false;
+    };
+    let Ok(ne3) = usize::try_from(ne3) else {
+        return false;
+    };
+    let dim = dim as usize;
+    let nb00 = nb00 as usize;
+    let nb01 = nb01 as usize;
+    let nb02 = nb02 as usize;
+    let nb03 = nb03 as usize;
+    let nb10 = nb10 as usize;
+    let nb11 = nb11 as usize;
+    let nb12 = nb12 as usize;
+    let nb13 = nb13 as usize;
+    let nb0 = nb0 as usize;
+    let nb1 = nb1 as usize;
+    let nb2 = nb2 as usize;
+    let nb3 = nb3 as usize;
+
+    fn tensor_bytes(
+        ne0: usize,
+        ne1: usize,
+        ne2: usize,
+        ne3: usize,
+        nb0: usize,
+        nb1: usize,
+        nb2: usize,
+        nb3: usize,
+    ) -> Option<usize> {
+        if ne0 == 0 || ne1 == 0 || ne2 == 0 || ne3 == 0 {
+            return Some(0);
+        }
+        ne3.checked_sub(1)?
+            .checked_mul(nb3)?
+            .checked_add(ne2.checked_sub(1)?.checked_mul(nb2)?)?
+            .checked_add(ne1.checked_sub(1)?.checked_mul(nb1)?)?
+            .checked_add(ne0.checked_sub(1)?.checked_mul(nb0)?)?
+            .checked_add(std::mem::size_of::<f32>())
+    }
+
+    let Some(src0_bytes) = tensor_bytes(ne00, ne01, ne02, ne03, nb00, nb01, nb02, nb03) else {
+        return false;
+    };
+    let Some(src1_bytes) = tensor_bytes(ne10, ne11, ne12, ne13, nb10, nb11, nb12, nb13) else {
+        return false;
+    };
+    let Some(dst_bytes) = tensor_bytes(ne0, ne1, ne2, ne3, nb0, nb1, nb2, nb3) else {
+        return false;
+    };
+    if !tmatmul_host_or_virtual_alloc_has_bytes(src0_addr, src0_bytes, false)
+        || !tmatmul_host_or_virtual_alloc_has_bytes(src1_addr, src1_bytes, false)
+        || !tmatmul_host_or_virtual_alloc_has_bytes(dst_addr, dst_bytes, true)
+    {
+        eprintln!(
+            "[TMatmul Fallback] concat_f32_non_cont '{}' rejected ranges src0=0x{:x}/{} src1=0x{:x}/{} dst=0x{:x}/{}",
+            kernel_name, src0_addr, src0_bytes, src1_addr, src1_bytes, dst_addr, dst_bytes
+        );
+        return false;
+    }
+
+    let src0 = src0_addr as *const u8;
+    let src1 = src1_addr as *const u8;
+    let dst = dst_addr as *mut u8;
+    let src0_ne = [ne00, ne01, ne02, ne03];
+
+    for i3 in 0..ne3 {
+        for i2 in 0..ne2 {
+            for i1 in 0..ne1 {
+                for i0 in 0..ne0 {
+                    let in_src0 = i0 < ne00 && i1 < ne01 && i2 < ne02 && i3 < ne03;
+                    let Some(src_off) = (if in_src0 {
+                        i3.checked_mul(nb03)
+                            .and_then(|v| v.checked_add(i2.checked_mul(nb02)?))
+                            .and_then(|v| v.checked_add(i1.checked_mul(nb01)?))
+                            .and_then(|v| v.checked_add(i0.checked_mul(nb00)?))
+                    } else {
+                        let i = [i0, i1, i2, i3];
+                        let nb = [nb10, nb11, nb12, nb13];
+                        let mut src_i = [i0, i1, i2, i3];
+                        let Some(adjusted_dim) = i[dim].checked_sub(src0_ne[dim]) else {
+                            return false;
+                        };
+                        src_i[dim] = adjusted_dim;
+                        src_i[3]
+                            .checked_mul(nb[3])
+                            .and_then(|v| v.checked_add(src_i[2].checked_mul(nb[2])?))
+                            .and_then(|v| v.checked_add(src_i[1].checked_mul(nb[1])?))
+                            .and_then(|v| v.checked_add(src_i[0].checked_mul(nb[0])?))
+                    }) else {
+                        return false;
+                    };
+                    let Some(dst_off) = i3
+                        .checked_mul(nb3)
+                        .and_then(|v| v.checked_add(i2.checked_mul(nb2)?))
+                        .and_then(|v| v.checked_add(i1.checked_mul(nb1)?))
+                        .and_then(|v| v.checked_add(i0.checked_mul(nb0)?))
+                    else {
+                        return false;
+                    };
+                    let src_base = if in_src0 { src0 } else { src1 };
+                    let value = (src_base.add(src_off) as *const f32).read_unaligned();
+                    (dst.add(dst_off) as *mut f32).write_unaligned(value);
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "[TMatmul Fallback] concat_f32_non_cont '{}' executed dim={} ne=({}, {}, {}, {})",
+        kernel_name, dim, ne0, ne1, ne2, ne3
     );
     true
 }

@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::ffi::CString;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
@@ -40,9 +42,18 @@ const CSR_INST_DBG_INSTR_CNT: usize = CSR_INST_BASE + 0x40;
 const TMATMUL_DMA_ERROR_STATUS: u32 = 0xff;
 const CXL_TYPE2_TMATMUL_RESULT_STALLED: u32 = 1 << 0;
 const CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR: u32 = 1 << 2;
+#[cfg(unix)]
+const CUDA_IPC_HANDLE_BYTES: usize = 64;
+#[cfg(unix)]
+const CUDA_HOST_REGISTER_MAPPED: u32 = 0x02;
+#[cfg(unix)]
+const CUDA_MEMCPY_DEFAULT: i32 = 4;
+#[cfg(unix)]
+const CUDA_IPC_MEM_LAZY_ENABLE_PEER_ACCESS: u32 = 1;
 
 #[cfg(unix)]
-static MATRIX_STAGE_CACHE: std::sync::Mutex<Option<(usize, usize)>> = std::sync::Mutex::new(None);
+static MATRIX_STAGE_CACHE: std::sync::Mutex<Option<(usize, usize, u64)>> =
+    std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CxlTmatmulError {
@@ -136,6 +147,64 @@ enum StagingBackend {
     CsrProbe,
 }
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MatrixStageMode {
+    Host,
+    CudaDax,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CudaDaxSource {
+    DevicePtr(usize),
+    IpcHandle {
+        bytes: [u8; CUDA_IPC_HANDLE_BYTES],
+        hex: String,
+    },
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CudaDaxMatrixStage {
+    source: CudaDaxSource,
+    bytes: usize,
+    dax_path: String,
+    cxl_offset: u64,
+    gpu: i32,
+    stream: usize,
+}
+
+#[cfg(unix)]
+enum MatrixStage<'a> {
+    Host(&'a [u8]),
+    CudaDax(CudaDaxMatrixStage),
+}
+
+#[cfg(unix)]
+impl MatrixStage<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Host(bytes) => bytes.len(),
+            Self::CudaDax(stage) => stage.bytes,
+        }
+    }
+
+    fn cxl_offset(&self) -> u64 {
+        match self {
+            Self::Host(_) => matrix_dpa_offset().unwrap_or(TMATMUL_DPA_MATRIX),
+            Self::CudaDax(stage) => stage.cxl_offset,
+        }
+    }
+
+    fn mode(&self) -> MatrixStageMode {
+        match self {
+            Self::Host(_) => MatrixStageMode::Host,
+            Self::CudaDax(_) => MatrixStageMode::CudaDax,
+        }
+    }
+}
+
 impl From<&CxlType2TmatmulCsrRun> for CxlTmatmulRunStatus {
     fn from(run: &CxlType2TmatmulCsrRun) -> Self {
         Self {
@@ -168,6 +237,77 @@ fn cxl_tmatmul_staging_backend() -> Result<StagingBackend, CxlTmatmulError> {
             .ok()
             .as_deref(),
     )
+}
+
+#[cfg(unix)]
+pub(crate) fn parse_matrix_stage_mode(
+    value: Option<&str>,
+) -> Result<MatrixStageMode, CxlTmatmulError> {
+    match value.unwrap_or("host").trim().to_ascii_lowercase().as_str() {
+        "" | "host" | "cpu" | "mmap" | "dax" => Ok(MatrixStageMode::Host),
+        "cuda_dax" | "cuda-dax" | "nvgpu_dax" | "nvgpu-dax" => Ok(MatrixStageMode::CudaDax),
+        other => Err(CxlTmatmulError::Io(format!(
+            "invalid HETGPU_TMATMUL_MATRIX_STAGE={other:?}, expected host or cuda_dax"
+        ))),
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn matrix_stage_mode() -> Result<MatrixStageMode, CxlTmatmulError> {
+    parse_matrix_stage_mode(
+        std::env::var("HETGPU_TMATMUL_MATRIX_STAGE")
+            .or_else(|_| std::env::var("HETGPU_CXL_TMATMUL_MATRIX_STAGE"))
+            .ok()
+            .as_deref(),
+    )
+}
+
+#[cfg(unix)]
+pub(crate) fn matrix_stage_cuda_dax_enabled() -> bool {
+    matches!(matrix_stage_mode(), Ok(MatrixStageMode::CudaDax))
+}
+
+#[cfg(unix)]
+pub(crate) fn matrix_dpa_offset() -> Result<u64, CxlTmatmulError> {
+    Ok(env_u64_any(&[
+        "HETGPU_TMATMUL_MATRIX_CXL_OFFSET",
+        "HETGPU_CXL_TMATMUL_MATRIX_OFFSET",
+        "HETGPU_TMATMUL_MATRIX_DPA",
+    ])?
+    .unwrap_or(TMATMUL_DPA_MATRIX))
+}
+
+#[cfg(unix)]
+pub(crate) fn cuda_dax_bridge_param_json(
+    cuda_device_ptr: u64,
+    bytes: usize,
+    count: usize,
+) -> Result<String, CxlTmatmulError> {
+    let source = cuda_dax_source_from_env(cuda_device_ptr as usize)?;
+    let mut value = serde_json::json!({
+        "file": "",
+        "count": count,
+        "is_pointer": true,
+        "stage": "cuda_dax",
+        "dtype": "nvint8",
+        "bytes": bytes,
+        "gpu": cuda_dax_gpu()?,
+        "dax_path": cxl_tmatmul_dax_path(),
+        "cxl_offset": matrix_dpa_offset()?,
+    });
+    match source {
+        CudaDaxSource::DevicePtr(ptr) => {
+            value["cuda_device_ptr"] = serde_json::Value::String(format!("0x{ptr:x}"));
+        }
+        CudaDaxSource::IpcHandle { hex, .. } => {
+            value["cuda_ipc_handle"] = serde_json::Value::String(hex);
+        }
+    }
+    let stream = cuda_dax_stream()?;
+    if stream != 0 {
+        value["stream"] = serde_json::Value::String(format!("0x{stream:x}"));
+    }
+    serde_json::to_string(&value).map_err(|e| CxlTmatmulError::Io(e.to_string()))
 }
 
 pub(crate) fn cxl_tmatmul_enabled() -> bool {
@@ -395,17 +535,44 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
     }
 
     let dim = usize::try_from(info.dim_d).map_err(|_| CxlTmatmulError::SizeOverflow)?;
-    validate_allocations(dim, input_alloc, output_alloc, matrix_alloc)?;
     let matrix_len = matrix_bytes(dim)?;
     let vector_len = vector_bytes(dim)?;
-    validate_fixed_layout(matrix_len, vector_len, program.len())?;
+    let matrix_offset = matrix_dpa_offset()?;
+    validate_fixed_layout_at_offsets(matrix_offset, matrix_len, vector_len, program.len())?;
+    match matrix_stage_mode()? {
+        MatrixStageMode::Host => {
+            validate_allocations(dim, input_alloc, output_alloc, matrix_alloc)?
+        }
+        MatrixStageMode::CudaDax => {
+            require_allocation("input", input_alloc, vector_len)?;
+            require_allocation("output", output_alloc, vector_len)?;
+            if matrix_alloc != usize::MAX {
+                require_allocation("matrix", matrix_alloc, matrix_len)?;
+            }
+        }
+    }
 
-    let matrix = std::slice::from_raw_parts(matrix_ptr, matrix_len);
+    let matrix_stage = match matrix_stage_mode()? {
+        MatrixStageMode::Host => {
+            MatrixStage::Host(std::slice::from_raw_parts(matrix_ptr, matrix_len))
+        }
+        MatrixStageMode::CudaDax => MatrixStage::CudaDax(cuda_dax_matrix_stage(
+            matrix_ptr as usize,
+            matrix_len,
+            matrix_offset,
+        )?),
+    };
     let input = std::slice::from_raw_parts(input_ptr, vector_len);
     let output = std::slice::from_raw_parts_mut(output_ptr, vector_len);
 
     submit_prepared_hardware_matmul(
-        &device, &program, matrix, input, output, timeout_ms, info.dim_d,
+        &device,
+        &program,
+        matrix_stage,
+        input,
+        output,
+        timeout_ms,
+        info.dim_d,
     )
 }
 
@@ -489,8 +656,23 @@ fn assemble_tmatmul_instruction(
             };
             Ok(encode_instr(0b010, op_code, vy_vb, vy_vb, va, 0, 0, 0, 0))
         }
-        "tmatmul_go" => {
-            require_arg_count(line_no, tokens, 2)?;
+        "tmatmul_go" | "tmatmul_go_nvint8" => {
+            if op == "tmatmul_go" {
+                require_arg_count(line_no, tokens, 2)?;
+            } else {
+                require_arg_count(line_no, tokens, 3)?;
+                let width = parse_u64_text(tokens[2]).ok_or_else(|| {
+                    CxlTmatmulError::AssembleFailed(format!(
+                        "line {line_no}: tmatmul_go_nvint8 expects numeric stage width, got '{}'",
+                        tokens[2]
+                    ))
+                })?;
+                if width != 4 {
+                    return Err(CxlTmatmulError::AssembleFailed(format!(
+                        "line {line_no}: tmatmul_go_nvint8 only supports stage width 4, got {width}"
+                    )));
+                }
+            }
             let addr = resolve_address(line_no, tokens[1], labels)?;
             Ok(encode_instr(0b011, 0, 0, 0, 0, 0, 0b10, 0, addr))
         }
@@ -612,22 +794,51 @@ fn validate_fixed_layout(
     vector_len: usize,
     program_len: usize,
 ) -> Result<(), CxlTmatmulError> {
-    let matrix_end = range_end(TMATMUL_DPA_MATRIX, matrix_len)?;
+    validate_fixed_layout_at_offsets(TMATMUL_DPA_MATRIX, matrix_len, vector_len, program_len)
+}
+
+fn validate_fixed_layout_at_offsets(
+    matrix_offset: u64,
+    matrix_len: usize,
+    vector_len: usize,
+    program_len: usize,
+) -> Result<(), CxlTmatmulError> {
+    let matrix_end = range_end(matrix_offset, matrix_len)?;
     let input_end = range_end(TMATMUL_DPA_INPUT, vector_len)?;
     let output_end = range_end(TMATMUL_DPA_OUTPUT, vector_len)?;
     let program_end = range_end(TMATMUL_DPA_PROGRAM, program_len)?;
 
-    if matrix_end > TMATMUL_DPA_INPUT as usize {
+    if ranges_overlap(matrix_offset, matrix_len, TMATMUL_DPA_INPUT, vector_len)? {
         return Err(CxlTmatmulError::Device(format!(
-            "fixed DAX layout overlaps matrix/input: matrix_end=0x{matrix_end:x} input=0x{TMATMUL_DPA_INPUT:x}"
+            "fixed DAX layout overlaps matrix/input: matrix=[0x{matrix_offset:x},0x{matrix_end:x}) input=[0x{TMATMUL_DPA_INPUT:x},0x{input_end:x})"
         )));
     }
-    if input_end > TMATMUL_DPA_OUTPUT as usize {
+    if ranges_overlap(matrix_offset, matrix_len, TMATMUL_DPA_OUTPUT, vector_len)? {
+        return Err(CxlTmatmulError::Device(format!(
+            "fixed DAX layout overlaps matrix/output: matrix=[0x{matrix_offset:x},0x{matrix_end:x}) output=[0x{TMATMUL_DPA_OUTPUT:x},0x{output_end:x})"
+        )));
+    }
+    if ranges_overlap(matrix_offset, matrix_len, TMATMUL_DPA_PROGRAM, program_len)? {
+        return Err(CxlTmatmulError::Device(format!(
+            "fixed DAX layout overlaps matrix/program: matrix=[0x{matrix_offset:x},0x{matrix_end:x}) program=[0x{TMATMUL_DPA_PROGRAM:x},0x{program_end:x})"
+        )));
+    }
+    if ranges_overlap(
+        TMATMUL_DPA_INPUT,
+        vector_len,
+        TMATMUL_DPA_OUTPUT,
+        vector_len,
+    )? {
         return Err(CxlTmatmulError::Device(format!(
             "fixed DAX layout overlaps input/output: input_end=0x{input_end:x} output=0x{TMATMUL_DPA_OUTPUT:x}"
         )));
     }
-    if output_end > TMATMUL_DPA_PROGRAM as usize {
+    if ranges_overlap(
+        TMATMUL_DPA_OUTPUT,
+        vector_len,
+        TMATMUL_DPA_PROGRAM,
+        program_len,
+    )? {
         return Err(CxlTmatmulError::Device(format!(
             "fixed DAX layout overlaps output/program: output_end=0x{output_end:x} program=0x{TMATMUL_DPA_PROGRAM:x}"
         )));
@@ -636,6 +847,23 @@ fn validate_fixed_layout(
         return Err(CxlTmatmulError::SizeOverflow);
     }
     Ok(())
+}
+
+fn ranges_overlap(
+    a_start: u64,
+    a_len: usize,
+    b_start: u64,
+    b_len: usize,
+) -> Result<bool, CxlTmatmulError> {
+    let a_start = usize::try_from(a_start).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+    let b_start = usize::try_from(b_start).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+    let a_end = a_start
+        .checked_add(a_len)
+        .ok_or(CxlTmatmulError::SizeOverflow)?;
+    let b_end = b_start
+        .checked_add(b_len)
+        .ok_or(CxlTmatmulError::SizeOverflow)?;
+    Ok(a_start < b_end && b_start < a_end)
 }
 
 fn range_end(offset: u64, len: usize) -> Result<usize, CxlTmatmulError> {
@@ -666,14 +894,15 @@ fn get_info(device: &File) -> Result<CxlType2TmatmulInfo, CxlTmatmulError> {
 fn submit_prepared_hardware_matmul(
     device: &File,
     program: &[u8],
-    matrix: &[u8],
+    matrix: MatrixStage<'_>,
     input: &[u8],
     output: &mut [u8],
     timeout_ms: u32,
     dim_d: u32,
 ) -> Result<CxlTmatmulRunStatus, CxlTmatmulError> {
+    let matrix_offset = matrix.cxl_offset();
     let used_len = [
-        range_end(TMATMUL_DPA_MATRIX, matrix.len())?,
+        range_end(matrix_offset, matrix.len())?,
         range_end(TMATMUL_DPA_INPUT, input.len())?,
         range_end(TMATMUL_DPA_OUTPUT, output.len())?,
         range_end(TMATMUL_DPA_PROGRAM, program.len())?,
@@ -682,21 +911,28 @@ fn submit_prepared_hardware_matmul(
     .max()
     .ok_or(CxlTmatmulError::SizeOverflow)?;
 
-    let mut staging = StagingMap::open(used_len)?;
+    let mut staging = StagingMap::open_for_matrix_stage(used_len, matrix.mode())?;
     {
-        let matrix_key = (matrix.as_ptr() as usize, matrix.len());
-        let assume_static_matrix = env_flag("HETGPU_CXL_TMATMUL_ASSUME_STATIC_MATRIX");
-        let matrix_already_staged = assume_static_matrix
-            && MATRIX_STAGE_CACHE
-                .lock()
-                .map(|cache| *cache == Some(matrix_key))
-                .unwrap_or(false);
-        if !matrix_already_staged {
-            staging.stage_bytes(TMATMUL_DPA_MATRIX, matrix)?;
-            if assume_static_matrix {
-                if let Ok(mut cache) = MATRIX_STAGE_CACHE.lock() {
-                    *cache = Some(matrix_key);
+        match &matrix {
+            MatrixStage::Host(matrix) => {
+                let matrix_key = (matrix.as_ptr() as usize, matrix.len(), matrix_offset);
+                let assume_static_matrix = env_flag("HETGPU_CXL_TMATMUL_ASSUME_STATIC_MATRIX");
+                let matrix_already_staged = assume_static_matrix
+                    && MATRIX_STAGE_CACHE
+                        .lock()
+                        .map(|cache| *cache == Some(matrix_key))
+                        .unwrap_or(false);
+                if !matrix_already_staged {
+                    staging.stage_bytes(matrix_offset, matrix)?;
+                    if assume_static_matrix {
+                        if let Ok(mut cache) = MATRIX_STAGE_CACHE.lock() {
+                            *cache = Some(matrix_key);
+                        }
+                    }
                 }
+            }
+            MatrixStage::CudaDax(stage) => {
+                staging.stage_cuda_dax_matrix(stage)?;
             }
         }
         staging.stage_bytes(TMATMUL_DPA_INPUT, input)?;
@@ -791,6 +1027,7 @@ fn run_prepared_hardware_matmul_via_bar(
 ) -> Result<CxlTmatmulRunStatus, CxlTmatmulError> {
     let program_len = u32::try_from(program_len).map_err(|_| CxlTmatmulError::SizeOverflow)?;
     let bar = StagingMap::open_csr_probe(0)?;
+    bar.reset_instruction_engine_before_run()?;
     bar.run_instance0_program(TMATMUL_DPA_PROGRAM, program_len, timeout_ms, dim_d)
 }
 
@@ -810,6 +1047,16 @@ enum StagingMap {
 
 #[cfg(unix)]
 impl StagingMap {
+    fn open_for_matrix_stage(
+        used_len: usize,
+        matrix_stage: MatrixStageMode,
+    ) -> Result<Self, CxlTmatmulError> {
+        match matrix_stage {
+            MatrixStageMode::Host => Self::open(used_len),
+            MatrixStageMode::CudaDax => Self::open_cuda_dax(used_len),
+        }
+    }
+
     fn open(used_len: usize) -> Result<Self, CxlTmatmulError> {
         if cxl_tmatmul_staging_backend()? == StagingBackend::CsrProbe {
             return Self::open_csr_probe(used_len);
@@ -829,6 +1076,29 @@ impl StagingMap {
             return Self::open_physical(&cxl_tmatmul_mem_path(), hpa_base, used_len);
         }
 
+        let dax_path = cxl_tmatmul_dax_path();
+        let dax_size = read_dax_size(&dax_path)?;
+        if used_len > dax_size {
+            return Err(CxlTmatmulError::AllocationTooSmall {
+                name: "dax window",
+                have: dax_size,
+                need: used_len,
+            });
+        }
+        Self::open_file_window(&dax_path, 0, used_len, "dax")
+    }
+
+    fn open_cuda_dax(used_len: usize) -> Result<Self, CxlTmatmulError> {
+        if cxl_tmatmul_staging_backend()? == StagingBackend::CsrProbe {
+            return Err(CxlTmatmulError::Device(
+                "cuda_dax matrix staging requires DAX mmap staging, not csr_probe".to_string(),
+            ));
+        }
+        if cxl_tmatmul_hpa_base()?.is_some() {
+            return Err(CxlTmatmulError::Device(
+                "cuda_dax matrix staging requires /dev/dax mapping; unset HETGPU_CXL_TMATMUL_HPA_BASE".to_string(),
+            ));
+        }
         let dax_path = cxl_tmatmul_dax_path();
         let dax_size = read_dax_size(&dax_path)?;
         if used_len > dax_size {
@@ -888,7 +1158,7 @@ impl StagingMap {
     ) -> Result<Self, CxlTmatmulError> {
         let mut options = OpenOptions::new();
         options.read(true).write(true);
-        if kind == "physical hpa" {
+        if kind == "physical hpa" || kind == "dax" {
             options.custom_flags(libc::O_SYNC);
         }
         let file = options
@@ -999,6 +1269,30 @@ impl StagingMap {
         }
     }
 
+    fn stage_cuda_dax_matrix(&mut self, stage: &CudaDaxMatrixStage) -> Result<(), CxlTmatmulError> {
+        match self {
+            Self::Mmap {
+                map_ptr, map_len, ..
+            } => {
+                let dst_end = range_end(stage.cxl_offset, stage.bytes)?;
+                if dst_end > *map_len {
+                    return Err(CxlTmatmulError::AllocationTooSmall {
+                        name: "cuda_dax mapped window",
+                        have: *map_len,
+                        need: dst_end,
+                    });
+                }
+                unsafe {
+                    CudaRuntime::load()?.stage_nvint8_to_dax(stage, *map_ptr, *map_len)?;
+                }
+                Ok(())
+            }
+            Self::CsrProbe { .. } => Err(CxlTmatmulError::Device(
+                "cuda_dax matrix staging cannot target csr_probe staging".to_string(),
+            )),
+        }
+    }
+
     fn fill_bytes(&mut self, offset: u64, value: u8, len: usize) -> Result<(), CxlTmatmulError> {
         match self {
             Self::Mmap { ptr, .. } => {
@@ -1091,6 +1385,10 @@ impl StagingMap {
     }
 
     fn wait_probe_status(&self) -> Result<u32, CxlTmatmulError> {
+        // The FPGA holds the previous probe status until the CDC pulse for the
+        // next request is observed. Match the kernel MEM_IO helper and the
+        // working C++ BAR smoke so we do not consume a stale DONE status.
+        std::thread::sleep(std::time::Duration::from_millis(5));
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
         loop {
             let status = self.csr_mmio_rd32(CSR_PROBE_STATUS)?;
@@ -1194,6 +1492,236 @@ impl StagingMap {
                 )));
             }
             std::hint::spin_loop();
+        }
+    }
+}
+
+#[cfg(unix)]
+struct CudaRuntime {
+    handle: *mut libc::c_void,
+    cuda_set_device: unsafe extern "C" fn(libc::c_int) -> libc::c_int,
+    cuda_host_register: unsafe extern "C" fn(*mut libc::c_void, usize, libc::c_uint) -> libc::c_int,
+    cuda_host_get_device_pointer: unsafe extern "C" fn(
+        *mut *mut libc::c_void,
+        *mut libc::c_void,
+        libc::c_uint,
+    ) -> libc::c_int,
+    cuda_memcpy_async: unsafe extern "C" fn(
+        *mut libc::c_void,
+        *const libc::c_void,
+        usize,
+        libc::c_int,
+        *mut libc::c_void,
+    ) -> libc::c_int,
+    cuda_stream_synchronize: unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int,
+    cuda_host_unregister: unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int,
+    cuda_ipc_open_mem_handle: Option<
+        unsafe extern "C" fn(
+            *mut *mut libc::c_void,
+            *mut libc::c_void,
+            libc::c_uint,
+        ) -> libc::c_int,
+    >,
+    cuda_ipc_close_mem_handle: Option<unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int>,
+}
+
+#[cfg(unix)]
+impl CudaRuntime {
+    fn load() -> Result<Self, CxlTmatmulError> {
+        let mut paths = Vec::new();
+        if let Ok(path) = std::env::var("HETGPU_TMATMUL_CUDART") {
+            paths.push(path);
+        }
+        if let Ok(path) = std::env::var("HETGPU_CUDART_PATH") {
+            paths.push(path);
+        }
+        paths.push("libcudart.so.12".to_string());
+        paths.push("libcudart.so".to_string());
+
+        let mut last_error = String::new();
+        for path in paths {
+            let c_path =
+                CString::new(path.clone()).map_err(|e| CxlTmatmulError::Io(e.to_string()))?;
+            let handle =
+                unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+            if handle.is_null() {
+                last_error = unsafe {
+                    let err = libc::dlerror();
+                    if err.is_null() {
+                        format!("dlopen {path} failed")
+                    } else {
+                        format!(
+                            "dlopen {path}: {}",
+                            std::ffi::CStr::from_ptr(err).to_string_lossy()
+                        )
+                    }
+                };
+                continue;
+            }
+
+            unsafe {
+                return Ok(Self {
+                    handle,
+                    cuda_set_device: Self::required_symbol(handle, "cudaSetDevice")?,
+                    cuda_host_register: Self::required_symbol(handle, "cudaHostRegister")?,
+                    cuda_host_get_device_pointer: Self::required_symbol(
+                        handle,
+                        "cudaHostGetDevicePointer",
+                    )?,
+                    cuda_memcpy_async: Self::required_symbol(handle, "cudaMemcpyAsync")?,
+                    cuda_stream_synchronize: Self::required_symbol(
+                        handle,
+                        "cudaStreamSynchronize",
+                    )?,
+                    cuda_host_unregister: Self::required_symbol(handle, "cudaHostUnregister")?,
+                    cuda_ipc_open_mem_handle: Self::optional_symbol(handle, "cudaIpcOpenMemHandle"),
+                    cuda_ipc_close_mem_handle: Self::optional_symbol(
+                        handle,
+                        "cudaIpcCloseMemHandle",
+                    ),
+                });
+            }
+        }
+
+        Err(CxlTmatmulError::Device(format!(
+            "cuda_dax matrix staging could not load libcudart: {last_error}"
+        )))
+    }
+
+    unsafe fn required_symbol<T>(
+        handle: *mut libc::c_void,
+        name: &str,
+    ) -> Result<T, CxlTmatmulError> {
+        let c_name = CString::new(name).map_err(|e| CxlTmatmulError::Io(e.to_string()))?;
+        let ptr = libc::dlsym(handle, c_name.as_ptr());
+        if ptr.is_null() {
+            return Err(CxlTmatmulError::Device(format!(
+                "cuda_dax matrix staging missing libcudart symbol {name}"
+            )));
+        }
+        Ok(std::mem::transmute_copy(&ptr))
+    }
+
+    unsafe fn optional_symbol<T>(handle: *mut libc::c_void, name: &str) -> Option<T> {
+        let c_name = CString::new(name).ok()?;
+        let ptr = libc::dlsym(handle, c_name.as_ptr());
+        if ptr.is_null() {
+            None
+        } else {
+            Some(std::mem::transmute_copy(&ptr))
+        }
+    }
+
+    unsafe fn check_cuda(&self, call: &str, rc: libc::c_int) -> Result<(), CxlTmatmulError> {
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(CxlTmatmulError::Device(format!(
+                "{call} failed: cudaError={rc}"
+            )))
+        }
+    }
+
+    unsafe fn stage_nvint8_to_dax(
+        &self,
+        stage: &CudaDaxMatrixStage,
+        dax_host_base: *mut u8,
+        map_len: usize,
+    ) -> Result<(), CxlTmatmulError> {
+        self.check_cuda("cudaSetDevice", (self.cuda_set_device)(stage.gpu))?;
+        self.check_cuda(
+            "cudaHostRegister",
+            (self.cuda_host_register)(dax_host_base.cast(), map_len, CUDA_HOST_REGISTER_MAPPED),
+        )?;
+
+        let mut ipc_opened: Option<*mut libc::c_void> = None;
+        let result = (|| {
+            let mut cxl_dev_base: *mut libc::c_void = std::ptr::null_mut();
+            self.check_cuda(
+                "cudaHostGetDevicePointer",
+                (self.cuda_host_get_device_pointer)(&mut cxl_dev_base, dax_host_base.cast(), 0),
+            )?;
+            if cxl_dev_base.is_null() {
+                return Err(CxlTmatmulError::Device(
+                    "cudaHostGetDevicePointer returned null for DAX mapping".to_string(),
+                ));
+            }
+
+            let src = match &stage.source {
+                CudaDaxSource::DevicePtr(ptr) => *ptr as *mut libc::c_void,
+                CudaDaxSource::IpcHandle { bytes, .. } => {
+                    let Some(open) = self.cuda_ipc_open_mem_handle else {
+                        return Err(CxlTmatmulError::Device(
+                            "cuda_dax IPC source requested but cudaIpcOpenMemHandle is unavailable"
+                                .to_string(),
+                        ));
+                    };
+                    let mut dev_ptr: *mut libc::c_void = std::ptr::null_mut();
+                    self.check_cuda(
+                        "cudaIpcOpenMemHandle",
+                        open(
+                            &mut dev_ptr,
+                            bytes.as_ptr() as *mut libc::c_void,
+                            CUDA_IPC_MEM_LAZY_ENABLE_PEER_ACCESS,
+                        ),
+                    )?;
+                    if dev_ptr.is_null() {
+                        return Err(CxlTmatmulError::Device(
+                            "cudaIpcOpenMemHandle returned null device pointer".to_string(),
+                        ));
+                    }
+                    ipc_opened = Some(dev_ptr);
+                    dev_ptr
+                }
+            };
+            if src.is_null() {
+                return Err(CxlTmatmulError::Device(
+                    "cuda_dax matrix source pointer is null".to_string(),
+                ));
+            }
+
+            let cxl_offset =
+                usize::try_from(stage.cxl_offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+            let dst = (cxl_dev_base as *mut u8)
+                .add(cxl_offset)
+                .cast::<libc::c_void>();
+            let stream = stage.stream as *mut libc::c_void;
+            self.check_cuda(
+                "cudaMemcpyAsync",
+                (self.cuda_memcpy_async)(
+                    dst,
+                    src as *const libc::c_void,
+                    stage.bytes,
+                    CUDA_MEMCPY_DEFAULT,
+                    stream,
+                ),
+            )?;
+            self.check_cuda(
+                "cudaStreamSynchronize",
+                (self.cuda_stream_synchronize)(stream),
+            )?;
+            eprintln!(
+                "[CXL TMatmul] cuda_dax staged nvint8 bytes={} gpu={} cxl_offset=0x{:x} dax={} stream=0x{:x}",
+                stage.bytes, stage.gpu, stage.cxl_offset, stage.dax_path, stage.stream
+            );
+            Ok(())
+        })();
+
+        if let Some(dev_ptr) = ipc_opened {
+            if let Some(close) = self.cuda_ipc_close_mem_handle {
+                let _ = close(dev_ptr);
+            }
+        }
+        let _ = (self.cuda_host_unregister)(dax_host_base.cast());
+        result
+    }
+}
+
+#[cfg(unix)]
+impl Drop for CudaRuntime {
+    fn drop(&mut self) {
+        unsafe {
+            libc::dlclose(self.handle);
         }
     }
 }
@@ -1421,6 +1949,108 @@ fn timeout_ms_or_default(timeout_ms: u32) -> u32 {
     } else {
         timeout_ms
     }
+}
+
+#[cfg(unix)]
+fn cuda_dax_source_from_env(default_device_ptr: usize) -> Result<CudaDaxSource, CxlTmatmulError> {
+    if let Some(hex) = cuda_ipc_handle_hex_from_env() {
+        return Ok(CudaDaxSource::IpcHandle {
+            bytes: parse_cuda_ipc_handle_hex(&hex)?,
+            hex: normalize_cuda_ipc_handle_hex(&hex)?,
+        });
+    }
+    if default_device_ptr == 0 {
+        return Err(CxlTmatmulError::Device(
+            "cuda_dax matrix staging requires cuda_device_ptr or cuda_ipc_handle".to_string(),
+        ));
+    }
+    Ok(CudaDaxSource::DevicePtr(default_device_ptr))
+}
+
+#[cfg(unix)]
+fn cuda_ipc_handle_hex_from_env() -> Option<String> {
+    [
+        "HETGPU_TMATMUL_MATRIX_CUDA_IPC_HANDLE",
+        "HETGPU_CXL_TMATMUL_MATRIX_CUDA_IPC_HANDLE",
+    ]
+    .iter()
+    .find_map(|key| std::env::var(key).ok())
+}
+
+#[cfg(unix)]
+fn normalize_cuda_ipc_handle_hex(value: &str) -> Result<String, CxlTmatmulError> {
+    let cleaned = value
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches("0X")
+        .chars()
+        .filter(|c| !matches!(c, ':' | '-' | '_' | ' ' | '\n' | '\t' | '\r'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if cleaned.len() != CUDA_IPC_HANDLE_BYTES * 2 || !cleaned.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(CxlTmatmulError::Io(format!(
+            "invalid CUDA IPC handle length {}, expected {} hex chars",
+            cleaned.len(),
+            CUDA_IPC_HANDLE_BYTES * 2
+        )));
+    }
+    Ok(cleaned)
+}
+
+#[cfg(unix)]
+fn parse_cuda_ipc_handle_hex(value: &str) -> Result<[u8; CUDA_IPC_HANDLE_BYTES], CxlTmatmulError> {
+    let normalized = normalize_cuda_ipc_handle_hex(value)?;
+    let mut out = [0u8; CUDA_IPC_HANDLE_BYTES];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let byte = &normalized[i * 2..i * 2 + 2];
+        *slot = u8::from_str_radix(byte, 16)
+            .map_err(|e| CxlTmatmulError::Io(format!("invalid CUDA IPC handle byte {i}: {e}")))?;
+    }
+    Ok(out)
+}
+
+#[cfg(unix)]
+fn cuda_dax_gpu() -> Result<i32, CxlTmatmulError> {
+    let value = env_u64_any(&[
+        "HETGPU_TMATMUL_CUDA_GPU",
+        "HETGPU_TMATMUL_MATRIX_GPU",
+        "HETGPU_CXL_TMATMUL_CUDA_GPU",
+    ])?
+    .unwrap_or(0);
+    i32::try_from(value).map_err(|_| CxlTmatmulError::SizeOverflow)
+}
+
+#[cfg(unix)]
+fn cuda_dax_stream() -> Result<usize, CxlTmatmulError> {
+    env_u64_any(&[
+        "HETGPU_TMATMUL_CUDA_STREAM",
+        "HETGPU_TMATMUL_MATRIX_CUDA_STREAM",
+    ])?
+    .map(|value| usize::try_from(value).map_err(|_| CxlTmatmulError::SizeOverflow))
+    .transpose()
+    .map(|value| value.unwrap_or(0))
+}
+
+#[cfg(unix)]
+fn cuda_dax_matrix_stage(
+    matrix_ptr: usize,
+    bytes: usize,
+    cxl_offset: u64,
+) -> Result<CudaDaxMatrixStage, CxlTmatmulError> {
+    if bytes == 0 {
+        return Err(CxlTmatmulError::Device(
+            "cuda_dax matrix staging requires non-zero bytes".to_string(),
+        ));
+    }
+    Ok(CudaDaxMatrixStage {
+        source: cuda_dax_source_from_env(matrix_ptr)?,
+        bytes,
+        dax_path: cxl_tmatmul_dax_path(),
+        cxl_offset,
+        gpu: cuda_dax_gpu()?,
+        stream: cuda_dax_stream()?,
+    })
 }
 
 #[cfg(unix)]
@@ -1715,6 +2345,17 @@ mod tests {
     }
 
     #[test]
+    fn encodes_stall_for_live_rtl_bit_order() {
+        let stall = encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0);
+        let words: Vec<u32> = stall
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();
+
+        assert_eq!(words, vec![0, 0, 0x0050_0000, 0]);
+    }
+
+    #[test]
     fn assembles_smoke_program_from_tmatmul_assembly() {
         let asm = format!(
             "
@@ -1759,6 +2400,64 @@ mod tests {
         let program = assemble_tmatmul_program(asm, &labels).unwrap();
 
         assert_eq!(program, encode_smoke_program());
+    }
+
+    #[test]
+    fn assembler_accepts_tmatmul_go_nvint8_alias_with_explicit_stage_width() {
+        let matrix_offset = 0x0040_0000;
+        let asm = "
+            ldv v0,PARAM_1
+            tmatmul_import v0
+            tmatmul_go_nvint8 PARAM_0,4
+            tmatmul_export v1
+            sv v1,PARAM_2
+            stall
+        ";
+        let labels = std::collections::HashMap::from([
+            ("PARAM_0".to_string(), matrix_offset),
+            ("PARAM_1".to_string(), TMATMUL_DPA_INPUT),
+            ("PARAM_2".to_string(), TMATMUL_DPA_OUTPUT),
+        ]);
+
+        let program = assemble_tmatmul_program(asm, &labels).unwrap();
+
+        assert_eq!(&program[32..40], &matrix_offset.to_le_bytes());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn matrix_stage_mode_parser_accepts_cuda_dax() {
+        assert_eq!(
+            parse_matrix_stage_mode(Some("cuda_dax")).unwrap(),
+            MatrixStageMode::CudaDax
+        );
+        assert_eq!(
+            parse_matrix_stage_mode(Some("host")).unwrap(),
+            MatrixStageMode::Host
+        );
+        assert_eq!(
+            parse_matrix_stage_mode(None).unwrap(),
+            MatrixStageMode::Host
+        );
+        assert!(parse_matrix_stage_mode(Some("bogus")).is_err());
+    }
+
+    #[test]
+    fn fixed_layout_allows_nondefault_matrix_offset_when_ranges_do_not_overlap() {
+        validate_fixed_layout_at_offsets(0x0040_0000, 0x1000, 0x1000, TMATMUL_PROGRAM_BYTES)
+            .unwrap();
+
+        let err = validate_fixed_layout_at_offsets(
+            TMATMUL_DPA_INPUT - 0x100,
+            0x200,
+            0x1000,
+            TMATMUL_PROGRAM_BYTES,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("matrix/input"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1943,7 +2642,7 @@ mod tests {
         let status = submit_prepared_hardware_matmul(
             &device,
             &program,
-            &matrix,
+            MatrixStage::Host(&matrix),
             &input,
             &mut output,
             10_000,
@@ -1969,6 +2668,55 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn hardware_csr_probe_stages_and_runs_stall_program_when_requested() {
+        if !env_flag("HETGPU_CXL_TMATMUL_HW_STALL_PROBE") {
+            return;
+        }
+
+        let device_path = cxl_tmatmul_device_path();
+        let device = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&device_path)
+            .unwrap_or_else(|e| panic!("open {device_path}: {e}"));
+        let info = get_info(&device).unwrap();
+        assert_eq!(info.version, CXL_TYPE2_TMATMUL_UAPI_VERSION);
+        assert_ne!(info.dim_d, 0);
+
+        let mut program = vec![0u8; TMATMUL_PROGRAM_BYTES];
+        program[..16].copy_from_slice(&encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0));
+
+        let mut staging =
+            StagingMap::open_csr_probe((TMATMUL_DPA_PROGRAM as usize) + program.len()).unwrap();
+        staging.stage_bytes(TMATMUL_DPA_PROGRAM, &program).unwrap();
+
+        let mut readback = vec![0u8; program.len()];
+        staging
+            .read_bytes(TMATMUL_DPA_PROGRAM, &mut readback)
+            .unwrap();
+        assert_eq!(readback, program);
+
+        staging.reset_instruction_engine_before_run().unwrap();
+        let started = std::time::Instant::now();
+        let status = staging
+            .run_instance0_program(
+                TMATMUL_DPA_PROGRAM,
+                program.len() as u32,
+                10_000,
+                info.dim_d,
+            )
+            .unwrap();
+        assert_ne!(status.result_flags & CXL_TYPE2_TMATMUL_RESULT_STALLED, 0);
+        eprintln!(
+            "tmatmul csr-probe stall smoke dim={} elapsed_us={} status={:?}",
+            info.dim_d,
+            started.elapsed().as_micros(),
+            status
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn hardware_benchmark_runs_when_requested() {
         if !env_flag("HETGPU_CXL_TMATMUL_HW_BENCH") {
             return;
@@ -1988,7 +2736,7 @@ mod tests {
             let status = submit_prepared_hardware_matmul(
                 &device,
                 &program,
-                &matrix,
+                MatrixStage::Host(&matrix),
                 &input,
                 &mut output,
                 10_000,
