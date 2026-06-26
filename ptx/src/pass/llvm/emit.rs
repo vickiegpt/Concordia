@@ -127,8 +127,8 @@ struct ModuleEmitContext<'a, 'input> {
     resolver: ResolveIdent,
 }
 
-fn pacc_log_ptx_emit_enabled() -> bool {
-    std::env::var("HETGPU_PACC_LOG_PTX_EMIT").ok().as_deref() == Some("1")
+fn sifive_log_ptx_emit_enabled() -> bool {
+    std::env::var("HETGPU_SIFIVE_LOG_PTX_EMIT").ok().as_deref() == Some("1")
 }
 
 impl<'a, 'input> ModuleEmitContext<'a, 'input> {
@@ -147,12 +147,12 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
     }
 
     fn kernel_call_convention() -> u32 {
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         {
-            // PACC lowers PTX-generated LLVM IR through a RISC-V backend rather than
+            // SIFIVE lowers PTX-generated LLVM IR through a RISC-V backend rather than
             // NVPTX. The NVPTX kernel CC (71) survives into the bitcode and later
             // makes LLVM RISC-V codegen fail with "Unsupported calling convention".
-            // For the PACC pipeline we keep kernels on the plain C calling
+            // For the SIFIVE pipeline we keep kernels on the plain C calling
             // convention and rely on the runtime launch ABI instead.
             return LLVMCallConv::LLVMCCallConv as u32;
         }
@@ -180,7 +180,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             .or_else(|| self.id_defs.ident_map[&method.name].name.as_deref())
             .ok_or_else(|| error_unreachable())?;
         let symbol_name = format!("f_{}", sanitize_llvm_value_name(name));
-        if pacc_log_ptx_emit_enabled() {
+        if sifive_log_ptx_emit_enabled() {
             eprintln!(
                 "[ptx emit] method name raw='{}' final='{}' kernel={}",
                 name, symbol_name, method.is_kernel
@@ -230,7 +230,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
                     unsafe { LLVMSetParamAlignment(value, align) };
                 }
             }
-            #[cfg(not(feature = "pacc"))]
+            #[cfg(not(feature = "sifive"))]
             {
                 let llvm_name = sanitize_llvm_value_name(name);
                 unsafe { LLVMSetValueName2(value, llvm_name.as_ptr().cast(), llvm_name.len()) };
@@ -263,7 +263,7 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             Self::func_call_convention()
         };
         unsafe { LLVMSetFunctionCallConv(fn_, call_conv) };
-        if pacc_log_ptx_emit_enabled() {
+        if sifive_log_ptx_emit_enabled() {
             eprintln!(
                 "[ptx emit] method cc final='{}' requested={} actual={}",
                 symbol_name,
@@ -272,14 +272,14 @@ impl<'a, 'input> ModuleEmitContext<'a, 'input> {
             );
         }
         if let Some(statements) = method.body {
-            let trace_needle = std::env::var("HETGPU_PACC_TRACE_EMIT_METHOD").ok();
-            let trace_from = std::env::var("HETGPU_PACC_TRACE_EMIT_FROM")
+            let trace_needle = std::env::var("HETGPU_SIFIVE_TRACE_EMIT_METHOD").ok();
+            let trace_from = std::env::var("HETGPU_SIFIVE_TRACE_EMIT_FROM")
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok());
-            let trace_statement = std::env::var("HETGPU_PACC_TRACE_EMIT_STATEMENT")
+            let trace_statement = std::env::var("HETGPU_SIFIVE_TRACE_EMIT_STATEMENT")
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok());
-            let trace_every = std::env::var("HETGPU_PACC_TRACE_EMIT_EVERY")
+            let trace_every = std::env::var("HETGPU_SIFIVE_TRACE_EMIT_EVERY")
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
                 .filter(|value| *value > 0)
@@ -587,7 +587,7 @@ impl<'a> MethodEmitContext<'a> {
         &mut self,
         statement: Statement<ast::Instruction<SpirvWord>, SpirvWord>,
     ) -> Result<(), TranslateError> {
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         {
             let current_block = unsafe { LLVMGetInsertBlock(self.builder) };
             if !current_block.is_null()
@@ -650,9 +650,9 @@ impl<'a> MethodEmitContext<'a> {
                     get_state_space(var.info.state_space)?,
                 )
             };
-            #[cfg(feature = "pacc")]
+            #[cfg(feature = "sifive")]
             self.resolver.register_wide_address(var.name, global);
-            #[cfg(not(feature = "pacc"))]
+            #[cfg(not(feature = "sifive"))]
             self.resolver.register(var.name, global);
             if let Some(align) = var.info.align {
                 unsafe { LLVMSetAlignment(global, align) };
@@ -664,9 +664,9 @@ impl<'a> MethodEmitContext<'a> {
             return Ok(());
         }
 
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         let llvm_name = LLVM_UNNAMED.as_ptr();
-        #[cfg(not(feature = "pacc"))]
+        #[cfg(not(feature = "sifive"))]
         let llvm_name = self.resolver.get_or_add_raw(var.name);
         let alloca = unsafe {
             LLVMZludaBuildAlloca(
@@ -676,13 +676,13 @@ impl<'a> MethodEmitContext<'a> {
                 llvm_name.cast(),
             )
         };
-        #[cfg(feature = "pacc")]
-        if pacc_uses_64bit_address_values(var.info.state_space) {
+        #[cfg(feature = "sifive")]
+        if sifive_uses_64bit_address_values(var.info.state_space) {
             self.resolver.register_wide_address(var.name, alloca);
         } else {
             self.resolver.register(var.name, alloca);
         }
-        #[cfg(not(feature = "pacc"))]
+        #[cfg(not(feature = "sifive"))]
         self.resolver.register(var.name, alloca);
         if let Some(align) = var.info.align {
             unsafe { LLVMSetAlignment(alloca, align) };
@@ -694,15 +694,15 @@ impl<'a> MethodEmitContext<'a> {
     }
 
     fn emit_label_initial(&mut self, label: SpirvWord) {
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         let block_name = LLVM_UNNAMED.as_ptr();
-        #[cfg(not(feature = "pacc"))]
+        #[cfg(not(feature = "sifive"))]
         let llvm_name = CString::new(format!(
             "bb_{}",
             sanitize_llvm_value_name(self.resolver.get_or_add(label))
         ))
         .expect("basic block label should be sanitizable");
-        #[cfg(not(feature = "pacc"))]
+        #[cfg(not(feature = "sifive"))]
         let block_name = llvm_name.as_ptr();
         let block = unsafe { LLVMAppendBasicBlockInContext(self.context, self.method, block_name) };
         self.resolver
@@ -791,23 +791,23 @@ impl<'a> MethodEmitContext<'a> {
             ast::Instruction::Tcgen05Cp { .. } => Ok(()), // nop - SM_100+ tensor core
             ast::Instruction::Tcgen05Shift { .. } => Ok(()), // nop - SM_100+ tensor core
             ast::Instruction::Tcgen05Mma { .. } => Ok(()), // nop - SM_100+ tensor core
-            // PACC: Emit VCIX intrinsics for matrix operations on RISC-V IME
+            // SIFIVE: Emit VCIX intrinsics for matrix operations on RISC-V IME
             ast::Instruction::Mma { data, arguments } => {
-                #[cfg(feature = "pacc")]
+                #[cfg(feature = "sifive")]
                 {
-                    self.emit_mma_pacc_vcix(data, arguments)
+                    self.emit_mma_sifive_vcix(data, arguments)
                 }
-                #[cfg(not(feature = "pacc"))]
+                #[cfg(not(feature = "sifive"))]
                 {
                     return Err(error_unreachable());
                 }
             }
             ast::Instruction::LdMatrix { data, arguments } => {
-                #[cfg(feature = "pacc")]
+                #[cfg(feature = "sifive")]
                 {
-                    self.emit_ldmatrix_pacc(data, arguments)
+                    self.emit_ldmatrix_sifive(data, arguments)
                 }
-                #[cfg(not(feature = "pacc"))]
+                #[cfg(not(feature = "sifive"))]
                 {
                     return Err(error_unreachable());
                 }
@@ -856,8 +856,8 @@ impl<'a> MethodEmitContext<'a> {
         Ok(())
     }
 
-    #[cfg(feature = "pacc")]
-    fn pacc_int_to_i64(&self, value: LLVMValueRef) -> LLVMValueRef {
+    #[cfg(feature = "sifive")]
+    fn sifive_int_to_i64(&self, value: LLVMValueRef) -> LLVMValueRef {
         unsafe {
             let value_type = LLVMTypeOf(value);
             if LLVMGetTypeKind(value_type) != LLVMTypeKind::LLVMIntegerTypeKind {
@@ -874,8 +874,8 @@ impl<'a> MethodEmitContext<'a> {
         }
     }
 
-    #[cfg(feature = "pacc")]
-    fn pacc_wide_binary_operands(
+    #[cfg(feature = "sifive")]
+    fn sifive_wide_binary_operands(
         &self,
         src1_word: SpirvWord,
         src2_word: SpirvWord,
@@ -885,11 +885,11 @@ impl<'a> MethodEmitContext<'a> {
         if !(self.resolver.is_wide_address(src1_word) || self.resolver.is_wide_address(src2_word)) {
             return None;
         }
-        Some((self.pacc_int_to_i64(src1), self.pacc_int_to_i64(src2)))
+        Some((self.sifive_int_to_i64(src1), self.sifive_int_to_i64(src2)))
     }
 
-    #[cfg(feature = "pacc")]
-    fn pacc_pointer_value_uses_64bit_address(&self, value: LLVMValueRef) -> bool {
+    #[cfg(feature = "sifive")]
+    fn sifive_pointer_value_uses_64bit_address(&self, value: LLVMValueRef) -> bool {
         unsafe {
             let value_type = LLVMTypeOf(value);
             if LLVMGetTypeKind(value_type) != LLVMTypeKind::LLVMPointerTypeKind {
@@ -907,7 +907,7 @@ impl<'a> MethodEmitContext<'a> {
         match conversion.kind {
             ConversionKind::Default => {
                 let src = self.resolver.value(conversion.src)?;
-                #[cfg(feature = "pacc")]
+                #[cfg(feature = "sifive")]
                 if self.resolver.is_wide_address(conversion.src) {
                     self.resolver.register_wide_address(conversion.dst, src);
                     return Ok(());
@@ -932,9 +932,9 @@ impl<'a> MethodEmitContext<'a> {
             ConversionKind::BitToPtr => {
                 let mut src = self.resolver.value(conversion.src)?;
                 let type_ = get_pointer_type(self.context, conversion.to_space)?;
-                #[cfg(feature = "pacc")]
-                if pacc_uses_64bit_address_values(conversion.to_space) {
-                    src = self.pacc_int_to_i64(src);
+                #[cfg(feature = "sifive")]
+                if sifive_uses_64bit_address_values(conversion.to_space) {
+                    src = self.sifive_int_to_i64(src);
                 }
                 self.resolver.with_result(conversion.dst, |dst| unsafe {
                     LLVMBuildIntToPtr(builder, src, type_, dst)
@@ -951,7 +951,7 @@ impl<'a> MethodEmitContext<'a> {
             }
             ConversionKind::AddressOf => {
                 let src = self.resolver.value(conversion.src)?;
-                // PACC lowers PTX to native RV64 code. Any LLVM pointer value,
+                // SIFIVE lowers PTX to native RV64 code. Any LLVM pointer value,
                 // including PTX local/register allocas, is a real 64-bit
                 // address. Truncating address-of results to PTX's nominal b32
                 // local address type produces addw/slli/srli sequences and
@@ -1113,9 +1113,9 @@ impl<'a> MethodEmitContext<'a> {
         };
         let src1 = self.resolver.value(arguments.src1)?;
         let src2 = self.resolver.value(arguments.src2)?;
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         if let Some((src1, src2)) =
-            self.pacc_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
+            self.sifive_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
         {
             let value = unsafe { fn_(builder, src1, src2, LLVM_UNNAMED.as_ptr()) };
             self.resolver.register_wide_address(arguments.dst, value);
@@ -1209,7 +1209,7 @@ impl<'a> MethodEmitContext<'a> {
 
     fn emit_mov(&mut self, arguments: ast::MovArgs<SpirvWord>) -> Result<(), TranslateError> {
         let src = self.resolver.value(arguments.src)?;
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         if self.resolver.is_wide_address(arguments.src) {
             self.resolver.register_wide_address(arguments.dst, src);
             return Ok(());
@@ -1232,9 +1232,9 @@ impl<'a> MethodEmitContext<'a> {
         let builder = self.builder;
         let src1 = self.resolver.value(arguments.src1)?;
         let src2 = self.resolver.value(arguments.src2)?;
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         if let Some((src1, src2)) =
-            self.pacc_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
+            self.sifive_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
         {
             let value = unsafe { LLVMBuildAnd(builder, src1, src2, LLVM_UNNAMED.as_ptr()) };
             self.resolver.register_wide_address(arguments.dst, value);
@@ -1533,9 +1533,9 @@ impl<'a> MethodEmitContext<'a> {
     ) -> Result<(), TranslateError> {
         let src1 = self.resolver.value(arguments.src1)?;
         let src2 = self.resolver.value(arguments.src2)?;
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         if let Some((src1, src2)) =
-            self.pacc_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
+            self.sifive_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
         {
             let value = unsafe { LLVMBuildOr(self.builder, src1, src2, LLVM_UNNAMED.as_ptr()) };
             self.resolver.register_wide_address(arguments.dst, value);
@@ -1554,9 +1554,9 @@ impl<'a> MethodEmitContext<'a> {
     ) -> Result<(), TranslateError> {
         let src1 = self.resolver.value(arguments.src1)?;
         let src2 = self.resolver.value(arguments.src2)?;
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         if let Some((src1, src2)) =
-            self.pacc_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
+            self.sifive_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
         {
             let value = unsafe { LLVMBuildXor(self.builder, src1, src2, LLVM_UNNAMED.as_ptr()) };
             self.resolver.register_wide_address(arguments.dst, value);
@@ -1724,9 +1724,9 @@ impl<'a> MethodEmitContext<'a> {
         let from_type = get_pointer_type(self.context, from_space)?;
         let dest_type = get_pointer_type(self.context, to_space)?;
         let mut src = self.resolver.value(arguments.src)?;
-        #[cfg(feature = "pacc")]
-        if pacc_uses_64bit_address_values(from_space) || pacc_uses_64bit_address_values(to_space) {
-            src = self.pacc_int_to_i64(src);
+        #[cfg(feature = "sifive")]
+        if sifive_uses_64bit_address_values(from_space) || sifive_uses_64bit_address_values(to_space) {
+            src = self.sifive_int_to_i64(src);
         }
         let temp_ptr =
             unsafe { LLVMBuildIntToPtr(self.builder, src, from_type, LLVM_UNNAMED.as_ptr()) };
@@ -1772,9 +1772,9 @@ impl<'a> MethodEmitContext<'a> {
         }
         let src1 = self.resolver.value(arguments.src1)?;
         let src2 = self.resolver.value(arguments.src2)?;
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         if let Some((src1, src2)) =
-            self.pacc_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
+            self.sifive_wide_binary_operands(arguments.src1, arguments.src2, src1, src2)
         {
             let value = unsafe { LLVMBuildSub(self.builder, src1, src2, LLVM_UNNAMED.as_ptr()) };
             self.resolver.register_wide_address(arguments.dst, value);
@@ -1941,9 +1941,9 @@ impl<'a> MethodEmitContext<'a> {
         let src2_word = src2;
         let src1 = self.resolver.value(src1_word)?;
         let src2 = self.resolver.value(src2_word)?;
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         let (src1, src2) = if let Some((src1, src2)) =
-            self.pacc_wide_binary_operands(src1_word, src2_word, src1, src2)
+            self.sifive_wide_binary_operands(src1_word, src2_word, src1, src2)
         {
             (src1, src2)
         } else {
@@ -2399,7 +2399,7 @@ impl<'a> MethodEmitContext<'a> {
         data: ptx_parser::RcpData,
         arguments: ptx_parser::RcpArgs<SpirvWord>,
     ) -> Result<(), TranslateError> {
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         if matches!(
             (data.type_, data.kind),
             (ast::ScalarType::F32, ast::RcpKind::Approx)
@@ -2444,7 +2444,7 @@ impl<'a> MethodEmitContext<'a> {
         data: ptx_parser::ShfDetails,
         arguments: ShfArgs<SpirvWord>,
     ) -> Result<(), TranslateError> {
-        let trace_shf = std::env::var("HETGPU_PACC_TRACE_SHF")
+        let trace_shf = std::env::var("HETGPU_SIFIVE_TRACE_SHF")
             .ok()
             .as_deref()
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -2482,7 +2482,7 @@ impl<'a> MethodEmitContext<'a> {
 
         // PTX shf.{l,r}.{wrap,clamp}.b32 uses raw bit semantics over two 32-bit
         // operands. Lower it explicitly instead of relying on llvm.fshl/fshr:
-        // the intrinsic path hangs in the current PACC rope_neox workload.
+        // the intrinsic path hangs in the current SIFIVE rope_neox workload.
         let masked_shift =
             unsafe { LLVMBuildAnd(self.builder, shift_amount, const_31, LLVM_UNNAMED.as_ptr()) };
         if trace_shf {
@@ -2551,7 +2551,7 @@ impl<'a> MethodEmitContext<'a> {
                 eprintln!("[ptx emit shf] registered clamp result");
             }
         } else {
-            #[cfg(not(feature = "pacc"))]
+            #[cfg(not(feature = "sifive"))]
             {
                 let name = self.resolver.get_or_add(arguments.dst);
                 let llvm_name = sanitize_llvm_value_name(name);
@@ -2682,13 +2682,13 @@ impl<'a> MethodEmitContext<'a> {
         data: ptx_parser::TypeFtz,
         arguments: ptx_parser::Ex2Args<SpirvWord>,
     ) -> Result<(), TranslateError> {
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         let intrinsic = match data.type_ {
             ast::ScalarType::F16 => c"llvm.exp2.f16",
             ast::ScalarType::F32 => c"llvm.exp2.f32",
             _ => return Err(error_unreachable()),
         };
-        #[cfg(not(feature = "pacc"))]
+        #[cfg(not(feature = "sifive"))]
         let intrinsic = match data.type_ {
             ast::ScalarType::F16 => c"llvm.amdgcn.exp2.f16",
             ast::ScalarType::F32 => c"llvm.amdgcn.exp2.f32",
@@ -2756,11 +2756,11 @@ impl<'a> MethodEmitContext<'a> {
     }
 
     fn emit_bar_warp(&mut self) -> Result<(), TranslateError> {
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         {
             return Ok(());
         }
-        #[cfg(not(feature = "pacc"))]
+        #[cfg(not(feature = "sifive"))]
         self.emit_intrinsic(c"llvm.amdgcn.wave.barrier", None, None, vec![])?;
         Ok(())
     }
@@ -3553,10 +3553,10 @@ impl<'a> MethodEmitContext<'a> {
      */
 
     // =========================================================================
-    // PACC: VCIX intrinsic emission for RISC-V IME matrix operations
+    // SIFIVE: VCIX intrinsic emission for RISC-V IME matrix operations
     // =========================================================================
 
-    /// Emit a PTX mma instruction as a PACC matrix multiply-accumulate.
+    /// Emit a PTX mma instruction as a SIFIVE matrix multiply-accumulate.
     ///
     /// Supports two codegen paths:
     /// 1. **VCIX path** (for real SiFive XM hardware):
@@ -3566,19 +3566,19 @@ impl<'a> MethodEmitContext<'a> {
     ///
     /// Maps PTX mma operands (dst=D, src1=A, src2=B, src3=C) to:
     ///   D = C + A * B^T
-    #[cfg(feature = "pacc")]
-    fn emit_mma_pacc_vcix(
+    #[cfg(feature = "sifive")]
+    fn emit_mma_sifive_vcix(
         &mut self,
         data: ast::MmaDetails,
         arguments: ast::MmaArgs<SpirvWord>,
     ) -> Result<(), TranslateError> {
-        use crate::pass::emit_pacc_vcix::{self, PaccElementType, PaccTileConfig};
+        use crate::pass::emit_sifive_vcix::{self, SifiveElementType, SifiveTileConfig};
         use llvm_zluda::*;
 
-        // Map PTX scalar types to PACC element types
-        let a_elem = pacc_elem_from_scalar(data.atype_scalar);
-        let b_elem = pacc_elem_from_scalar(data.btype_scalar);
-        let d_elem = pacc_elem_from_scalar(data.dtype_scalar);
+        // Map PTX scalar types to SIFIVE element types
+        let a_elem = sifive_elem_from_scalar(data.atype_scalar);
+        let b_elem = sifive_elem_from_scalar(data.btype_scalar);
+        let d_elem = sifive_elem_from_scalar(data.dtype_scalar);
 
         let src_sew = a_elem.sew_bits();
         let dst_sew = d_elem.sew_bits();
@@ -3595,7 +3595,7 @@ impl<'a> MethodEmitContext<'a> {
         let c_val = self.resolver.value(arguments.src3)?;
 
         // Check if Zvbdot instruction is available for this type combo
-        let zvbdot_instr = emit_pacc_vcix::select_zvbdot_instr(a_elem, b_elem, d_elem);
+        let zvbdot_instr = emit_sifive_vcix::select_zvbdot_instr(a_elem, b_elem, d_elem);
 
         if let Some(instr) = zvbdot_instr {
             // --- Zvbdot path: inline assembly for spike simulation ---
@@ -3692,10 +3692,10 @@ impl<'a> MethodEmitContext<'a> {
     /// Emit a PTX ldmatrix instruction as a standard RVV vector load.
     ///
     /// ldmatrix loads matrix fragments from shared memory into registers.
-    /// On PACC, we use standard RVV vector loads (vle8/vle16) since IME
+    /// On SIFIVE, we use standard RVV vector loads (vle8/vle16) since IME
     /// reuses the vector register file.
-    #[cfg(feature = "pacc")]
-    fn emit_ldmatrix_pacc(
+    #[cfg(feature = "sifive")]
+    fn emit_ldmatrix_sifive(
         &mut self,
         data: ast::LdMatrixDetails,
         arguments: ast::LdMatrixArgs<SpirvWord>,
@@ -3703,7 +3703,7 @@ impl<'a> MethodEmitContext<'a> {
         use llvm_zluda::*;
 
         // ldmatrix loads from shared memory into register fragments
-        // For PACC, this becomes a standard vector load
+        // For SIFIVE, this becomes a standard vector load
         let src_ptr = self.resolver.value(arguments.src)?;
         let loaded_type = data.get_loaded_type();
         let llvm_type = get_type(self.context, &loaded_type)?;
@@ -3720,26 +3720,26 @@ impl<'a> MethodEmitContext<'a> {
     }
 }
 
-/// Map PTX ScalarType to PACC element type (used by emit_mma_pacc_vcix)
-#[cfg(feature = "pacc")]
-fn pacc_elem_from_scalar(scalar: ast::ScalarType) -> crate::pass::emit_pacc_vcix::PaccElementType {
-    use crate::pass::emit_pacc_vcix::PaccElementType;
+/// Map PTX ScalarType to SIFIVE element type (used by emit_mma_sifive_vcix)
+#[cfg(feature = "sifive")]
+fn sifive_elem_from_scalar(scalar: ast::ScalarType) -> crate::pass::emit_sifive_vcix::SifiveElementType {
+    use crate::pass::emit_sifive_vcix::SifiveElementType;
     match scalar {
-        ast::ScalarType::U8 => PaccElementType::Uint8,
-        ast::ScalarType::S8 => PaccElementType::Int8,
-        ast::ScalarType::U16 => PaccElementType::Uint16,
-        ast::ScalarType::S16 => PaccElementType::Int16,
-        ast::ScalarType::U32 | ast::ScalarType::B32 => PaccElementType::Int32,
-        ast::ScalarType::S32 => PaccElementType::Int32,
-        ast::ScalarType::F16 => PaccElementType::Float16,
-        ast::ScalarType::BF16 => PaccElementType::Bfloat16,
-        ast::ScalarType::F32 => PaccElementType::Float32,
-        _ => PaccElementType::Int8, // fallback
+        ast::ScalarType::U8 => SifiveElementType::Uint8,
+        ast::ScalarType::S8 => SifiveElementType::Int8,
+        ast::ScalarType::U16 => SifiveElementType::Uint16,
+        ast::ScalarType::S16 => SifiveElementType::Int16,
+        ast::ScalarType::U32 | ast::ScalarType::B32 => SifiveElementType::Int32,
+        ast::ScalarType::S32 => SifiveElementType::Int32,
+        ast::ScalarType::F16 => SifiveElementType::Float16,
+        ast::ScalarType::BF16 => SifiveElementType::Bfloat16,
+        ast::ScalarType::F32 => SifiveElementType::Float32,
+        _ => SifiveElementType::Int8, // fallback
     }
 }
 
-#[cfg(feature = "pacc")]
-fn pacc_uses_64bit_address_values(space: ast::StateSpace) -> bool {
+#[cfg(feature = "sifive")]
+fn sifive_uses_64bit_address_values(space: ast::StateSpace) -> bool {
     matches!(
         space,
         ast::StateSpace::Reg | ast::StateSpace::Local | ast::StateSpace::Shared
@@ -4005,9 +4005,9 @@ impl ResolveIdent {
         word: SpirvWord,
         fn_: impl FnOnce(*const c_char) -> LLVMValueRef,
     ) -> LLVMValueRef {
-        #[cfg(feature = "pacc")]
+        #[cfg(feature = "sifive")]
         let t = fn_(LLVM_UNNAMED.as_ptr());
-        #[cfg(not(feature = "pacc"))]
+        #[cfg(not(feature = "sifive"))]
         let t = self.get_or_ad_impl(word, |dst| fn_(dst.as_ptr().cast()));
         self.register(word, t);
         t

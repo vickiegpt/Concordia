@@ -51,7 +51,7 @@ Three new crates, one new compiler pass, one new comgr entry point.
 ### `ext/aie_comgr-sys`
 
 Shell-out driver for the mlir-aie toolchain. Input: TOSA MLIR text. Output:
-XCLBIN bytes. Mirrors the structure of `ext/pacc_comgr-sys`.
+XCLBIN bytes. Mirrors the structure of `ext/sifive_comgr-sys`.
 
 **Public API:**
 

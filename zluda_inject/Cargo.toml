@@ -9,7 +9,7 @@ default = []
 intel = []
 tenstorrent = []
 gemmini = []
-pacc = []
+sifive = []
 nvidia = []
 [[bin]]
 name = "zluda_with"

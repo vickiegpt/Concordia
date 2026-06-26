@@ -1,4 +1,4 @@
-#[cfg(any(feature = "tenstorrent", feature = "nvidia", feature = "pacc"))]
+#[cfg(any(feature = "tenstorrent", feature = "nvidia", feature = "sifive"))]
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
@@ -14,76 +14,76 @@ use nvidia_runtime_sys;
 use ze_runtime_sys::*;
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-use pacc_runtime_sys;
+use sifive_runtime_sys;
 use std::ptr;
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 use std::sync::{Mutex, OnceLock};
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE: AtomicBool = AtomicBool::new(false);
+static SIFIVE_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE: AtomicBool = AtomicBool::new(false);
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_MMVF_OFFLOAD_DISABLED_AFTER_FAILURE: AtomicBool = AtomicBool::new(false);
+static SIFIVE_MMVF_OFFLOAD_DISABLED_AFTER_FAILURE: AtomicBool = AtomicBool::new(false);
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_DRIVER_KERNEL_NOOP_LAUNCH_COUNT: AtomicU64 = AtomicU64::new(0);
+static SIFIVE_DRIVER_KERNEL_NOOP_LAUNCH_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_DRIVER_KERNEL_NOOP_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+static SIFIVE_DRIVER_KERNEL_NOOP_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_NAMED_FAILOPEN_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+static SIFIVE_NAMED_FAILOPEN_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_GENERIC_FAST_SUCCESS_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+static SIFIVE_GENERIC_FAST_SUCCESS_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_NAMED_ERROR_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+static SIFIVE_NAMED_ERROR_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "intel")]
 fn tmatmul_default_cocotb_dir() -> String {
@@ -178,25 +178,25 @@ fn select_tmatmul_ptx(runtime_ptx: Option<&str>, cocotb_dir: &str) -> Option<(St
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[derive(Copy, Clone)]
-struct PaccCachedKernelHandles {
+struct SifiveCachedKernelHandles {
     device: usize,
     program: usize,
     kernel: usize,
 }
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_PYTORCH_SOFTMAX_ELF_KERNELS: std::sync::OnceLock<
-    std::sync::Mutex<[Option<PaccCachedKernelHandles>; 4]>,
+static SIFIVE_PYTORCH_SOFTMAX_ELF_KERNELS: std::sync::OnceLock<
+    std::sync::Mutex<[Option<SifiveCachedKernelHandles>; 4]>,
 > = std::sync::OnceLock::new();
 
 #[cfg(feature = "amd")]
@@ -8181,11 +8181,11 @@ pub(crate) fn launch_kernel_ex(
 }
 
 // ============================================================================
-// PACC function implementations (SiFive Intelligence XM / RISC-V IME)
+// SIFIVE function implementations (SiFive Intelligence XM / RISC-V IME)
 // ============================================================================
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -8193,7 +8193,7 @@ pub(crate) fn launch_kernel_ex(
 pub(crate) fn get_attribute(
     pi: *mut i32,
     attrib: cuda_types::cuda::CUfunction_attribute,
-    func: *mut crate::r#impl::module::PaccKernel,
+    func: *mut crate::r#impl::module::SifiveKernel,
 ) -> cuda_types::cuda::CUresult {
     use cuda_types::cuda::*;
     if pi.is_null() || func.is_null() {
@@ -8217,13 +8217,13 @@ pub(crate) fn get_attribute(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 pub(crate) fn launch_kernel(
-    f: *mut crate::r#impl::module::PaccKernel,
+    f: *mut crate::r#impl::module::SifiveKernel,
     grid_dim_x: ::core::ffi::c_uint,
     grid_dim_y: ::core::ffi::c_uint,
     grid_dim_z: ::core::ffi::c_uint,
@@ -8242,13 +8242,13 @@ pub(crate) fn launch_kernel(
 
     let kernel = unsafe { &*f };
 
-    if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+    if std::env::var("HETGPU_SIFIVE_LOG_KERNEL_LAUNCHES")
         .ok()
         .as_deref()
         == Some("1")
     {
         eprintln!(
-            "[PACC Backend] Launching kernel '{}' grid=({},{},{}) block=({},{},{})",
+            "[SIFIVE Backend] Launching kernel '{}' grid=({},{},{}) block=({},{},{})",
             kernel.kernel_name,
             grid_dim_x,
             grid_dim_y,
@@ -8259,29 +8259,29 @@ pub(crate) fn launch_kernel(
         );
     }
 
-    if pacc_driver_kernel_noop_enabled() {
-        let launch_index = PACC_DRIVER_KERNEL_NOOP_LAUNCH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if sifive_driver_kernel_noop_enabled() {
+        let launch_index = SIFIVE_DRIVER_KERNEL_NOOP_LAUNCH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let should_submit = {
-            let first = pacc_driver_kernel_noop_first();
-            let every = pacc_driver_kernel_noop_every();
+            let first = sifive_driver_kernel_noop_first();
+            let every = sifive_driver_kernel_noop_every();
             launch_index <= first || every <= 1 || (launch_index % every) == 0
         };
 
         if !should_submit {
-            if PACC_DRIVER_KERNEL_NOOP_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 5 {
+            if SIFIVE_DRIVER_KERNEL_NOOP_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 5 {
                 eprintln!(
-                    "[PACC Backend] driver KERNEL_PACC_NOOP sampled out launch #{} for '{}'; success",
+                    "[SIFIVE Backend] driver KERNEL_SIFIVE_NOOP sampled out launch #{} for '{}'; success",
                     launch_index, kernel.kernel_name
                 );
             }
             return Ok(());
         }
 
-        let device_id = current_pacc_device_id_or_zero().max(0) as u32;
+        let device_id = current_sifive_device_id_or_zero().max(0) as u32;
         let c_name = std::ffi::CString::new(kernel.kernel_name.as_str())
             .unwrap_or_else(|_| std::ffi::CString::new("<invalid>").unwrap());
         let rc = unsafe {
-            pacc_runtime_sys::hetgpu_pacc_launch_kernel_noop(
+            sifive_runtime_sys::hetgpu_sifive_launch_kernel_noop(
                 device_id,
                 c_name.as_ptr(),
                 grid_dim_x,
@@ -8292,10 +8292,10 @@ pub(crate) fn launch_kernel(
                 block_dim_z,
             )
         };
-        if rc == pacc_runtime_sys::pacc_Result_Success {
-            if PACC_DRIVER_KERNEL_NOOP_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 20 {
+        if rc == sifive_runtime_sys::sifive_Result_Success {
+            if SIFIVE_DRIVER_KERNEL_NOOP_LOG_COUNT.fetch_add(1, Ordering::Relaxed) < 20 {
                 eprintln!(
-                    "[PACC Backend] driver KERNEL_PACC_NOOP submitted '{}' to pacc{} grid=({},{},{}) block=({},{},{})",
+                    "[SIFIVE Backend] driver KERNEL_SIFIVE_NOOP submitted '{}' to sifive{} grid=({},{},{}) block=({},{},{})",
                     kernel.kernel_name,
                     device_id,
                     grid_dim_x,
@@ -8309,9 +8309,9 @@ pub(crate) fn launch_kernel(
             return Ok(());
         }
 
-        if pacc_named_fail_open_enabled() {
+        if sifive_named_fail_open_enabled() {
             eprintln!(
-                "[PACC Backend] driver KERNEL_PACC_NOOP submit failed for '{}' on pacc{} rc={}; fail-open success",
+                "[SIFIVE Backend] driver KERNEL_SIFIVE_NOOP submit failed for '{}' on sifive{} rc={}; fail-open success",
                 kernel.kernel_name, device_id, rc
             );
             return Ok(());
@@ -8319,9 +8319,9 @@ pub(crate) fn launch_kernel(
         return Err(CUerror::UNKNOWN);
     }
 
-    let strict = std::env::var("HETGPU_PACC_STRICT").ok().as_deref() == Some("1");
+    let strict = std::env::var("HETGPU_SIFIVE_STRICT").ok().as_deref() == Some("1");
     let allow_failed_kernel_skip = !strict
-        && match std::env::var("HETGPU_PACC_ALLOW_FAILED_KERNEL_SKIP")
+        && match std::env::var("HETGPU_SIFIVE_ALLOW_FAILED_KERNEL_SKIP")
             .ok()
             .map(|value| value.trim().to_ascii_lowercase())
         {
@@ -8329,11 +8329,11 @@ pub(crate) fn launch_kernel(
                 false
             }
             Some(_) => true,
-            None => pacc_named_fail_open_enabled(),
+            None => sifive_named_fail_open_enabled(),
         };
 
     if let Some(result) = unsafe {
-        try_offload_named_pacc_kernel(
+        try_offload_named_sifive_kernel(
             &kernel.kernel_name,
             grid_dim_x,
             grid_dim_y,
@@ -8344,14 +8344,14 @@ pub(crate) fn launch_kernel(
         return result;
     }
 
-    if pacc_generic_kernel_fast_success_enabled() {
-        pacc_log_limited(
-            &PACC_GENERIC_FAST_SUCCESS_LOG_COUNT,
+    if sifive_generic_kernel_fast_success_enabled() {
+        sifive_log_limited(
+            &SIFIVE_GENERIC_FAST_SUCCESS_LOG_COUNT,
             "HETGPU_CUDART_GENERIC_KERNEL_FAST_SUCCESS_LOG_LIMIT",
             8,
             || {
                 eprintln!(
-                    "[PACC Backend] generic cudart kernel fast-success for '{}' grid=({},{},{}) block=({},{},{})",
+                    "[SIFIVE Backend] generic cudart kernel fast-success for '{}' grid=({},{},{}) block=({},{},{})",
                     kernel.kernel_name,
                     grid_dim_x,
                     grid_dim_y,
@@ -8368,20 +8368,20 @@ pub(crate) fn launch_kernel(
 
     if kernel.kernel_ptr.is_null() {
         crate::r#impl::hetgpu_debug!(
-            "[PACC Backend] Missing PACC kernel handle for '{}'",
+            "[SIFIVE Backend] Missing SIFIVE kernel handle for '{}'",
             kernel.kernel_name
         );
         if strict || !allow_failed_kernel_skip {
             eprintln!(
-                "[PACC Backend] missing PACC kernel handle for '{}'; refusing to skip kernel",
+                "[SIFIVE Backend] missing SIFIVE kernel handle for '{}'; refusing to skip kernel",
                 kernel.kernel_name
             );
             return Err(CUerror::UNKNOWN);
         }
     } else {
-        if unsafe { pacc_kernel_has_nonempty_elf(kernel.kernel_ptr) } {
+        if unsafe { sifive_kernel_has_nonempty_elf(kernel.kernel_ptr) } {
             let abi_result = unsafe {
-                configure_pacc_launch_abi(
+                configure_sifive_launch_abi(
                     kernel.kernel_ptr,
                     &kernel.kernel_name,
                     grid_dim_x,
@@ -8391,31 +8391,31 @@ pub(crate) fn launch_kernel(
                     extra,
                 )
             };
-            if abi_result != pacc_runtime_sys::pacc_Result_Success {
+            if abi_result != sifive_runtime_sys::sifive_Result_Success {
                 crate::r#impl::hetgpu_debug!(
-                    "[PACC Backend] configure_pacc_launch_abi failed: {}",
+                    "[SIFIVE Backend] configure_sifive_launch_abi failed: {}",
                     abi_result
                 );
                 if strict || !allow_failed_kernel_skip {
                     eprintln!(
-                        "[PACC Backend] configure_pacc_launch_abi failed for '{}' with rc={}; refusing to launch with stale/empty args",
+                        "[SIFIVE Backend] configure_sifive_launch_abi failed for '{}' with rc={}; refusing to launch with stale/empty args",
                         kernel.kernel_name, abi_result
                     );
                     return Err(CUerror::UNKNOWN);
                 }
             }
-        } else if std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+        } else if std::env::var("HETGPU_SIFIVE_LOG_KERNEL_LAUNCHES")
             .ok()
             .as_deref()
             == Some("1")
         {
             eprintln!(
-                "[PACC Backend] skipping launch ABI for '{}' because kernel ELF is empty",
+                "[SIFIVE Backend] skipping launch ABI for '{}' because kernel ELF is empty",
                 kernel.kernel_name
             );
         }
         let result = unsafe {
-            pacc_runtime_sys::pacc_LaunchKernel(
+            sifive_runtime_sys::sifive_LaunchKernel(
                 kernel.kernel_ptr,
                 grid_dim_x,
                 grid_dim_y,
@@ -8425,11 +8425,11 @@ pub(crate) fn launch_kernel(
                 block_dim_z,
             )
         };
-        if result != pacc_runtime_sys::pacc_Result_Success {
-            crate::r#impl::hetgpu_debug!("[PACC Backend] pacc_LaunchKernel failed: {}", result);
+        if result != sifive_runtime_sys::sifive_Result_Success {
+            crate::r#impl::hetgpu_debug!("[SIFIVE Backend] sifive_LaunchKernel failed: {}", result);
             if strict || !allow_failed_kernel_skip {
                 eprintln!(
-                    "[PACC Backend] pacc_LaunchKernel failed for '{}' with rc={}; refusing to report success",
+                    "[SIFIVE Backend] sifive_LaunchKernel failed for '{}' with rc={}; refusing to report success",
                     kernel.kernel_name, result
                 );
                 return Err(CUerror::UNKNOWN);
@@ -8442,13 +8442,13 @@ pub(crate) fn launch_kernel(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_max_launch_params() -> usize {
-    std::env::var("HETGPU_PACC_MAX_KERNEL_PARAMS")
+fn sifive_max_launch_params() -> usize {
+    std::env::var("HETGPU_SIFIVE_MAX_KERNEL_PARAMS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&n| n > 0 && n <= 256)
@@ -8456,12 +8456,12 @@ fn pacc_max_launch_params() -> usize {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
+fn sifive_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
     let name = kernel_name.to_lowercase();
 
     if name.contains("deep_ep") {
@@ -8554,10 +8554,10 @@ fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
         return Some(22);
     }
     if name.contains("k_bin_bcast_unravel") {
-        return Some(24 + pacc_bin_bcast_fuse_count(kernel_name));
+        return Some(24 + sifive_bin_bcast_fuse_count(kernel_name));
     }
     if name.contains("k_bin_bcast") {
-        return Some(22 + pacc_bin_bcast_fuse_count(kernel_name));
+        return Some(22 + sifive_bin_bcast_fuse_count(kernel_name));
     }
     if name.contains("rope_norm") || name.contains("rope_neox") || name.contains("rope_multi") {
         return Some(21);
@@ -8639,7 +8639,7 @@ fn pacc_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -8674,7 +8674,7 @@ pub(crate) unsafe fn launch_named_kernel_c(
         Err(_) => return 1,
     };
 
-    match try_offload_named_pacc_kernel(
+    match try_offload_named_sifive_kernel(
         kernel_name,
         grid_dim_x,
         grid_dim_y,
@@ -8688,27 +8688,27 @@ pub(crate) unsafe fn launch_named_kernel_c(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_looks_like_pointer(value: u64) -> bool {
+fn sifive_looks_like_pointer(value: u64) -> bool {
     value > 0x1000 && value < 0x0000_8000_0000_0000
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_looks_like_host_param_addr(addr: usize) -> bool {
+fn sifive_looks_like_host_param_addr(addr: usize) -> bool {
     if !(addr >= 0x1_0000 && addr < 0x0000_8000_0000_0000usize && (addr & 0x3) == 0) {
         return false;
     }
 
-    if std::env::var("HETGPU_PACC_VALIDATE_PARAM_ADDRS")
+    if std::env::var("HETGPU_SIFIVE_VALIDATE_PARAM_ADDRS")
         .ok()
         .as_deref()
         != Some("1")
@@ -8749,13 +8749,13 @@ fn pacc_looks_like_host_param_addr(addr: usize) -> bool {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[derive(Clone, Copy)]
-struct PaccHostMapRange {
+struct SifiveHostMapRange {
     start: usize,
     end: usize,
     read: bool,
@@ -8763,20 +8763,20 @@ struct PaccHostMapRange {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_HOST_MAPS_CACHE: OnceLock<Mutex<Vec<PaccHostMapRange>>> = OnceLock::new();
+static SIFIVE_HOST_MAPS_CACHE: OnceLock<Mutex<Vec<SifiveHostMapRange>>> = OnceLock::new();
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn parse_pacc_host_maps() -> Vec<PaccHostMapRange> {
+fn parse_sifive_host_maps() -> Vec<SifiveHostMapRange> {
     let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
         return Vec::new();
     };
@@ -8798,7 +8798,7 @@ fn parse_pacc_host_maps() -> Vec<PaccHostMapRange> {
         let Ok(end) = usize::from_str_radix(end_hex, 16) else {
             continue;
         };
-        ranges.push(PaccHostMapRange {
+        ranges.push(SifiveHostMapRange {
             start,
             end,
             read: perms.starts_with('r'),
@@ -8809,13 +8809,13 @@ fn parse_pacc_host_maps() -> Vec<PaccHostMapRange> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_host_maps_contains(
-    ranges: &[PaccHostMapRange],
+fn sifive_host_maps_contains(
+    ranges: &[SifiveHostMapRange],
     addr: usize,
     end_addr: usize,
     need_write: bool,
@@ -8826,24 +8826,24 @@ fn pacc_host_maps_contains(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_host_range_has_perms(addr: usize, len: usize, need_write: bool) -> bool {
+fn sifive_host_range_has_perms(addr: usize, len: usize, need_write: bool) -> bool {
     if len == 0 {
         return true;
     }
     let Some(end_addr) = addr.checked_add(len) else {
         return false;
     };
-    let cache = PACC_HOST_MAPS_CACHE.get_or_init(|| Mutex::new(parse_pacc_host_maps()));
+    let cache = SIFIVE_HOST_MAPS_CACHE.get_or_init(|| Mutex::new(parse_sifive_host_maps()));
     if let Ok(mut ranges) = cache.lock() {
         if ranges.is_empty() {
-            *ranges = parse_pacc_host_maps();
+            *ranges = parse_sifive_host_maps();
         }
-        if pacc_host_maps_contains(&ranges, addr, end_addr, need_write) {
+        if sifive_host_maps_contains(&ranges, addr, end_addr, need_write) {
             return true;
         }
     }
@@ -8851,12 +8851,12 @@ fn pacc_host_range_has_perms(addr: usize, len: usize, need_write: bool) -> bool 
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_kernel_has_nonempty_elf(kernel_ptr: *mut pacc_runtime_sys::pacc_Kernel) -> bool {
+unsafe fn sifive_kernel_has_nonempty_elf(kernel_ptr: *mut sifive_runtime_sys::sifive_Kernel) -> bool {
     if kernel_ptr.is_null() {
         return false;
     }
@@ -8868,12 +8868,12 @@ unsafe fn pacc_kernel_has_nonempty_elf(kernel_ptr: *mut pacc_runtime_sys::pacc_K
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn parse_pacc_launch_extra_blob(extra: *mut *mut ::core::ffi::c_void) -> Option<Vec<u8>> {
+unsafe fn parse_sifive_launch_extra_blob(extra: *mut *mut ::core::ffi::c_void) -> Option<Vec<u8>> {
     use cuda_types::cuda::{
         CU_LAUNCH_PARAM_BUFFER_POINTER_AS_INT, CU_LAUNCH_PARAM_BUFFER_SIZE_AS_INT,
     };
@@ -8910,66 +8910,66 @@ unsafe fn parse_pacc_launch_extra_blob(extra: *mut *mut ::core::ffi::c_void) -> 
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn configure_pacc_launch_abi(
-    kernel_ptr: *mut pacc_runtime_sys::pacc_Kernel,
+unsafe fn configure_sifive_launch_abi(
+    kernel_ptr: *mut sifive_runtime_sys::sifive_Kernel,
     kernel_name: &str,
     grid_dim_x: u32,
     grid_dim_y: u32,
     grid_dim_z: u32,
     kernel_params: *mut *mut ::core::ffi::c_void,
     extra: *mut *mut ::core::ffi::c_void,
-) -> pacc_runtime_sys::pacc_Result {
+) -> sifive_runtime_sys::sifive_Result {
     if kernel_ptr.is_null() {
-        return pacc_runtime_sys::pacc_Result_Error;
+        return sifive_runtime_sys::sifive_Result_Error;
     }
 
-    let clear = pacc_runtime_sys::pacc_KernelClearLaunchState(kernel_ptr);
-    if clear != pacc_runtime_sys::pacc_Result_Success {
+    let clear = sifive_runtime_sys::sifive_KernelClearLaunchState(kernel_ptr);
+    if clear != sifive_runtime_sys::sifive_Result_Success {
         return clear;
     }
 
-    let mut raw_param_blob = parse_pacc_launch_extra_blob(extra).unwrap_or_default();
+    let mut raw_param_blob = parse_sifive_launch_extra_blob(extra).unwrap_or_default();
 
-    if kernel_name.starts_with("lanxin_pacc_mul_mat_") {
+    if kernel_name.starts_with("lanxin_sifive_mul_mat_") {
         let m_v = read_param_i32(kernel_params, 0).unwrap_or(0).max(0) as u32;
         let n_v = read_param_i32(kernel_params, 1).unwrap_or(0).max(0) as u32;
         let k_v = read_param_i32(kernel_params, 2).unwrap_or(0).max(0) as u32;
         let a = read_param_u64(kernel_params, 3).unwrap_or(0) as *const ::core::ffi::c_void;
         let b = read_param_u64(kernel_params, 4).unwrap_or(0) as *const ::core::ffi::c_void;
         let c = read_param_u64(kernel_params, 5).unwrap_or(0) as *mut ::core::ffi::c_void;
-        return pacc_runtime_sys::pacc_KernelConfigureLanxinMulMatTile(
+        return sifive_runtime_sys::sifive_KernelConfigureLanxinMulMatTile(
             kernel_ptr, m_v, n_v, k_v, a, 0, b, 0, c, 0,
         );
     }
 
     if kernel_params.is_null() {
         if !raw_param_blob.is_empty() {
-            let rc = pacc_runtime_sys::pacc_KernelSetRawParamBlob(
+            let rc = sifive_runtime_sys::sifive_KernelSetRawParamBlob(
                 kernel_ptr,
                 raw_param_blob.as_ptr() as *const _,
                 raw_param_blob.len() as u64,
             );
-            if rc != pacc_runtime_sys::pacc_Result_Success {
+            if rc != sifive_runtime_sys::sifive_Result_Success {
                 return rc;
             }
         }
-        return pacc_runtime_sys::pacc_Result_Success;
+        return sifive_runtime_sys::sifive_Result_Success;
     }
 
     let max_params =
-        pacc_known_kernel_param_count(kernel_name).unwrap_or_else(pacc_max_launch_params);
-    let log_launches = std::env::var("HETGPU_PACC_LOG_KERNEL_LAUNCHES")
+        sifive_known_kernel_param_count(kernel_name).unwrap_or_else(sifive_max_launch_params);
+    let log_launches = std::env::var("HETGPU_SIFIVE_LOG_KERNEL_LAUNCHES")
         .ok()
         .as_deref()
         == Some("1");
     let log_arg_records = log_launches
         && (kernel_name.contains("k_bin_bcast")
-            || std::env::var("HETGPU_PACC_LOG_KERNEL_ARGS").ok().as_deref() == Some("1"));
+            || std::env::var("HETGPU_SIFIVE_LOG_KERNEL_ARGS").ok().as_deref() == Some("1"));
     let _ = (grid_dim_x, grid_dim_y);
     let mut pushed = 0usize;
     let mut pointer_like = 0usize;
@@ -8977,24 +8977,24 @@ unsafe fn configure_pacc_launch_abi(
     for i in 0..max_params {
         let param = *kernel_params.add(i);
         if param.is_null() {
-            if pacc_known_kernel_param_count(kernel_name).is_some() {
+            if sifive_known_kernel_param_count(kernel_name).is_some() {
                 if log_launches {
                     eprintln!(
-                        "[PACC Backend] launch ABI '{}' hit unexpected null param at index {} of {}",
+                        "[SIFIVE Backend] launch ABI '{}' hit unexpected null param at index {} of {}",
                         kernel_name, i, max_params
                     );
                 }
-                return pacc_runtime_sys::pacc_Result_Error;
+                return sifive_runtime_sys::sifive_Result_Error;
             }
             break;
         }
 
-        let arg_size = pacc_kernel_arg_size(kernel_name, i);
+        let arg_size = sifive_kernel_arg_size(kernel_name, i);
         let inline_immediate = if arg_size == 1 {
             let addr = param as usize;
             !(addr >= 0x1_0000 && addr < 0x0000_8000_0000_0000usize)
         } else {
-            !pacc_looks_like_host_param_addr(param as usize)
+            !sifive_looks_like_host_param_addr(param as usize)
         };
         let mut record_flags = 0u32;
         let (value, value_hi) = if !inline_immediate && arg_size > 16 {
@@ -9002,11 +9002,11 @@ unsafe fn configure_pacc_launch_abi(
             raw_param_blob.resize(offset, 0);
             raw_param_blob
                 .extend_from_slice(std::slice::from_raw_parts(param as *const u8, arg_size));
-            record_flags |= pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_INLINE_BLOB;
+            record_flags |= sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_INLINE_BLOB;
             (offset as u64, 0)
         } else if inline_immediate {
             if arg_size > 16 {
-                return pacc_runtime_sys::pacc_Result_Error;
+                return sifive_runtime_sys::sifive_Result_Error;
             }
             (param as usize as u64, 0)
         } else {
@@ -9031,10 +9031,10 @@ unsafe fn configure_pacc_launch_abi(
         };
         let can_be_pointer = !inline_immediate
             && arg_size == 8
-            && pacc_looks_like_pointer(value)
-            && pacc_kernel_arg_can_be_pointer(kernel_name, i);
+            && sifive_looks_like_pointer(value)
+            && sifive_kernel_arg_can_be_pointer(kernel_name, i);
         let binding_metadata = if can_be_pointer {
-            pacc_kernel_binding_metadata(
+            sifive_kernel_binding_metadata(
                 kernel_name,
                 kernel_params,
                 grid_dim_x,
@@ -9047,12 +9047,12 @@ unsafe fn configure_pacc_launch_abi(
         };
         let is_pointer = can_be_pointer
             && (binding_metadata.is_some()
-                || super::memory::pacc_allocation_remaining_addr(value).is_some());
-        let record = pacc_runtime_sys::PaccKernelArgRecord {
+                || super::memory::sifive_allocation_remaining_addr(value).is_some());
+        let record = sifive_runtime_sys::SifiveKernelArgRecord {
             kind: if is_pointer {
-                pacc_runtime_sys::PACC_KERNEL_ARG_KIND_POINTER
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_KIND_POINTER
             } else {
-                pacc_runtime_sys::PACC_KERNEL_ARG_KIND_SCALAR
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_KIND_SCALAR
             },
             size: arg_size as u32,
             flags: record_flags,
@@ -9060,14 +9060,14 @@ unsafe fn configure_pacc_launch_abi(
             value,
             value_hi,
         };
-        let rc = pacc_runtime_sys::pacc_KernelPushArgRecord(kernel_ptr, &record);
-        if rc != pacc_runtime_sys::pacc_Result_Success {
+        let rc = sifive_runtime_sys::sifive_KernelPushArgRecord(kernel_ptr, &record);
+        if rc != sifive_runtime_sys::sifive_Result_Success {
             return rc;
         }
 
         if log_arg_records {
             eprintln!(
-                "[PACC Backend] launch arg kernel='{}' idx={} param={:p} inline={} size={} kind={} flags=0x{:x} value=0x{:x} hi=0x{:x}",
+                "[SIFIVE Backend] launch arg kernel='{}' idx={} param={:p} inline={} size={} kind={} flags=0x{:x} value=0x{:x} hi=0x{:x}",
                 kernel_name,
                 i,
                 param,
@@ -9083,24 +9083,24 @@ unsafe fn configure_pacc_launch_abi(
         if is_pointer {
             let (size, flags) = binding_metadata
                 .or_else(|| {
-                    let remaining = super::memory::pacc_allocation_remaining_addr(value)? as u64;
+                    let remaining = super::memory::sifive_allocation_remaining_addr(value)? as u64;
                     Some((
                         remaining,
-                        pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT
-                            | pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+                        sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT
+                            | sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
                     ))
                 })
                 .unwrap_or((0, 0));
             let (addr, flags) =
-                if let Some(phys) = super::memory::pacc_shared_ddr_physical_addr(value) {
+                if let Some(phys) = super::memory::sifive_shared_ddr_physical_addr(value) {
                     (
                         phys,
-                        flags | pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_DEVICE_PHYS,
+                        flags | sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_DEVICE_PHYS,
                     )
                 } else {
                     (value, flags)
                 };
-            let binding = pacc_runtime_sys::PaccKernelBufferBinding {
+            let binding = sifive_runtime_sys::SifiveKernelBufferBinding {
                 arg_index: i as u32,
                 flags,
                 addr,
@@ -9108,7 +9108,7 @@ unsafe fn configure_pacc_launch_abi(
             };
             if log_arg_records {
                 eprintln!(
-                    "[PACC Backend] launch binding kernel='{}' bind={} arg={} host=0x{:x} addr=0x{:x} size={} flags=0x{:x} direct_shared_ddr={}",
+                    "[SIFIVE Backend] launch binding kernel='{}' bind={} arg={} host=0x{:x} addr=0x{:x} size={} flags=0x{:x} direct_shared_ddr={}",
                     kernel_name,
                     pointer_like,
                     i,
@@ -9116,11 +9116,11 @@ unsafe fn configure_pacc_launch_abi(
                     binding.addr,
                     binding.size,
                     binding.flags,
-                    (binding.flags & pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_DEVICE_PHYS) != 0,
+                    (binding.flags & sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_DEVICE_PHYS) != 0,
                 );
             }
-            let rc = pacc_runtime_sys::pacc_KernelAddBufferBinding(kernel_ptr, &binding);
-            if rc != pacc_runtime_sys::pacc_Result_Success {
+            let rc = sifive_runtime_sys::sifive_KernelAddBufferBinding(kernel_ptr, &binding);
+            if rc != sifive_runtime_sys::sifive_Result_Success {
                 return rc;
             }
             pointer_like += 1;
@@ -9130,33 +9130,33 @@ unsafe fn configure_pacc_launch_abi(
     }
 
     if !raw_param_blob.is_empty() {
-        let rc = pacc_runtime_sys::pacc_KernelSetRawParamBlob(
+        let rc = sifive_runtime_sys::sifive_KernelSetRawParamBlob(
             kernel_ptr,
             raw_param_blob.as_ptr() as *const _,
             raw_param_blob.len() as u64,
         );
-        if rc != pacc_runtime_sys::pacc_Result_Success {
+        if rc != sifive_runtime_sys::sifive_Result_Success {
             return rc;
         }
     }
 
     if log_launches {
         eprintln!(
-            "[PACC Backend] launch ABI prepared for '{}' args={} pointer_like={}",
+            "[SIFIVE Backend] launch ABI prepared for '{}' args={} pointer_like={}",
             kernel_name, pushed, pointer_like
         );
     }
 
-    pacc_runtime_sys::pacc_Result_Success
+    sifive_runtime_sys::sifive_Result_Success
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_kernel_arg_can_be_pointer(kernel_name: &str, index: usize) -> bool {
+fn sifive_kernel_arg_can_be_pointer(kernel_name: &str, index: usize) -> bool {
     let name = kernel_name.to_ascii_lowercase();
     if name.contains("deep_ep") {
         if name.contains("get_dispatch_layout") {
@@ -9221,12 +9221,12 @@ fn pacc_kernel_arg_can_be_pointer(kernel_name: &str, index: usize) -> bool {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_kernel_arg_size(kernel_name: &str, index: usize) -> usize {
+fn sifive_kernel_arg_size(kernel_name: &str, index: usize) -> usize {
     let name = kernel_name.to_ascii_lowercase();
     if name.contains("deep_ep") {
         if name.contains("get_dispatch_layout") {
@@ -9319,7 +9319,7 @@ fn pacc_kernel_arg_size(kernel_name: &str, index: usize) -> usize {
         return 4;
     } else if name.contains("op_clamp_kernel") {
         if matches!(index, 2 | 3) {
-            return pacc_parse_op_clamp_element_size(kernel_name).unwrap_or(4) as usize;
+            return sifive_parse_op_clamp_element_size(kernel_name).unwrap_or(4) as usize;
         }
         if index == 4 {
             return 4;
@@ -9340,7 +9340,7 @@ fn pacc_kernel_arg_size(kernel_name: &str, index: usize) -> usize {
     } else if name.contains("convert_unary") && index == 5 {
         return 12;
     } else if (name.contains("softmax") || name.contains("soft_max")) && index == 4 {
-        return std::mem::size_of::<PaccSoftMaxParams>();
+        return std::mem::size_of::<SifiveSoftMaxParams>();
     } else if (name.contains("k_set_rows_quant") || name.contains("k_set_rows"))
         && matches!(index, 17..=21)
     {
@@ -9350,12 +9350,12 @@ fn pacc_kernel_arg_size(kernel_name: &str, index: usize) -> usize {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_kernel_binding_metadata(
+unsafe fn sifive_kernel_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: u32,
@@ -9365,10 +9365,10 @@ unsafe fn pacc_kernel_binding_metadata(
 ) -> Option<(u64, u32)> {
     let name = kernel_name.to_ascii_lowercase();
     if name.contains("deep_ep") && name.contains("get_dispatch_layout") {
-        return pacc_deepep_layout_binding_metadata(kernel_params, index);
+        return sifive_deepep_layout_binding_metadata(kernel_params, index);
     }
     if name.contains("mul_mat_vec_q_moe") {
-        return pacc_mul_mat_vec_q_moe_binding_metadata(
+        return sifive_mul_mat_vec_q_moe_binding_metadata(
             kernel_name,
             kernel_params,
             grid_dim_y,
@@ -9376,10 +9376,10 @@ unsafe fn pacc_kernel_binding_metadata(
         );
     }
     if name.contains("topk_moe_cuda") {
-        return pacc_topk_moe_binding_metadata(kernel_name, kernel_params, index);
+        return sifive_topk_moe_binding_metadata(kernel_name, kernel_params, index);
     }
     if name.contains("mul_mat_vec_q") {
-        return pacc_mul_mat_vec_q_binding_metadata(
+        return sifive_mul_mat_vec_q_binding_metadata(
             kernel_name,
             kernel_params,
             grid_dim_x,
@@ -9389,7 +9389,7 @@ unsafe fn pacc_kernel_binding_metadata(
         );
     }
     if name.contains("mul_mat_vec_f") {
-        return pacc_mul_mat_vec_f_binding_metadata(
+        return sifive_mul_mat_vec_f_binding_metadata(
             kernel_name,
             kernel_params,
             grid_dim_x,
@@ -9399,19 +9399,19 @@ unsafe fn pacc_kernel_binding_metadata(
         );
     }
     if name.contains("scale_f32") {
-        return pacc_scale_f32_binding_metadata(kernel_params, index);
+        return sifive_scale_f32_binding_metadata(kernel_params, index);
     }
     if name.contains("k_argsort_f32_i32") {
-        return pacc_argsort_f32_i32_binding_metadata(kernel_params, grid_dim_x, index);
+        return sifive_argsort_f32_i32_binding_metadata(kernel_params, grid_dim_x, index);
     }
     if name.contains("k_get_rows_float") {
-        return pacc_get_rows_float_binding_metadata(kernel_params, grid_dim_x, index);
+        return sifive_get_rows_float_binding_metadata(kernel_params, grid_dim_x, index);
     }
     if name.contains("k_get_rows") && name.contains("dequantize_q8_0") {
-        return pacc_get_rows_q8_0_binding_metadata(kernel_name, kernel_params, grid_dim_x, index);
+        return sifive_get_rows_q8_0_binding_metadata(kernel_name, kernel_params, grid_dim_x, index);
     }
     if name.contains("l2_norm_f32") {
-        return pacc_l2_norm_f32_binding_metadata(
+        return sifive_l2_norm_f32_binding_metadata(
             kernel_params,
             grid_dim_x,
             grid_dim_y,
@@ -9420,22 +9420,22 @@ unsafe fn pacc_kernel_binding_metadata(
         );
     }
     if name.contains("compute_batched_ptrs") {
-        return pacc_compute_batched_ptrs_binding_metadata(kernel_params, index);
+        return sifive_compute_batched_ptrs_binding_metadata(kernel_params, index);
     }
     if name.contains("softmax") || name.contains("soft_max") {
-        return pacc_softmax_binding_metadata(kernel_name, kernel_params, index);
+        return sifive_softmax_binding_metadata(kernel_name, kernel_params, index);
     }
     if name.contains("quantize_q8_1") {
-        return pacc_quantize_q8_1_binding_metadata(kernel_params, grid_dim_z, index);
+        return sifive_quantize_q8_1_binding_metadata(kernel_params, grid_dim_z, index);
     }
     if name.contains("dequantize_block_q8_0_f16") {
-        return pacc_dequantize_block_q8_0_f16_binding_metadata(kernel_params, index);
+        return sifive_dequantize_block_q8_0_f16_binding_metadata(kernel_params, index);
     }
     if name.contains("convert_unary") {
-        return pacc_convert_unary_binding_metadata(kernel_name, kernel_params, index);
+        return sifive_convert_unary_binding_metadata(kernel_name, kernel_params, index);
     }
     if name.contains("concat_f32_non_cont") {
-        return pacc_concat_non_cont_binding_metadata(
+        return sifive_concat_non_cont_binding_metadata(
             kernel_params,
             grid_dim_x,
             grid_dim_y,
@@ -9444,7 +9444,7 @@ unsafe fn pacc_kernel_binding_metadata(
         );
     }
     if name.contains("concat_f32_dim") {
-        return pacc_concat_dim_binding_metadata(
+        return sifive_concat_dim_binding_metadata(
             kernel_name,
             kernel_params,
             grid_dim_y,
@@ -9453,31 +9453,31 @@ unsafe fn pacc_kernel_binding_metadata(
         );
     }
     if name.contains("op_clamp_kernel") {
-        return pacc_op_clamp_binding_metadata(kernel_name, kernel_params, index);
+        return sifive_op_clamp_binding_metadata(kernel_name, kernel_params, index);
     }
     if name.contains("cpy_scalar") {
-        return pacc_cpy_scalar_binding_metadata(kernel_name, kernel_params, index);
+        return sifive_cpy_scalar_binding_metadata(kernel_name, kernel_params, index);
     }
     if name.contains("k_set_rows") && !name.contains("k_set_rows_quant") {
-        return pacc_set_rows_binding_metadata(kernel_name, kernel_params, index);
+        return sifive_set_rows_binding_metadata(kernel_name, kernel_params, index);
     }
     if name.contains("rope_norm") || name.contains("rope_neox") || name.contains("rope_multi") {
-        return pacc_rope_multi_binding_metadata(kernel_name, kernel_params, grid_dim_z, index);
+        return sifive_rope_multi_binding_metadata(kernel_name, kernel_params, grid_dim_z, index);
     }
     if name.contains("unary_op_kernel") {
-        return pacc_unary_op_binding_metadata(kernel_name, kernel_params, index);
+        return sifive_unary_op_binding_metadata(kernel_name, kernel_params, index);
     }
     if name.contains("unary_gated_op_kernel") {
-        return pacc_unary_gated_op_binding_metadata(kernel_name, kernel_params, index);
+        return sifive_unary_gated_op_binding_metadata(kernel_name, kernel_params, index);
     }
     if name.contains("k_bin_bcast_unravel") {
-        return pacc_bin_bcast_binding_metadata(kernel_name, kernel_params, index, true);
+        return sifive_bin_bcast_binding_metadata(kernel_name, kernel_params, index, true);
     }
     if name.contains("k_bin_bcast") {
-        return pacc_bin_bcast_binding_metadata(kernel_name, kernel_params, index, false);
+        return sifive_bin_bcast_binding_metadata(kernel_name, kernel_params, index, false);
     }
     if name.contains("ssm_conv_f32") || name.contains("ssm_conv_long_token_f32") {
-        return pacc_ssm_conv_binding_metadata(
+        return sifive_ssm_conv_binding_metadata(
             kernel_name,
             kernel_params,
             grid_dim_x,
@@ -9487,18 +9487,18 @@ unsafe fn pacc_kernel_binding_metadata(
         );
     }
     if name.contains("gated_delta_net_cuda") {
-        return pacc_gated_delta_net_binding_metadata(kernel_name, kernel_params, index);
+        return sifive_gated_delta_net_binding_metadata(kernel_name, kernel_params, index);
     }
     None
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_deepep_layout_binding_metadata(
+unsafe fn sifive_deepep_layout_binding_metadata(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
 ) -> Option<(u64, u32)> {
@@ -9514,11 +9514,11 @@ unsafe fn pacc_deepep_layout_binding_metadata(
             num_tokens
                 .saturating_mul(num_topk)
                 .saturating_mul(topk_bytes),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
             num_ranks.saturating_mul(i32_bytes),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         2 => {
             let rdma_ranks = if num_ranks > 8 && num_ranks % 8 == 0 {
@@ -9528,30 +9528,30 @@ unsafe fn pacc_deepep_layout_binding_metadata(
             };
             (
                 rdma_ranks.saturating_mul(i32_bytes),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
             )
         }
         3 => (
             num_experts.saturating_mul(i32_bytes),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         4 => (
             num_tokens.saturating_mul(num_ranks),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
 
-    pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
+    sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_bin_bcast_fuse_count(kernel_name: &str) -> usize {
+fn sifive_bin_bcast_fuse_count(kernel_name: &str) -> usize {
     let marker = match kernel_name.find("EvPKT0_") {
         Some(pos) => pos,
         None => return 0,
@@ -9563,28 +9563,28 @@ fn pacc_bin_bcast_fuse_count(kernel_name: &str) -> usize {
     let pack = template[pack_start + 1..]
         .strip_suffix('E')
         .unwrap_or(&template[pack_start + 1..]);
-    pacc_count_mangled_type_pack(pack)
+    sifive_count_mangled_type_pack(pack)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_count_mangled_type_pack(mut pack: &str) -> usize {
+fn sifive_count_mangled_type_pack(mut pack: &str) -> usize {
     let mut count = 0usize;
     while !pack.is_empty() {
         if let Some(rest) = pack.strip_prefix("PK") {
             pack = rest;
-            if let Some(rest) = pacc_skip_mangled_scalar_type(pack) {
+            if let Some(rest) = sifive_skip_mangled_scalar_type(pack) {
                 pack = rest;
                 count += 1;
                 continue;
             }
         } else if let Some(rest) = pack.strip_prefix('P') {
             pack = rest;
-            if let Some(rest) = pacc_skip_mangled_scalar_type(pack) {
+            if let Some(rest) = sifive_skip_mangled_scalar_type(pack) {
                 pack = rest;
                 count += 1;
                 continue;
@@ -9602,12 +9602,12 @@ fn pacc_count_mangled_type_pack(mut pack: &str) -> usize {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_skip_mangled_scalar_type(pack: &str) -> Option<&str> {
+fn sifive_skip_mangled_scalar_type(pack: &str) -> Option<&str> {
     if let Some(rest) = pack.strip_prefix('f') {
         Some(rest)
     } else if let Some(rest) = pack.strip_prefix("6__half") {
@@ -9620,12 +9620,12 @@ fn pacc_skip_mangled_scalar_type(pack: &str) -> Option<&str> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_cpy_scalar_size(
+fn sifive_parse_cpy_scalar_size(
     name: &str,
     offset: &mut usize,
     previous: Option<u64>,
@@ -9649,15 +9649,15 @@ fn pacc_parse_cpy_scalar_size(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_cpy_scalar_element_sizes(kernel_name: &str) -> Option<(u64, u64)> {
+fn sifive_cpy_scalar_element_sizes(kernel_name: &str) -> Option<(u64, u64)> {
     if let Some(start) = kernel_name.find("cpy_scalar_transposeI") {
         let mut offset = start + "cpy_scalar_transposeI".len();
-        let elem = pacc_parse_cpy_scalar_size(kernel_name, &mut offset, None)?;
+        let elem = sifive_parse_cpy_scalar_size(kernel_name, &mut offset, None)?;
         return Some((elem, elem));
     }
 
@@ -9670,18 +9670,18 @@ fn pacc_cpy_scalar_element_sizes(kernel_name: &str) -> Option<(u64, u64)> {
     };
 
     let mut offset = marker.0 + marker.1.len();
-    let src = pacc_parse_cpy_scalar_size(kernel_name, &mut offset, None)?;
-    let dst = pacc_parse_cpy_scalar_size(kernel_name, &mut offset, Some(src))?;
+    let src = sifive_parse_cpy_scalar_size(kernel_name, &mut offset, None)?;
+    let dst = sifive_parse_cpy_scalar_size(kernel_name, &mut offset, Some(src))?;
     Some((src, dst))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_div_ceil_u64(numer: u64, denom: u64) -> u64 {
+fn sifive_div_ceil_u64(numer: u64, denom: u64) -> u64 {
     if denom == 0 {
         0
     } else {
@@ -9690,12 +9690,12 @@ fn pacc_div_ceil_u64(numer: u64, denom: u64) -> u64 {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_mangled_scalar_size(name: &str, offset: &mut usize) -> Option<u64> {
+fn sifive_parse_mangled_scalar_size(name: &str, offset: &mut usize) -> Option<u64> {
     let rest = name.get(*offset..)?;
     if rest.starts_with('f') {
         *offset += 1;
@@ -9709,38 +9709,38 @@ fn pacc_parse_mangled_scalar_size(name: &str, offset: &mut usize) -> Option<u64>
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_convert_unary_element_sizes(kernel_name: &str) -> Option<(u64, u64)> {
+fn sifive_parse_convert_unary_element_sizes(kernel_name: &str) -> Option<(u64, u64)> {
     let marker = "convert_unaryI";
     let mut offset = kernel_name.find(marker)? + marker.len();
-    let src = pacc_parse_mangled_scalar_size(kernel_name, &mut offset)?;
-    let dst = pacc_parse_mangled_scalar_size(kernel_name, &mut offset)?;
+    let src = sifive_parse_mangled_scalar_size(kernel_name, &mut offset)?;
+    let dst = sifive_parse_mangled_scalar_size(kernel_name, &mut offset)?;
     Some((src, dst))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_op_clamp_element_size(kernel_name: &str) -> Option<u64> {
+fn sifive_parse_op_clamp_element_size(kernel_name: &str) -> Option<u64> {
     let marker = "op_clamp_kernelI";
     let mut offset = kernel_name.find(marker)? + marker.len();
-    pacc_parse_mangled_scalar_size(kernel_name, &mut offset)
+    sifive_parse_mangled_scalar_size(kernel_name, &mut offset)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_tagged_number(name: &str, offset: &mut usize, tag: &str) -> Option<u64> {
+fn sifive_parse_tagged_number(name: &str, offset: &mut usize, tag: &str) -> Option<u64> {
     let rest = name.get(*offset..)?;
     if !rest.starts_with(tag) {
         return None;
@@ -9762,23 +9762,23 @@ fn pacc_parse_tagged_number(name: &str, offset: &mut usize, tag: &str) -> Option
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_ssm_conv_template(kernel_name: &str) -> Option<(u64, u64, u64)> {
+fn sifive_parse_ssm_conv_template(kernel_name: &str) -> Option<(u64, u64, u64)> {
     let (marker, has_split_n_t) = if kernel_name.contains("ssm_conv_long_token_f32I") {
         ("ssm_conv_long_token_f32I", true)
     } else {
         ("ssm_conv_f32I", false)
     };
     let mut offset = kernel_name.find(marker)? + marker.len();
-    pacc_parse_tagged_number(kernel_name, &mut offset, "Lb")?;
-    let split_d_inner = pacc_parse_tagged_number(kernel_name, &mut offset, "Lm")?;
-    let d_conv = pacc_parse_tagged_number(kernel_name, &mut offset, "Lm")?;
+    sifive_parse_tagged_number(kernel_name, &mut offset, "Lb")?;
+    let split_d_inner = sifive_parse_tagged_number(kernel_name, &mut offset, "Lm")?;
+    let d_conv = sifive_parse_tagged_number(kernel_name, &mut offset, "Lm")?;
     let split_n_t = if has_split_n_t {
-        pacc_parse_tagged_number(kernel_name, &mut offset, "Ll")?
+        sifive_parse_tagged_number(kernel_name, &mut offset, "Ll")?
     } else {
         0
     };
@@ -9786,44 +9786,44 @@ fn pacc_parse_ssm_conv_template(kernel_name: &str) -> Option<(u64, u64, u64)> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_gated_delta_net_template(kernel_name: &str) -> Option<(u64, bool)> {
+fn sifive_parse_gated_delta_net_template(kernel_name: &str) -> Option<(u64, bool)> {
     let marker = "gated_delta_net_cudaI";
     let mut offset = kernel_name.find(marker)? + marker.len();
-    let s_v = pacc_parse_tagged_number(kernel_name, &mut offset, "Li")?;
-    let kda = pacc_parse_tagged_number(kernel_name, &mut offset, "Lb")? != 0;
+    let s_v = sifive_parse_tagged_number(kernel_name, &mut offset, "Li")?;
+    let kda = sifive_parse_tagged_number(kernel_name, &mut offset, "Lb")? != 0;
     Some((s_v, kda))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_bin_bcast_element_sizes(kernel_name: &str) -> (u64, u64, u64) {
+fn sifive_bin_bcast_element_sizes(kernel_name: &str) -> (u64, u64, u64) {
     let default = std::mem::size_of::<f32>() as u64;
     let Some(type_start) = kernel_name.find("EE").map(|pos| pos + 2) else {
         return (default, default, default);
     };
     let mut offset = type_start;
-    let src0 = pacc_parse_mangled_scalar_size(kernel_name, &mut offset).unwrap_or(default);
-    let src1 = pacc_parse_mangled_scalar_size(kernel_name, &mut offset).unwrap_or(default);
-    let dst = pacc_parse_mangled_scalar_size(kernel_name, &mut offset).unwrap_or(default);
+    let src0 = sifive_parse_mangled_scalar_size(kernel_name, &mut offset).unwrap_or(default);
+    let src1 = sifive_parse_mangled_scalar_size(kernel_name, &mut offset).unwrap_or(default);
+    let dst = sifive_parse_mangled_scalar_size(kernel_name, &mut offset).unwrap_or(default);
     (src0, src1, dst)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_set_rows_scalar_size(name: &str, offset: &mut usize) -> Option<u64> {
+fn sifive_parse_set_rows_scalar_size(name: &str, offset: &mut usize) -> Option<u64> {
     let rest = name.get(*offset..)?;
     if rest.starts_with('f') {
         *offset += 1;
@@ -9846,27 +9846,27 @@ fn pacc_parse_set_rows_scalar_size(name: &str, offset: &mut usize) -> Option<u64
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_set_rows_element_sizes(kernel_name: &str) -> Option<(u64, u64, u64)> {
+fn sifive_set_rows_element_sizes(kernel_name: &str) -> Option<(u64, u64, u64)> {
     let marker = "k_set_rowsI";
     let mut offset = kernel_name.find(marker)? + marker.len();
-    let src = pacc_parse_set_rows_scalar_size(kernel_name, &mut offset)?;
-    let idx = pacc_parse_set_rows_scalar_size(kernel_name, &mut offset)?;
-    let dst = pacc_parse_set_rows_scalar_size(kernel_name, &mut offset)?;
+    let src = sifive_parse_set_rows_scalar_size(kernel_name, &mut offset)?;
+    let idx = sifive_parse_set_rows_scalar_size(kernel_name, &mut offset)?;
+    let dst = sifive_parse_set_rows_scalar_size(kernel_name, &mut offset)?;
     Some((src, idx, dst))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_strided_extent_bytes(dims: [u64; 4], strides: [u64; 4], elem_size: u64) -> u64 {
+fn sifive_strided_extent_bytes(dims: [u64; 4], strides: [u64; 4], elem_size: u64) -> u64 {
     if elem_size == 0 || dims.iter().any(|&dim| dim == 0) {
         return 0;
     }
@@ -9880,12 +9880,12 @@ fn pacc_strided_extent_bytes(dims: [u64; 4], strides: [u64; 4], elem_size: u64) 
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_strided_extent_bytes_from_byte_strides(
+fn sifive_strided_extent_bytes_from_byte_strides(
     dims: [u64; 4],
     strides: [u64; 4],
     elem_size: u64,
@@ -9903,18 +9903,18 @@ fn pacc_strided_extent_bytes_from_byte_strides(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_binding_bytes_for_host_ptr(
+unsafe fn sifive_binding_bytes_for_host_ptr(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
     bytes: u64,
 ) -> Option<u64> {
     let ptr = read_param_u64(kernel_params, index)?;
-    if let Some(remaining) = super::memory::pacc_allocation_remaining_addr(ptr) {
+    if let Some(remaining) = super::memory::sifive_allocation_remaining_addr(ptr) {
         let remaining = remaining as u64;
         if remaining == 0 {
             None
@@ -9922,7 +9922,7 @@ unsafe fn pacc_binding_bytes_for_host_ptr(
             Some(bytes.min(remaining))
         }
     } else if bytes <= usize::MAX as u64
-        && pacc_host_range_has_perms(ptr as usize, bytes as usize, false)
+        && sifive_host_range_has_perms(ptr as usize, bytes as usize, false)
     {
         Some(bytes)
     } else {
@@ -9931,20 +9931,20 @@ unsafe fn pacc_binding_bytes_for_host_ptr(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_max_nonnegative_i32_from_host_ptr(ptr: u64, elem_count: u64) -> Option<u64> {
-    let remaining = super::memory::pacc_allocation_remaining_addr(ptr)
+unsafe fn sifive_max_nonnegative_i32_from_host_ptr(ptr: u64, elem_count: u64) -> Option<u64> {
+    let remaining = super::memory::sifive_allocation_remaining_addr(ptr)
         .map(|remaining| remaining as u64)
         .or_else(|| {
             elem_count
                 .checked_mul(std::mem::size_of::<i32>() as u64)
                 .filter(|&bytes| {
                     bytes <= usize::MAX as u64
-                        && pacc_host_range_has_perms(ptr as usize, bytes as usize, false)
+                        && sifive_host_range_has_perms(ptr as usize, bytes as usize, false)
                 })
         })?;
     let count = elem_count
@@ -9964,32 +9964,32 @@ unsafe fn pacc_max_nonnegative_i32_from_host_ptr(ptr: u64, elem_count: u64) -> O
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_scale_f32_binding_metadata(
+unsafe fn sifive_scale_f32_binding_metadata(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
 ) -> Option<(u64, u32)> {
     let nelements = read_param_i64(kernel_params, 4)?.max(0) as u64;
     let bytes = nelements.saturating_mul(std::mem::size_of::<f32>() as u64);
     let flags = match index {
-        0 => pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
-        1 => pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+        0 => sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
+        1 => sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         _ => return None,
     };
-    pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
+    sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_argsort_f32_i32_binding_metadata(
+unsafe fn sifive_argsort_f32_i32_binding_metadata(
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: u32,
     index: usize,
@@ -10007,42 +10007,42 @@ unsafe fn pacc_argsort_f32_i32_binding_metadata(
         _ => return None,
     };
     let flags = match index {
-        0 => pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
-        1 => pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+        0 => sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
+        1 => sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         _ => return None,
     };
-    pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
+    sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_op_clamp_binding_metadata(
+unsafe fn sifive_op_clamp_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let elem_size = pacc_parse_op_clamp_element_size(kernel_name)?;
+    let elem_size = sifive_parse_op_clamp_element_size(kernel_name)?;
     let nelements = read_param_i32(kernel_params, 4)?.max(0) as u64;
     let bytes = nelements.saturating_mul(elem_size);
     let flags = match index {
-        0 => pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
-        1 => pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+        0 => sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
+        1 => sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         _ => return None,
     };
-    pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
+    sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_l2_norm_f32_binding_metadata(
+unsafe fn sifive_l2_norm_f32_binding_metadata(
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: u32,
     grid_dim_y: u32,
@@ -10068,7 +10068,7 @@ unsafe fn pacc_l2_norm_f32_binding_metadata(
                 .saturating_add(ncols.saturating_sub(1));
             (
                 max_elem.saturating_add(1).saturating_mul(elem_size),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         1 => (
@@ -10077,20 +10077,20 @@ unsafe fn pacc_l2_norm_f32_binding_metadata(
                 .saturating_mul(nrows)
                 .saturating_mul(ncols)
                 .saturating_mul(elem_size),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
+    sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_get_rows_float_binding_metadata(
+unsafe fn sifive_get_rows_float_binding_metadata(
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: u32,
     index: usize,
@@ -10117,7 +10117,7 @@ unsafe fn pacc_get_rows_float_binding_metadata(
         .saturating_add(ne12.saturating_sub(1).saturating_mul(s12));
     let max_row_index = {
         let ids_ptr = read_param_u64(kernel_params, 1).unwrap_or(0);
-        pacc_max_nonnegative_i32_from_host_ptr(ids_ptr, idx_max_off.saturating_add(1))?
+        sifive_max_nonnegative_i32_from_host_ptr(ids_ptr, idx_max_off.saturating_add(1))?
     };
 
     let (bytes, flags) = match index {
@@ -10129,14 +10129,14 @@ unsafe fn pacc_get_rows_float_binding_metadata(
                 .saturating_add(ne00.saturating_sub(1).saturating_mul(elem_size));
             (
                 max_byte.saturating_add(elem_size),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         1 => (
             idx_max_off
                 .saturating_add(1)
                 .saturating_mul(std::mem::size_of::<i32>() as u64),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         2 => {
             let max_elem = ne10
@@ -10147,21 +10147,21 @@ unsafe fn pacc_get_rows_float_binding_metadata(
                 .saturating_add(ne00.saturating_sub(1));
             (
                 max_elem.saturating_add(1).saturating_mul(elem_size),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
             )
         }
         _ => return None,
     };
-    pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
+    sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_get_rows_q8_0_dst_elem_size(kernel_name: &str) -> u64 {
+fn sifive_get_rows_q8_0_dst_elem_size(kernel_name: &str) -> u64 {
     if kernel_name.contains("13__nv_bfloat16") || kernel_name.contains("6__half") {
         2
     } else {
@@ -10170,12 +10170,12 @@ fn pacc_get_rows_q8_0_dst_elem_size(kernel_name: &str) -> u64 {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_get_rows_q8_0_binding_metadata(
+unsafe fn sifive_get_rows_q8_0_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: u32,
@@ -10194,9 +10194,9 @@ unsafe fn pacc_get_rows_q8_0_binding_metadata(
     let s11 = read_param_u64(kernel_params, 13)?;
     let s12 = read_param_u64(kernel_params, 14)?;
     let ne10 = grid_dim_x.max(1) as u64;
-    let dst_elem_size = pacc_get_rows_q8_0_dst_elem_size(kernel_name);
+    let dst_elem_size = sifive_get_rows_q8_0_dst_elem_size(kernel_name);
     let q8_0_block_bytes = (std::mem::size_of::<u16>() + 32) as u64;
-    let src_row_bytes = pacc_div_ceil_u64(ne00, 32).saturating_mul(q8_0_block_bytes);
+    let src_row_bytes = sifive_div_ceil_u64(ne00, 32).saturating_mul(q8_0_block_bytes);
 
     let idx_max_off = ne10
         .saturating_sub(1)
@@ -10205,7 +10205,7 @@ unsafe fn pacc_get_rows_q8_0_binding_metadata(
         .saturating_add(ne12.saturating_sub(1).saturating_mul(s12));
     let ids_ptr = read_param_u64(kernel_params, 1).unwrap_or(0);
     let max_row_index =
-        pacc_max_nonnegative_i32_from_host_ptr(ids_ptr, idx_max_off.saturating_add(1))?;
+        sifive_max_nonnegative_i32_from_host_ptr(ids_ptr, idx_max_off.saturating_add(1))?;
 
     let (bytes, flags) = match index {
         0 => {
@@ -10216,14 +10216,14 @@ unsafe fn pacc_get_rows_q8_0_binding_metadata(
                 .saturating_add(src_row_bytes.saturating_sub(1));
             (
                 max_byte.saturating_add(1),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         1 => (
             idx_max_off
                 .saturating_add(1)
                 .saturating_mul(std::mem::size_of::<i32>() as u64),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         2 => {
             let max_elem = ne10
@@ -10234,21 +10234,21 @@ unsafe fn pacc_get_rows_q8_0_binding_metadata(
                 .saturating_add(ne00.saturating_sub(1));
             (
                 max_elem.saturating_add(1).saturating_mul(dst_elem_size),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
             )
         }
         _ => return None,
     };
-    pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
+    sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_compute_batched_ptrs_binding_metadata(
+unsafe fn sifive_compute_batched_ptrs_binding_metadata(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
 ) -> Option<(u64, u32)> {
@@ -10260,24 +10260,24 @@ unsafe fn pacc_compute_batched_ptrs_binding_metadata(
     let (bytes, flags) = match index {
         3 => (
             ne23.saturating_add(table_count).saturating_mul(ptr_size),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         4 => (
             table_count.saturating_mul(ptr_size),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
+    sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_cpy_scalar_binding_metadata(
+unsafe fn sifive_cpy_scalar_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
@@ -10286,12 +10286,12 @@ unsafe fn pacc_cpy_scalar_binding_metadata(
         return None;
     }
 
-    let (src_elem_size, dst_elem_size) = pacc_cpy_scalar_element_sizes(kernel_name)?;
+    let (src_elem_size, dst_elem_size) = sifive_cpy_scalar_element_sizes(kernel_name)?;
     let ne = read_param_u64(kernel_params, 2)?;
     let flags = if index == 0 {
-        pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT
+        sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT
     } else {
-        pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT
+        sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT
     };
     if ne == 0 {
         return Some((0, flags));
@@ -10311,39 +10311,39 @@ unsafe fn pacc_cpy_scalar_binding_metadata(
         let ne1 = read_param_u64(kernel_params, 4)?.max(1);
         let ne2 = read_param_u64(kernel_params, 5)?.max(1);
         let ne012 = ne0.saturating_mul(ne1).saturating_mul(ne2).max(1);
-        let dims = [ne0, ne1, ne2, pacc_div_ceil_u64(ne, ne012).max(1)];
+        let dims = [ne0, ne1, ne2, sifive_div_ceil_u64(ne, ne012).max(1)];
         let strides = [
             read_param_u64(kernel_params, 6)?,
             read_param_u64(kernel_params, 7)?,
             read_param_u64(kernel_params, 8)?,
             read_param_u64(kernel_params, 9)?,
         ];
-        pacc_strided_extent_bytes_from_byte_strides(dims, strides, src_elem_size)
+        sifive_strided_extent_bytes_from_byte_strides(dims, strides, src_elem_size)
     } else {
         let ne0 = read_param_u64(kernel_params, 10)?.max(1);
         let ne1 = read_param_u64(kernel_params, 11)?.max(1);
         let ne2 = read_param_u64(kernel_params, 12)?.max(1);
         let ne012 = ne0.saturating_mul(ne1).saturating_mul(ne2).max(1);
-        let dims = [ne0, ne1, ne2, pacc_div_ceil_u64(ne, ne012).max(1)];
+        let dims = [ne0, ne1, ne2, sifive_div_ceil_u64(ne, ne012).max(1)];
         let strides = [
             read_param_u64(kernel_params, 13)?,
             read_param_u64(kernel_params, 14)?,
             read_param_u64(kernel_params, 15)?,
             read_param_u64(kernel_params, 16)?,
         ];
-        pacc_strided_extent_bytes_from_byte_strides(dims, strides, dst_elem_size)
+        sifive_strided_extent_bytes_from_byte_strides(dims, strides, dst_elem_size)
     };
 
-    pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
+    sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes).map(|clamped| (clamped, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_rope_element_sizes(kernel_name: &str) -> (u64, u64) {
+fn sifive_rope_element_sizes(kernel_name: &str) -> (u64, u64) {
     if kernel_name.contains("E6__halfS0_") || kernel_name.contains("E13__nv_bfloat16S0_") {
         (2, 2)
     } else if kernel_name.contains("Ef6__half") || kernel_name.contains("Ef13__nv_bfloat16") {
@@ -10358,45 +10358,45 @@ fn pacc_rope_element_sizes(kernel_name: &str) -> (u64, u64) {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_rope_element_size(kernel_name: &str) -> u64 {
-    let (src_elem_size, dst_elem_size) = pacc_rope_element_sizes(kernel_name);
+fn sifive_rope_element_size(kernel_name: &str) -> u64 {
+    let (src_elem_size, dst_elem_size) = sifive_rope_element_sizes(kernel_name);
     src_elem_size.max(dst_elem_size)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_rope_is_forward(kernel_name: &str) -> bool {
+fn sifive_rope_is_forward(kernel_name: &str) -> bool {
     !kernel_name.contains("rope_normILb0") && !kernel_name.contains("rope_neoxILb0")
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_rope_has_freq_factors(kernel_name: &str, freq_factors: u64) -> bool {
+fn sifive_rope_has_freq_factors(kernel_name: &str, freq_factors: u64) -> bool {
     freq_factors != 0
         || kernel_name.contains("rope_normILb1ELb1")
         || kernel_name.contains("rope_neoxILb1ELb1")
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_f32_to_f16(value: f32) -> u16 {
+fn sifive_f32_to_f16(value: f32) -> u16 {
     let bits = value.to_bits();
     let sign = ((bits >> 16) & 0x8000) as u16;
     let exp = ((bits >> 23) & 0xff) as i32;
@@ -10421,15 +10421,15 @@ fn pacc_f32_to_f16(value: f32) -> u16 {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_read_elem_as_f32(base: *const u8, elem_index: i64, elem_size: u64) -> f32 {
+unsafe fn sifive_read_elem_as_f32(base: *const u8, elem_index: i64, elem_size: u64) -> f32 {
     if elem_size == 2 {
         let ptr = base.offset((elem_index * 2) as isize) as *const u16;
-        pacc_f16_to_f32(ptr.read_unaligned())
+        sifive_f16_to_f32(ptr.read_unaligned())
     } else {
         let ptr = base.offset((elem_index * 4) as isize) as *const f32;
         ptr.read_unaligned()
@@ -10437,15 +10437,15 @@ unsafe fn pacc_read_elem_as_f32(base: *const u8, elem_index: i64, elem_size: u64
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_write_elem_from_f32(base: *mut u8, elem_index: i64, elem_size: u64, value: f32) {
+unsafe fn sifive_write_elem_from_f32(base: *mut u8, elem_index: i64, elem_size: u64, value: f32) {
     if elem_size == 2 {
         let ptr = base.offset((elem_index * 2) as isize) as *mut u16;
-        ptr.write_unaligned(pacc_f32_to_f16(value));
+        ptr.write_unaligned(sifive_f32_to_f16(value));
     } else {
         let ptr = base.offset((elem_index * 4) as isize) as *mut f32;
         ptr.write_unaligned(value);
@@ -10453,53 +10453,53 @@ unsafe fn pacc_write_elem_from_f32(base: *mut u8, elem_index: i64, elem_size: u6
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_f32_to_bf16(value: f32) -> u16 {
+fn sifive_f32_to_bf16(value: f32) -> u16 {
     let bits = value.to_bits();
     ((bits.wrapping_add(0x7fff).wrapping_add((bits >> 16) & 1)) >> 16) as u16
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[inline]
-fn pacc_bf16_to_f32(value: u16) -> f32 {
+fn sifive_bf16_to_f32(value: u16) -> f32 {
     f32::from_bits((value as u32) << 16)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[inline]
-unsafe fn pacc_read_f16_bf16_or_f32(base: *const u8, elem: i64, x_type: u32) -> f32 {
+unsafe fn sifive_read_f16_bf16_or_f32(base: *const u8, elem: i64, x_type: u32) -> f32 {
     if x_type == 2 {
         let xh = base.offset((elem * 2) as isize) as *const u16;
-        pacc_f16_to_f32(xh.read_unaligned())
+        sifive_f16_to_f32(xh.read_unaligned())
     } else if x_type == 3 {
         let xb = base.offset((elem * 2) as isize) as *const u16;
-        pacc_bf16_to_f32(xb.read_unaligned())
+        sifive_bf16_to_f32(xb.read_unaligned())
     } else {
         (base as *const f32).offset(elem as isize).read_unaligned()
     }
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_write_elem_from_f32_typed(
+unsafe fn sifive_write_elem_from_f32_typed(
     base: *mut u8,
     elem_index: i64,
     elem_size: u64,
@@ -10508,14 +10508,14 @@ unsafe fn pacc_write_elem_from_f32_typed(
 ) {
     if elem_size == 2 && is_bf16 {
         let ptr = base.offset((elem_index * 2) as isize) as *mut u16;
-        ptr.write_unaligned(pacc_f32_to_bf16(value));
+        ptr.write_unaligned(sifive_f32_to_bf16(value));
     } else {
-        pacc_write_elem_from_f32(base, elem_index, elem_size, value);
+        sifive_write_elem_from_f32(base, elem_index, elem_size, value);
     }
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -10529,7 +10529,7 @@ unsafe fn execute_set_rows_host_fallback(
     if !kernel_name.contains("k_set_rows") || kernel_name.contains("k_set_rows_quant") {
         return None;
     }
-    if std::env::var("HETGPU_PACC_SET_ROWS_HOST_FALLBACK")
+    if std::env::var("HETGPU_SIFIVE_SET_ROWS_HOST_FALLBACK")
         .ok()
         .as_deref()
         == Some("0")
@@ -10537,7 +10537,7 @@ unsafe fn execute_set_rows_host_fallback(
         return Some(Err(CUerror::UNKNOWN));
     }
 
-    let (src_elem, idx_elem, dst_elem) = pacc_set_rows_element_sizes(kernel_name)?;
+    let (src_elem, idx_elem, dst_elem) = sifive_set_rows_element_sizes(kernel_name)?;
     if !matches!(src_elem, 2 | 4) || !matches!(idx_elem, 4 | 8) || !matches!(dst_elem, 2 | 4) {
         return None;
     }
@@ -10573,20 +10573,20 @@ unsafe fn execute_set_rows_host_fallback(
         .any(|&stride| stride < 0)
     {
         eprintln!(
-            "[PACC Backend] host-fallback k_set_rows '{}' rejected invalid shape/stride",
+            "[SIFIVE Backend] host-fallback k_set_rows '{}' rejected invalid shape/stride",
             kernel_name
         );
         return Some(Err(CUerror::UNKNOWN));
     }
 
     let ne012 = ne00.saturating_mul(ne01).saturating_mul(ne02).max(1);
-    let ne03 = pacc_div_ceil_u64(ne_total, ne012);
-    let src0_bytes = pacc_strided_extent_bytes(
+    let ne03 = sifive_div_ceil_u64(ne_total, ne012);
+    let src0_bytes = sifive_strided_extent_bytes(
         [ne00, ne01, ne02, ne03],
         [1, s01 as u64, s02 as u64, s03 as u64],
         src_elem,
     );
-    let src1_bytes = pacc_strided_extent_bytes(
+    let src1_bytes = sifive_strided_extent_bytes(
         [ne01, ne11_fd, ne12_fd, 1],
         [s10 as u64, s11 as u64, s12 as u64, 0],
         idx_elem,
@@ -10597,11 +10597,11 @@ unsafe fn execute_set_rows_host_fallback(
     let Some(src1_len) = usize::try_from(src1_bytes).ok() else {
         return Some(Err(CUerror::UNKNOWN));
     };
-    if !pacc_host_or_cuda_alloc_has_bytes(src0, src0_len, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(src1, src1_len, false)
+    if !sifive_host_or_cuda_alloc_has_bytes(src0, src0_len, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(src1, src1_len, false)
     {
         eprintln!(
-            "[PACC Backend] host-fallback k_set_rows '{}' rejected input ranges src0=0x{:x}/{} src1=0x{:x}/{}",
+            "[SIFIVE Backend] host-fallback k_set_rows '{}' rejected input ranges src0=0x{:x}/{} src1=0x{:x}/{}",
             kernel_name, src0, src0_bytes, src1, src1_bytes
         );
         return Some(Err(CUerror::UNKNOWN));
@@ -10636,7 +10636,7 @@ unsafe fn execute_set_rows_host_fallback(
         };
         if dst_row < 0 {
             eprintln!(
-                "[PACC Backend] host-fallback k_set_rows '{}' rejected dst_row={}",
+                "[SIFIVE Backend] host-fallback k_set_rows '{}' rejected dst_row={}",
                 kernel_name, dst_row
             );
             return Some(Err(CUerror::UNKNOWN));
@@ -10652,9 +10652,9 @@ unsafe fn execute_set_rows_host_fallback(
     let Some(dst_len) = usize::try_from(dst_bytes).ok() else {
         return Some(Err(CUerror::UNKNOWN));
     };
-    if !pacc_host_or_cuda_alloc_has_bytes(dst, dst_len, true) {
+    if !sifive_host_or_cuda_alloc_has_bytes(dst, dst_len, true) {
         eprintln!(
-            "[PACC Backend] host-fallback k_set_rows '{}' rejected dst range dst=0x{:x}/{} max_dst_index={} src1_ne10={}",
+            "[SIFIVE Backend] host-fallback k_set_rows '{}' rejected dst range dst=0x{:x}/{} max_dst_index={} src1_ne10={}",
             kernel_name, dst, dst_bytes, max_dst_index, ne10
         );
         return Some(Err(CUerror::UNKNOWN));
@@ -10683,7 +10683,7 @@ unsafe fn execute_set_rows_host_fallback(
         };
         if dst_row < 0 {
             eprintln!(
-                "[PACC Backend] host-fallback k_set_rows '{}' rejected dst_row={}",
+                "[SIFIVE Backend] host-fallback k_set_rows '{}' rejected dst_row={}",
                 kernel_name, dst_row
             );
             return Some(Err(CUerror::UNKNOWN));
@@ -10691,19 +10691,19 @@ unsafe fn execute_set_rows_host_fallback(
 
         let src_index = i00 as i64 + i01 as i64 * s01 + i02 as i64 * s02 + i03 as i64 * s03;
         let dst_index = i00 as i64 + dst_row * s1 + i02 as i64 * s2 + i03 as i64 * s3;
-        let value = pacc_read_elem_as_f32(src0_base, src_index, src_elem);
-        pacc_write_elem_from_f32_typed(dst_base, dst_index, dst_elem, value, dst_is_bf16);
+        let value = sifive_read_elem_as_f32(src0_base, src_index, src_elem);
+        sifive_write_elem_from_f32_typed(dst_base, dst_index, dst_elem, value, dst_is_bf16);
     }
 
     eprintln!(
-        "[PACC Backend] host-fallback k_set_rows '{}' ne_total={} ne00={} ne01={} ne02={} ne03={} idx_elem={} dst_elem={}",
+        "[SIFIVE Backend] host-fallback k_set_rows '{}' ne_total={} ne00={} ne01={} ne02={} ne03={} idx_elem={} dst_elem={}",
         kernel_name, ne_total, ne00, ne01, ne02, ne03, idx_elem, dst_elem
     );
     Some(Ok(()))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -10717,7 +10717,7 @@ unsafe fn execute_cpy_scalar_host_fallback(
     if !kernel_name.contains("cpy_scalar") {
         return None;
     }
-    let (src_elem, dst_elem) = pacc_cpy_scalar_element_sizes(kernel_name)?;
+    let (src_elem, dst_elem) = sifive_cpy_scalar_element_sizes(kernel_name)?;
     if !matches!(src_elem, 2 | 4) || !matches!(dst_elem, 2 | 4) {
         return None;
     }
@@ -10746,7 +10746,7 @@ unsafe fn execute_cpy_scalar_host_fallback(
             src_ne0,
             src_ne1,
             src_ne2,
-            pacc_div_ceil_u64(ne, src_ne012).max(1),
+            sifive_div_ceil_u64(ne, src_ne012).max(1),
         ];
         let src_strides = [
             read_param_u64(kernel_params, 6)?,
@@ -10766,7 +10766,7 @@ unsafe fn execute_cpy_scalar_host_fallback(
             dst_ne0,
             dst_ne1,
             dst_ne2,
-            pacc_div_ceil_u64(ne, dst_ne012).max(1),
+            sifive_div_ceil_u64(ne, dst_ne012).max(1),
         ];
         let dst_strides = [
             read_param_u64(kernel_params, 13)?,
@@ -10776,8 +10776,8 @@ unsafe fn execute_cpy_scalar_host_fallback(
         ];
 
         (
-            pacc_strided_extent_bytes_from_byte_strides(src_dims, src_strides, src_elem),
-            pacc_strided_extent_bytes_from_byte_strides(dst_dims, dst_strides, dst_elem),
+            sifive_strided_extent_bytes_from_byte_strides(src_dims, src_strides, src_elem),
+            sifive_strided_extent_bytes_from_byte_strides(dst_dims, dst_strides, dst_elem),
         )
     };
 
@@ -10787,11 +10787,11 @@ unsafe fn execute_cpy_scalar_host_fallback(
     let Some(dst_len_usize) = usize::try_from(dst_len).ok() else {
         return Some(Err(CUerror::UNKNOWN));
     };
-    if !pacc_host_or_cuda_alloc_has_bytes(src, src_len_usize, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(dst, dst_len_usize, true)
+    if !sifive_host_or_cuda_alloc_has_bytes(src, src_len_usize, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(dst, dst_len_usize, true)
     {
         eprintln!(
-            "[PACC Backend] host-fallback cpy_scalar '{}' rejected ranges src=0x{:x}/{} dst=0x{:x}/{}",
+            "[SIFIVE Backend] host-fallback cpy_scalar '{}' rejected ranges src=0x{:x}/{} dst=0x{:x}/{}",
             kernel_name, src, src_len, dst, dst_len
         );
         return Some(Err(CUerror::UNKNOWN));
@@ -10805,8 +10805,8 @@ unsafe fn execute_cpy_scalar_host_fallback(
             std::ptr::copy_nonoverlapping(src_base, dst_base, dst_len_usize);
         } else {
             for i in 0..ne {
-                let value = pacc_read_elem_as_f32(src_base, i as i64, src_elem);
-                pacc_write_elem_from_f32_typed(dst_base, i as i64, dst_elem, value, dst_is_bf16);
+                let value = sifive_read_elem_as_f32(src_base, i as i64, src_elem);
+                sifive_write_elem_from_f32_typed(dst_base, i as i64, dst_elem, value, dst_is_bf16);
             }
         }
     } else {
@@ -10817,7 +10817,7 @@ unsafe fn execute_cpy_scalar_host_fallback(
             .saturating_mul(src_ne1)
             .saturating_mul(src_ne2)
             .max(1);
-        let src_ne03 = pacc_div_ceil_u64(ne, src_ne012).max(1);
+        let src_ne03 = sifive_div_ceil_u64(ne, src_ne012).max(1);
         let src_strides = [
             read_param_u64(kernel_params, 6)? / src_elem,
             read_param_u64(kernel_params, 7)? / src_elem,
@@ -10832,7 +10832,7 @@ unsafe fn execute_cpy_scalar_host_fallback(
             .saturating_mul(dst_ne1)
             .saturating_mul(dst_ne2)
             .max(1);
-        let dst_ne03 = pacc_div_ceil_u64(ne, dst_ne012).max(1);
+        let dst_ne03 = sifive_div_ceil_u64(ne, dst_ne012).max(1);
         let dst_strides = [
             read_param_u64(kernel_params, 13)? / dst_elem,
             read_param_u64(kernel_params, 14)? / dst_elem,
@@ -10859,8 +10859,8 @@ unsafe fn execute_cpy_scalar_host_fallback(
                 .saturating_add(dst_i1.saturating_mul(dst_strides[1]))
                 .saturating_add(dst_i2.saturating_mul(dst_strides[2]))
                 .saturating_add(dst_i3.saturating_mul(dst_strides[3]));
-            let value = pacc_read_elem_as_f32(src_base, src_index as i64, src_elem);
-            pacc_write_elem_from_f32_typed(
+            let value = sifive_read_elem_as_f32(src_base, src_index as i64, src_elem);
+            sifive_write_elem_from_f32_typed(
                 dst_base,
                 dst_index as i64,
                 dst_elem,
@@ -10870,9 +10870,9 @@ unsafe fn execute_cpy_scalar_host_fallback(
         }
     }
 
-    if pacc_env_truthy("HETGPU_PACC_CPY_SCALAR_TRACE") {
+    if sifive_env_truthy("HETGPU_SIFIVE_CPY_SCALAR_TRACE") {
         eprintln!(
-            "[PACC Backend] host-fallback cpy_scalar '{}' ne={} src_elem={} dst_elem={} contiguous={}",
+            "[SIFIVE Backend] host-fallback cpy_scalar '{}' ne={} src_elem={} dst_elem={} contiguous={}",
             kernel_name, ne, src_elem, dst_elem, contiguous
         );
     }
@@ -10880,7 +10880,7 @@ unsafe fn execute_cpy_scalar_host_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -10894,7 +10894,7 @@ unsafe fn execute_convert_unary_host_fallback(
     if !kernel_name.contains("convert_unary") {
         return None;
     }
-    let (src_elem, dst_elem) = pacc_parse_convert_unary_element_sizes(kernel_name)?;
+    let (src_elem, dst_elem) = sifive_parse_convert_unary_element_sizes(kernel_name)?;
     if !matches!(src_elem, 2 | 4) || !matches!(dst_elem, 2 | 4) {
         return None;
     }
@@ -10908,13 +10908,13 @@ unsafe fn execute_convert_unary_host_fallback(
         return Some(Ok(()));
     }
     let ne02 = read_param_uint3_z(kernel_params, 5)?.max(1) as u64;
-    let ne03 = pacc_div_ceil_u64(ne0203, ne02).max(1);
+    let ne03 = sifive_div_ceil_u64(ne0203, ne02).max(1);
     let s01_i = read_param_i64(kernel_params, 6)?;
     let s02_i = read_param_i64(kernel_params, 7)?;
     let s03_i = read_param_i64(kernel_params, 8)?;
     if s01_i < 0 || s02_i < 0 || s03_i < 0 {
         eprintln!(
-            "[PACC Backend] host-fallback convert_unary '{}' rejected negative stride s01={} s02={} s03={}",
+            "[SIFIVE Backend] host-fallback convert_unary '{}' rejected negative stride s01={} s02={} s03={}",
             kernel_name, s01_i, s02_i, s03_i
         );
         return Some(Err(CUerror::UNKNOWN));
@@ -10924,7 +10924,7 @@ unsafe fn execute_convert_unary_host_fallback(
     let s03 = s03_i as u64;
 
     let src_bytes =
-        pacc_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], src_elem);
+        sifive_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], src_elem);
     let dst_bytes = ne00
         .saturating_mul(ne01)
         .saturating_mul(ne0203)
@@ -10935,11 +10935,11 @@ unsafe fn execute_convert_unary_host_fallback(
     let Some(dst_len) = usize::try_from(dst_bytes).ok() else {
         return Some(Err(CUerror::UNKNOWN));
     };
-    if !pacc_host_or_cuda_alloc_has_bytes(src, src_len, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(dst, dst_len, true)
+    if !sifive_host_or_cuda_alloc_has_bytes(src, src_len, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(dst, dst_len, true)
     {
         eprintln!(
-            "[PACC Backend] host-fallback convert_unary '{}' rejected ranges src=0x{:x}/{} dst=0x{:x}/{}",
+            "[SIFIVE Backend] host-fallback convert_unary '{}' rejected ranges src=0x{:x}/{} dst=0x{:x}/{}",
             kernel_name, src, src_bytes, dst, dst_bytes
         );
         return Some(Err(CUerror::UNKNOWN));
@@ -10963,8 +10963,8 @@ unsafe fn execute_convert_unary_host_fallback(
                     .saturating_add(i01)
                     .saturating_mul(ne00)
                     .saturating_add(i00);
-                let value = pacc_read_elem_as_f32(src_base, src_index as i64, src_elem);
-                pacc_write_elem_from_f32_typed(
+                let value = sifive_read_elem_as_f32(src_base, src_index as i64, src_elem);
+                sifive_write_elem_from_f32_typed(
                     dst_base,
                     dst_index as i64,
                     dst_elem,
@@ -10976,19 +10976,19 @@ unsafe fn execute_convert_unary_host_fallback(
     }
 
     eprintln!(
-        "[PACC Backend] host-fallback convert_unary '{}' ne00={} ne01={} ne0203={} src_elem={} dst_elem={}",
+        "[SIFIVE Backend] host-fallback convert_unary '{}' ne00={} ne01={} ne0203={} src_elem={} dst_elem={}",
         kernel_name, ne00, ne01, ne0203, src_elem, dst_elem
     );
     Some(Ok(()))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_mmvq_type(kernel_name: &str) -> Option<u32> {
+fn sifive_parse_mmvq_type(kernel_name: &str) -> Option<u32> {
     let marker = "L9ggml_type";
     let start = kernel_name.find(marker)? + marker.len();
     let digits = kernel_name[start..]
@@ -11002,12 +11002,12 @@ fn pacc_parse_mmvq_type(kernel_name: &str) -> Option<u32> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_mmvq_ncols_dst(kernel_name: &str) -> Option<u32> {
+fn sifive_parse_mmvq_ncols_dst(kernel_name: &str) -> Option<u32> {
     let type_marker = "L9ggml_type";
     let type_pos = kernel_name.find(type_marker)?;
     let after_type = &kernel_name[type_pos + type_marker.len()..];
@@ -11023,12 +11023,12 @@ fn pacc_parse_mmvq_ncols_dst(kernel_name: &str) -> Option<u32> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_mmvq_small_k(kernel_name: &str) -> bool {
+fn sifive_parse_mmvq_small_k(kernel_name: &str) -> bool {
     let type_marker = "L9ggml_type";
     let Some(type_pos) = kernel_name.find(type_marker) else {
         return false;
@@ -11055,14 +11055,14 @@ fn pacc_parse_mmvq_small_k(kernel_name: &str) -> bool {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_mmvq_rows_per_block(kernel_name: &str, ncols_dst: u64) -> u64 {
+fn sifive_mmvq_rows_per_block(kernel_name: &str, ncols_dst: u64) -> u64 {
     match ncols_dst {
-        1 if pacc_parse_mmvq_small_k(kernel_name) => 4,
+        1 if sifive_parse_mmvq_small_k(kernel_name) => 4,
         1 => 1,
         2..=8 => 2,
         _ => 1,
@@ -11070,12 +11070,12 @@ fn pacc_mmvq_rows_per_block(kernel_name: &str, ncols_dst: u64) -> u64 {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_topk_moe_experts(kernel_name: &str) -> Option<u64> {
+fn sifive_parse_topk_moe_experts(kernel_name: &str) -> Option<u64> {
     let marker = "topk_moe_cudaILi";
     let start = kernel_name.find(marker)? + marker.len();
     let digits = kernel_name[start..]
@@ -11089,22 +11089,22 @@ fn pacc_parse_topk_moe_experts(kernel_name: &str) -> Option<u64> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_topk_moe_has_bias(kernel_name: &str) -> bool {
+fn sifive_topk_moe_has_bias(kernel_name: &str) -> bool {
     kernel_name.contains("ELb1EEvPKfPfPi")
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_mmvq_type_layout(ggml_type: u32) -> Option<(u64, u64)> {
+fn sifive_mmvq_type_layout(ggml_type: u32) -> Option<(u64, u64)> {
     match ggml_type {
         // GGML_TYPE_Q8_0: QK8_0 elements per block, one fp16 scale and 32 i8 quants.
         8 => Some((32, 34)),
@@ -11113,12 +11113,12 @@ fn pacc_mmvq_type_layout(ggml_type: u32) -> Option<(u64, u64)> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_mul_mat_vec_q_binding_metadata(
+unsafe fn sifive_mul_mat_vec_q_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: u32,
@@ -11126,9 +11126,9 @@ unsafe fn pacc_mul_mat_vec_q_binding_metadata(
     grid_dim_z: u32,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let (qk, x_block_bytes) = pacc_mmvq_type_layout(pacc_parse_mmvq_type(kernel_name)?)?;
-    let ncols_dst = pacc_parse_mmvq_ncols_dst(kernel_name)?.max(1) as u64;
-    let rows_per_block = pacc_mmvq_rows_per_block(kernel_name, ncols_dst);
+    let (qk, x_block_bytes) = sifive_mmvq_type_layout(sifive_parse_mmvq_type(kernel_name)?)?;
+    let ncols_dst = sifive_parse_mmvq_ncols_dst(kernel_name)?.max(1) as u64;
+    let rows_per_block = sifive_mmvq_rows_per_block(kernel_name, ncols_dst);
     let ncols_x = read_param_u32(kernel_params, 5)? as u64;
     let nchannels_y = read_param_uint3_z(kernel_params, 6)?.max(1) as u64;
     let stride_row_x = read_param_u32(kernel_params, 7)? as u64;
@@ -11151,13 +11151,13 @@ unsafe fn pacc_mul_mat_vec_q_binding_metadata(
     let blocks_per_row_x = ncols_x.saturating_add(qk - 1) / qk;
     let q8_1_block_bytes = 36u64;
     let ids_ptr = read_param_u64(kernel_params, 2).unwrap_or(0);
-    let has_ids = ids_ptr != 0 && super::memory::pacc_allocation_remaining_addr(ids_ptr).is_some();
+    let has_ids = ids_ptr != 0 && super::memory::sifive_allocation_remaining_addr(ids_ptr).is_some();
 
     let (bytes, flags) = match index {
         0 => {
             let max_sample_x = grid_z.saturating_sub(1) / sample_ratio;
             let max_channel_x = if has_ids && ncols_dst == 1 {
-                pacc_max_nonnegative_i32_from_host_ptr(ids_ptr, grid_y)
+                sifive_max_nonnegative_i32_from_host_ptr(ids_ptr, grid_y)
                     .unwrap_or_else(|| grid_y.saturating_sub(1))
             } else {
                 grid_y.saturating_sub(1) / channel_ratio
@@ -11171,7 +11171,7 @@ unsafe fn pacc_mul_mat_vec_q_binding_metadata(
                 .saturating_add(max_block);
             (
                 max_off.saturating_add(1).saturating_mul(x_block_bytes),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         1 => {
@@ -11192,7 +11192,7 @@ unsafe fn pacc_mul_mat_vec_q_binding_metadata(
                 .saturating_add(max_kby);
             (
                 max_off.saturating_add(1).saturating_mul(q8_1_block_bytes),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         2 if has_ids => {
@@ -11205,7 +11205,7 @@ unsafe fn pacc_mul_mat_vec_q_binding_metadata(
             };
             (
                 max_off.saturating_add(1).saturating_mul(4),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         4 => {
@@ -11219,27 +11219,27 @@ unsafe fn pacc_mul_mat_vec_q_binding_metadata(
                 .saturating_add(max_row);
             (
                 max_off.saturating_add(1).saturating_mul(4),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
             )
         }
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_set_rows_binding_metadata(
+unsafe fn sifive_set_rows_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let (src_elem, idx_elem, dst_elem) = pacc_set_rows_element_sizes(kernel_name)?;
+    let (src_elem, idx_elem, dst_elem) = sifive_set_rows_element_sizes(kernel_name)?;
     let ne_total = read_param_i64(kernel_params, 3)?.max(0) as u64;
     let ne10 = read_param_i64(kernel_params, 4)?.max(0) as u64;
     let ne11 = read_param_i64(kernel_params, 5)?.max(0) as u64;
@@ -11259,13 +11259,13 @@ unsafe fn pacc_set_rows_binding_metadata(
     let ne11_fd = read_param_uint3_z(kernel_params, 20)?.max(1) as u64;
     let ne12_fd = read_param_uint3_z(kernel_params, 21)?.max(1) as u64;
     let ne012 = ne00.saturating_mul(ne01).saturating_mul(ne02).max(1);
-    let ne03 = pacc_div_ceil_u64(ne_total, ne012);
+    let ne03 = sifive_div_ceil_u64(ne_total, ne012);
 
     let src0_bytes =
-        pacc_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], src_elem);
+        sifive_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], src_elem);
     let src1_bytes =
-        pacc_strided_extent_bytes([ne01, ne11_fd, ne12_fd, 1], [s10, s11, s12, 0], idx_elem);
-    let dst_bytes = pacc_strided_extent_bytes(
+        sifive_strided_extent_bytes([ne01, ne11_fd, ne12_fd, 1], [s10, s11, s12, 0], idx_elem);
+    let dst_bytes = sifive_strided_extent_bytes(
         [ne00, ne10, ne11.max(1), ne12.max(1)],
         [1, s1, s2, s3],
         dst_elem,
@@ -11274,34 +11274,34 @@ unsafe fn pacc_set_rows_binding_metadata(
     let (bytes, flags) = match index {
         0 => (
             src0_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
             src1_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         2 => (
             dst_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_topk_moe_binding_metadata(
+unsafe fn sifive_topk_moe_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let n_experts = pacc_parse_topk_moe_experts(kernel_name)?.max(1);
+    let n_experts = sifive_parse_topk_moe_experts(kernel_name)?.max(1);
     let n_rows = read_param_i32(kernel_params, 4)?.max(0) as u64;
     let n_expert_used = read_param_i32(kernel_params, 5)?.max(0) as u64;
 
@@ -11310,44 +11310,44 @@ unsafe fn pacc_topk_moe_binding_metadata(
             n_rows
                 .saturating_mul(n_experts)
                 .saturating_mul(std::mem::size_of::<f32>() as u64),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
             n_rows
                 .saturating_mul(n_expert_used)
                 .saturating_mul(std::mem::size_of::<f32>() as u64),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         2 => (
             n_rows
                 .saturating_mul(n_experts)
                 .saturating_mul(std::mem::size_of::<i32>() as u64),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
-        3 if pacc_topk_moe_has_bias(kernel_name) => (
+        3 if sifive_topk_moe_has_bias(kernel_name) => (
             n_experts.saturating_mul(std::mem::size_of::<f32>() as u64),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         _ => return None,
     };
 
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_mul_mat_vec_q_moe_binding_metadata(
+unsafe fn sifive_mul_mat_vec_q_moe_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_y: u32,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let (qk, x_block_bytes) = pacc_mmvq_type_layout(pacc_parse_mmvq_type(kernel_name)?)?;
+    let (qk, x_block_bytes) = sifive_mmvq_type_layout(sifive_parse_mmvq_type(kernel_name)?)?;
     let ncols_x = read_param_u32(kernel_params, 4)? as u64;
     let nchannels_y = read_param_uint3_z(kernel_params, 5)?.max(1) as u64;
     let nrows_x = read_param_u32(kernel_params, 6)?.max(1) as u64;
@@ -11364,7 +11364,7 @@ unsafe fn pacc_mul_mat_vec_q_moe_binding_metadata(
     let blocks_per_row_x = ncols_x.saturating_add(qk - 1) / qk;
     let q8_1_block_bytes = 36u64;
     let ids_ptr = read_param_u64(kernel_params, 2).unwrap_or(0);
-    let has_ids = ids_ptr != 0 && super::memory::pacc_allocation_remaining_addr(ids_ptr).is_some();
+    let has_ids = ids_ptr != 0 && super::memory::sifive_allocation_remaining_addr(ids_ptr).is_some();
     let ids_max_off = grid_y
         .saturating_sub(1)
         .saturating_add(ncols_dst.saturating_sub(1).saturating_mul(ids_stride));
@@ -11372,7 +11372,7 @@ unsafe fn pacc_mul_mat_vec_q_moe_binding_metadata(
     let (bytes, flags) = match index {
         0 => {
             let max_channel_x = if has_ids {
-                pacc_max_nonnegative_i32_from_host_ptr(ids_ptr, ids_max_off.saturating_add(1))
+                sifive_max_nonnegative_i32_from_host_ptr(ids_ptr, ids_max_off.saturating_add(1))
                     .unwrap_or_else(|| nchannels_y.saturating_sub(1))
             } else {
                 nchannels_y.saturating_sub(1)
@@ -11383,7 +11383,7 @@ unsafe fn pacc_mul_mat_vec_q_moe_binding_metadata(
                 .saturating_add(blocks_per_row_x.saturating_sub(1));
             (
                 max_off.saturating_add(1).saturating_mul(x_block_bytes),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         1 => {
@@ -11395,14 +11395,14 @@ unsafe fn pacc_mul_mat_vec_q_moe_binding_metadata(
                 .saturating_add(blocks_per_row_x.saturating_sub(1));
             (
                 max_off.saturating_add(1).saturating_mul(q8_1_block_bytes),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         2 => (
             ids_max_off
                 .saturating_add(1)
                 .saturating_mul(std::mem::size_of::<i32>() as u64),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         3 => {
             let max_off = grid_y
@@ -11414,23 +11414,23 @@ unsafe fn pacc_mul_mat_vec_q_moe_binding_metadata(
                 max_off
                     .saturating_add(1)
                     .saturating_mul(std::mem::size_of::<f32>() as u64),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
             )
         }
         _ => return None,
     };
 
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_mmvf_template(kernel_name: &str) -> Option<(u64, bool, bool)> {
+fn sifive_parse_mmvf_template(kernel_name: &str) -> Option<(u64, bool, bool)> {
     let marker = "mul_mat_vec_f";
     let after = &kernel_name[kernel_name.find(marker)? + marker.len()..];
     let li = after.find("Li")? + 2;
@@ -11454,12 +11454,12 @@ fn pacc_parse_mmvf_template(kernel_name: &str) -> Option<(u64, bool, bool)> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_mmvf_x_elem_bytes(kernel_name: &str) -> u64 {
+fn sifive_mmvf_x_elem_bytes(kernel_name: &str) -> u64 {
     if kernel_name.contains("mul_mat_vec_fI6__half")
         || kernel_name.contains("mul_mat_vec_fI11nv_bfloat16")
         || kernel_name.contains("mul_mat_vec_fI12__nv_bfloat16")
@@ -11472,12 +11472,12 @@ fn pacc_mmvf_x_elem_bytes(kernel_name: &str) -> u64 {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_mmvf_x_type(kernel_name: &str) -> Option<u32> {
+fn sifive_mmvf_x_type(kernel_name: &str) -> Option<u32> {
     if kernel_name.contains("mul_mat_vec_fI6__half") {
         Some(2)
     } else if kernel_name.contains("mul_mat_vec_fI11nv_bfloat16")
@@ -11495,14 +11495,14 @@ fn pacc_mmvf_x_type(kernel_name: &str) -> Option<u32> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
-struct PaccMmvFusionArgs {
+struct SifiveMmvFusionArgs {
     x_bias: u64,
     gate: u64,
     gate_bias: u64,
@@ -11511,7 +11511,7 @@ struct PaccMmvFusionArgs {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -11519,60 +11519,60 @@ struct PaccMmvFusionArgs {
 unsafe fn read_mmvf_fusion_args(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
-) -> Option<PaccMmvFusionArgs> {
+) -> Option<SifiveMmvFusionArgs> {
     if kernel_params.is_null() {
         return None;
     }
     let param = *kernel_params.add(index);
     if param.is_null()
         || (param as usize) < 0x1_0000
-        || !pacc_host_range_has_perms(
+        || !sifive_host_range_has_perms(
             param as usize,
-            std::mem::size_of::<PaccMmvFusionArgs>(),
+            std::mem::size_of::<SifiveMmvFusionArgs>(),
             false,
         )
     {
         return None;
     }
-    Some((param as *const PaccMmvFusionArgs).read_unaligned())
+    Some((param as *const SifiveMmvFusionArgs).read_unaligned())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_silu(value: f32) -> f32 {
+fn sifive_silu(value: f32) -> f32 {
     value / (1.0 + (-value).exp())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_gelu(value: f32) -> f32 {
+fn sifive_gelu(value: f32) -> f32 {
     const GELU_COEF_A: f32 = 0.044715;
     const SQRT_2_OVER_PI: f32 = 0.7978845608028654;
     0.5 * value * (1.0 + (SQRT_2_OVER_PI * value * (1.0 + GELU_COEF_A * value * value)).tanh())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_swiglu_oai(x: f32, gate: f32) -> f32 {
+fn sifive_swiglu_oai(x: f32, gate: f32) -> f32 {
     let x = x.min(7.0);
     let gate = gate.clamp(-7.0, 7.0);
     x * gate / (1.0 + (-1.702 * gate).exp())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -11580,7 +11580,7 @@ fn pacc_swiglu_oai(x: f32, gate: f32) -> f32 {
 unsafe fn read_param_uint3_value(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
-) -> Option<pacc_runtime_sys::HetgpuPaccUint3> {
+) -> Option<sifive_runtime_sys::HetgpuSifiveUint3> {
     if kernel_params.is_null() {
         return None;
     }
@@ -11589,7 +11589,7 @@ unsafe fn read_param_uint3_value(
         return None;
     }
     let p = param as *const u32;
-    Some(pacc_runtime_sys::HetgpuPaccUint3 {
+    Some(sifive_runtime_sys::HetgpuSifiveUint3 {
         x: p.read_unaligned(),
         y: p.add(1).read_unaligned(),
         z: p.add(2).read_unaligned(),
@@ -11597,12 +11597,12 @@ unsafe fn read_param_uint3_value(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_mul_mat_vec_f_binding_metadata(
+unsafe fn sifive_mul_mat_vec_f_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: u32,
@@ -11610,8 +11610,8 @@ unsafe fn pacc_mul_mat_vec_f_binding_metadata(
     grid_dim_z: u32,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let (ncols_dst, _has_fusion, is_multi_token_id) = pacc_parse_mmvf_template(kernel_name)?;
-    let x_elem_bytes = pacc_mmvf_x_elem_bytes(kernel_name);
+    let (ncols_dst, _has_fusion, is_multi_token_id) = sifive_parse_mmvf_template(kernel_name)?;
+    let x_elem_bytes = sifive_mmvf_x_elem_bytes(kernel_name);
     let ncols2 = read_param_u32(kernel_params, 5)? as u64;
     let nchannels_y = read_param_uint3_z(kernel_params, 6)?.max(1) as u64;
     let stride_row = read_param_u32(kernel_params, 7)? as u64;
@@ -11631,7 +11631,7 @@ unsafe fn pacc_mul_mat_vec_f_binding_metadata(
     let grid_y = grid_dim_y.max(1) as u64;
     let grid_z = grid_dim_z.max(1) as u64;
     let ids_ptr = read_param_u64(kernel_params, 2).unwrap_or(0);
-    let has_ids = ids_ptr != 0 && pacc_host_or_cuda_alloc_has_bytes(ids_ptr, 4, false);
+    let has_ids = ids_ptr != 0 && sifive_host_or_cuda_alloc_has_bytes(ids_ptr, 4, false);
     let col_elems = ncols2.saturating_mul(2);
 
     let (bytes, flags) = match index {
@@ -11645,7 +11645,7 @@ unsafe fn pacc_mul_mat_vec_f_binding_metadata(
                 let max_off = grid_y
                     .saturating_sub(1)
                     .saturating_add(grid_z.saturating_sub(1).saturating_mul(ids_stride));
-                pacc_max_nonnegative_i32_from_host_ptr(ids_ptr, max_off.saturating_add(1))
+                sifive_max_nonnegative_i32_from_host_ptr(ids_ptr, max_off.saturating_add(1))
                     .unwrap_or_else(|| grid_y.saturating_sub(1))
             } else {
                 grid_y.saturating_sub(1) / channel_ratio
@@ -11657,7 +11657,7 @@ unsafe fn pacc_mul_mat_vec_f_binding_metadata(
                 .saturating_add(col_elems.saturating_sub(1));
             (
                 max_off.saturating_add(1).saturating_mul(x_elem_bytes),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         1 => {
@@ -11683,7 +11683,7 @@ unsafe fn pacc_mul_mat_vec_f_binding_metadata(
                 .saturating_add(col_elems.saturating_sub(1));
             (
                 max_off.saturating_add(1).saturating_mul(4),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         2 if has_ids => {
@@ -11692,7 +11692,7 @@ unsafe fn pacc_mul_mat_vec_f_binding_metadata(
                 .saturating_add(grid_z.saturating_sub(1).saturating_mul(ids_stride));
             (
                 max_off.saturating_add(1).saturating_mul(4),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         4 => {
@@ -11713,18 +11713,18 @@ unsafe fn pacc_mul_mat_vec_f_binding_metadata(
                 .saturating_add(grid_x.saturating_sub(1));
             (
                 max_off.saturating_add(1).saturating_mul(4),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
             )
         }
         _ => return None,
     };
 
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -11736,21 +11736,21 @@ unsafe fn execute_mmvf_host_fallback(
     grid_dim_z: ::core::ffi::c_uint,
     kernel_params: *mut *mut ::core::ffi::c_void,
 ) -> Option<cuda_types::cuda::CUresult> {
-    let (ncols_dst, has_fusion, is_multi_token_id) = pacc_parse_mmvf_template(kernel_name)?;
+    let (ncols_dst, has_fusion, is_multi_token_id) = sifive_parse_mmvf_template(kernel_name)?;
     if ncols_dst == 0 || ncols_dst > 8 || (has_fusion && ncols_dst != 1) {
         return None;
     }
-    let x_type = pacc_mmvf_x_type(kernel_name)?;
+    let x_type = sifive_mmvf_x_type(kernel_name)?;
     let x_host = read_param_u64(kernel_params, 0)?;
     let y_host = read_param_u64(kernel_params, 1)?;
     let ids_host = read_param_u64(kernel_params, 2).unwrap_or(0);
     let fusion = if has_fusion {
         read_mmvf_fusion_args(kernel_params, 3)?
     } else {
-        PaccMmvFusionArgs::default()
+        SifiveMmvFusionArgs::default()
     };
     let dst_host = read_param_u64(kernel_params, 4)?;
-    let x_bytes = pacc_mul_mat_vec_f_binding_metadata(
+    let x_bytes = sifive_mul_mat_vec_f_binding_metadata(
         kernel_name,
         kernel_params,
         grid_dim_x,
@@ -11759,7 +11759,7 @@ unsafe fn execute_mmvf_host_fallback(
         0,
     )?
     .0 as usize;
-    let y_bytes = pacc_mul_mat_vec_f_binding_metadata(
+    let y_bytes = sifive_mul_mat_vec_f_binding_metadata(
         kernel_name,
         kernel_params,
         grid_dim_x,
@@ -11769,7 +11769,7 @@ unsafe fn execute_mmvf_host_fallback(
     )?
     .0 as usize;
     let ids_bytes = if ids_host != 0 {
-        pacc_mul_mat_vec_f_binding_metadata(
+        sifive_mul_mat_vec_f_binding_metadata(
             kernel_name,
             kernel_params,
             grid_dim_x,
@@ -11781,7 +11781,7 @@ unsafe fn execute_mmvf_host_fallback(
     } else {
         0
     };
-    let dst_bytes = pacc_mul_mat_vec_f_binding_metadata(
+    let dst_bytes = sifive_mul_mat_vec_f_binding_metadata(
         kernel_name,
         kernel_params,
         grid_dim_x,
@@ -11793,18 +11793,18 @@ unsafe fn execute_mmvf_host_fallback(
     if x_bytes == 0
         || y_bytes == 0
         || dst_bytes == 0
-        || !pacc_host_or_cuda_alloc_has_bytes(x_host, x_bytes, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(y_host, y_bytes, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(dst_host, dst_bytes, true)
-        || (fusion.gate != 0 && !pacc_host_or_cuda_alloc_has_bytes(fusion.gate, x_bytes, false))
+        || !sifive_host_or_cuda_alloc_has_bytes(x_host, x_bytes, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(y_host, y_bytes, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(dst_host, dst_bytes, true)
+        || (fusion.gate != 0 && !sifive_host_or_cuda_alloc_has_bytes(fusion.gate, x_bytes, false))
         || (fusion.x_bias != 0
-            && !pacc_host_or_cuda_alloc_has_bytes(fusion.x_bias, dst_bytes, false))
+            && !sifive_host_or_cuda_alloc_has_bytes(fusion.x_bias, dst_bytes, false))
         || (fusion.gate_bias != 0
-            && !pacc_host_or_cuda_alloc_has_bytes(fusion.gate_bias, dst_bytes, false))
-        || (ids_host != 0 && !pacc_host_or_cuda_alloc_has_bytes(ids_host, ids_bytes, false))
+            && !sifive_host_or_cuda_alloc_has_bytes(fusion.gate_bias, dst_bytes, false))
+        || (ids_host != 0 && !sifive_host_or_cuda_alloc_has_bytes(ids_host, ids_bytes, false))
     {
         eprintln!(
-            "[PACC Backend] host-fallback MMVF '{}' rejected ranges x=0x{:x}/{} y=0x{:x}/{} ids=0x{:x}/{} dst=0x{:x}/{} gate=0x{:x} x_bias=0x{:x} gate_bias=0x{:x}",
+            "[SIFIVE Backend] host-fallback MMVF '{}' rejected ranges x=0x{:x}/{} y=0x{:x}/{} ids=0x{:x}/{} dst=0x{:x}/{} gate=0x{:x} x_bias=0x{:x} gate_bias=0x{:x}",
             kernel_name,
             x_host,
             x_bytes,
@@ -11851,7 +11851,7 @@ unsafe fn execute_mmvf_host_fallback(
     let sample_ratio_z = sample_ratio.z.max(1) as u64;
     let _ = nchannels_y;
 
-    let workers = std::env::var("HETGPU_PACC_MMVF_HOST_THREADS")
+    let workers = std::env::var("HETGPU_SIFIVE_MMVF_HOST_THREADS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(4)
@@ -11937,9 +11937,9 @@ unsafe fn execute_mmvf_host_fallback(
                         for i in 0..total {
                             let yv = yf.offset(i as isize).read_unaligned();
                             sum +=
-                                pacc_read_f16_bf16_or_f32(x_base_ptr, x_base_elem + i, x_type) * yv;
+                                sifive_read_f16_bf16_or_f32(x_base_ptr, x_base_elem + i, x_type) * yv;
                             if use_gate {
-                                gate_sum += pacc_read_f16_bf16_or_f32(
+                                gate_sum += sifive_read_f16_bf16_or_f32(
                                     gate_base_ptr,
                                     x_base_elem + i,
                                     x_type,
@@ -11958,9 +11958,9 @@ unsafe fn execute_mmvf_host_fallback(
                                     .read_unaligned();
                             }
                             sum = match glu_op {
-                                1 => sum * pacc_gelu(gate_sum),
-                                3 => pacc_swiglu_oai(gate_sum, sum),
-                                _ => sum * pacc_silu(gate_sum),
+                                1 => sum * sifive_gelu(gate_sum),
+                                3 => sifive_swiglu_oai(gate_sum, sum),
+                                _ => sum * sifive_silu(gate_sum),
                             };
                         }
                         dst_base_ptr
@@ -11973,12 +11973,12 @@ unsafe fn execute_mmvf_host_fallback(
                         let mut sum = 0.0f32;
                         let mut gate_sum = 0.0f32;
                         for col2 in 0..ncols2_i {
-                            let x0 = pacc_read_f16_bf16_or_f32(
+                            let x0 = sifive_read_f16_bf16_or_f32(
                                 x_base_ptr,
                                 x_base_elem + col2 * 2,
                                 x_type,
                             );
-                            let x1 = pacc_read_f16_bf16_or_f32(
+                            let x1 = sifive_read_f16_bf16_or_f32(
                                 x_base_ptr,
                                 x_base_elem + col2 * 2 + 1,
                                 x_type,
@@ -11988,12 +11988,12 @@ unsafe fn execute_mmvf_host_fallback(
                             );
                             sum += x0 * y2.read_unaligned() + x1 * y2.add(1).read_unaligned();
                             if use_gate {
-                                let gx0 = pacc_read_f16_bf16_or_f32(
+                                let gx0 = sifive_read_f16_bf16_or_f32(
                                     gate_base_ptr,
                                     x_base_elem + col2 * 2,
                                     x_type,
                                 );
-                                let gx1 = pacc_read_f16_bf16_or_f32(
+                                let gx1 = sifive_read_f16_bf16_or_f32(
                                     gate_base_ptr,
                                     x_base_elem + col2 * 2 + 1,
                                     x_type,
@@ -12020,9 +12020,9 @@ unsafe fn execute_mmvf_host_fallback(
                                     .read_unaligned();
                             }
                             sum = match glu_op {
-                                1 => sum * pacc_gelu(gate_sum),
-                                3 => pacc_swiglu_oai(gate_sum, sum),
-                                _ => sum * pacc_silu(gate_sum),
+                                1 => sum * sifive_gelu(gate_sum),
+                                3 => sifive_swiglu_oai(gate_sum, sum),
+                                _ => sum * sifive_silu(gate_sum),
                             };
                         }
                         dst_base_ptr
@@ -12036,13 +12036,13 @@ unsafe fn execute_mmvf_host_fallback(
         }
     });
 
-    if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
+    if std::env::var("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS")
         .ok()
         .as_deref()
         == Some("1")
     {
         eprintln!(
-            "[PACC Backend] host-fallback MMVF '{}' work={} ncols2={} ncols_dst={} x_type={} fusion={} workers={}",
+            "[SIFIVE Backend] host-fallback MMVF '{}' work={} ncols2={} ncols_dst={} x_type={} fusion={} workers={}",
             kernel_name, work_items, ncols2, ncols_dst, x_type, has_fusion, workers
         );
     }
@@ -12050,12 +12050,12 @@ unsafe fn execute_mmvf_host_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn try_offload_mmvf_named_pacc_kernel(
+unsafe fn try_offload_mmvf_named_sifive_kernel(
     kernel_name: &str,
     grid_dim_x: ::core::ffi::c_uint,
     grid_dim_y: ::core::ffi::c_uint,
@@ -12063,8 +12063,8 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     kernel_params: *mut *mut ::core::ffi::c_void,
 ) -> Option<cuda_types::cuda::CUresult> {
     use cuda_types::cuda::*;
-    let mmvf_trace = pacc_env_truthy("HETGPU_PACC_MMVF_TRACE")
-        || pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS");
+    let mmvf_trace = sifive_env_truthy("HETGPU_SIFIVE_MMVF_TRACE")
+        || sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS");
     macro_rules! trace_mmvf {
         ($($arg:tt)*) => {
             if mmvf_trace {
@@ -12073,7 +12073,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         };
     }
 
-    unsafe fn finish_without_direct_pacc(
+    unsafe fn finish_without_direct_sifive(
         reason: &str,
         kernel_name: &str,
         grid_dim_x: ::core::ffi::c_uint,
@@ -12081,8 +12081,8 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         grid_dim_z: ::core::ffi::c_uint,
         kernel_params: *mut *mut ::core::ffi::c_void,
     ) -> Option<cuda_types::cuda::CUresult> {
-        if pacc_env_truthy("HETGPU_PACC_MMVF_HOST_FALLBACK")
-            || pacc_env_truthy("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
+        if sifive_env_truthy("HETGPU_SIFIVE_MMVF_HOST_FALLBACK")
+            || sifive_env_truthy("HETGPU_SIFIVE_ALLOW_NAMED_HOST_FALLBACK")
         {
             if let Some(result) = execute_mmvf_host_fallback(
                 kernel_name,
@@ -12094,23 +12094,23 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
                 return Some(result);
             }
         }
-        if pacc_named_fail_open_enabled() {
-            return pacc_named_assume_success(reason, kernel_name);
+        if sifive_named_fail_open_enabled() {
+            return sifive_named_assume_success(reason, kernel_name);
         }
         Some(Err(CUerror::UNKNOWN))
     }
 
-    if pacc_env_truthy("HETGPU_PACC_FUSE_GEMV_TO_GEMM")
-        || std::env::var("HETGPU_PACC_MMVF_SUBMIT")
+    if sifive_env_truthy("HETGPU_SIFIVE_FUSE_GEMV_TO_GEMM")
+        || std::env::var("HETGPU_SIFIVE_MMVF_SUBMIT")
             .ok()
             .map(|value| value.trim() == "0")
             .unwrap_or(false)
     {
         trace_mmvf!(
-            "[PACC Backend] MMVF '{}' direct submit disabled by GEMV->GEMM policy",
+            "[SIFIVE Backend] MMVF '{}' direct submit disabled by GEMV->GEMM policy",
             kernel_name
         );
-        return finish_without_direct_pacc(
+        return finish_without_direct_sifive(
             "MMVF direct submit disabled by GEMV->GEMM policy",
             kernel_name,
             grid_dim_x,
@@ -12120,28 +12120,28 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         );
     }
 
-    if std::env::var("HETGPU_PACC_MMVF_NAMED_OFFLOAD")
+    if std::env::var("HETGPU_SIFIVE_MMVF_NAMED_OFFLOAD")
         .ok()
         .as_deref()
         == Some("0")
     {
         trace_mmvf!(
-            "[PACC Backend] MMVF '{}' direct offload disabled by HETGPU_PACC_MMVF_NAMED_OFFLOAD=0",
+            "[SIFIVE Backend] MMVF '{}' direct offload disabled by HETGPU_SIFIVE_MMVF_NAMED_OFFLOAD=0",
             kernel_name
         );
         return None;
     }
-    if pacc_env_truthy("HETGPU_PACC_MMVF_FAST_SUCCESS")
-        || pacc_env_truthy("HETGPU_PACC_MMVF_NAMED_FAIL_OPEN")
+    if sifive_env_truthy("HETGPU_SIFIVE_MMVF_FAST_SUCCESS")
+        || sifive_env_truthy("HETGPU_SIFIVE_MMVF_NAMED_FAIL_OPEN")
     {
-        return pacc_named_assume_success("MMVF named fast-success requested", kernel_name);
+        return sifive_named_assume_success("MMVF named fast-success requested", kernel_name);
     }
 
-    let (ncols_dst, has_fusion, is_multi_token_id) = match pacc_parse_mmvf_template(kernel_name) {
+    let (ncols_dst, has_fusion, is_multi_token_id) = match sifive_parse_mmvf_template(kernel_name) {
         Some(parsed) => parsed,
         None => {
             trace_mmvf!(
-                "[PACC Backend] MMVF '{}' template parse failed grid={}x{}x{}",
+                "[SIFIVE Backend] MMVF '{}' template parse failed grid={}x{}x{}",
                 kernel_name,
                 grid_dim_x,
                 grid_dim_y,
@@ -12151,7 +12151,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         }
     };
     trace_mmvf!(
-        "[PACC Backend] MMVF '{}' parsed grid={}x{}x{} ncols_dst={} fusion={} multi_token_id={}",
+        "[SIFIVE Backend] MMVF '{}' parsed grid={}x{}x{} ncols_dst={} fusion={} multi_token_id={}",
         kernel_name,
         grid_dim_x,
         grid_dim_y,
@@ -12162,14 +12162,14 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     );
     if is_multi_token_id || ncols_dst == 0 || ncols_dst > 8 || (has_fusion && ncols_dst != 1) {
         trace_mmvf!(
-            "[PACC Backend] MMVF '{}' unsupported template ncols_dst={} fusion={} multi_token_id={}",
+            "[SIFIVE Backend] MMVF '{}' unsupported template ncols_dst={} fusion={} multi_token_id={}",
             kernel_name,
             ncols_dst,
             has_fusion,
             is_multi_token_id
         );
-        return finish_without_direct_pacc(
-            "MMVF template unsupported by direct PACC offload",
+        return finish_without_direct_sifive(
+            "MMVF template unsupported by direct SIFIVE offload",
             kernel_name,
             grid_dim_x,
             grid_dim_y,
@@ -12177,17 +12177,17 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
             kernel_params,
         );
     }
-    let x_type = match pacc_mmvf_x_type(kernel_name) {
+    let x_type = match sifive_mmvf_x_type(kernel_name) {
         Some(value) => value,
         None => {
-            trace_mmvf!("[PACC Backend] MMVF '{}' x_type parse failed", kernel_name);
+            trace_mmvf!("[SIFIVE Backend] MMVF '{}' x_type parse failed", kernel_name);
             return None;
         }
     };
-    let mmvf_host_fallback = pacc_env_truthy("HETGPU_PACC_MMVF_HOST_FALLBACK");
+    let mmvf_host_fallback = sifive_env_truthy("HETGPU_SIFIVE_MMVF_HOST_FALLBACK");
     if mmvf_host_fallback {
         trace_mmvf!(
-            "[PACC Backend] MMVF '{}' using explicit host fallback",
+            "[SIFIVE Backend] MMVF '{}' using explicit host fallback",
             kernel_name
         );
         return execute_mmvf_host_fallback(
@@ -12198,13 +12198,13 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
             kernel_params,
         );
     }
-    if PACC_MMVF_OFFLOAD_DISABLED_AFTER_FAILURE.load(Ordering::Relaxed) {
+    if SIFIVE_MMVF_OFFLOAD_DISABLED_AFTER_FAILURE.load(Ordering::Relaxed) {
         trace_mmvf!(
-            "[PACC Backend] MMVF '{}' rejected: offload disabled after prior failure",
+            "[SIFIVE Backend] MMVF '{}' rejected: offload disabled after prior failure",
             kernel_name
         );
-        if pacc_named_fail_open_enabled() {
-            return pacc_named_assume_success(
+        if sifive_named_fail_open_enabled() {
+            return sifive_named_assume_success(
                 "MMVF offload disabled after prior failure",
                 kernel_name,
             );
@@ -12215,14 +12215,14 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     let x_host = match read_param_u64(kernel_params, 0) {
         Some(value) => value,
         None => {
-            trace_mmvf!("[PACC Backend] MMVF '{}' missing x param[0]", kernel_name);
+            trace_mmvf!("[SIFIVE Backend] MMVF '{}' missing x param[0]", kernel_name);
             return None;
         }
     };
     let y_host = match read_param_u64(kernel_params, 1) {
         Some(value) => value,
         None => {
-            trace_mmvf!("[PACC Backend] MMVF '{}' missing y param[1]", kernel_name);
+            trace_mmvf!("[SIFIVE Backend] MMVF '{}' missing y param[1]", kernel_name);
             return None;
         }
     };
@@ -12230,12 +12230,12 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     let dst_host = match read_param_u64(kernel_params, 4) {
         Some(value) => value,
         None => {
-            trace_mmvf!("[PACC Backend] MMVF '{}' missing dst param[4]", kernel_name);
+            trace_mmvf!("[SIFIVE Backend] MMVF '{}' missing dst param[4]", kernel_name);
             return None;
         }
     };
     trace_mmvf!(
-        "[PACC Backend] MMVF '{}' host ptrs x=0x{:x} y=0x{:x} ids=0x{:x} dst=0x{:x}",
+        "[SIFIVE Backend] MMVF '{}' host ptrs x=0x{:x} y=0x{:x} ids=0x{:x} dst=0x{:x}",
         kernel_name,
         x_host,
         y_host,
@@ -12244,12 +12244,12 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
     );
     if ids_host != 0 {
         trace_mmvf!(
-            "[PACC Backend] MMVF '{}' rejected: ids ptr is nonzero 0x{:x}",
+            "[SIFIVE Backend] MMVF '{}' rejected: ids ptr is nonzero 0x{:x}",
             kernel_name,
             ids_host
         );
-        return finish_without_direct_pacc(
-            "MMVF ids input is not supported by direct PACC offload",
+        return finish_without_direct_sifive(
+            "MMVF ids input is not supported by direct SIFIVE offload",
             kernel_name,
             grid_dim_x,
             grid_dim_y,
@@ -12258,7 +12258,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         );
     }
 
-    let x_bytes = match pacc_mul_mat_vec_f_binding_metadata(
+    let x_bytes = match sifive_mul_mat_vec_f_binding_metadata(
         kernel_name,
         kernel_params,
         grid_dim_x,
@@ -12269,13 +12269,13 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         Some((bytes, _flags)) => bytes,
         None => {
             trace_mmvf!(
-                "[PACC Backend] MMVF '{}' failed to derive x binding bytes",
+                "[SIFIVE Backend] MMVF '{}' failed to derive x binding bytes",
                 kernel_name
             );
             return None;
         }
     };
-    let y_bytes = match pacc_mul_mat_vec_f_binding_metadata(
+    let y_bytes = match sifive_mul_mat_vec_f_binding_metadata(
         kernel_name,
         kernel_params,
         grid_dim_x,
@@ -12286,13 +12286,13 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         Some((bytes, _flags)) => bytes,
         None => {
             trace_mmvf!(
-                "[PACC Backend] MMVF '{}' failed to derive y binding bytes",
+                "[SIFIVE Backend] MMVF '{}' failed to derive y binding bytes",
                 kernel_name
             );
             return None;
         }
     };
-    let dst_bytes = match pacc_mul_mat_vec_f_binding_metadata(
+    let dst_bytes = match sifive_mul_mat_vec_f_binding_metadata(
         kernel_name,
         kernel_params,
         grid_dim_x,
@@ -12303,7 +12303,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         Some((bytes, _flags)) => bytes,
         None => {
             trace_mmvf!(
-                "[PACC Backend] MMVF '{}' failed to derive dst binding bytes",
+                "[SIFIVE Backend] MMVF '{}' failed to derive dst binding bytes",
                 kernel_name
             );
             return None;
@@ -12313,7 +12313,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         Some(value) => value,
         None => {
             trace_mmvf!(
-                "[PACC Backend] MMVF '{}' missing nchannels_y param[6]",
+                "[SIFIVE Backend] MMVF '{}' missing nchannels_y param[6]",
                 kernel_name
             );
             return None;
@@ -12323,7 +12323,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         Some(value) => value,
         None => {
             trace_mmvf!(
-                "[PACC Backend] MMVF '{}' missing channel_ratio param[10]",
+                "[SIFIVE Backend] MMVF '{}' missing channel_ratio param[10]",
                 kernel_name
             );
             return None;
@@ -12333,7 +12333,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         Some(value) => value,
         None => {
             trace_mmvf!(
-                "[PACC Backend] MMVF '{}' missing sample_ratio param[14]",
+                "[SIFIVE Backend] MMVF '{}' missing sample_ratio param[14]",
                 kernel_name
             );
             return None;
@@ -12355,11 +12355,11 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         && stride_row_raw != 0
         && stride_col_y2_raw != 0
         && stride_col_dst_raw != 0
-        && pacc_host_or_cuda_alloc_has_bytes(x_host, x_bytes as usize, false)
-        && pacc_host_or_cuda_alloc_has_bytes(y_host, y_bytes as usize, false)
-        && pacc_host_or_cuda_alloc_has_bytes(dst_host, dst_bytes as usize, true);
+        && sifive_host_or_cuda_alloc_has_bytes(x_host, x_bytes as usize, false)
+        && sifive_host_or_cuda_alloc_has_bytes(y_host, y_bytes as usize, false)
+        && sifive_host_or_cuda_alloc_has_bytes(dst_host, dst_bytes as usize, true);
     trace_mmvf!(
-        "[PACC Backend] MMVF {} small-N candidate simple={} ids=0x{:x} fusion={} multi_id={} grid={}x{}x{} ncols_dst={} ncols2={} stride_row={} stride_y2={} stride_dst={} bytes={}/{}/{} ranges={}/{}/{}",
+        "[SIFIVE Backend] MMVF {} small-N candidate simple={} ids=0x{:x} fusion={} multi_id={} grid={}x{}x{} ncols_dst={} ncols2={} stride_row={} stride_y2={} stride_dst={} bytes={}/{}/{} ranges={}/{}/{}",
         kernel_name,
         simple_small_n,
         ids_host,
@@ -12376,22 +12376,22 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         x_bytes,
         y_bytes,
         dst_bytes,
-        pacc_host_or_cuda_alloc_has_bytes(x_host, x_bytes as usize, false),
-        pacc_host_or_cuda_alloc_has_bytes(y_host, y_bytes as usize, false),
-        pacc_host_or_cuda_alloc_has_bytes(dst_host, dst_bytes as usize, true)
+        sifive_host_or_cuda_alloc_has_bytes(x_host, x_bytes as usize, false),
+        sifive_host_or_cuda_alloc_has_bytes(y_host, y_bytes as usize, false),
+        sifive_host_or_cuda_alloc_has_bytes(dst_host, dst_bytes as usize, true)
     );
     if simple_small_n {
         let alpha: f32 = 1.0;
         let beta: f32 = 0.0;
         let atype = if x_type == 3 {
-            pacc_runtime_sys::PaccDataType::Bfloat16 as i32
+            sifive_runtime_sys::SifiveDataType::Bfloat16 as i32
         } else if x_type == 2 {
-            pacc_runtime_sys::PaccDataType::Float16 as i32
+            sifive_runtime_sys::SifiveDataType::Float16 as i32
         } else {
-            pacc_runtime_sys::PaccDataType::Float32 as i32
+            sifive_runtime_sys::SifiveDataType::Float32 as i32
         };
-        let rc = if pacc_env_truthy("HETGPU_PACC_MMVF_USE_GEMM_STAGED") {
-            pacc_runtime_sys::hetgpu_pacc_submit_gemm_staged_tiled(
+        let rc = if sifive_env_truthy("HETGPU_SIFIVE_MMVF_USE_GEMM_STAGED") {
+            sifive_runtime_sys::hetgpu_sifive_submit_gemm_staged_tiled(
                 1,
                 0,
                 grid_dim_x.max(1) as i32,
@@ -12403,12 +12403,12 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
                 stride_row_raw as i32,
                 0,
                 y_host as *const ::core::ffi::c_void,
-                pacc_runtime_sys::PaccDataType::Float32 as i32,
+                sifive_runtime_sys::SifiveDataType::Float32 as i32,
                 stride_col_y2_raw.saturating_mul(2) as i32,
                 0,
                 (&beta as *const f32).cast(),
                 dst_host as *mut ::core::ffi::c_void,
-                pacc_runtime_sys::PaccDataType::Float32 as i32,
+                sifive_runtime_sys::SifiveDataType::Float32 as i32,
                 stride_col_dst_raw as i32,
                 0,
                 1,
@@ -12418,7 +12418,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
                 ncols2_raw.saturating_mul(2) as i32,
             )
         } else {
-            pacc_runtime_sys::hetgpu_pacc_submit_gemm_mmvf_small_n(
+            sifive_runtime_sys::hetgpu_sifive_submit_gemm_mmvf_small_n(
                 1,
                 0,
                 grid_dim_x.max(1) as i32,
@@ -12430,12 +12430,12 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
                 stride_row_raw as i32,
                 0,
                 y_host as *const ::core::ffi::c_void,
-                pacc_runtime_sys::PaccDataType::Float32 as i32,
+                sifive_runtime_sys::SifiveDataType::Float32 as i32,
                 stride_col_y2_raw.saturating_mul(2) as i32,
                 0,
                 (&beta as *const f32).cast(),
                 dst_host as *mut ::core::ffi::c_void,
-                pacc_runtime_sys::PaccDataType::Float32 as i32,
+                sifive_runtime_sys::SifiveDataType::Float32 as i32,
                 stride_col_dst_raw as i32,
                 0,
                 1,
@@ -12444,7 +12444,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         };
         if rc == 0 {
             trace_mmvf!(
-                "[PACC Backend] offloaded MMVF {} via staged small-N m={} n={} k={} atype={} lda={} ldb={} ldc={}",
+                "[SIFIVE Backend] offloaded MMVF {} via staged small-N m={} n={} k={} atype={} lda={} ldb={} ldc={}",
                 kernel_name,
                 grid_dim_x.max(1),
                 ncols_dst,
@@ -12457,7 +12457,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
             return Some(Ok(()));
         }
         trace_mmvf!(
-            "[PACC Backend] MMVF {} staged small-N returned rc={} m={} n={} k={}",
+            "[SIFIVE Backend] MMVF {} staged small-N returned rc={} m={} n={} k={}",
             kernel_name,
             rc,
             grid_dim_x.max(1),
@@ -12466,16 +12466,16 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         );
     }
 
-    let x_addr = match super::memory::pacc_driver_physical_addr(x_host) {
+    let x_addr = match super::memory::sifive_driver_physical_addr(x_host) {
         Some(addr) => addr,
         None => {
             trace_mmvf!(
-                "[PACC Backend] MMVF '{}' x host ptr 0x{:x} has no PACC physical address",
+                "[SIFIVE Backend] MMVF '{}' x host ptr 0x{:x} has no SIFIVE physical address",
                 kernel_name,
                 x_host
             );
-            return finish_without_direct_pacc(
-                "MMVF x allocation has no PACC physical address",
+            return finish_without_direct_sifive(
+                "MMVF x allocation has no SIFIVE physical address",
                 kernel_name,
                 grid_dim_x,
                 grid_dim_y,
@@ -12484,16 +12484,16 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
             );
         }
     };
-    let y_addr = match super::memory::pacc_driver_physical_addr(y_host) {
+    let y_addr = match super::memory::sifive_driver_physical_addr(y_host) {
         Some(addr) => addr,
         None => {
             trace_mmvf!(
-                "[PACC Backend] MMVF '{}' y host ptr 0x{:x} has no PACC physical address",
+                "[SIFIVE Backend] MMVF '{}' y host ptr 0x{:x} has no SIFIVE physical address",
                 kernel_name,
                 y_host
             );
-            return finish_without_direct_pacc(
-                "MMVF y allocation has no PACC physical address",
+            return finish_without_direct_sifive(
+                "MMVF y allocation has no SIFIVE physical address",
                 kernel_name,
                 grid_dim_x,
                 grid_dim_y,
@@ -12502,16 +12502,16 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
             );
         }
     };
-    let dst_addr = match super::memory::pacc_driver_physical_addr(dst_host) {
+    let dst_addr = match super::memory::sifive_driver_physical_addr(dst_host) {
         Some(addr) => addr,
         None => {
             trace_mmvf!(
-                "[PACC Backend] MMVF '{}' dst host ptr 0x{:x} has no PACC physical address",
+                "[SIFIVE Backend] MMVF '{}' dst host ptr 0x{:x} has no SIFIVE physical address",
                 kernel_name,
                 dst_host
             );
-            return finish_without_direct_pacc(
-                "MMVF dst allocation has no PACC physical address",
+            return finish_without_direct_sifive(
+                "MMVF dst allocation has no SIFIVE physical address",
                 kernel_name,
                 grid_dim_x,
                 grid_dim_y,
@@ -12521,7 +12521,7 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         }
     };
 
-    let job = pacc_runtime_sys::HetgpuPaccMmvfJob {
+    let job = sifive_runtime_sys::HetgpuSifiveMmvfJob {
         x_addr,
         y_addr,
         ids_addr: 0,
@@ -12553,14 +12553,14 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
 
     if job.ncols2 <= 0 || job.x_bytes == 0 || job.y_bytes == 0 || job.dst_bytes == 0 {
         trace_mmvf!(
-            "[PACC Backend] MMVF '{}' empty metadata ncols2={} x_bytes={} y_bytes={} dst_bytes={}",
+            "[SIFIVE Backend] MMVF '{}' empty metadata ncols2={} x_bytes={} y_bytes={} dst_bytes={}",
             kernel_name,
             job.ncols2,
             job.x_bytes,
             job.y_bytes,
             job.dst_bytes
         );
-        return finish_without_direct_pacc(
+        return finish_without_direct_sifive(
             "MMVF binding metadata is empty",
             kernel_name,
             grid_dim_x,
@@ -12570,9 +12570,9 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         );
     }
 
-    let dev_id = current_pacc_device_id_or_zero();
+    let dev_id = current_sifive_device_id_or_zero();
     trace_mmvf!(
-        "[PACC Backend] MMVF '{}' submit dev={} x_addr=0x{:x} y_addr=0x{:x} dst_addr=0x{:x} bytes={}/{}/{} grid={}x{}x{} ncols2={} ncols_dst={} x_type={} stride_row={} stride_col_y2={} stride_col_dst={}",
+        "[SIFIVE Backend] MMVF '{}' submit dev={} x_addr=0x{:x} y_addr=0x{:x} dst_addr=0x{:x} bytes={}/{}/{} grid={}x{}x{} ncols2={} ncols_dst={} x_type={} stride_row={} stride_col_y2={} stride_col_dst={}",
         kernel_name,
         dev_id,
         job.x_addr,
@@ -12591,11 +12591,11 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         job.stride_col_y2,
         job.stride_col_dst
     );
-    let rc = pacc_runtime_sys::hetgpu_pacc_submit_mmvf_on(dev_id, &job as *const _);
+    let rc = sifive_runtime_sys::hetgpu_sifive_submit_mmvf_on(dev_id, &job as *const _);
     if rc == 0 {
         if mmvf_trace {
             eprintln!(
-                "[PACC Backend] offloaded MMVF '{}' dev={} grid={}x{}x{} ncols2={} ncols_dst={} x_type={}",
+                "[SIFIVE Backend] offloaded MMVF '{}' dev={} grid={}x{}x{} ncols2={} ncols_dst={} x_type={}",
                 kernel_name,
                 dev_id,
                 job.grid_x,
@@ -12609,29 +12609,29 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
         return Some(Ok(()));
     }
     trace_mmvf!(
-        "[PACC Backend] MMVF '{}' submit returned rc={} dev={} seq path failed",
+        "[SIFIVE Backend] MMVF '{}' submit returned rc={} dev={} seq path failed",
         kernel_name,
         rc,
         dev_id
     );
 
-    if !PACC_MMVF_OFFLOAD_DISABLED_AFTER_FAILURE.swap(true, Ordering::Relaxed) {
-        pacc_log_limited(
-            &PACC_NAMED_ERROR_LOG_COUNT,
-            "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+    if !SIFIVE_MMVF_OFFLOAD_DISABLED_AFTER_FAILURE.swap(true, Ordering::Relaxed) {
+        sifive_log_limited(
+            &SIFIVE_NAMED_ERROR_LOG_COUNT,
+            "HETGPU_SIFIVE_NAMED_ERROR_LOG_LIMIT",
             64,
             || {
                 eprintln!(
-                    "[PACC Backend] MMVF '{}' offload failed with rc={}; disabling MMVF offload for this process",
+                    "[SIFIVE Backend] MMVF '{}' offload failed with rc={}; disabling MMVF offload for this process",
                     kernel_name, rc
                 );
             },
         );
     }
-    if pacc_named_fail_open_enabled() {
-        return pacc_named_assume_success("MMVF PACC offload failed", kernel_name);
+    if sifive_named_fail_open_enabled() {
+        return sifive_named_assume_success("MMVF SIFIVE offload failed", kernel_name);
     }
-    if std::env::var("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
+    if std::env::var("HETGPU_SIFIVE_ALLOW_NAMED_HOST_FALLBACK")
         .ok()
         .as_deref()
         == Some("1")
@@ -12650,12 +12650,12 @@ unsafe fn try_offload_mmvf_named_pacc_kernel(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_mmf_rows_per_block(kernel_name: &str) -> Option<u64> {
+fn sifive_parse_mmf_rows_per_block(kernel_name: &str) -> Option<u64> {
     let marker = "mul_mat_f";
     let after = &kernel_name[kernel_name.find(marker)? + marker.len()..];
     let li = after.find("Li")? + 2;
@@ -12670,12 +12670,12 @@ fn pacc_parse_mmf_rows_per_block(kernel_name: &str) -> Option<u64> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
+unsafe fn try_offload_mul_mat_f_named_sifive_kernel(
     kernel_name: &str,
     grid_dim_x: ::core::ffi::c_uint,
     grid_dim_y: ::core::ffi::c_uint,
@@ -12684,7 +12684,7 @@ unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
 ) -> Option<cuda_types::cuda::CUresult> {
     use cuda_types::cuda::*;
 
-    if !pacc_env_enabled_default("HETGPU_PACC_MUL_MAT_F_OFFLOAD", true) {
+    if !sifive_env_enabled_default("HETGPU_SIFIVE_MUL_MAT_F_OFFLOAD", true) {
         return None;
     }
 
@@ -12694,7 +12694,7 @@ unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
         return None;
     }
 
-    let rows_per_block = pacc_parse_mmf_rows_per_block(kernel_name)
+    let rows_per_block = sifive_parse_mmf_rows_per_block(kernel_name)
         .unwrap_or(32)
         .max(1);
     let x_host = read_param_u64(kernel_params, 0)?;
@@ -12743,23 +12743,23 @@ unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
     let ldb_i32 = i32::try_from(stride_col_y2.checked_mul(2)?).ok()?;
     let ldc_i32 = i32::try_from(stride_col_dst).ok()?;
     let max_m = i32::try_from(
-        pacc_parse_env_u64_default("HETGPU_PACC_MUL_MAT_F_MAX_M", rows.min(2048)).max(1),
+        sifive_parse_env_u64_default("HETGPU_SIFIVE_MUL_MAT_F_MAX_M", rows.min(2048)).max(1),
     )
     .unwrap_or(i32::MAX);
-    let max_n = i32::try_from(pacc_parse_env_u64_default("HETGPU_PACC_MUL_MAT_F_MAX_N", 1).max(1))
+    let max_n = i32::try_from(sifive_parse_env_u64_default("HETGPU_SIFIVE_MUL_MAT_F_MAX_N", 1).max(1))
         .unwrap_or(i32::MAX);
     let max_k =
-        i32::try_from(pacc_parse_env_u64_default("HETGPU_PACC_MUL_MAT_F_MAX_K", k.min(256)).max(1))
+        i32::try_from(sifive_parse_env_u64_default("HETGPU_SIFIVE_MUL_MAT_F_MAX_K", k.min(256)).max(1))
             .unwrap_or(i32::MAX);
 
     let skinny_host_first =
-        pacc_env_enabled_default("HETGPU_PACC_MUL_MAT_F_SKINNY_HOST_FIRST", true)
-            && n <= pacc_parse_env_u64_default("HETGPU_PACC_MUL_MAT_F_SKINNY_MAX_N", 1).max(1)
-            && k >= pacc_parse_env_u64_default("HETGPU_PACC_MUL_MAT_F_SKINNY_MIN_K", 64).max(1);
+        sifive_env_enabled_default("HETGPU_SIFIVE_MUL_MAT_F_SKINNY_HOST_FIRST", true)
+            && n <= sifive_parse_env_u64_default("HETGPU_SIFIVE_MUL_MAT_F_SKINNY_MAX_N", 1).max(1)
+            && k >= sifive_parse_env_u64_default("HETGPU_SIFIVE_MUL_MAT_F_SKINNY_MIN_K", 64).max(1);
 
-    let atype = pacc_runtime_sys::PaccDataType::Bfloat16 as i32;
-    let btype = pacc_runtime_sys::PaccDataType::Float32 as i32;
-    let ctype = pacc_runtime_sys::PaccDataType::Float32 as i32;
+    let atype = sifive_runtime_sys::SifiveDataType::Bfloat16 as i32;
+    let btype = sifive_runtime_sys::SifiveDataType::Float32 as i32;
+    let ctype = sifive_runtime_sys::SifiveDataType::Float32 as i32;
     let mut rc = if skinny_host_first { -2 } else { 0 };
     if !skinny_host_first {
         for sample_dst in 0..grid_z {
@@ -12786,12 +12786,12 @@ unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
                 let dst_ptr = (dst_host as *mut f32)
                     .add(usize::try_from(dst_off_f32).ok()?)
                     .cast::<::core::ffi::c_void>();
-                rc = if std::env::var("HETGPU_PACC_MUL_MAT_F_STAGED_ON")
+                rc = if std::env::var("HETGPU_SIFIVE_MUL_MAT_F_STAGED_ON")
                     .ok()
                     .as_deref()
                     == Some("1")
                 {
-                    pacc_runtime_sys::hetgpu_pacc_submit_gemm_staged_on(
+                    sifive_runtime_sys::hetgpu_sifive_submit_gemm_staged_on(
                         -1,
                         -1,
                         1,
@@ -12817,7 +12817,7 @@ unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
                         ctype,
                     )
                 } else {
-                    pacc_runtime_sys::hetgpu_pacc_submit_gemm_staged_tiled(
+                    sifive_runtime_sys::hetgpu_sifive_submit_gemm_staged_tiled(
                         1,
                         0,
                         m_i32,
@@ -12855,13 +12855,13 @@ unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
     }
 
     if rc == 0 {
-        if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
+        if std::env::var("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS")
             .ok()
             .as_deref()
             == Some("1")
         {
             eprintln!(
-                "[PACC Backend] offloaded mul_mat_f BF16 '{}' via staged GEMM grid={}x{}x{} m={} n={} k={} lda={} ldb={} ldc={}",
+                "[SIFIVE Backend] offloaded mul_mat_f BF16 '{}' via staged GEMM grid={}x{}x{} m={} n={} k={} lda={} ldb={} ldc={}",
                 kernel_name,
                 grid_dim_x,
                 grid_dim_y,
@@ -12878,30 +12878,30 @@ unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
     }
 
     if skinny_host_first {
-        if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
             eprintln!(
-                "[PACC Backend] mul_mat_f BF16 '{}' skinny n={} k={} uses host path before PACC submit",
+                "[SIFIVE Backend] mul_mat_f BF16 '{}' skinny n={} k={} uses host path before SIFIVE submit",
                 kernel_name, n, k
             );
         }
     } else {
-        pacc_log_limited(
-            &PACC_NAMED_ERROR_LOG_COUNT,
-            "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+        sifive_log_limited(
+            &SIFIVE_NAMED_ERROR_LOG_COUNT,
+            "HETGPU_SIFIVE_NAMED_ERROR_LOG_LIMIT",
             64,
             || {
                 eprintln!(
-                    "[PACC Backend] mul_mat_f BF16 '{}' staged GEMM offload failed rc={} grid={}x{}x{} m={} n={} k={}",
+                    "[SIFIVE Backend] mul_mat_f BF16 '{}' staged GEMM offload failed rc={} grid={}x{}x{} m={} n={} k={}",
                     kernel_name, rc, grid_dim_x, grid_dim_y, grid_dim_z, rows, n, k
                 );
             },
         );
     }
-    if pacc_env_enabled_default("HETGPU_PACC_MUL_MAT_F_HOST_FALLBACK", true)
-        || pacc_env_truthy("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
+    if sifive_env_enabled_default("HETGPU_SIFIVE_MUL_MAT_F_HOST_FALLBACK", true)
+        || sifive_env_truthy("HETGPU_SIFIVE_ALLOW_NAMED_HOST_FALLBACK")
     {
         let work_items = rows.checked_mul(grid_y)?.checked_mul(grid_z)?;
-        let workers = std::env::var("HETGPU_PACC_MUL_MAT_F_HOST_THREADS")
+        let workers = std::env::var("HETGPU_SIFIVE_MUL_MAT_F_HOST_THREADS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
@@ -12955,12 +12955,12 @@ unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
                         for j in 0..n_u {
                             let mut sum = 0.0f32;
                             for col2 in 0..ncols2_i {
-                                let x0 = pacc_read_f16_bf16_or_f32(
+                                let x0 = sifive_read_f16_bf16_or_f32(
                                     x_base_ptr,
                                     x_base_elem + col2 * 2,
                                     3,
                                 );
-                                let x1 = pacc_read_f16_bf16_or_f32(
+                                let x1 = sifive_read_f16_bf16_or_f32(
                                     x_base_ptr,
                                     x_base_elem + col2 * 2 + 1,
                                     3,
@@ -12983,9 +12983,9 @@ unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
             }
         });
 
-        if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
             eprintln!(
-                "[PACC Backend] host-fallback mul_mat_f BF16 '{}' grid={}x{}x{} rows={} n={} k={} workers={}",
+                "[SIFIVE Backend] host-fallback mul_mat_f BF16 '{}' grid={}x{}x{} rows={} n={} k={} workers={}",
                 kernel_name,
                 grid_dim_x,
                 grid_dim_y,
@@ -12998,25 +12998,25 @@ unsafe fn try_offload_mul_mat_f_named_pacc_kernel(
         }
         return Some(Ok(()));
     }
-    if pacc_env_truthy("HETGPU_PACC_MUL_MAT_F_FAIL_OPEN") {
-        return pacc_named_assume_success("mul_mat_f BF16 PACC offload failed", kernel_name);
+    if sifive_env_truthy("HETGPU_SIFIVE_MUL_MAT_F_FAIL_OPEN") {
+        return sifive_named_assume_success("mul_mat_f BF16 SIFIVE offload failed", kernel_name);
     }
     Some(Err(CUerror::UNKNOWN))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_rope_multi_binding_metadata(
+unsafe fn sifive_rope_multi_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: u32,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let (src_elem_size, dst_elem_size) = pacc_rope_element_sizes(kernel_name);
+    let (src_elem_size, dst_elem_size) = sifive_rope_element_sizes(kernel_name);
     let ne00 = read_param_i32(kernel_params, 2)?.max(0) as u64;
     let ne01 = read_param_i32(kernel_params, 3)?.max(0) as u64;
     let ne02 = read_param_i32(kernel_params, 4)?.max(0) as u64;
@@ -13030,9 +13030,9 @@ unsafe fn pacc_rope_multi_binding_metadata(
     let plane = ne01.saturating_mul(ne02).max(1);
     let ne03 = rows.saturating_add(plane - 1) / plane;
     let src_bytes =
-        pacc_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], src_elem_size);
+        sifive_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], src_elem_size);
     let dst_bytes =
-        pacc_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s1, s2, s3], dst_elem_size);
+        sifive_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s1, s2, s3], dst_elem_size);
     let pos_bytes = ne02.saturating_mul(4).max(1).saturating_mul(4);
     let freq_bytes = ne00.saturating_add(1) / 2 * std::mem::size_of::<f32>() as u64;
     let row_indices_bytes = ne02
@@ -13042,32 +13042,32 @@ unsafe fn pacc_rope_multi_binding_metadata(
     let (bytes, flags) = match index {
         0 => (
             src_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
             dst_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         12 => (
             pos_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         18 => (
             freq_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         19 if kernel_name.contains("rope_norm") || kernel_name.contains("rope_neox") => (
             row_indices_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -13082,7 +13082,7 @@ unsafe fn execute_rope_host_fallback(
     if !(kernel_name.contains("rope_norm") || kernel_name.contains("rope_neox")) {
         return None;
     }
-    if std::env::var("HETGPU_PACC_ROPE_HOST_FALLBACK")
+    if std::env::var("HETGPU_SIFIVE_ROPE_HOST_FALLBACK")
         .ok()
         .as_deref()
         == Some("0")
@@ -13123,13 +13123,13 @@ unsafe fn execute_rope_host_fallback(
     let rows = grid_dim_x.max(1) as u64;
     let plane = ne01.saturating_mul(ne02).max(1);
     let ne03 = rows.saturating_add(plane - 1) / plane;
-    let (src_elem_size, dst_elem_size) = pacc_rope_element_sizes(kernel_name);
-    let src_bytes = pacc_strided_extent_bytes(
+    let (src_elem_size, dst_elem_size) = sifive_rope_element_sizes(kernel_name);
+    let src_bytes = sifive_strided_extent_bytes(
         [ne00, ne01, ne02, ne03],
         [1, s01 as u64, s02 as u64, s03 as u64],
         src_elem_size,
     );
-    let dst_bytes = pacc_strided_extent_bytes(
+    let dst_bytes = sifive_strided_extent_bytes(
         [ne00, ne01, ne02, ne03],
         [1, s1 as u64, s2 as u64, s3 as u64],
         dst_elem_size,
@@ -13144,24 +13144,24 @@ unsafe fn execute_rope_host_fallback(
     let row_indices_bytes = ne02
         .max(1)
         .saturating_mul(std::mem::size_of::<i64>() as u64);
-    if !pacc_host_or_cuda_alloc_has_bytes(src, src_bytes as usize, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(dst, dst_bytes as usize, true)
-        || !pacc_host_or_cuda_alloc_has_bytes(pos, pos_bytes as usize, false)
+    if !sifive_host_or_cuda_alloc_has_bytes(src, src_bytes as usize, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(dst, dst_bytes as usize, true)
+        || !sifive_host_or_cuda_alloc_has_bytes(pos, pos_bytes as usize, false)
         || (freq_factors != 0
-            && !pacc_host_or_cuda_alloc_has_bytes(freq_factors, freq_bytes as usize, false))
+            && !sifive_host_or_cuda_alloc_has_bytes(freq_factors, freq_bytes as usize, false))
         || (set_rows_stride != 0
-            && !pacc_host_or_cuda_alloc_has_bytes(row_indices, row_indices_bytes as usize, false))
+            && !sifive_host_or_cuda_alloc_has_bytes(row_indices, row_indices_bytes as usize, false))
     {
         eprintln!(
-            "[PACC Backend] host-fallback ROPE '{}' rejected ranges src=0x{:x}/{} dst=0x{:x}/{} pos=0x{:x}/{}",
+            "[SIFIVE Backend] host-fallback ROPE '{}' rejected ranges src=0x{:x}/{} dst=0x{:x}/{} pos=0x{:x}/{}",
             kernel_name, src, src_bytes, dst, dst_bytes, pos, pos_bytes
         );
         return Some(Err(CUerror::UNKNOWN));
     }
 
-    let forward = pacc_rope_is_forward(kernel_name);
+    let forward = sifive_rope_is_forward(kernel_name);
     let is_neox = kernel_name.contains("rope_neox");
-    let has_ff = pacc_rope_has_freq_factors(kernel_name, freq_factors);
+    let has_ff = sifive_rope_has_freq_factors(kernel_name, freq_factors);
     let src_base = src as *const u8;
     let dst_base = dst as *mut u8;
     let pos_base = pos as *const i32;
@@ -13192,21 +13192,21 @@ unsafe fn execute_rope_host_fallback(
 
             if i0 >= n_dims {
                 if is_neox {
-                    let x0 = pacc_read_elem_as_f32(src_base, ix + (i0 / 2) as i64, src_elem_size);
+                    let x0 = sifive_read_elem_as_f32(src_base, ix + (i0 / 2) as i64, src_elem_size);
                     let x1 =
-                        pacc_read_elem_as_f32(src_base, ix + (i0 / 2 + 1) as i64, src_elem_size);
-                    pacc_write_elem_from_f32(dst_base, idst + (i0 / 2) as i64, dst_elem_size, x0);
-                    pacc_write_elem_from_f32(
+                        sifive_read_elem_as_f32(src_base, ix + (i0 / 2 + 1) as i64, src_elem_size);
+                    sifive_write_elem_from_f32(dst_base, idst + (i0 / 2) as i64, dst_elem_size, x0);
+                    sifive_write_elem_from_f32(
                         dst_base,
                         idst + (i0 / 2 + 1) as i64,
                         dst_elem_size,
                         x1,
                     );
                 } else {
-                    let x0 = pacc_read_elem_as_f32(src_base, ix, src_elem_size);
-                    let x1 = pacc_read_elem_as_f32(src_base, ix + 1, src_elem_size);
-                    pacc_write_elem_from_f32(dst_base, idst, dst_elem_size, x0);
-                    pacc_write_elem_from_f32(dst_base, idst + 1, dst_elem_size, x1);
+                    let x0 = sifive_read_elem_as_f32(src_base, ix, src_elem_size);
+                    let x1 = sifive_read_elem_as_f32(src_base, ix + 1, src_elem_size);
+                    sifive_write_elem_from_f32(dst_base, idst, dst_elem_size, x0);
+                    sifive_write_elem_from_f32(dst_base, idst + 1, dst_elem_size, x1);
                 }
                 continue;
             }
@@ -13234,30 +13234,30 @@ unsafe fn execute_rope_host_fallback(
             }
 
             if is_neox {
-                let x0 = pacc_read_elem_as_f32(src_base, ix, src_elem_size);
-                let x1 = pacc_read_elem_as_f32(src_base, ix + (n_dims / 2) as i64, src_elem_size);
-                pacc_write_elem_from_f32(
+                let x0 = sifive_read_elem_as_f32(src_base, ix, src_elem_size);
+                let x1 = sifive_read_elem_as_f32(src_base, ix + (n_dims / 2) as i64, src_elem_size);
+                sifive_write_elem_from_f32(
                     dst_base,
                     idst,
                     dst_elem_size,
                     x0 * cos_theta - x1 * sin_theta,
                 );
-                pacc_write_elem_from_f32(
+                sifive_write_elem_from_f32(
                     dst_base,
                     idst + (n_dims / 2) as i64,
                     dst_elem_size,
                     x0 * sin_theta + x1 * cos_theta,
                 );
             } else {
-                let x0 = pacc_read_elem_as_f32(src_base, ix, src_elem_size);
-                let x1 = pacc_read_elem_as_f32(src_base, ix + 1, src_elem_size);
-                pacc_write_elem_from_f32(
+                let x0 = sifive_read_elem_as_f32(src_base, ix, src_elem_size);
+                let x1 = sifive_read_elem_as_f32(src_base, ix + 1, src_elem_size);
+                sifive_write_elem_from_f32(
                     dst_base,
                     idst,
                     dst_elem_size,
                     x0 * cos_theta - x1 * sin_theta,
                 );
-                pacc_write_elem_from_f32(
+                sifive_write_elem_from_f32(
                     dst_base,
                     idst + 1,
                     dst_elem_size,
@@ -13267,13 +13267,13 @@ unsafe fn execute_rope_host_fallback(
         }
     }
 
-    if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
+    if std::env::var("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS")
         .ok()
         .as_deref()
         == Some("1")
     {
         eprintln!(
-            "[PACC Backend] host-fallback ROPE '{}' rows={} ne00={} n_dims={} neox={} src_elem={} dst_elem={}",
+            "[SIFIVE Backend] host-fallback ROPE '{}' rows={} ne00={} n_dims={} neox={} src_elem={} dst_elem={}",
             kernel_name, rows, ne00, n_dims, is_neox, src_elem_size, dst_elem_size
         );
     }
@@ -13281,35 +13281,35 @@ unsafe fn execute_rope_host_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_unary_op_binding_metadata(
+unsafe fn sifive_unary_op_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let elem_size = pacc_rope_element_size(kernel_name);
+    let elem_size = sifive_rope_element_size(kernel_name);
     let k = read_param_i32(kernel_params, 2)?.max(0) as u64;
     let bytes = k.saturating_mul(elem_size);
     let flags = match index {
-        0 => pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
-        1 => pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+        0 => sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
+        1 => sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_unary_gated_access_bytes(k: u64, n: u64, stride: u64, elem_size: u64) -> u64 {
+fn sifive_unary_gated_access_bytes(k: u64, n: u64, stride: u64, elem_size: u64) -> u64 {
     if k == 0 || n == 0 || elem_size == 0 {
         return 0;
     }
@@ -13324,53 +13324,53 @@ fn pacc_unary_gated_access_bytes(k: u64, n: u64, stride: u64, elem_size: u64) ->
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_unary_gated_op_binding_metadata(
+unsafe fn sifive_unary_gated_op_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let elem_size = pacc_rope_element_size(kernel_name);
+    let elem_size = sifive_rope_element_size(kernel_name);
     let k = read_param_i64(kernel_params, 3)?.max(0) as u64;
     let n = read_param_i64(kernel_params, 4)?.max(0) as u64;
     let o0 = read_param_i64(kernel_params, 5)?.max(0) as u64;
     let o1 = read_param_i64(kernel_params, 6)?.max(0) as u64;
     let (bytes, flags) = match index {
         0 => (
-            pacc_unary_gated_access_bytes(k, n, o0, elem_size),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_unary_gated_access_bytes(k, n, o0, elem_size),
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
-            pacc_unary_gated_access_bytes(k, n, o1, elem_size),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_unary_gated_access_bytes(k, n, o1, elem_size),
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         2 => (
             k.saturating_mul(elem_size),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_bin_bcast_binding_metadata(
+unsafe fn sifive_bin_bcast_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
     unravel: bool,
 ) -> Option<(u64, u32)> {
-    let (src0_elem, src1_elem, dst_elem) = pacc_bin_bcast_element_sizes(kernel_name);
+    let (src0_elem, src1_elem, dst_elem) = sifive_bin_bcast_element_sizes(kernel_name);
     let (ne0, ne1, ne2, ne3, ne10, ne11, ne12, ne13, stride_base) = if unravel {
         (
             read_param_uint3_z(kernel_params, 3)? as u64,
@@ -13410,44 +13410,44 @@ unsafe fn pacc_bin_bcast_binding_metadata(
     let s13 = read_param_i32(kernel_params, stride_base + 10)?.max(0) as u64;
 
     let src0_bytes =
-        pacc_strided_extent_bytes([ne0, ne1, ne2, ne3], [s00, s01, s02, s03], src0_elem);
-    let src1_bytes = pacc_strided_extent_bytes(
+        sifive_strided_extent_bytes([ne0, ne1, ne2, ne3], [s00, s01, s02, s03], src0_elem);
+    let src1_bytes = sifive_strided_extent_bytes(
         [ne0.min(ne10), ne1.min(ne11), ne2.min(ne12), ne3.min(ne13)],
         [s10, s11, s12, s13],
         src1_elem,
     );
-    let dst_bytes = pacc_strided_extent_bytes([ne0, ne1, ne2, ne3], [1, s1, s2, s3], dst_elem);
+    let dst_bytes = sifive_strided_extent_bytes([ne0, ne1, ne2, ne3], [1, s1, s2, s3], dst_elem);
 
     let (bytes, flags) = match index {
         0 => (
             src0_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
             src1_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         2 => (
             dst_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         i if i >= stride_base + 11 => (
             src1_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_concat_dim(kernel_name: &str) -> Option<u32> {
+fn sifive_parse_concat_dim(kernel_name: &str) -> Option<u32> {
     if kernel_name.contains("concat_f32_dim0") || kernel_name.contains("concat_f32_non_contILi0") {
         Some(0)
     } else if kernel_name.contains("concat_f32_dim1")
@@ -13466,19 +13466,19 @@ fn pacc_parse_concat_dim(kernel_name: &str) -> Option<u32> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_concat_dim_binding_metadata(
+unsafe fn sifive_concat_dim_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_y: u32,
     grid_dim_z: u32,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let dim = pacc_parse_concat_dim(kernel_name)?;
+    let dim = sifive_parse_concat_dim(kernel_name)?;
     let ne0 = read_param_i32(kernel_params, 3)?.max(0) as u64;
     let split = read_param_i32(kernel_params, 4)?.max(0) as u64;
     let ne1 = grid_dim_y.max(1) as u64;
@@ -13519,29 +13519,29 @@ unsafe fn pacc_concat_dim_binding_metadata(
     let (bytes, flags) = match index {
         0 => (
             src0_elems.saturating_mul(elem_size),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
             src1_elems.saturating_mul(elem_size),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         2 => (
             dst_elems.saturating_mul(elem_size),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_concat_non_cont_binding_metadata(
+unsafe fn sifive_concat_non_cont_binding_metadata(
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: u32,
     grid_dim_y: u32,
@@ -13582,17 +13582,17 @@ unsafe fn pacc_concat_non_cont_binding_metadata(
     let nb2 = read_param_u64(kernel_params, 25)?;
     let nb3 = read_param_u64(kernel_params, 26)?;
 
-    let src0_bytes = pacc_strided_extent_bytes_from_byte_strides(
+    let src0_bytes = sifive_strided_extent_bytes_from_byte_strides(
         [ne00, ne01, ne02, ne03],
         [nb00, nb01, nb02, nb03],
         elem_size,
     );
-    let src1_bytes = pacc_strided_extent_bytes_from_byte_strides(
+    let src1_bytes = sifive_strided_extent_bytes_from_byte_strides(
         [ne10, ne11, ne12, ne13],
         [nb10, nb11, nb12, nb13],
         elem_size,
     );
-    let dst_bytes = pacc_strided_extent_bytes_from_byte_strides(
+    let dst_bytes = sifive_strided_extent_bytes_from_byte_strides(
         [ne0, ne1, ne2, ne3],
         [nb0, nb1, nb2, nb3],
         elem_size,
@@ -13601,29 +13601,29 @@ unsafe fn pacc_concat_non_cont_binding_metadata(
     let (bytes, flags) = match index {
         0 => (
             src0_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
             src1_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         2 => (
             dst_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_quantize_q8_1_binding_metadata(
+unsafe fn sifive_quantize_q8_1_binding_metadata(
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_z: u32,
     index: usize,
@@ -13652,7 +13652,7 @@ unsafe fn pacc_quantize_q8_1_binding_metadata(
             let bytes = max_off
                 .saturating_add(1)
                 .saturating_mul(std::mem::size_of::<f32>() as u64);
-            Some((bytes, pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT))
+            Some((bytes, sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT))
         }
         1 => {
             let total = ne0.saturating_mul(ne1).saturating_mul(grid_z.max(1));
@@ -13660,7 +13660,7 @@ unsafe fn pacc_quantize_q8_1_binding_metadata(
             let block_q8_1_bytes = 36u64;
             Some((
                 blocks.saturating_mul(block_q8_1_bytes),
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
             ))
         }
         _ => None,
@@ -13668,7 +13668,7 @@ unsafe fn pacc_quantize_q8_1_binding_metadata(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -13693,20 +13693,20 @@ unsafe fn execute_quantize_q8_1_host_fallback(
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     }
 
-    let x_bytes = pacc_quantize_q8_1_binding_metadata(kernel_params, grid_dim_z, 0)?.0 as usize;
-    let y_bytes = pacc_quantize_q8_1_binding_metadata(kernel_params, grid_dim_z, 1)?.0 as usize;
+    let x_bytes = sifive_quantize_q8_1_binding_metadata(kernel_params, grid_dim_z, 0)?.0 as usize;
+    let y_bytes = sifive_quantize_q8_1_binding_metadata(kernel_params, grid_dim_z, 1)?.0 as usize;
     if x_bytes == 0
         || y_bytes == 0
-        || !pacc_host_or_cuda_alloc_has_bytes(x_addr, x_bytes, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(y_addr, y_bytes, true)
+        || !sifive_host_or_cuda_alloc_has_bytes(x_addr, x_bytes, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(y_addr, y_bytes, true)
     {
-        pacc_log_limited(
-            &PACC_NAMED_ERROR_LOG_COUNT,
-            "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+        sifive_log_limited(
+            &SIFIVE_NAMED_ERROR_LOG_COUNT,
+            "HETGPU_SIFIVE_NAMED_ERROR_LOG_LIMIT",
             64,
             || {
                 eprintln!(
-                    "[PACC Backend] quantize_q8_1 '{}' rejected ranges x=0x{:x}/{} y=0x{:x}/{}",
+                    "[SIFIVE Backend] quantize_q8_1 '{}' rejected ranges x=0x{:x}/{} y=0x{:x}/{}",
                     kernel_name, x_addr, x_bytes, y_addr, y_bytes
                 );
             },
@@ -13761,20 +13761,20 @@ unsafe fn execute_quantize_q8_1_host_fallback(
                     };
                     block.add(lane).write_unaligned(q as u8);
                 }
-                (block.add(32) as *mut u16).write_unaligned(pacc_f32_to_f16(d));
-                (block.add(34) as *mut u16).write_unaligned(pacc_f32_to_f16(sum));
+                (block.add(32) as *mut u16).write_unaligned(sifive_f32_to_f16(d));
+                (block.add(34) as *mut u16).write_unaligned(sifive_f32_to_f16(sum));
                 i0 += 32;
             }
         }
     }
 
-    if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
+    if std::env::var("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS")
         .ok()
         .as_deref()
         == Some("1")
     {
         eprintln!(
-            "[PACC Backend] host-fallback quantize_q8_1 '{}' ne0={} ne1={} grid_z={} bytes={}",
+            "[SIFIVE Backend] host-fallback quantize_q8_1 '{}' ne0={} ne1={} grid_z={} bytes={}",
             kernel_name, ne0, ne1, grid_z, y_bytes
         );
     }
@@ -13782,57 +13782,57 @@ unsafe fn execute_quantize_q8_1_host_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_dequantize_block_q8_0_f16_binding_metadata(
+unsafe fn sifive_dequantize_block_q8_0_f16_binding_metadata(
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
 ) -> Option<(u64, u32)> {
     let k = read_param_i64(kernel_params, 2)?.max(0) as u64;
-    let src_blocks = pacc_div_ceil_u64(k, 32);
+    let src_blocks = sifive_div_ceil_u64(k, 32);
     let src_bytes = src_blocks.saturating_mul(34);
     let dst_bytes = k.saturating_mul(2);
     let (bytes, flags) = match index {
         0 => (
             src_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
             dst_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_convert_unary_binding_metadata(
+unsafe fn sifive_convert_unary_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let (src_elem, dst_elem) = pacc_parse_convert_unary_element_sizes(kernel_name)?;
+    let (src_elem, dst_elem) = sifive_parse_convert_unary_element_sizes(kernel_name)?;
     let ne00 = read_param_i64(kernel_params, 2)?.max(0) as u64;
     let ne01 = read_param_i64(kernel_params, 3)?.max(0) as u64;
     let ne0203 = read_param_i64(kernel_params, 4)?.max(0) as u64;
     let ne02 = read_param_uint3_z(kernel_params, 5)?.max(1) as u64;
-    let ne03 = pacc_div_ceil_u64(ne0203, ne02).max(1);
+    let ne03 = sifive_div_ceil_u64(ne0203, ne02).max(1);
     let s01 = read_param_i64(kernel_params, 6)?.max(0) as u64;
     let s02 = read_param_i64(kernel_params, 7)?.max(0) as u64;
     let s03 = read_param_i64(kernel_params, 8)?.max(0) as u64;
 
     let src_bytes =
-        pacc_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], src_elem);
+        sifive_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], src_elem);
     let dst_bytes = ne00
         .saturating_mul(ne01)
         .saturating_mul(ne0203)
@@ -13841,25 +13841,25 @@ unsafe fn pacc_convert_unary_binding_metadata(
     let (bytes, flags) = match index {
         0 => (
             src_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
             dst_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_ssm_conv_binding_metadata(
+unsafe fn sifive_ssm_conv_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: u32,
@@ -13868,7 +13868,7 @@ unsafe fn pacc_ssm_conv_binding_metadata(
     index: usize,
 ) -> Option<(u64, u32)> {
     let (split_d_inner, d_conv, split_n_t) =
-        pacc_parse_ssm_conv_template(kernel_name).unwrap_or((128, 4, 0));
+        sifive_parse_ssm_conv_template(kernel_name).unwrap_or((128, 4, 0));
     let src0_nb0 = read_param_i32(kernel_params, 3)?.max(0) as u64;
     let src0_nb1 = read_param_i32(kernel_params, 4)?.max(0) as u64;
     let src0_nb2 = read_param_i32(kernel_params, 5)?.max(0) as u64;
@@ -13918,34 +13918,34 @@ unsafe fn pacc_ssm_conv_binding_metadata(
     let (bytes, flags) = match index {
         0 => (
             src0_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 => (
             src1_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         7 => (
             dst_bytes,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_gated_delta_net_binding_metadata(
+unsafe fn sifive_gated_delta_net_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let (s_v, kda) = pacc_parse_gated_delta_net_template(kernel_name)?;
+    let (s_v, kda) = sifive_parse_gated_delta_net_template(kernel_name)?;
     let h = read_param_i64(kernel_params, 7)?.max(0) as u64;
     let n_tokens = read_param_i64(kernel_params, 8)?.max(0) as u64;
     let n_seqs = read_param_i64(kernel_params, 9)?.max(0) as u64;
@@ -13996,36 +13996,36 @@ unsafe fn pacc_gated_delta_net_binding_metadata(
     let (bytes, flags) = match index {
         0 | 1 => (
             qk_elems.saturating_mul(elem),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         2 => (
             v_elems.saturating_mul(elem),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         3 => (
             g_elems.saturating_mul(elem),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         4 => (
             beta_elems.saturating_mul(elem),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         5 => (
             state_elems.saturating_mul(elem),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         6 => (
             dst_elems.saturating_mul(elem),
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14045,7 +14045,7 @@ unsafe fn read_param_u64(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14065,7 +14065,7 @@ unsafe fn read_param_i32(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14085,7 +14085,7 @@ unsafe fn read_param_u32(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14105,7 +14105,7 @@ unsafe fn read_param_f32(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14125,7 +14125,7 @@ unsafe fn read_param_i64(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14145,7 +14145,7 @@ unsafe fn read_param_bool(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14165,7 +14165,7 @@ unsafe fn read_param_uint3_z(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14184,7 +14184,7 @@ fn rmsnorm_named_offload_template_mode(kernel_name: &str) -> (bool, bool) {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14206,7 +14206,7 @@ fn rmsnorm_named_offload_template_hidden(kernel_name: &str) -> Option<u64> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14264,7 +14264,7 @@ unsafe fn read_rmsnorm_named_offload_args(
     let expected_stride_row = hidden;
     let expected_stride_channel = hidden.saturating_mul(grid_rows);
     let expected_stride_sample = expected_stride_channel.saturating_mul(grid_channels);
-    let strict_strides = std::env::var("HETGPU_PACC_RMSNORM_STRICT_STRIDES")
+    let strict_strides = std::env::var("HETGPU_SIFIVE_RMSNORM_STRICT_STRIDES")
         .ok()
         .as_deref()
         == Some("1");
@@ -14277,7 +14277,7 @@ unsafe fn read_rmsnorm_named_offload_args(
 
     let weight = if do_multiply {
         let weight = read_param_u64(kernel_params, 7)? as *const ::core::ffi::c_void;
-        let strict_weight_shape = std::env::var("HETGPU_PACC_RMSNORM_STRICT_WEIGHT_SHAPE")
+        let strict_weight_shape = std::env::var("HETGPU_SIFIVE_RMSNORM_STRICT_WEIGHT_SHAPE")
             .ok()
             .as_deref()
             == Some("1");
@@ -14299,7 +14299,7 @@ unsafe fn read_rmsnorm_named_offload_args(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14315,14 +14315,14 @@ unsafe fn execute_rmsnorm_f32_host_fallback(
 ) -> Option<cuda_types::cuda::CUresult> {
     use cuda_types::cuda::*;
 
-    if pacc_rmsnorm_delivery_noop_enabled() {
-        pacc_log_limited(
-            &PACC_NAMED_FAILOPEN_LOG_COUNT,
-            "HETGPU_PACC_NAMED_FAILOPEN_LOG_LIMIT",
+    if sifive_rmsnorm_delivery_noop_enabled() {
+        sifive_log_limited(
+            &SIFIVE_NAMED_FAILOPEN_LOG_COUNT,
+            "HETGPU_SIFIVE_NAMED_FAILOPEN_LOG_LIMIT",
             8,
             || {
                 eprintln!(
-                    "[PACC Backend] delivery-noop RMSNorm '{}' rows={} hidden={} eps={}",
+                    "[SIFIVE Backend] delivery-noop RMSNorm '{}' rows={} hidden={} eps={}",
                     kernel_name, rows, hidden, eps
                 );
             },
@@ -14330,7 +14330,7 @@ unsafe fn execute_rmsnorm_f32_host_fallback(
         return Some(Ok(()));
     }
 
-    if std::env::var("HETGPU_PACC_RMSNORM_HOST_FALLBACK")
+    if std::env::var("HETGPU_SIFIVE_RMSNORM_HOST_FALLBACK")
         .ok()
         .as_deref()
         == Some("0")
@@ -14347,18 +14347,18 @@ unsafe fn execute_rmsnorm_f32_host_fallback(
     let x_addr = x as usize;
     let y_addr = y as usize;
     let weight_addr = weight as usize;
-    if !pacc_host_or_cuda_alloc_has_bytes(x_addr as u64, bytes, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(y_addr as u64, bytes, true)
+    if !sifive_host_or_cuda_alloc_has_bytes(x_addr as u64, bytes, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(y_addr as u64, bytes, true)
         || (!weight.is_null()
-            && !pacc_host_or_cuda_alloc_has_bytes(weight_addr as u64, weight_bytes, false))
+            && !sifive_host_or_cuda_alloc_has_bytes(weight_addr as u64, weight_bytes, false))
     {
-        pacc_log_limited(
-            &PACC_NAMED_FAILOPEN_LOG_COUNT,
-            "HETGPU_PACC_RMSNORM_HOST_FALLBACK_LOG_LIMIT",
+        sifive_log_limited(
+            &SIFIVE_NAMED_FAILOPEN_LOG_COUNT,
+            "HETGPU_SIFIVE_RMSNORM_HOST_FALLBACK_LOG_LIMIT",
             2,
             || {
                 eprintln!(
-                    "[PACC Backend] host-fallback RMSNorm '{}' rejected inaccessible host range x=0x{:x} w=0x{:x} y=0x{:x} rows={} hidden={}",
+                    "[SIFIVE Backend] host-fallback RMSNorm '{}' rejected inaccessible host range x=0x{:x} w=0x{:x} y=0x{:x} rows={} hidden={}",
                     kernel_name, x_addr, weight_addr, y_addr, rows, hidden
                 );
             },
@@ -14388,14 +14388,14 @@ unsafe fn execute_rmsnorm_f32_host_fallback(
         }
     }
 
-    if pacc_env_enabled_default("HETGPU_PACC_RMSNORM_HOST_FALLBACK_LOG", false) {
-        pacc_log_limited(
-            &PACC_NAMED_FAILOPEN_LOG_COUNT,
-            "HETGPU_PACC_RMSNORM_HOST_FALLBACK_LOG_LIMIT",
+    if sifive_env_enabled_default("HETGPU_SIFIVE_RMSNORM_HOST_FALLBACK_LOG", false) {
+        sifive_log_limited(
+            &SIFIVE_NAMED_FAILOPEN_LOG_COUNT,
+            "HETGPU_SIFIVE_RMSNORM_HOST_FALLBACK_LOG_LIMIT",
             2,
             || {
                 eprintln!(
-                    "[PACC Backend] host-fallback RMSNorm '{}' rows={} hidden={} eps={}",
+                    "[SIFIVE Backend] host-fallback RMSNorm '{}' rows={} hidden={} eps={}",
                     kernel_name, rows, hidden, eps
                 );
             },
@@ -14405,14 +14405,14 @@ unsafe fn execute_rmsnorm_f32_host_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[repr(C)]
 #[derive(Copy, Clone)]
-struct PaccSoftMaxParams {
+struct SifiveSoftMaxParams {
     nheads: i64,
     n_head_log2: u32,
     _pad0: u32,
@@ -14435,7 +14435,7 @@ struct PaccSoftMaxParams {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14447,7 +14447,7 @@ unsafe fn read_softmax_named_args(
     *const ::core::ffi::c_void,
     *const ::core::ffi::c_void,
     *mut ::core::ffi::c_void,
-    PaccSoftMaxParams,
+    SifiveSoftMaxParams,
 )> {
     if kernel_params.is_null() {
         return None;
@@ -14456,11 +14456,11 @@ unsafe fn read_softmax_named_args(
     let mask = read_param_u64(kernel_params, 1).unwrap_or(0) as *const ::core::ffi::c_void;
     let sinks = read_param_u64(kernel_params, 2).unwrap_or(0) as *const ::core::ffi::c_void;
     let dst = read_param_u64(kernel_params, 3)? as *mut ::core::ffi::c_void;
-    let p_ptr = *kernel_params.add(4) as *const PaccSoftMaxParams;
+    let p_ptr = *kernel_params.add(4) as *const SifiveSoftMaxParams;
     if p_ptr.is_null()
-        || !pacc_host_range_has_perms(
+        || !sifive_host_range_has_perms(
             p_ptr as usize,
-            std::mem::size_of::<PaccSoftMaxParams>(),
+            std::mem::size_of::<SifiveSoftMaxParams>(),
             false,
         )
     {
@@ -14470,7 +14470,7 @@ unsafe fn read_softmax_named_args(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14505,11 +14505,11 @@ unsafe fn read_pytorch_softmax_warp_forward_args(
         .checked_mul(stride)?
         .checked_mul(std::mem::size_of::<f32>() as u64)?;
     let bytes = usize::try_from(bytes).ok()?;
-    if !pacc_host_or_cuda_alloc_has_bytes(src as u64, bytes, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(dst as u64, bytes, true)
+    if !sifive_host_or_cuda_alloc_has_bytes(src as u64, bytes, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(dst as u64, bytes, true)
     {
         eprintln!(
-            "[PACC Backend] PyTorch softmax_warp_forward rejected inaccessible range src=0x{:x} dst=0x{:x} rows={} cols={} stride={}",
+            "[SIFIVE Backend] PyTorch softmax_warp_forward rejected inaccessible range src=0x{:x} dst=0x{:x} rows={} cols={} stride={}",
             src as u64, dst as u64, rows, cols, stride
         );
         return None;
@@ -14521,25 +14521,25 @@ unsafe fn read_pytorch_softmax_warp_forward_args(
         rows,
         cols,
         stride,
-        pacc_runtime_sys::PaccDataType::Float32 as i32,
+        sifive_runtime_sys::SifiveDataType::Float32 as i32,
     ))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-const PACC_PYTORCH_SOFTMAX_ELF_SYMBOL: &str = "pacc_pytorch_softmax_warp_forward";
+const SIFIVE_PYTORCH_SOFTMAX_ELF_SYMBOL: &str = "sifive_pytorch_softmax_warp_forward";
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-const PACC_PYTORCH_SOFTMAX_ELF_SOURCE: &str = r#"
+const SIFIVE_PYTORCH_SOFTMAX_ELF_SOURCE: &str = r#"
 typedef unsigned long u64;
 typedef unsigned int u32;
 
@@ -14548,13 +14548,13 @@ struct KernelParamCell {
     u64 hi;
 };
 
-static u64 pacc_cell_lo(u64 cell_addr) {
+static u64 sifive_cell_lo(u64 cell_addr) {
     volatile const struct KernelParamCell *cell =
         (volatile const struct KernelParamCell *)cell_addr;
     return cell ? cell->lo : 0UL;
 }
 
-static float pacc_fast_expf(float x) {
+static float sifive_fast_expf(float x) {
     if (x < -80.0f) return 0.0f;
     if (x > 80.0f) x = 80.0f;
     union {
@@ -14569,16 +14569,16 @@ static float pacc_fast_expf(float x) {
 }
 
 __attribute__((visibility("default")))
-void pacc_pytorch_softmax_warp_forward(u64 dst_cell,
+void sifive_pytorch_softmax_warp_forward(u64 dst_cell,
                                        u64 src_cell,
                                        u64 rows_cell,
                                        u64 cols_cell,
                                        u64 stride_cell) {
-    float *dst = (float *)(pacc_cell_lo(dst_cell));
-    const float *src = (const float *)(pacc_cell_lo(src_cell));
-    u64 rows = pacc_cell_lo(rows_cell);
-    u64 cols = pacc_cell_lo(cols_cell);
-    u64 stride = pacc_cell_lo(stride_cell);
+    float *dst = (float *)(sifive_cell_lo(dst_cell));
+    const float *src = (const float *)(sifive_cell_lo(src_cell));
+    u64 rows = sifive_cell_lo(rows_cell);
+    u64 cols = sifive_cell_lo(cols_cell);
+    u64 stride = sifive_cell_lo(stride_cell);
     if (!dst || !src || rows == 0UL || cols == 0UL) return;
     if (stride < cols) stride = cols;
 
@@ -14591,7 +14591,7 @@ void pacc_pytorch_softmax_warp_forward(u64 dst_cell,
         }
         float sum = 0.0f;
         for (u64 col = 0; col < cols; col++) {
-            float e = pacc_fast_expf(src[base + col] - max_v);
+            float e = sifive_fast_expf(src[base + col] - max_v);
             dst[base + col] = e;
             sum += e;
         }
@@ -14605,55 +14605,55 @@ void pacc_pytorch_softmax_warp_forward(u64 dst_cell,
 "#;
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_get_pytorch_softmax_elf_kernel(
+unsafe fn sifive_get_pytorch_softmax_elf_kernel(
     dev_id: i32,
-) -> Option<*mut pacc_runtime_sys::pacc_Kernel> {
+) -> Option<*mut sifive_runtime_sys::sifive_Kernel> {
     let dev_id = if (0..4).contains(&dev_id) {
         dev_id as usize
     } else {
         0
     };
-    let cache = PACC_PYTORCH_SOFTMAX_ELF_KERNELS
+    let cache = SIFIVE_PYTORCH_SOFTMAX_ELF_KERNELS
         .get_or_init(|| std::sync::Mutex::new([None, None, None, None]));
     let mut guard = cache.lock().ok()?;
     if let Some(handles) = guard[dev_id] {
-        return Some(handles.kernel as *mut pacc_runtime_sys::pacc_Kernel);
+        return Some(handles.kernel as *mut sifive_runtime_sys::sifive_Kernel);
     }
 
-    let device = pacc_runtime_sys::pacc_CreateDevice(dev_id as u32);
+    let device = sifive_runtime_sys::sifive_CreateDevice(dev_id as u32);
     if device.is_null() {
         eprintln!(
-            "[PACC Backend] PyTorch softmax ELF failed to create pacc{} device",
+            "[SIFIVE Backend] PyTorch softmax ELF failed to create sifive{} device",
             dev_id
         );
         return None;
     }
-    let program = pacc_runtime_sys::pacc_CreateProgram();
+    let program = sifive_runtime_sys::sifive_CreateProgram();
     if program.is_null() {
-        eprintln!("[PACC Backend] PyTorch softmax ELF failed to create program");
+        eprintln!("[SIFIVE Backend] PyTorch softmax ELF failed to create program");
         return None;
     }
 
-    let source = PACC_PYTORCH_SOFTMAX_ELF_SOURCE.as_bytes();
+    let source = SIFIVE_PYTORCH_SOFTMAX_ELF_SOURCE.as_bytes();
     let workdir =
-        std::path::Path::new("/home/ubuntu/Documents/hetGPU_pacc/target/pacc_named_kernels");
+        std::path::Path::new("/home/ubuntu/Documents/hetGPU_sifive/target/sifive_named_kernels");
     if let Err(err) = std::fs::create_dir_all(workdir) {
         eprintln!(
-            "[PACC Backend] PyTorch softmax ELF failed to create source dir {}: {}",
+            "[SIFIVE Backend] PyTorch softmax ELF failed to create source dir {}: {}",
             workdir.display(),
             err
         );
         return None;
     }
-    let source_path = workdir.join("pacc_pytorch_softmax_warp_forward.c");
+    let source_path = workdir.join("sifive_pytorch_softmax_warp_forward.c");
     if let Err(err) = std::fs::write(&source_path, source) {
         eprintln!(
-            "[PACC Backend] PyTorch softmax ELF failed to write source {}: {}",
+            "[SIFIVE Backend] PyTorch softmax ELF failed to write source {}: {}",
             source_path.display(),
             err
         );
@@ -14667,7 +14667,7 @@ unsafe fn pacc_get_pytorch_softmax_elf_kernel(
         Ok(path) => path,
         Err(_) => return None,
     };
-    let rc = pacc_runtime_sys::pacc_LoadProgramSource(
+    let rc = sifive_runtime_sys::sifive_LoadProgramSource(
         program,
         std::ptr::null(),
         source_name.as_ptr(),
@@ -14679,26 +14679,26 @@ unsafe fn pacc_get_pytorch_softmax_elf_kernel(
         std::ptr::null(),
         0,
     );
-    if rc != pacc_runtime_sys::pacc_Result_Success {
+    if rc != sifive_runtime_sys::sifive_Result_Success {
         let compile_error = program
             .as_ref()
             .and_then(|p| p.compile_error.as_deref())
             .map(str::to_owned)
             .unwrap_or_default();
         eprintln!(
-            "[PACC Backend] PyTorch softmax ELF compile failed rc={} {}",
+            "[SIFIVE Backend] PyTorch softmax ELF compile failed rc={} {}",
             rc, compile_error
         );
         return None;
     }
 
-    let kernel_name = std::ffi::CString::new(PACC_PYTORCH_SOFTMAX_ELF_SYMBOL).ok()?;
-    let kernel = pacc_runtime_sys::pacc_CreateKernelOnDevice(program, device, kernel_name.as_ptr());
+    let kernel_name = std::ffi::CString::new(SIFIVE_PYTORCH_SOFTMAX_ELF_SYMBOL).ok()?;
+    let kernel = sifive_runtime_sys::sifive_CreateKernelOnDevice(program, device, kernel_name.as_ptr());
     if kernel.is_null() {
-        eprintln!("[PACC Backend] PyTorch softmax ELF failed to create kernel handle");
+        eprintln!("[SIFIVE Backend] PyTorch softmax ELF failed to create kernel handle");
         return None;
     }
-    guard[dev_id] = Some(PaccCachedKernelHandles {
+    guard[dev_id] = Some(SifiveCachedKernelHandles {
         device: device as usize,
         program: program as usize,
         kernel: kernel as usize,
@@ -14707,19 +14707,19 @@ unsafe fn pacc_get_pytorch_softmax_elf_kernel(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_push_softmax_elf_arg(
-    kernel: *mut pacc_runtime_sys::pacc_Kernel,
+unsafe fn sifive_push_softmax_elf_arg(
+    kernel: *mut sifive_runtime_sys::sifive_Kernel,
     index: u32,
     kind: u32,
     value: u64,
     binding: Option<(u64, u32)>,
 ) -> bool {
-    let record = pacc_runtime_sys::PaccKernelArgRecord {
+    let record = sifive_runtime_sys::SifiveKernelArgRecord {
         kind,
         size: 8,
         flags: 0,
@@ -14727,29 +14727,29 @@ unsafe fn pacc_push_softmax_elf_arg(
         value,
         value_hi: 0,
     };
-    if pacc_runtime_sys::pacc_KernelPushArgRecord(kernel, &record)
-        != pacc_runtime_sys::pacc_Result_Success
+    if sifive_runtime_sys::sifive_KernelPushArgRecord(kernel, &record)
+        != sifive_runtime_sys::sifive_Result_Success
     {
         return false;
     }
     if let Some((size, flags)) = binding {
-        let (addr, flags) = if let Some(phys) = super::memory::pacc_shared_ddr_physical_addr(value)
+        let (addr, flags) = if let Some(phys) = super::memory::sifive_shared_ddr_physical_addr(value)
         {
             (
                 phys,
-                flags | pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_DEVICE_PHYS,
+                flags | sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_DEVICE_PHYS,
             )
         } else {
             (value, flags)
         };
-        let binding = pacc_runtime_sys::PaccKernelBufferBinding {
+        let binding = sifive_runtime_sys::SifiveKernelBufferBinding {
             arg_index: index,
             flags,
             addr,
             size,
         };
-        if pacc_runtime_sys::pacc_KernelAddBufferBinding(kernel, &binding)
-            != pacc_runtime_sys::pacc_Result_Success
+        if sifive_runtime_sys::sifive_KernelAddBufferBinding(kernel, &binding)
+            != sifive_runtime_sys::sifive_Result_Success
         {
             return false;
         }
@@ -14758,7 +14758,7 @@ unsafe fn pacc_push_softmax_elf_arg(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14771,7 +14771,7 @@ unsafe fn launch_pytorch_softmax_warp_forward_elf(
     cols: u64,
     stride: u64,
 ) -> i32 {
-    let Some(kernel) = pacc_get_pytorch_softmax_elf_kernel(dev_id) else {
+    let Some(kernel) = sifive_get_pytorch_softmax_elf_kernel(dev_id) else {
         return -1;
     };
     let bytes = match rows
@@ -14781,46 +14781,46 @@ unsafe fn launch_pytorch_softmax_warp_forward_elf(
         Some(bytes) => bytes,
         None => return -1,
     };
-    if pacc_runtime_sys::pacc_KernelClearLaunchState(kernel)
-        != pacc_runtime_sys::pacc_Result_Success
+    if sifive_runtime_sys::sifive_KernelClearLaunchState(kernel)
+        != sifive_runtime_sys::sifive_Result_Success
     {
         return -1;
     }
-    if !pacc_push_softmax_elf_arg(
+    if !sifive_push_softmax_elf_arg(
         kernel,
         0,
-        pacc_runtime_sys::PACC_KERNEL_ARG_KIND_POINTER,
+        sifive_runtime_sys::SIFIVE_KERNEL_ARG_KIND_POINTER,
         dst as u64,
-        Some((bytes, pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT)),
-    ) || !pacc_push_softmax_elf_arg(
+        Some((bytes, sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT)),
+    ) || !sifive_push_softmax_elf_arg(
         kernel,
         1,
-        pacc_runtime_sys::PACC_KERNEL_ARG_KIND_POINTER,
+        sifive_runtime_sys::SIFIVE_KERNEL_ARG_KIND_POINTER,
         src as u64,
-        Some((bytes, pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT)),
-    ) || !pacc_push_softmax_elf_arg(
+        Some((bytes, sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT)),
+    ) || !sifive_push_softmax_elf_arg(
         kernel,
         2,
-        pacc_runtime_sys::PACC_KERNEL_ARG_KIND_SCALAR,
+        sifive_runtime_sys::SIFIVE_KERNEL_ARG_KIND_SCALAR,
         rows,
         None,
-    ) || !pacc_push_softmax_elf_arg(
+    ) || !sifive_push_softmax_elf_arg(
         kernel,
         3,
-        pacc_runtime_sys::PACC_KERNEL_ARG_KIND_SCALAR,
+        sifive_runtime_sys::SIFIVE_KERNEL_ARG_KIND_SCALAR,
         cols,
         None,
-    ) || !pacc_push_softmax_elf_arg(
+    ) || !sifive_push_softmax_elf_arg(
         kernel,
         4,
-        pacc_runtime_sys::PACC_KERNEL_ARG_KIND_SCALAR,
+        sifive_runtime_sys::SIFIVE_KERNEL_ARG_KIND_SCALAR,
         stride,
         None,
     ) {
         return -1;
     }
 
-    let rc = pacc_runtime_sys::pacc_LaunchKernel(
+    let rc = sifive_runtime_sys::sifive_LaunchKernel(
         kernel,
         rows.min(u32::MAX as u64) as u32,
         1,
@@ -14829,7 +14829,7 @@ unsafe fn launch_pytorch_softmax_warp_forward_elf(
         1,
         1,
     );
-    if rc == pacc_runtime_sys::pacc_Result_Success {
+    if rc == sifive_runtime_sys::sifive_Result_Success {
         0
     } else {
         rc
@@ -14837,12 +14837,12 @@ unsafe fn launch_pytorch_softmax_warp_forward_elf(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_softmax_binding_metadata(
+unsafe fn sifive_softmax_binding_metadata(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     index: usize,
@@ -14858,7 +14858,7 @@ unsafe fn pacc_softmax_binding_metadata(
         0 => (
             rows.checked_mul(ncols)?
                 .checked_mul(std::mem::size_of::<f32>() as u64)?,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         1 if !mask.is_null() => {
             let ne12 = p.ne12.max(1) as i128;
@@ -14877,31 +14877,31 @@ unsafe fn pacc_softmax_binding_metadata(
             };
             (
                 (max_mask_off as u64).checked_add(ncols.checked_mul(mask_elem_size)?)?,
-                pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
             )
         }
         2 if !sinks.is_null() => (
             ne02.checked_mul(std::mem::size_of::<f32>() as u64)?,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
         3 => (
             rows.checked_mul(ncols)?
                 .checked_mul(std::mem::size_of::<f32>() as u64)?,
-            pacc_runtime_sys::PACC_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    let bytes = pacc_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
     Some((bytes, flags))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_alibi_slope(max_bias: f32, h: u32, n_head_log2: u32, m0: f32, m1: f32) -> f32 {
+fn sifive_alibi_slope(max_bias: f32, h: u32, n_head_log2: u32, m0: f32, m1: f32) -> f32 {
     if max_bias <= 0.0 {
         return 1.0;
     }
@@ -14914,12 +14914,12 @@ fn pacc_alibi_slope(max_bias: f32, h: u32, n_head_log2: u32, m0: f32, m1: f32) -
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_f16_to_f32(bits: u16) -> f32 {
+fn sifive_f16_to_f32(bits: u16) -> f32 {
     let sign = ((bits & 0x8000) as u32) << 16;
     let exp = ((bits >> 10) & 0x1f) as i32;
     let frac = (bits & 0x03ff) as u32;
@@ -14945,7 +14945,7 @@ fn pacc_f16_to_f32(bits: u16) -> f32 {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -14956,12 +14956,12 @@ unsafe fn execute_softmax_f32_host_fallback(
     mask: *const ::core::ffi::c_void,
     sinks: *const ::core::ffi::c_void,
     dst: *mut ::core::ffi::c_void,
-    p: PaccSoftMaxParams,
+    p: SifiveSoftMaxParams,
     mask_is_f16: bool,
 ) -> Option<cuda_types::cuda::CUresult> {
     use cuda_types::cuda::*;
 
-    if std::env::var("HETGPU_PACC_SOFTMAX_HOST_FALLBACK")
+    if std::env::var("HETGPU_SIFIVE_SOFTMAX_HOST_FALLBACK")
         .ok()
         .as_deref()
         == Some("0")
@@ -14982,18 +14982,18 @@ unsafe fn execute_softmax_f32_host_fallback(
         .checked_mul(std::mem::size_of::<f32>())?;
     let x_addr = x as u64;
     let dst_addr = dst as u64;
-    if !pacc_host_or_cuda_alloc_has_bytes(x_addr, bytes, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(dst_addr, bytes, true)
+    if !sifive_host_or_cuda_alloc_has_bytes(x_addr, bytes, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(dst_addr, bytes, true)
     {
         eprintln!(
-            "[PACC Backend] host-fallback softmax '{}' rejected inaccessible x/dst range x=0x{:x} dst=0x{:x} rows={} cols={}",
+            "[SIFIVE Backend] host-fallback softmax '{}' rejected inaccessible x/dst range x=0x{:x} dst=0x{:x} rows={} cols={}",
             kernel_name, x_addr, dst_addr, rows, ncols
         );
         return Some(Err(CUerror::UNKNOWN));
     }
     if !sinks.is_null() {
         let sinks_bytes = ne02.checked_mul(std::mem::size_of::<f32>())?;
-        if !pacc_host_or_cuda_alloc_has_bytes(sinks as u64, sinks_bytes, false) {
+        if !sifive_host_or_cuda_alloc_has_bytes(sinks as u64, sinks_bytes, false) {
             return Some(Err(CUerror::UNKNOWN));
         }
     }
@@ -15015,7 +15015,7 @@ unsafe fn execute_softmax_f32_host_fallback(
         let mask_bytes = usize::try_from(max_mask_off)
             .ok()?
             .checked_add(ncols.checked_mul(mask_elem_size)?)?;
-        if !pacc_host_or_cuda_alloc_has_bytes(mask as u64, mask_bytes, false) {
+        if !sifive_host_or_cuda_alloc_has_bytes(mask as u64, mask_bytes, false) {
             return Some(Err(CUerror::UNKNOWN));
         }
     }
@@ -15032,7 +15032,7 @@ unsafe fn execute_softmax_f32_host_fallback(
                 } else {
                     sinks.add(i02).read_unaligned()
                 };
-                let slope = pacc_alibi_slope(p.max_bias, i02 as u32, p.n_head_log2, p.m0, p.m1);
+                let slope = sifive_alibi_slope(p.max_bias, i02 as u32, p.n_head_log2, p.m0, p.m1);
                 let mask_row = if mask.is_null() {
                     std::ptr::null::<u8>()
                 } else {
@@ -15054,7 +15054,7 @@ unsafe fn execute_softmax_f32_host_fallback(
                     let mask_v = if mask_row.is_null() {
                         0.0
                     } else if mask_is_f16 {
-                        pacc_f16_to_f32((mask_row as *const u16).add(col).read_unaligned())
+                        sifive_f16_to_f32((mask_row as *const u16).add(col).read_unaligned())
                     } else {
                         (mask_row as *const f32).add(col).read_unaligned()
                     };
@@ -15081,7 +15081,7 @@ unsafe fn execute_softmax_f32_host_fallback(
     }
 
     eprintln!(
-        "[PACC Backend] host-fallback softmax '{}' rows={} cols={} mask={} sinks={}",
+        "[SIFIVE Backend] host-fallback softmax '{}' rows={} cols={} mask={} sinks={}",
         kernel_name,
         rows,
         ncols,
@@ -15092,7 +15092,7 @@ unsafe fn execute_softmax_f32_host_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15127,7 +15127,7 @@ unsafe fn execute_bin_bcast_f32_fallback(
     if kernel_name.contains("k_bin_bcast_unravel") || !kernel_name.contains("EEfffJ") {
         return None;
     }
-    let (src0_elem, src1_elem, dst_elem) = pacc_bin_bcast_element_sizes(kernel_name);
+    let (src0_elem, src1_elem, dst_elem) = sifive_bin_bcast_element_sizes(kernel_name);
     if src0_elem != 4 || src1_elem != 4 || dst_elem != 4 {
         return None;
     }
@@ -15138,14 +15138,14 @@ unsafe fn execute_bin_bcast_f32_fallback(
     let src0 = if src0_addr == 0 {
         std::ptr::null()
     } else {
-        pacc_host_ptr::<f32>(src0_addr)? as *const f32
+        sifive_host_ptr::<f32>(src0_addr)? as *const f32
     };
     let src1 = if src1_addr == 0 {
         std::ptr::null()
     } else {
-        pacc_host_ptr::<f32>(src1_addr)? as *const f32
+        sifive_host_ptr::<f32>(src1_addr)? as *const f32
     };
-    let dst = pacc_host_ptr::<f32>(dst_addr)?;
+    let dst = sifive_host_ptr::<f32>(dst_addr)?;
 
     let ne0 = read_param_i32(kernel_params, 3)?.max(0) as usize;
     let ne1 = read_param_i32(kernel_params, 4)?.max(0) as usize;
@@ -15167,7 +15167,7 @@ unsafe fn execute_bin_bcast_f32_fallback(
     let s12 = read_param_i32(kernel_params, 20)?.max(0) as usize;
     let s13 = read_param_i32(kernel_params, 21)?.max(0) as usize;
 
-    let dim = |v: pacc_runtime_sys::HetgpuPaccUint3| -> usize { v.z.max(1) as usize };
+    let dim = |v: sifive_runtime_sys::HetgpuSifiveUint3| -> usize { v.z.max(1) as usize };
     let ne3z = dim(ne3);
     let ne10z = dim(ne10);
     let ne11z = dim(ne11);
@@ -15177,11 +15177,11 @@ unsafe fn execute_bin_bcast_f32_fallback(
         return Some(Ok(()));
     }
 
-    let fused = pacc_bin_bcast_fuse_count(kernel_name);
+    let fused = sifive_bin_bcast_fuse_count(kernel_name);
     let mut src1s = Vec::with_capacity(fused.max(1));
     if fused != 0 {
         for i in 0..fused {
-            let ptr = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 22 + i)?)? as *const f32;
+            let ptr = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 22 + i)?)? as *const f32;
             src1s.push(ptr);
         }
     } else if !src1.is_null() {
@@ -15215,14 +15215,14 @@ unsafe fn execute_bin_bcast_f32_fallback(
     let src0_elems = checked_extent(ne3z, s03, ne2, s02, ne1, s01, ne0, s00)?;
     let src1_i0 = ne0.min(ne10z).max(1);
     let src1_elems = checked_extent(ne13z, s13, ne12z, s12, ne11z, s11, src1_i0, s10)?;
-    if !pacc_cuda_alloc_has_elems(dst as *const f32, dst_elems)
-        || (!src0.is_null() && !pacc_cuda_alloc_has_elems(src0, src0_elems))
+    if !sifive_cuda_alloc_has_elems(dst as *const f32, dst_elems)
+        || (!src0.is_null() && !sifive_cuda_alloc_has_elems(src0, src0_elems))
         || src1s
             .iter()
-            .any(|&ptr| !pacc_cuda_alloc_has_elems(ptr, src1_elems))
+            .any(|&ptr| !sifive_cuda_alloc_has_elems(ptr, src1_elems))
     {
         eprintln!(
-            "[PACC Backend] host-fallback bin_bcast '{}' rejected range dst={:p} src0={:p} dst_elems={} src0_elems={} src1_elems={}",
+            "[SIFIVE Backend] host-fallback bin_bcast '{}' rejected range dst={:p} src0={:p} dst_elems={} src0_elems={} src1_elems={}",
             kernel_name, dst, src0, dst_elems, src0_elems, src1_elems
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -15263,13 +15263,13 @@ unsafe fn execute_bin_bcast_f32_fallback(
         }
     }
 
-    if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
+    if std::env::var("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS")
         .ok()
         .as_deref()
         == Some("1")
     {
         eprintln!(
-            "[PACC Backend] host-fallback bin_bcast '{}' elems={} fused={}",
+            "[SIFIVE Backend] host-fallback bin_bcast '{}' elems={} fused={}",
             kernel_name,
             ne0 * ne1 * ne2 * ne3z,
             src1s.len()
@@ -15279,7 +15279,7 @@ unsafe fn execute_bin_bcast_f32_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15311,9 +15311,9 @@ unsafe fn execute_compute_batched_ptrs_fallback(
 
     /*
      * This fallback runs on the host and populates CUDA pointer tables that are
-     * themselves CUDA allocations.  In PACC shared-DDR mode those allocation
+     * themselves CUDA allocations.  In SIFIVE shared-DDR mode those allocation
      * pointers are mmap'ed host addresses backed by the shared window.  Do not
-     * translate the table address to a physical PACC address here: physical
+     * translate the table address to a physical SIFIVE address here: physical
      * addresses are for jobd/kernel consumption and are not valid AP pointers.
      * Keep the table entries as CUDA pointers too; cublas_shim resolves each
      * per-batch A/B/C pointer when it submits the GEMM tile.
@@ -15323,10 +15323,10 @@ unsafe fn execute_compute_batched_ptrs_fallback(
 
     if ptrs_src_host.is_null() || ptrs_dst_host.is_null() {
         eprintln!(
-            "[PACC Backend] compute_batched_ptrs '{}' could not resolve pointer tables",
+            "[SIFIVE Backend] compute_batched_ptrs '{}' could not resolve pointer tables",
             kernel_name
         );
-        return pacc_named_assume_success(
+        return sifive_named_assume_success(
             "compute_batched_ptrs pointer tables could not be resolved",
             kernel_name,
         );
@@ -15334,11 +15334,11 @@ unsafe fn execute_compute_batched_ptrs_fallback(
 
     let table_count = ne12.checked_mul(ne13)?;
     let ptrs_src_count = ne23.checked_add(table_count)?;
-    if !pacc_cuda_alloc_has_elems(ptrs_src_host as *const u64, ptrs_src_count)
-        || !pacc_cuda_alloc_has_elems(ptrs_dst_host as *const u64, table_count)
+    if !sifive_cuda_alloc_has_elems(ptrs_src_host as *const u64, ptrs_src_count)
+        || !sifive_cuda_alloc_has_elems(ptrs_dst_host as *const u64, table_count)
     {
         eprintln!(
-            "[PACC Backend] compute_batched_ptrs '{}' rejected out-of-allocation pointer tables ptrs_src={:p} ptrs_dst={:p} src_count={} dst_count={} ne12={} ne13={} ne23={}",
+            "[SIFIVE Backend] compute_batched_ptrs '{}' rejected out-of-allocation pointer tables ptrs_src={:p} ptrs_dst={:p} src_count={} dst_count={} ne12={} ne13={} ne23={}",
             kernel_name,
             ptrs_src_host,
             ptrs_dst_host,
@@ -15348,7 +15348,7 @@ unsafe fn execute_compute_batched_ptrs_fallback(
             ne13,
             ne23
         );
-        return pacc_named_assume_success(
+        return sifive_named_assume_success(
             "compute_batched_ptrs pointer table range check failed",
             kernel_name,
         );
@@ -15371,13 +15371,13 @@ unsafe fn execute_compute_batched_ptrs_fallback(
         }
     }
 
-    if std::env::var("HETGPU_PACC_LOG_COMPUTE_BATCHED_PTRS")
+    if std::env::var("HETGPU_SIFIVE_LOG_COMPUTE_BATCHED_PTRS")
         .ok()
         .as_deref()
         == Some("1")
     {
         eprintln!(
-            "[PACC Backend] handled compute_batched_ptrs '{}' ne12={} ne13={} ne23={}",
+            "[SIFIVE Backend] handled compute_batched_ptrs '{}' ne12={} ne13={} ne23={}",
             kernel_name, ne12, ne13, ne23
         );
     }
@@ -15385,68 +15385,68 @@ unsafe fn execute_compute_batched_ptrs_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn pacc_host_ptr<T>(addr: u64) -> Option<*mut T> {
+unsafe fn sifive_host_ptr<T>(addr: u64) -> Option<*mut T> {
     if addr == 0 {
         return None;
     }
     let ptr = addr as usize;
-    if !pacc_looks_like_host_param_addr(ptr) {
+    if !sifive_looks_like_host_param_addr(ptr) {
         return None;
     }
     Some(ptr as *mut T)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_cuda_alloc_has_bytes(addr: u64, bytes: usize) -> bool {
+fn sifive_cuda_alloc_has_bytes(addr: u64, bytes: usize) -> bool {
     if bytes == 0 {
         return true;
     }
-    super::memory::pacc_allocation_remaining_addr(addr)
+    super::memory::sifive_allocation_remaining_addr(addr)
         .map(|remaining| remaining >= bytes)
         .unwrap_or(false)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_host_or_cuda_alloc_has_bytes(addr: u64, bytes: usize, need_write: bool) -> bool {
-    if pacc_cuda_alloc_has_bytes(addr, bytes) {
+fn sifive_host_or_cuda_alloc_has_bytes(addr: u64, bytes: usize, need_write: bool) -> bool {
+    if sifive_cuda_alloc_has_bytes(addr, bytes) {
         return true;
     }
     let Ok(host_addr) = usize::try_from(addr) else {
         return false;
     };
-    pacc_host_range_has_perms(host_addr, bytes, need_write)
+    sifive_host_range_has_perms(host_addr, bytes, need_write)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_cuda_alloc_has_elems<T>(ptr: *const T, elems: usize) -> bool {
+fn sifive_cuda_alloc_has_elems<T>(ptr: *const T, elems: usize) -> bool {
     elems
         .checked_mul(std::mem::size_of::<T>())
-        .map(|bytes| pacc_cuda_alloc_has_bytes(ptr as u64, bytes))
+        .map(|bytes| sifive_cuda_alloc_has_bytes(ptr as u64, bytes))
         .unwrap_or(false)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15470,7 +15470,7 @@ unsafe fn execute_vectorized_gather_host_copy(
     }
     if inp_stride < 0 || out_stride < 0 || ind_dim_size <= 0 {
         eprintln!(
-            "[PACC Backend] vectorized_gather '{}' rejected invalid shape num_ind={} slice={} ind_dim={} inp_stride={} out_stride={}",
+            "[SIFIVE Backend] vectorized_gather '{}' rejected invalid shape num_ind={} slice={} ind_dim={} inp_stride={} out_stride={}",
             kernel_name, num_ind, slice_size, ind_dim_size, inp_stride, out_stride
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -15497,11 +15497,11 @@ unsafe fn execute_vectorized_gather_host_copy(
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
 
-    if !pacc_host_or_cuda_alloc_has_bytes(idx_addr, idx_bytes, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(out_addr, out_bytes, true)
+    if !sifive_host_or_cuda_alloc_has_bytes(idx_addr, idx_bytes, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(out_addr, out_bytes, true)
     {
         eprintln!(
-            "[PACC Backend] vectorized_gather '{}' rejected out/idx allocation out=0x{:x} out_bytes={} idx=0x{:x} idx_bytes={}",
+            "[SIFIVE Backend] vectorized_gather '{}' rejected out/idx allocation out=0x{:x} out_bytes={} idx=0x{:x} idx_bytes={}",
             kernel_name, out_addr, out_bytes, idx_addr, idx_bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -15519,7 +15519,7 @@ unsafe fn execute_vectorized_gather_host_copy(
         }
         if ind < 0 || ind >= ind_dim_size {
             eprintln!(
-                "[PACC Backend] vectorized_gather '{}' index {} out of bounds at {} (dim={})",
+                "[SIFIVE Backend] vectorized_gather '{}' index {} out of bounds at {} (dim={})",
                 kernel_name, ind, i, ind_dim_size
             );
             return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -15533,9 +15533,9 @@ unsafe fn execute_vectorized_gather_host_copy(
         max_src_end = max_src_end.max(src_end);
     }
 
-    if !pacc_host_or_cuda_alloc_has_bytes(inp_addr, max_src_end, false) {
+    if !sifive_host_or_cuda_alloc_has_bytes(inp_addr, max_src_end, false) {
         eprintln!(
-            "[PACC Backend] vectorized_gather '{}' rejected input allocation inp=0x{:x} bytes={}",
+            "[SIFIVE Backend] vectorized_gather '{}' rejected input allocation inp=0x{:x} bytes={}",
             kernel_name, inp_addr, max_src_end
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -15557,9 +15557,9 @@ unsafe fn execute_vectorized_gather_host_copy(
         std::ptr::copy_nonoverlapping(inp.add(src_off), out.add(dst_off), slice_size);
     }
 
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled vectorized_gather '{}' on host-copy path num_ind={} slice={} ind_dim={} idx={} ",
+            "[SIFIVE Backend] handled vectorized_gather '{}' on host-copy path num_ind={} slice={} ind_dim={} idx={} ",
             kernel_name,
             num_ind,
             slice_size,
@@ -15571,7 +15571,7 @@ unsafe fn execute_vectorized_gather_host_copy(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15587,7 +15587,7 @@ unsafe fn read_param_data_pair(
     if param.is_null() || (param as usize) < 0x1_0000 {
         return None;
     }
-    if !pacc_host_range_has_perms(param as usize, 2 * std::mem::size_of::<u64>(), false) {
+    if !sifive_host_range_has_perms(param as usize, 2 * std::mem::size_of::<u64>(), false) {
         return None;
     }
     let data = param as *const u64;
@@ -15600,7 +15600,7 @@ unsafe fn read_param_data_pair(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15616,7 +15616,7 @@ unsafe fn read_param_data_single(
     if param.is_null() || (param as usize) < 0x1_0000 {
         return None;
     }
-    if !pacc_host_range_has_perms(param as usize, std::mem::size_of::<u64>(), false) {
+    if !sifive_host_range_has_perms(param as usize, std::mem::size_of::<u64>(), false) {
         return None;
     }
     let out = (param as *const u64).read_unaligned();
@@ -15627,7 +15627,7 @@ unsafe fn read_param_data_single(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15641,8 +15641,8 @@ unsafe fn find_tensoriterator_data_pair(
     }
     for index in 1..6 {
         if let Some((out_addr, inp_addr)) = read_param_data_pair(kernel_params, index) {
-            if pacc_cuda_alloc_has_bytes(out_addr, bytes)
-                && pacc_cuda_alloc_has_bytes(inp_addr, bytes)
+            if sifive_cuda_alloc_has_bytes(out_addr, bytes)
+                && sifive_cuda_alloc_has_bytes(inp_addr, bytes)
             {
                 return Some((index, 0, out_addr, inp_addr));
             }
@@ -15654,7 +15654,7 @@ unsafe fn find_tensoriterator_data_pair(
         }
         let base = param as usize;
         for off in (0..4096usize).step_by(std::mem::size_of::<u64>()) {
-            if !pacc_host_range_has_perms(
+            if !sifive_host_range_has_perms(
                 base.saturating_add(off),
                 2 * std::mem::size_of::<u64>(),
                 false,
@@ -15667,8 +15667,8 @@ unsafe fn find_tensoriterator_data_pair(
             if out_addr < 0x1_0000 || inp_addr < 0x1_0000 {
                 continue;
             }
-            if pacc_cuda_alloc_has_bytes(out_addr, bytes)
-                && pacc_cuda_alloc_has_bytes(inp_addr, bytes)
+            if sifive_cuda_alloc_has_bytes(out_addr, bytes)
+                && sifive_cuda_alloc_has_bytes(inp_addr, bytes)
             {
                 return Some((index, off, out_addr, inp_addr));
             }
@@ -15678,7 +15678,7 @@ unsafe fn find_tensoriterator_data_pair(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15692,7 +15692,7 @@ unsafe fn find_tensoriterator_data_single(
     }
     for index in 1..8 {
         if let Some(out_addr) = read_param_data_single(kernel_params, index) {
-            if pacc_cuda_alloc_has_bytes(out_addr, bytes) {
+            if sifive_cuda_alloc_has_bytes(out_addr, bytes) {
                 return Some((index, 0, out_addr));
             }
         }
@@ -15703,7 +15703,7 @@ unsafe fn find_tensoriterator_data_single(
         }
         let base = param as usize;
         for off in (0..4096usize).step_by(std::mem::size_of::<u64>()) {
-            if !pacc_host_range_has_perms(
+            if !sifive_host_range_has_perms(
                 base.saturating_add(off),
                 std::mem::size_of::<u64>(),
                 false,
@@ -15714,7 +15714,7 @@ unsafe fn find_tensoriterator_data_single(
             if out_addr < 0x1_0000 {
                 continue;
             }
-            if pacc_cuda_alloc_has_bytes(out_addr, bytes) {
+            if sifive_cuda_alloc_has_bytes(out_addr, bytes) {
                 return Some((index, off, out_addr));
             }
         }
@@ -15723,7 +15723,7 @@ unsafe fn find_tensoriterator_data_single(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15733,20 +15733,20 @@ unsafe fn log_tensoriterator_triplet_scan_debug(
     kernel_name: &str,
     n: usize,
 ) {
-    if !pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") || kernel_params.is_null() {
+    if !sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") || kernel_params.is_null() {
         return;
     }
     eprintln!(
-        "[PACC Backend] TensorIterator triplet scan debug '{}' n={}",
+        "[SIFIVE Backend] TensorIterator triplet scan debug '{}' n={}",
         kernel_name, n
     );
     for index in 0..6 {
         let param = *kernel_params.add(index);
-        eprintln!("[PACC Backend]   param[{}]={:p}", index, param);
+        eprintln!("[SIFIVE Backend]   param[{}]={:p}", index, param);
         if param.is_null() || (param as usize) < 0x1_0000 {
             continue;
         }
-        if !pacc_host_range_has_perms(param as usize, 8 * std::mem::size_of::<u64>(), false) {
+        if !sifive_host_range_has_perms(param as usize, 8 * std::mem::size_of::<u64>(), false) {
             continue;
         }
         let data = param as *const u64;
@@ -15755,11 +15755,11 @@ unsafe fn log_tensoriterator_triplet_scan_debug(
             words[i] = data.add(i).read_unaligned();
         }
         eprintln!(
-            "[PACC Backend]   words[{}]= {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x}",
+            "[SIFIVE Backend]   words[{}]= {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x}",
             index, words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7]
         );
         for off in (0..1024usize).step_by(std::mem::size_of::<u64>()) {
-            if !pacc_host_range_has_perms(
+            if !sifive_host_range_has_perms(
                 (param as usize).saturating_add(off),
                 std::mem::size_of::<u64>(),
                 false,
@@ -15767,9 +15767,9 @@ unsafe fn log_tensoriterator_triplet_scan_debug(
                 continue;
             }
             let value = ((param as usize + off) as *const u64).read_unaligned();
-            if let Some(remaining) = super::memory::pacc_allocation_remaining_addr(value) {
+            if let Some(remaining) = super::memory::sifive_allocation_remaining_addr(value) {
                 eprintln!(
-                    "[PACC Backend]   alloc-candidate param={} off=0x{:x} value=0x{:x} remaining={}",
+                    "[SIFIVE Backend]   alloc-candidate param={} off=0x{:x} value=0x{:x} remaining={}",
                     index, off, value, remaining
                 );
             }
@@ -15778,7 +15778,7 @@ unsafe fn log_tensoriterator_triplet_scan_debug(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15800,9 +15800,9 @@ unsafe fn find_tensoriterator_data_triplet(
             let p0 = base.saturating_add(off);
             let p1 = p0.saturating_add(std::mem::size_of::<u64>());
             let p2 = p1.saturating_add(std::mem::size_of::<u64>());
-            if !pacc_host_range_has_perms(p0, std::mem::size_of::<u64>(), false)
-                || !pacc_host_range_has_perms(p1, std::mem::size_of::<u64>(), false)
-                || !pacc_host_range_has_perms(p2, std::mem::size_of::<u64>(), false)
+            if !sifive_host_range_has_perms(p0, std::mem::size_of::<u64>(), false)
+                || !sifive_host_range_has_perms(p1, std::mem::size_of::<u64>(), false)
+                || !sifive_host_range_has_perms(p2, std::mem::size_of::<u64>(), false)
             {
                 continue;
             }
@@ -15813,9 +15813,9 @@ unsafe fn find_tensoriterator_data_triplet(
             if out_addr < 0x1_0000 || lhs_addr < 0x1_0000 || rhs_addr < 0x1_0000 {
                 continue;
             }
-            if pacc_cuda_alloc_has_bytes(out_addr, out_bytes)
-                && pacc_cuda_alloc_has_bytes(lhs_addr, std::mem::size_of::<f32>())
-                && pacc_cuda_alloc_has_bytes(rhs_addr, std::mem::size_of::<f32>())
+            if sifive_cuda_alloc_has_bytes(out_addr, out_bytes)
+                && sifive_cuda_alloc_has_bytes(lhs_addr, std::mem::size_of::<f32>())
+                && sifive_cuda_alloc_has_bytes(rhs_addr, std::mem::size_of::<f32>())
             {
                 return Some((index, off, out_addr, lhs_addr, rhs_addr));
             }
@@ -15825,7 +15825,7 @@ unsafe fn find_tensoriterator_data_triplet(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15839,7 +15839,7 @@ unsafe fn read_f32_tensor_prefix(
     if elems == 0 {
         return Ok(values);
     }
-    if pacc_host_range_has_perms(addr as usize, bytes, false) {
+    if sifive_host_range_has_perms(addr as usize, bytes, false) {
         std::ptr::copy_nonoverlapping(addr as *const f32, values.as_mut_ptr(), elems);
         return Ok(values);
     }
@@ -15852,7 +15852,7 @@ unsafe fn read_f32_tensor_prefix(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15862,7 +15862,7 @@ unsafe fn write_f32_tensor(addr: u64, values: &[f32]) -> Result<(), cuda_types::
     if values.is_empty() {
         return Ok(());
     }
-    if pacc_host_range_has_perms(addr as usize, bytes, true) {
+    if sifive_host_range_has_perms(addr as usize, bytes, true) {
         std::ptr::copy_nonoverlapping(values.as_ptr(), addr as *mut f32, values.len());
         return Ok(());
     }
@@ -15874,7 +15874,7 @@ unsafe fn write_f32_tensor(addr: u64, values: &[f32]) -> Result<(), cuda_types::
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15888,7 +15888,7 @@ unsafe fn read_bf16_tensor_prefix(
     if elems == 0 {
         return Ok(values);
     }
-    if pacc_host_range_has_perms(addr as usize, bytes, false) {
+    if sifive_host_range_has_perms(addr as usize, bytes, false) {
         std::ptr::copy_nonoverlapping(addr as *const u16, values.as_mut_ptr(), elems);
         return Ok(values);
     }
@@ -15901,7 +15901,7 @@ unsafe fn read_bf16_tensor_prefix(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15911,7 +15911,7 @@ unsafe fn write_bf16_tensor(addr: u64, values: &[u16]) -> Result<(), cuda_types:
     if values.is_empty() {
         return Ok(());
     }
-    if pacc_host_range_has_perms(addr as usize, bytes, true) {
+    if sifive_host_range_has_perms(addr as usize, bytes, true) {
         std::ptr::copy_nonoverlapping(values.as_ptr(), addr as *mut u16, values.len());
         return Ok(());
     }
@@ -15923,7 +15923,7 @@ unsafe fn write_bf16_tensor(addr: u64, values: &[u16]) -> Result<(), cuda_types:
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -15949,19 +15949,19 @@ unsafe fn execute_direct_copy_bf16_host(
         find_tensoriterator_data_pair(kernel_params, bytes)
     else {
         eprintln!(
-            "[PACC Backend] direct_copy bf16 '{}' could not locate TensorIterator data pair for n={} bytes={}",
+            "[SIFIVE Backend] direct_copy bf16 '{}' could not locate TensorIterator data pair for n={} bytes={}",
             kernel_name, n, bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
 
-    if pacc_host_range_has_perms(inp_addr as usize, bytes, false)
-        && pacc_host_range_has_perms(out_addr as usize, bytes, true)
+    if sifive_host_range_has_perms(inp_addr as usize, bytes, false)
+        && sifive_host_range_has_perms(out_addr as usize, bytes, true)
     {
         std::ptr::copy(inp_addr as *const u8, out_addr as *mut u8, bytes);
     } else {
         let mut tmp = vec![0u8; bytes];
-        if pacc_host_range_has_perms(inp_addr as usize, bytes, false) {
+        if sifive_host_range_has_perms(inp_addr as usize, bytes, false) {
             std::ptr::copy_nonoverlapping(inp_addr as *const u8, tmp.as_mut_ptr(), bytes);
         } else if let Err(err) = super::memory::copy_dto_h_v2(
             tmp.as_mut_ptr() as *mut ::core::ffi::c_void,
@@ -15969,12 +15969,12 @@ unsafe fn execute_direct_copy_bf16_host(
             bytes,
         ) {
             eprintln!(
-                "[PACC Backend] direct_copy bf16 '{}' failed to read input out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+                "[SIFIVE Backend] direct_copy bf16 '{}' failed to read input out=0x{:x} inp=0x{:x} bytes={} err={:?}",
                 kernel_name, out_addr, inp_addr, bytes, err
             );
             return Some(Err(err));
         }
-        if pacc_host_range_has_perms(out_addr as usize, bytes, true) {
+        if sifive_host_range_has_perms(out_addr as usize, bytes, true) {
             std::ptr::copy_nonoverlapping(tmp.as_ptr(), out_addr as *mut u8, bytes);
         } else if let Err(err) = super::memory::copy_hto_d_v2(
             cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
@@ -15982,16 +15982,16 @@ unsafe fn execute_direct_copy_bf16_host(
             bytes,
         ) {
             eprintln!(
-                "[PACC Backend] direct_copy bf16 '{}' failed to write output out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+                "[SIFIVE Backend] direct_copy bf16 '{}' failed to write output out=0x{:x} inp=0x{:x} bytes={} err={:?}",
                 kernel_name, out_addr, inp_addr, bytes, err
             );
             return Some(Err(err));
         }
     }
 
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled direct_copy bf16 '{}' on host-copy path n={} bytes={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
+            "[SIFIVE Backend] handled direct_copy bf16 '{}' on host-copy path n={} bytes={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
             kernel_name, n, bytes, out_addr, inp_addr, pair_index, pair_off
         );
     }
@@ -15999,7 +15999,7 @@ unsafe fn execute_direct_copy_bf16_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16024,8 +16024,8 @@ unsafe fn execute_direct_copy_bool_host_cast(
     let mut pair = None;
     for index in 1..6 {
         if let Some((out_addr, inp_addr)) = read_param_data_pair(kernel_params, index) {
-            if pacc_host_or_cuda_alloc_has_bytes(out_addr, n, true)
-                && pacc_host_or_cuda_alloc_has_bytes(inp_addr, n, false)
+            if sifive_host_or_cuda_alloc_has_bytes(out_addr, n, true)
+                && sifive_host_or_cuda_alloc_has_bytes(inp_addr, n, false)
             {
                 pair = Some((index, out_addr, inp_addr));
                 break;
@@ -16034,21 +16034,21 @@ unsafe fn execute_direct_copy_bool_host_cast(
     }
     let Some((pair_index, out_addr, inp_addr)) = pair else {
         eprintln!(
-            "[PACC Backend] direct_copy '{}' could not locate TensorIterator data pair for n={}",
+            "[SIFIVE Backend] direct_copy '{}' could not locate TensorIterator data pair for n={}",
             kernel_name, n
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
 
-    let inp_remaining = super::memory::pacc_allocation_remaining_addr(inp_addr)
+    let inp_remaining = super::memory::sifive_allocation_remaining_addr(inp_addr)
         .or_else(|| {
-            if pacc_host_range_has_perms(inp_addr as usize, n.saturating_mul(8), false) {
+            if sifive_host_range_has_perms(inp_addr as usize, n.saturating_mul(8), false) {
                 Some(n.saturating_mul(8))
-            } else if pacc_host_range_has_perms(inp_addr as usize, n.saturating_mul(4), false) {
+            } else if sifive_host_range_has_perms(inp_addr as usize, n.saturating_mul(4), false) {
                 Some(n.saturating_mul(4))
-            } else if pacc_host_range_has_perms(inp_addr as usize, n.saturating_mul(2), false) {
+            } else if sifive_host_range_has_perms(inp_addr as usize, n.saturating_mul(2), false) {
                 Some(n.saturating_mul(2))
-            } else if pacc_host_range_has_perms(inp_addr as usize, n, false) {
+            } else if sifive_host_range_has_perms(inp_addr as usize, n, false) {
                 Some(n)
             } else {
                 None
@@ -16065,11 +16065,11 @@ unsafe fn execute_direct_copy_bool_host_cast(
         1
     };
 
-    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, n, true)
-        || !pacc_host_or_cuda_alloc_has_bytes(inp_addr, n.saturating_mul(src_elem), false)
+    if !sifive_host_or_cuda_alloc_has_bytes(out_addr, n, true)
+        || !sifive_host_or_cuda_alloc_has_bytes(inp_addr, n.saturating_mul(src_elem), false)
     {
         eprintln!(
-            "[PACC Backend] direct_copy '{}' rejected allocation range out=0x{:x} inp=0x{:x} n={} src_elem={}",
+            "[SIFIVE Backend] direct_copy '{}' rejected allocation range out=0x{:x} inp=0x{:x} n={} src_elem={}",
             kernel_name, out_addr, inp_addr, n, src_elem
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -16077,7 +16077,7 @@ unsafe fn execute_direct_copy_bool_host_cast(
 
     let src_bytes = n.saturating_mul(src_elem);
     let mut src = vec![0u8; src_bytes];
-    if pacc_host_range_has_perms(inp_addr as usize, src_bytes, false) {
+    if sifive_host_range_has_perms(inp_addr as usize, src_bytes, false) {
         std::ptr::copy_nonoverlapping(inp_addr as *const u8, src.as_mut_ptr(), src_bytes);
     } else if let Err(err) = super::memory::copy_dto_h_v2(
         src.as_mut_ptr() as *mut ::core::ffi::c_void,
@@ -16085,7 +16085,7 @@ unsafe fn execute_direct_copy_bool_host_cast(
         src_bytes,
     ) {
         eprintln!(
-            "[PACC Backend] direct_copy '{}' failed to read input out=0x{:x} inp=0x{:x} n={} src_elem={} err={:?}",
+            "[SIFIVE Backend] direct_copy '{}' failed to read input out=0x{:x} inp=0x{:x} n={} src_elem={} err={:?}",
             kernel_name, out_addr, inp_addr, n, src_elem, err
         );
         return Some(Err(err));
@@ -16102,7 +16102,7 @@ unsafe fn execute_direct_copy_bool_host_cast(
         dst[i] = if nonzero { 1 } else { 0 };
     }
 
-    if pacc_host_range_has_perms(out_addr as usize, n, true) {
+    if sifive_host_range_has_perms(out_addr as usize, n, true) {
         std::ptr::copy_nonoverlapping(dst.as_ptr(), out_addr as *mut u8, n);
     } else if let Err(err) = super::memory::copy_hto_d_v2(
         cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
@@ -16110,15 +16110,15 @@ unsafe fn execute_direct_copy_bool_host_cast(
         n,
     ) {
         eprintln!(
-            "[PACC Backend] direct_copy '{}' failed to write output out=0x{:x} inp=0x{:x} n={} src_elem={} err={:?}",
+            "[SIFIVE Backend] direct_copy '{}' failed to write output out=0x{:x} inp=0x{:x} n={} src_elem={} err={:?}",
             kernel_name, out_addr, inp_addr, n, src_elem, err
         );
         return Some(Err(err));
     }
 
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled direct_copy '{}' on host bool-cast path n={} src_elem={} pair_param={}",
+            "[SIFIVE Backend] handled direct_copy '{}' on host bool-cast path n={} src_elem={} pair_param={}",
             kernel_name, n, src_elem, pair_index
         );
     }
@@ -16126,15 +16126,15 @@ unsafe fn execute_direct_copy_bool_host_cast(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 unsafe fn infer_linear_elem_size(addr: u64, n: usize, writable: bool) -> usize {
-    let remaining = super::memory::pacc_allocation_remaining_addr(addr).or_else(|| {
+    let remaining = super::memory::sifive_allocation_remaining_addr(addr).or_else(|| {
         for elem in [4usize, 2, 1] {
-            if pacc_host_range_has_perms(addr as usize, n.saturating_mul(elem), writable) {
+            if sifive_host_range_has_perms(addr as usize, n.saturating_mul(elem), writable) {
                 return Some(n.saturating_mul(elem));
             }
         }
@@ -16153,7 +16153,7 @@ unsafe fn infer_linear_elem_size(addr: u64, n: usize, writable: bool) -> usize {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16178,7 +16178,7 @@ unsafe fn execute_direct_copy_cast_host(
         find_tensoriterator_data_pair(kernel_params, n)
     else {
         eprintln!(
-            "[PACC Backend] direct_copy cast '{}' could not locate TensorIterator data pair for n={}",
+            "[SIFIVE Backend] direct_copy cast '{}' could not locate TensorIterator data pair for n={}",
             kernel_name, n
         );
         return None;
@@ -16186,11 +16186,11 @@ unsafe fn execute_direct_copy_cast_host(
 
     let src_elem = infer_linear_elem_size(inp_addr, n, false);
     let dst_elem = infer_linear_elem_size(out_addr, n, true);
-    if !pacc_host_or_cuda_alloc_has_bytes(inp_addr, n.saturating_mul(src_elem), false)
-        || !pacc_host_or_cuda_alloc_has_bytes(out_addr, n.saturating_mul(dst_elem), true)
+    if !sifive_host_or_cuda_alloc_has_bytes(inp_addr, n.saturating_mul(src_elem), false)
+        || !sifive_host_or_cuda_alloc_has_bytes(out_addr, n.saturating_mul(dst_elem), true)
     {
         eprintln!(
-            "[PACC Backend] direct_copy cast '{}' rejected ranges out=0x{:x}/{} inp=0x{:x}/{} n={}",
+            "[SIFIVE Backend] direct_copy cast '{}' rejected ranges out=0x{:x}/{} inp=0x{:x}/{} n={}",
             kernel_name, out_addr, dst_elem, inp_addr, src_elem, n
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -16199,7 +16199,7 @@ unsafe fn execute_direct_copy_cast_host(
     if src_elem == dst_elem && src_elem != 1 {
         let bytes = n.saturating_mul(src_elem);
         let mut tmp = vec![0u8; bytes];
-        if pacc_host_range_has_perms(inp_addr as usize, bytes, false) {
+        if sifive_host_range_has_perms(inp_addr as usize, bytes, false) {
             std::ptr::copy_nonoverlapping(inp_addr as *const u8, tmp.as_mut_ptr(), bytes);
         } else if let Err(err) = super::memory::copy_dto_h_v2(
             tmp.as_mut_ptr() as *mut ::core::ffi::c_void,
@@ -16208,7 +16208,7 @@ unsafe fn execute_direct_copy_cast_host(
         ) {
             return Some(Err(err));
         }
-        if pacc_host_range_has_perms(out_addr as usize, bytes, true) {
+        if sifive_host_range_has_perms(out_addr as usize, bytes, true) {
             std::ptr::copy_nonoverlapping(tmp.as_ptr(), out_addr as *mut u8, bytes);
         } else if let Err(err) = super::memory::copy_hto_d_v2(
             cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
@@ -16232,12 +16232,12 @@ unsafe fn execute_direct_copy_cast_host(
                     Err(err) => return Some(Err(err)),
                 };
                 for i in 0..n {
-                    values[i] = pacc_bf16_to_f32(src[i]);
+                    values[i] = sifive_bf16_to_f32(src[i]);
                 }
             }
             _ => {
                 let mut src = vec![0u8; n];
-                if pacc_host_range_has_perms(inp_addr as usize, n, false) {
+                if sifive_host_range_has_perms(inp_addr as usize, n, false) {
                     std::ptr::copy_nonoverlapping(inp_addr as *const u8, src.as_mut_ptr(), n);
                 } else if let Err(err) = super::memory::copy_dto_h_v2(
                     src.as_mut_ptr() as *mut ::core::ffi::c_void,
@@ -16259,7 +16259,7 @@ unsafe fn execute_direct_copy_cast_host(
                 }
             }
             2 => {
-                let dst: Vec<u16> = values.iter().map(|&v| pacc_f32_to_bf16(v)).collect();
+                let dst: Vec<u16> = values.iter().map(|&v| sifive_f32_to_bf16(v)).collect();
                 if let Err(err) = write_bf16_tensor(out_addr, &dst) {
                     return Some(Err(err));
                 }
@@ -16269,7 +16269,7 @@ unsafe fn execute_direct_copy_cast_host(
                     .iter()
                     .map(|&v| if v != 0.0 { 1 } else { 0 })
                     .collect();
-                if pacc_host_range_has_perms(out_addr as usize, n, true) {
+                if sifive_host_range_has_perms(out_addr as usize, n, true) {
                     std::ptr::copy_nonoverlapping(dst.as_ptr(), out_addr as *mut u8, n);
                 } else if let Err(err) = super::memory::copy_hto_d_v2(
                     cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
@@ -16282,9 +16282,9 @@ unsafe fn execute_direct_copy_cast_host(
         }
     }
 
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled direct_copy cast '{}' n={} src_elem={} dst_elem={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
+            "[SIFIVE Backend] handled direct_copy cast '{}' n={} src_elem={} dst_elem={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
             kernel_name, n, src_elem, dst_elem, out_addr, inp_addr, pair_index, pair_off
         );
     }
@@ -16292,7 +16292,7 @@ unsafe fn execute_direct_copy_cast_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16319,14 +16319,14 @@ unsafe fn execute_unary_bf16_host(
         find_tensoriterator_data_pair(kernel_params, bytes)
     else {
         eprintln!(
-            "[PACC Backend] unary bf16 {} '{}' could not locate TensorIterator data pair for n={} bytes={}",
+            "[SIFIVE Backend] unary bf16 {} '{}' could not locate TensorIterator data pair for n={} bytes={}",
             op, kernel_name, n, bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
 
     let mut input = vec![0u16; n];
-    if pacc_host_range_has_perms(inp_addr as usize, bytes, false) {
+    if sifive_host_range_has_perms(inp_addr as usize, bytes, false) {
         std::ptr::copy_nonoverlapping(inp_addr as *const u16, input.as_mut_ptr(), n);
     } else if let Err(err) = super::memory::copy_dto_h_v2(
         input.as_mut_ptr() as *mut ::core::ffi::c_void,
@@ -16334,7 +16334,7 @@ unsafe fn execute_unary_bf16_host(
         bytes,
     ) {
         eprintln!(
-            "[PACC Backend] unary bf16 {} '{}' failed to read input out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+            "[SIFIVE Backend] unary bf16 {} '{}' failed to read input out=0x{:x} inp=0x{:x} bytes={} err={:?}",
             op, kernel_name, out_addr, inp_addr, bytes, err
         );
         return Some(Err(err));
@@ -16342,10 +16342,10 @@ unsafe fn execute_unary_bf16_host(
 
     let mut output = vec![0u16; n];
     for i in 0..n {
-        let x = pacc_bf16_to_f32(input[i]);
+        let x = sifive_bf16_to_f32(input[i]);
         let y = match op {
             "log" => x.ln(),
-            "silu" => pacc_silu(x),
+            "silu" => sifive_silu(x),
             _ => {
                 if x >= 0.0 {
                     let z = (-x).exp();
@@ -16356,10 +16356,10 @@ unsafe fn execute_unary_bf16_host(
                 }
             }
         };
-        output[i] = pacc_f32_to_bf16(y);
+        output[i] = sifive_f32_to_bf16(y);
     }
 
-    if pacc_host_range_has_perms(out_addr as usize, bytes, true) {
+    if sifive_host_range_has_perms(out_addr as usize, bytes, true) {
         std::ptr::copy_nonoverlapping(output.as_ptr(), out_addr as *mut u16, n);
     } else if let Err(err) = super::memory::copy_hto_d_v2(
         cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
@@ -16367,15 +16367,15 @@ unsafe fn execute_unary_bf16_host(
         bytes,
     ) {
         eprintln!(
-            "[PACC Backend] unary bf16 {} '{}' failed to write output out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+            "[SIFIVE Backend] unary bf16 {} '{}' failed to write output out=0x{:x} inp=0x{:x} bytes={} err={:?}",
             op, kernel_name, out_addr, inp_addr, bytes, err
         );
         return Some(Err(err));
     }
 
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled unary bf16 {} '{}' on host path n={} bytes={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
+            "[SIFIVE Backend] handled unary bf16 {} '{}' on host path n={} bytes={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
             op, kernel_name, n, bytes, out_addr, inp_addr, pair_index, pair_off
         );
     }
@@ -16383,7 +16383,7 @@ unsafe fn execute_unary_bf16_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16404,7 +16404,7 @@ unsafe fn execute_uniform_bf16_host(
         find_tensoriterator_data_single(kernel_params, bytes)
     else {
         eprintln!(
-            "[PACC Backend] uniform bf16 '{}' could not locate TensorIterator output for n={} bytes={}",
+            "[SIFIVE Backend] uniform bf16 '{}' could not locate TensorIterator output for n={} bytes={}",
             kernel_name, n, bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -16421,18 +16421,18 @@ unsafe fn execute_uniform_bf16_host(
         x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
         x ^= x >> 31;
         let unit = ((x >> 40) as f32) * (1.0 / ((1u32 << 24) as f32));
-        output[i] = pacc_f32_to_bf16(unit * 16.0);
+        output[i] = sifive_f32_to_bf16(unit * 16.0);
     }
     if let Err(err) = write_bf16_tensor(out_addr, &output) {
         eprintln!(
-            "[PACC Backend] uniform bf16 '{}' failed to write output out=0x{:x} n={} err={:?}",
+            "[SIFIVE Backend] uniform bf16 '{}' failed to write output out=0x{:x} n={} err={:?}",
             kernel_name, out_addr, n, err
         );
         return Some(Err(err));
     }
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled uniform bf16 '{}' on host path n={} out=0x{:x} param={} off=0x{:x}",
+            "[SIFIVE Backend] handled uniform bf16 '{}' on host path n={} out=0x{:x} param={} off=0x{:x}",
             kernel_name, n, out_addr, param_index, param_off
         );
     }
@@ -16440,7 +16440,7 @@ unsafe fn execute_uniform_bf16_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16467,14 +16467,14 @@ unsafe fn execute_unary_f32_host(
         find_tensoriterator_data_pair(kernel_params, bytes)
     else {
         eprintln!(
-            "[PACC Backend] unary f32 {} '{}' could not locate TensorIterator data pair for n={} bytes={}",
+            "[SIFIVE Backend] unary f32 {} '{}' could not locate TensorIterator data pair for n={} bytes={}",
             op_name, kernel_name, n, bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
 
     let mut input = vec![0f32; n];
-    if pacc_host_range_has_perms(inp_addr as usize, bytes, false) {
+    if sifive_host_range_has_perms(inp_addr as usize, bytes, false) {
         std::ptr::copy_nonoverlapping(inp_addr as *const f32, input.as_mut_ptr(), n);
     } else if let Err(err) = super::memory::copy_dto_h_v2(
         input.as_mut_ptr() as *mut ::core::ffi::c_void,
@@ -16482,7 +16482,7 @@ unsafe fn execute_unary_f32_host(
         bytes,
     ) {
         eprintln!(
-            "[PACC Backend] unary f32 {} '{}' failed to read input out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+            "[SIFIVE Backend] unary f32 {} '{}' failed to read input out=0x{:x} inp=0x{:x} bytes={} err={:?}",
             op_name, kernel_name, out_addr, inp_addr, bytes, err
         );
         return Some(Err(err));
@@ -16517,7 +16517,7 @@ unsafe fn execute_unary_f32_host(
         };
     }
 
-    if pacc_host_range_has_perms(out_addr as usize, bytes, true) {
+    if sifive_host_range_has_perms(out_addr as usize, bytes, true) {
         std::ptr::copy_nonoverlapping(output.as_ptr(), out_addr as *mut f32, n);
     } else if let Err(err) = super::memory::copy_hto_d_v2(
         cuda_types::cuda::CUdeviceptr_v2(out_addr as *mut ::core::ffi::c_void),
@@ -16525,15 +16525,15 @@ unsafe fn execute_unary_f32_host(
         bytes,
     ) {
         eprintln!(
-            "[PACC Backend] unary f32 {} '{}' failed to write output out=0x{:x} inp=0x{:x} bytes={} err={:?}",
+            "[SIFIVE Backend] unary f32 {} '{}' failed to write output out=0x{:x} inp=0x{:x} bytes={} err={:?}",
             op_name, kernel_name, out_addr, inp_addr, bytes, err
         );
         return Some(Err(err));
     }
 
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled unary f32 {} '{}' on host path n={} bytes={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
+            "[SIFIVE Backend] handled unary f32 {} '{}' on host path n={} bytes={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
             op_name, kernel_name, n, bytes, out_addr, inp_addr, pair_index, pair_off
         );
     }
@@ -16541,7 +16541,7 @@ unsafe fn execute_unary_f32_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16569,23 +16569,23 @@ unsafe fn execute_binary_f32_host(
     else {
         log_tensoriterator_triplet_scan_debug(kernel_params, kernel_name, n);
         eprintln!(
-            "[PACC Backend] binary f32 {} '{}' could not locate TensorIterator data triplet for n={} bytes={}",
+            "[SIFIVE Backend] binary f32 {} '{}' could not locate TensorIterator data triplet for n={} bytes={}",
             op_name, kernel_name, n, out_bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
 
-    let lhs_elems = super::memory::pacc_allocation_remaining_addr(lhs_addr)
+    let lhs_elems = super::memory::sifive_allocation_remaining_addr(lhs_addr)
         .map(|bytes| (bytes / std::mem::size_of::<f32>()).clamp(1, n))
         .unwrap_or(n);
-    let rhs_elems = super::memory::pacc_allocation_remaining_addr(rhs_addr)
+    let rhs_elems = super::memory::sifive_allocation_remaining_addr(rhs_addr)
         .map(|bytes| (bytes / std::mem::size_of::<f32>()).clamp(1, n))
         .unwrap_or(n);
     let lhs = match read_f32_tensor_prefix(lhs_addr, lhs_elems) {
         Ok(v) => v,
         Err(err) => {
             eprintln!(
-                "[PACC Backend] binary f32 {} '{}' failed to read lhs=0x{:x} elems={} err={:?}",
+                "[SIFIVE Backend] binary f32 {} '{}' failed to read lhs=0x{:x} elems={} err={:?}",
                 op_name, kernel_name, lhs_addr, lhs_elems, err
             );
             return Some(Err(err));
@@ -16595,7 +16595,7 @@ unsafe fn execute_binary_f32_host(
         Ok(v) => v,
         Err(err) => {
             eprintln!(
-                "[PACC Backend] binary f32 {} '{}' failed to read rhs=0x{:x} elems={} err={:?}",
+                "[SIFIVE Backend] binary f32 {} '{}' failed to read rhs=0x{:x} elems={} err={:?}",
                 op_name, kernel_name, rhs_addr, rhs_elems, err
             );
             return Some(Err(err));
@@ -16615,15 +16615,15 @@ unsafe fn execute_binary_f32_host(
     }
     if let Err(err) = write_f32_tensor(out_addr, &out) {
         eprintln!(
-            "[PACC Backend] binary f32 {} '{}' failed to write out=0x{:x} bytes={} err={:?}",
+            "[SIFIVE Backend] binary f32 {} '{}' failed to write out=0x{:x} bytes={} err={:?}",
             op_name, kernel_name, out_addr, out_bytes, err
         );
         return Some(Err(err));
     }
 
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled binary f32 {} '{}' on host path n={} lhs_elems={} rhs_elems={} out=0x{:x} lhs=0x{:x} rhs=0x{:x} triplet_param={} triplet_off=0x{:x}",
+            "[SIFIVE Backend] handled binary f32 {} '{}' on host path n={} lhs_elems={} rhs_elems={} out=0x{:x} lhs=0x{:x} rhs=0x{:x} triplet_param={} triplet_off=0x{:x}",
             op_name, kernel_name, n, lhs_elems, rhs_elems, out_addr, lhs_addr, rhs_addr, triplet_index, triplet_off
         );
     }
@@ -16631,7 +16631,7 @@ unsafe fn execute_binary_f32_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16659,23 +16659,23 @@ unsafe fn execute_binary_bf16_host(
     else {
         log_tensoriterator_triplet_scan_debug(kernel_params, kernel_name, n);
         eprintln!(
-            "[PACC Backend] binary bf16 {} '{}' could not locate TensorIterator data triplet for n={} bytes={}",
+            "[SIFIVE Backend] binary bf16 {} '{}' could not locate TensorIterator data triplet for n={} bytes={}",
             op_name, kernel_name, n, out_bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
 
-    let lhs_elems = super::memory::pacc_allocation_remaining_addr(lhs_addr)
+    let lhs_elems = super::memory::sifive_allocation_remaining_addr(lhs_addr)
         .map(|bytes| (bytes / std::mem::size_of::<u16>()).clamp(1, n))
         .unwrap_or(n);
-    let rhs_elems = super::memory::pacc_allocation_remaining_addr(rhs_addr)
+    let rhs_elems = super::memory::sifive_allocation_remaining_addr(rhs_addr)
         .map(|bytes| (bytes / std::mem::size_of::<u16>()).clamp(1, n))
         .unwrap_or(n);
     let lhs = match read_bf16_tensor_prefix(lhs_addr, lhs_elems) {
         Ok(v) => v,
         Err(err) => {
             eprintln!(
-                "[PACC Backend] binary bf16 {} '{}' failed to read lhs=0x{:x} elems={} err={:?}",
+                "[SIFIVE Backend] binary bf16 {} '{}' failed to read lhs=0x{:x} elems={} err={:?}",
                 op_name, kernel_name, lhs_addr, lhs_elems, err
             );
             return Some(Err(err));
@@ -16685,7 +16685,7 @@ unsafe fn execute_binary_bf16_host(
         Ok(v) => v,
         Err(err) => {
             eprintln!(
-                "[PACC Backend] binary bf16 {} '{}' failed to read rhs=0x{:x} elems={} err={:?}",
+                "[SIFIVE Backend] binary bf16 {} '{}' failed to read rhs=0x{:x} elems={} err={:?}",
                 op_name, kernel_name, rhs_addr, rhs_elems, err
             );
             return Some(Err(err));
@@ -16694,27 +16694,27 @@ unsafe fn execute_binary_bf16_host(
 
     let mut out = vec![0u16; n];
     for i in 0..n {
-        let a = pacc_bf16_to_f32(lhs[i % lhs.len()]);
-        let b = pacc_bf16_to_f32(rhs[i % rhs.len()]);
+        let a = sifive_bf16_to_f32(lhs[i % lhs.len()]);
+        let b = sifive_bf16_to_f32(rhs[i % rhs.len()]);
         let y = match op_name {
             "add" => a + b,
             "mul" => a * b,
             "div" => a / b,
             _ => a,
         };
-        out[i] = pacc_f32_to_bf16(y);
+        out[i] = sifive_f32_to_bf16(y);
     }
     if let Err(err) = write_bf16_tensor(out_addr, &out) {
         eprintln!(
-            "[PACC Backend] binary bf16 {} '{}' failed to write out=0x{:x} bytes={} err={:?}",
+            "[SIFIVE Backend] binary bf16 {} '{}' failed to write out=0x{:x} bytes={} err={:?}",
             op_name, kernel_name, out_addr, out_bytes, err
         );
         return Some(Err(err));
     }
 
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled binary bf16 {} '{}' on host path n={} lhs_elems={} rhs_elems={} out=0x{:x} lhs=0x{:x} rhs=0x{:x} triplet_param={} triplet_off=0x{:x}",
+            "[SIFIVE Backend] handled binary bf16 {} '{}' on host path n={} lhs_elems={} rhs_elems={} out=0x{:x} lhs=0x{:x} rhs=0x{:x} triplet_param={} triplet_off=0x{:x}",
             op_name, kernel_name, n, lhs_elems, rhs_elems, out_addr, lhs_addr, rhs_addr, triplet_index, triplet_off
         );
     }
@@ -16722,7 +16722,7 @@ unsafe fn execute_binary_bf16_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16738,7 +16738,7 @@ unsafe fn read_aunary_f32_scalar(kernel_params: *mut *mut ::core::ffi::c_void) -
         }
         let base = param as usize;
         for off in (0..128usize).step_by(std::mem::size_of::<f32>()) {
-            if !pacc_host_range_has_perms(
+            if !sifive_host_range_has_perms(
                 base.saturating_add(off),
                 std::mem::size_of::<f32>(),
                 false,
@@ -16755,7 +16755,7 @@ unsafe fn read_aunary_f32_scalar(kernel_params: *mut *mut ::core::ffi::c_void) -
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16782,14 +16782,14 @@ unsafe fn execute_aunary_f32_host(
         find_tensoriterator_data_pair(kernel_params, bytes)
     else {
         eprintln!(
-            "[PACC Backend] aunary f32 {} '{}' could not locate TensorIterator data pair for n={} bytes={}",
+            "[SIFIVE Backend] aunary f32 {} '{}' could not locate TensorIterator data pair for n={} bytes={}",
             op_name, kernel_name, n, bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
     let Some(scalar) = read_aunary_f32_scalar(kernel_params) else {
         eprintln!(
-            "[PACC Backend] aunary f32 {} '{}' could not locate scalar for n={}",
+            "[SIFIVE Backend] aunary f32 {} '{}' could not locate scalar for n={}",
             op_name, kernel_name, n
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -16809,9 +16809,9 @@ unsafe fn execute_aunary_f32_host(
     if let Err(err) = write_f32_tensor(out_addr, &out) {
         return Some(Err(err));
     }
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled aunary f32 {} '{}' n={} scalar={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
+            "[SIFIVE Backend] handled aunary f32 {} '{}' n={} scalar={} out=0x{:x} inp=0x{:x} pair_param={} pair_off=0x{:x}",
             op_name, kernel_name, n, scalar, out_addr, inp_addr, pair_index, pair_off
         );
     }
@@ -16819,7 +16819,7 @@ unsafe fn execute_aunary_f32_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16844,45 +16844,45 @@ unsafe fn execute_arange_host_fill(
         if candidate < 0x1_0000 {
             continue;
         }
-        if pacc_host_or_cuda_alloc_has_bytes(candidate, n, true) {
+        if sifive_host_or_cuda_alloc_has_bytes(candidate, n, true) {
             out_addr = Some((index, candidate));
             break;
         }
     }
     let Some((param_index, out_addr)) = out_addr else {
         eprintln!(
-            "[PACC Backend] arange '{}' could not locate output allocation for n={}",
+            "[SIFIVE Backend] arange '{}' could not locate output allocation for n={}",
             kernel_name, n
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
 
-    let remaining = super::memory::pacc_allocation_remaining_addr(out_addr).unwrap_or(n);
+    let remaining = super::memory::sifive_allocation_remaining_addr(out_addr).unwrap_or(n);
     if remaining >= n.saturating_mul(8)
-        && pacc_host_or_cuda_alloc_has_bytes(out_addr, n.saturating_mul(8), true)
+        && sifive_host_or_cuda_alloc_has_bytes(out_addr, n.saturating_mul(8), true)
     {
         let out = out_addr as *mut i64;
         for i in 0..n {
             out.add(i).write(i as i64);
         }
-        if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
             eprintln!(
-                "[PACC Backend] handled arange '{}' on host-fill path n={} dtype=i64 param={}",
+                "[SIFIVE Backend] handled arange '{}' on host-fill path n={} dtype=i64 param={}",
                 kernel_name, n, param_index
             );
         }
         return Some(Ok(()));
     }
     if remaining >= n.saturating_mul(4)
-        && pacc_host_or_cuda_alloc_has_bytes(out_addr, n.saturating_mul(4), true)
+        && sifive_host_or_cuda_alloc_has_bytes(out_addr, n.saturating_mul(4), true)
     {
         let out = out_addr as *mut i32;
         for i in 0..n {
             out.add(i).write(i as i32);
         }
-        if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+        if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
             eprintln!(
-                "[PACC Backend] handled arange '{}' on host-fill path n={} dtype=i32 param={}",
+                "[SIFIVE Backend] handled arange '{}' on host-fill path n={} dtype=i32 param={}",
                 kernel_name, n, param_index
             );
         }
@@ -16890,14 +16890,14 @@ unsafe fn execute_arange_host_fill(
     }
 
     eprintln!(
-        "[PACC Backend] arange '{}' rejected output allocation out=0x{:x} n={} remaining={}",
+        "[SIFIVE Backend] arange '{}' rejected output allocation out=0x{:x} n={} remaining={}",
         kernel_name, out_addr, n, remaining
     );
     Some(Err(cuda_types::cuda::CUerror::UNKNOWN))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16916,17 +16916,17 @@ unsafe fn execute_vectorized_add_i64_host(
     let scalar = read_param_i64(kernel_params, 1).unwrap_or(0);
     let Some((out_addr, inp_addr)) = read_param_data_pair(kernel_params, 2) else {
         eprintln!(
-            "[PACC Backend] vectorized add '{}' missing data pair n={}",
+            "[SIFIVE Backend] vectorized add '{}' missing data pair n={}",
             kernel_name, n
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
     let bytes = n.saturating_mul(std::mem::size_of::<i64>());
-    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, bytes, true)
-        || !pacc_host_or_cuda_alloc_has_bytes(inp_addr, bytes, false)
+    if !sifive_host_or_cuda_alloc_has_bytes(out_addr, bytes, true)
+        || !sifive_host_or_cuda_alloc_has_bytes(inp_addr, bytes, false)
     {
         eprintln!(
-            "[PACC Backend] vectorized add '{}' rejected allocation out=0x{:x} inp=0x{:x} bytes={}",
+            "[SIFIVE Backend] vectorized add '{}' rejected allocation out=0x{:x} inp=0x{:x} bytes={}",
             kernel_name, out_addr, inp_addr, bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -16938,9 +16938,9 @@ unsafe fn execute_vectorized_add_i64_host(
         out.add(i)
             .write(inp.add(i).read_unaligned().wrapping_add(scalar));
     }
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled vectorized add '{}' on host i64 path n={} scalar={}",
+            "[SIFIVE Backend] handled vectorized add '{}' on host i64 path n={} scalar={}",
             kernel_name, n, scalar
         );
     }
@@ -16948,7 +16948,7 @@ unsafe fn execute_vectorized_add_i64_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -16967,22 +16967,22 @@ unsafe fn execute_fill_bool_host(
     let value = read_param_bool(kernel_params, 1).unwrap_or(true);
     let Some(out_addr) = read_param_data_single(kernel_params, 2) else {
         eprintln!(
-            "[PACC Backend] fill bool '{}' missing output pointer n={}",
+            "[SIFIVE Backend] fill bool '{}' missing output pointer n={}",
             kernel_name, n
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
-    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, n, true) {
+    if !sifive_host_or_cuda_alloc_has_bytes(out_addr, n, true) {
         eprintln!(
-            "[PACC Backend] fill bool '{}' rejected output allocation out=0x{:x} n={}",
+            "[SIFIVE Backend] fill bool '{}' rejected output allocation out=0x{:x} n={}",
             kernel_name, out_addr, n
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     }
     std::ptr::write_bytes(out_addr as *mut u8, if value { 1 } else { 0 }, n);
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled fill bool '{}' on host path n={} value={}",
+            "[SIFIVE Backend] handled fill bool '{}' on host path n={} value={}",
             kernel_name, n, value
         );
     }
@@ -16990,7 +16990,7 @@ unsafe fn execute_fill_bool_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -17010,7 +17010,7 @@ unsafe fn execute_fill_bf16_host(
         let param = *kernel_params.add(1);
         if !param.is_null()
             && (param as usize) >= 0x1_0000
-            && pacc_host_range_has_perms(param as usize, std::mem::size_of::<u16>(), false)
+            && sifive_host_range_has_perms(param as usize, std::mem::size_of::<u16>(), false)
         {
             (param as *const u16).read_unaligned()
         } else {
@@ -17021,15 +17021,15 @@ unsafe fn execute_fill_bf16_host(
     };
     let Some(out_addr) = read_param_data_single(kernel_params, 2) else {
         eprintln!(
-            "[PACC Backend] fill bf16 '{}' missing output pointer n={}",
+            "[SIFIVE Backend] fill bf16 '{}' missing output pointer n={}",
             kernel_name, n
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
     let bytes = n.saturating_mul(std::mem::size_of::<u16>());
-    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, bytes, true) {
+    if !sifive_host_or_cuda_alloc_has_bytes(out_addr, bytes, true) {
         eprintln!(
-            "[PACC Backend] fill bf16 '{}' rejected output allocation out=0x{:x} bytes={}",
+            "[SIFIVE Backend] fill bf16 '{}' rejected output allocation out=0x{:x} bytes={}",
             kernel_name, out_addr, bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -17038,9 +17038,9 @@ unsafe fn execute_fill_bf16_host(
     for i in 0..n {
         out.add(i).write_unaligned(value);
     }
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled fill bf16 '{}' on host path n={} value=0x{:04x}",
+            "[SIFIVE Backend] handled fill bf16 '{}' on host path n={} value=0x{:04x}",
             kernel_name, n, value
         );
     }
@@ -17048,7 +17048,7 @@ unsafe fn execute_fill_bf16_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -17067,15 +17067,15 @@ unsafe fn execute_fill_f32_host(
     let value = read_param_f32(kernel_params, 1).unwrap_or(0.0);
     let Some(out_addr) = read_param_data_single(kernel_params, 2) else {
         eprintln!(
-            "[PACC Backend] fill f32 '{}' missing output pointer n={}",
+            "[SIFIVE Backend] fill f32 '{}' missing output pointer n={}",
             kernel_name, n
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     };
     let bytes = n.saturating_mul(std::mem::size_of::<f32>());
-    if !pacc_host_or_cuda_alloc_has_bytes(out_addr, bytes, true) {
+    if !sifive_host_or_cuda_alloc_has_bytes(out_addr, bytes, true) {
         eprintln!(
-            "[PACC Backend] fill f32 '{}' rejected output allocation out=0x{:x} bytes={}",
+            "[SIFIVE Backend] fill f32 '{}' rejected output allocation out=0x{:x} bytes={}",
             kernel_name, out_addr, bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -17083,14 +17083,14 @@ unsafe fn execute_fill_f32_host(
     let values = vec![value; n];
     if let Err(err) = write_f32_tensor(out_addr, &values) {
         eprintln!(
-            "[PACC Backend] fill f32 '{}' failed to write out=0x{:x} bytes={} err={:?}",
+            "[SIFIVE Backend] fill f32 '{}' failed to write out=0x{:x} bytes={} err={:?}",
             kernel_name, out_addr, bytes, err
         );
         return Some(Err(err));
     }
-    if pacc_env_truthy("HETGPU_PACC_LOG_NAMED_OFFLOADS") {
+    if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
         eprintln!(
-            "[PACC Backend] handled fill f32 '{}' on host path n={} value={}",
+            "[SIFIVE Backend] handled fill f32 '{}' on host path n={} value={}",
             kernel_name, n, value
         );
     }
@@ -17098,7 +17098,7 @@ unsafe fn execute_fill_f32_host(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -17112,7 +17112,7 @@ unsafe fn execute_compare_i64_host_debug(
         .map(|v| v.max(0) as usize)
         .unwrap_or(grid_dim_x as usize);
     eprintln!(
-        "[PACC Backend] compare i64 '{}' debug n={} grid_x={}",
+        "[SIFIVE Backend] compare i64 '{}' debug n={} grid_x={}",
         kernel_name, n, grid_dim_x
     );
     if kernel_params.is_null() {
@@ -17121,13 +17121,13 @@ unsafe fn execute_compare_i64_host_debug(
     for index in 0..2 {
         let param = *kernel_params.add(index);
         if param.is_null() {
-            eprintln!("[PACC Backend] compare param[{}]=NULL", index);
+            eprintln!("[SIFIVE Backend] compare param[{}]=NULL", index);
             continue;
         }
         let addr = param as usize;
-        if !pacc_host_range_has_perms(addr, 64, false) {
+        if !sifive_host_range_has_perms(addr, 64, false) {
             eprintln!(
-                "[PACC Backend] compare param[{}]={:p} not readable64",
+                "[SIFIVE Backend] compare param[{}]={:p} not readable64",
                 index, param
             );
             continue;
@@ -17141,7 +17141,7 @@ unsafe fn execute_compare_i64_host_debug(
                 .read_unaligned();
         }
         for (word_index, value) in words.iter().copied().enumerate() {
-            let alloc = pacc_host_or_cuda_alloc_has_bytes(value, 1, word_index == 0);
+            let alloc = sifive_host_or_cuda_alloc_has_bytes(value, 1, word_index == 0);
             let _ = std::fmt::Write::write_fmt(
                 &mut rendered,
                 format_args!(
@@ -17153,7 +17153,7 @@ unsafe fn execute_compare_i64_host_debug(
             );
         }
         eprintln!(
-            "[PACC Backend] compare param[{}]={:p}{}",
+            "[SIFIVE Backend] compare param[{}]={:p}{}",
             index, param, rendered
         );
         if index == 0 {
@@ -17163,7 +17163,7 @@ unsafe fn execute_compare_i64_host_debug(
             let Ok(ptr) = usize::try_from(value) else {
                 continue;
             };
-            if ptr < 0x1_0000 || !pacc_host_range_has_perms(ptr, 128, false) {
+            if ptr < 0x1_0000 || !sifive_host_range_has_perms(ptr, 128, false) {
                 continue;
             }
             let mut nested_rendered = String::new();
@@ -17172,7 +17172,7 @@ unsafe fn execute_compare_i64_host_debug(
                     .add(nested_index * std::mem::size_of::<u64>())
                     .cast::<u64>()
                     .read_unaligned();
-                let alloc = pacc_host_or_cuda_alloc_has_bytes(nested_value, 1, nested_index == 0);
+                let alloc = sifive_host_or_cuda_alloc_has_bytes(nested_value, 1, nested_index == 0);
                 let _ = std::fmt::Write::write_fmt(
                     &mut nested_rendered,
                     format_args!(
@@ -17184,7 +17184,7 @@ unsafe fn execute_compare_i64_host_debug(
                 );
             }
             eprintln!(
-                "[PACC Backend] compare param[{}].w{} -> 0x{:x}{}",
+                "[SIFIVE Backend] compare param[{}].w{} -> 0x{:x}{}",
                 index, word_index, ptr, nested_rendered
             );
         }
@@ -17193,7 +17193,7 @@ unsafe fn execute_compare_i64_host_debug(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -17202,17 +17202,17 @@ unsafe fn execute_scale_f32_fallback(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
 ) -> Option<cuda_types::cuda::CUresult> {
-    let src = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)?;
-    let dst = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 1)?)?;
+    let src = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)?;
+    let dst = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 1)?)?;
     let scale = read_param_f32(kernel_params, 2)?;
     let bias = read_param_f32(kernel_params, 3)?;
     let nelements = read_param_i64(kernel_params, 4)?.max(0) as usize;
 
-    if !pacc_cuda_alloc_has_elems(src as *const f32, nelements)
-        || !pacc_cuda_alloc_has_elems(dst as *const f32, nelements)
+    if !sifive_cuda_alloc_has_elems(src as *const f32, nelements)
+        || !sifive_cuda_alloc_has_elems(dst as *const f32, nelements)
     {
         eprintln!(
-            "[PACC Backend] host-fallback scale_f32 '{}' rejected out-of-allocation range src={:p} dst={:p} nelements={}",
+            "[SIFIVE Backend] host-fallback scale_f32 '{}' rejected out-of-allocation range src={:p} dst={:p} nelements={}",
             kernel_name, src, dst, nelements
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -17224,9 +17224,9 @@ unsafe fn execute_scale_f32_fallback(
         dst[i] = scale.mul_add(src[i], bias);
     }
 
-    if pacc_env_truthy("HETGPU_PACC_SCALE_F32_TRACE") {
+    if sifive_env_truthy("HETGPU_SIFIVE_SCALE_F32_TRACE") {
         eprintln!(
-            "[PACC Backend] host-fallback scale_f32 '{}' nelements={}",
+            "[SIFIVE Backend] host-fallback scale_f32 '{}' nelements={}",
             kernel_name, nelements
         );
     }
@@ -17234,7 +17234,7 @@ unsafe fn execute_scale_f32_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -17243,9 +17243,9 @@ unsafe fn execute_concat_f32_cont_host_fallback(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
 ) -> Option<cuda_types::cuda::CUresult> {
-    let x = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)?;
-    let y = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 1)?)?;
-    let dst = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 2)?)?;
+    let x = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)?;
+    let y = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 1)?)?;
+    let dst = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 2)?)?;
     let ne00 = read_param_i64(kernel_params, 3)?;
     let ne01 = read_param_i64(kernel_params, 4)?;
     let ne02 = read_param_i64(kernel_params, 5)?;
@@ -17285,12 +17285,12 @@ unsafe fn execute_concat_f32_cont_host_fallback(
             ne0.checked_mul(ne1)?.checked_mul(ne2.checked_sub(ne02)?)?,
         ),
     };
-    if !pacc_cuda_alloc_has_elems(x as *const f32, x_elems)
-        || !pacc_cuda_alloc_has_elems(y as *const f32, y_elems)
-        || !pacc_cuda_alloc_has_elems(dst as *const f32, n)
+    if !sifive_cuda_alloc_has_elems(x as *const f32, x_elems)
+        || !sifive_cuda_alloc_has_elems(y as *const f32, y_elems)
+        || !sifive_cuda_alloc_has_elems(dst as *const f32, n)
     {
         eprintln!(
-            "[PACC Backend] host-fallback concat_f32_cont '{}' rejected ranges x={:p}/{} y={:p}/{} dst={:p}/{}",
+            "[SIFIVE Backend] host-fallback concat_f32_cont '{}' rejected ranges x={:p}/{} y={:p}/{} dst={:p}/{}",
             kernel_name, x, x_elems, y, y_elems, dst, n
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -17331,9 +17331,9 @@ unsafe fn execute_concat_f32_cont_host_fallback(
             }
         }
     }
-    if pacc_env_truthy("HETGPU_PACC_CONCAT_F32_TRACE") {
+    if sifive_env_truthy("HETGPU_SIFIVE_CONCAT_F32_TRACE") {
         eprintln!(
-            "[PACC Backend] host-fallback concat_f32_cont '{}' dim={} n={}",
+            "[SIFIVE Backend] host-fallback concat_f32_cont '{}' dim={} n={}",
             kernel_name, dim, n
         );
     }
@@ -17341,7 +17341,7 @@ unsafe fn execute_concat_f32_cont_host_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -17350,9 +17350,9 @@ unsafe fn execute_concat_f32_non_cont_host_fallback(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
 ) -> Option<cuda_types::cuda::CUresult> {
-    let src0 = pacc_host_ptr::<u8>(read_param_u64(kernel_params, 0)?)?;
-    let src1 = pacc_host_ptr::<u8>(read_param_u64(kernel_params, 1)?)?;
-    let dst = pacc_host_ptr::<u8>(read_param_u64(kernel_params, 2)?)?;
+    let src0 = sifive_host_ptr::<u8>(read_param_u64(kernel_params, 0)?)?;
+    let src1 = sifive_host_ptr::<u8>(read_param_u64(kernel_params, 1)?)?;
+    let dst = sifive_host_ptr::<u8>(read_param_u64(kernel_params, 2)?)?;
 
     let ne00 = read_param_i64(kernel_params, 3)?;
     let ne01 = read_param_i64(kernel_params, 4)?;
@@ -17438,12 +17438,12 @@ unsafe fn execute_concat_f32_non_cont_host_fallback(
     let src0_bytes = tensor_bytes(ne00, ne01, ne02, ne03, nb00, nb01, nb02, nb03)?;
     let src1_bytes = tensor_bytes(ne10, ne11, ne12, ne13, nb10, nb11, nb12, nb13)?;
     let dst_bytes = tensor_bytes(ne0, ne1, ne2, ne3, nb0, nb1, nb2, nb3)?;
-    if !pacc_cuda_alloc_has_bytes(src0 as u64, src0_bytes)
-        || !pacc_cuda_alloc_has_bytes(src1 as u64, src1_bytes)
-        || !pacc_cuda_alloc_has_bytes(dst as u64, dst_bytes)
+    if !sifive_cuda_alloc_has_bytes(src0 as u64, src0_bytes)
+        || !sifive_cuda_alloc_has_bytes(src1 as u64, src1_bytes)
+        || !sifive_cuda_alloc_has_bytes(dst as u64, dst_bytes)
     {
         eprintln!(
-            "[PACC Backend] host-fallback concat_f32_non_cont '{}' rejected ranges src0={:p}/{} src1={:p}/{} dst={:p}/{}",
+            "[SIFIVE Backend] host-fallback concat_f32_non_cont '{}' rejected ranges src0={:p}/{} src1={:p}/{} dst={:p}/{}",
             kernel_name, src0, src0_bytes, src1, src1_bytes, dst, dst_bytes
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -17500,9 +17500,9 @@ unsafe fn execute_concat_f32_non_cont_host_fallback(
         }
     }
 
-    if pacc_env_truthy("HETGPU_PACC_CONCAT_F32_TRACE") {
+    if sifive_env_truthy("HETGPU_SIFIVE_CONCAT_F32_TRACE") {
         eprintln!(
-            "[PACC Backend] host-fallback concat_f32_non_cont '{}' dim={} ne=({},{},{},{})",
+            "[SIFIVE Backend] host-fallback concat_f32_non_cont '{}' dim={} ne=({},{},{},{})",
             kernel_name, dim, ne0, ne1, ne2, ne3
         );
     }
@@ -17510,13 +17510,13 @@ unsafe fn execute_concat_f32_non_cont_host_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[derive(Clone, Copy)]
-enum PaccLlamaUnaryF32Op {
+enum SifiveLlamaUnaryF32Op {
     Abs,
     Exp,
     Log,
@@ -17530,67 +17530,67 @@ enum PaccLlamaUnaryF32Op {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_llama_unary_f32_op(kernel_name: &str) -> Option<PaccLlamaUnaryF32Op> {
+fn sifive_llama_unary_f32_op(kernel_name: &str) -> Option<SifiveLlamaUnaryF32Op> {
     let name = kernel_name.to_lowercase();
     if name.contains("op_softplus") {
-        Some(PaccLlamaUnaryF32Op::Softplus)
+        Some(SifiveLlamaUnaryF32Op::Softplus)
     } else if name.contains("op_exp") {
-        Some(PaccLlamaUnaryF32Op::Exp)
+        Some(SifiveLlamaUnaryF32Op::Exp)
     } else if name.contains("op_neg") {
-        Some(PaccLlamaUnaryF32Op::Neg)
+        Some(SifiveLlamaUnaryF32Op::Neg)
     } else if name.contains("op_sigmoid") {
-        Some(PaccLlamaUnaryF32Op::Sigmoid)
+        Some(SifiveLlamaUnaryF32Op::Sigmoid)
     } else if name.contains("op_silu") {
-        Some(PaccLlamaUnaryF32Op::Silu)
+        Some(SifiveLlamaUnaryF32Op::Silu)
     } else if name.contains("op_log") {
-        Some(PaccLlamaUnaryF32Op::Log)
+        Some(SifiveLlamaUnaryF32Op::Log)
     } else if name.contains("op_tanh") {
-        Some(PaccLlamaUnaryF32Op::Tanh)
+        Some(SifiveLlamaUnaryF32Op::Tanh)
     } else if name.contains("op_relu") {
-        Some(PaccLlamaUnaryF32Op::Relu)
+        Some(SifiveLlamaUnaryF32Op::Relu)
     } else if name.contains("op_sqrt") {
-        Some(PaccLlamaUnaryF32Op::Sqrt)
+        Some(SifiveLlamaUnaryF32Op::Sqrt)
     } else if name.contains("op_abs") {
-        Some(PaccLlamaUnaryF32Op::Abs)
+        Some(SifiveLlamaUnaryF32Op::Abs)
     } else {
         None
     }
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_llama_unary_f32_apply(op: PaccLlamaUnaryF32Op, x: f32) -> f32 {
+fn sifive_llama_unary_f32_apply(op: SifiveLlamaUnaryF32Op, x: f32) -> f32 {
     match op {
-        PaccLlamaUnaryF32Op::Abs => x.abs(),
-        PaccLlamaUnaryF32Op::Exp => x.exp(),
-        PaccLlamaUnaryF32Op::Log => x.ln(),
-        PaccLlamaUnaryF32Op::Neg => -x,
-        PaccLlamaUnaryF32Op::Relu => x.max(0.0),
-        PaccLlamaUnaryF32Op::Sigmoid => 1.0 / (1.0 + (-x).exp()),
-        PaccLlamaUnaryF32Op::Silu => x / (1.0 + (-x).exp()),
-        PaccLlamaUnaryF32Op::Softplus => {
+        SifiveLlamaUnaryF32Op::Abs => x.abs(),
+        SifiveLlamaUnaryF32Op::Exp => x.exp(),
+        SifiveLlamaUnaryF32Op::Log => x.ln(),
+        SifiveLlamaUnaryF32Op::Neg => -x,
+        SifiveLlamaUnaryF32Op::Relu => x.max(0.0),
+        SifiveLlamaUnaryF32Op::Sigmoid => 1.0 / (1.0 + (-x).exp()),
+        SifiveLlamaUnaryF32Op::Silu => x / (1.0 + (-x).exp()),
+        SifiveLlamaUnaryF32Op::Softplus => {
             if x > 20.0 {
                 x
             } else {
                 (1.0 + x.exp()).ln()
             }
         }
-        PaccLlamaUnaryF32Op::Sqrt => x.sqrt(),
-        PaccLlamaUnaryF32Op::Tanh => x.tanh(),
+        SifiveLlamaUnaryF32Op::Sqrt => x.sqrt(),
+        SifiveLlamaUnaryF32Op::Tanh => x.tanh(),
     }
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -17602,30 +17602,30 @@ unsafe fn execute_llama_unary_op_f32_host_fallback(
     if !kernel_name.contains("unary_op_kernel") || kernel_name.contains("unary_gated_op_kernel") {
         return None;
     }
-    let op = pacc_llama_unary_f32_op(kernel_name)?;
-    let src = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)? as *const f32;
-    let dst = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 1)?)?;
+    let op = sifive_llama_unary_f32_op(kernel_name)?;
+    let src = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)? as *const f32;
+    let dst = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 1)?)?;
     let k = read_param_i32(kernel_params, 2)?;
     if k < 0 {
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     }
     let elems = k as usize;
-    if !pacc_cuda_alloc_has_elems(src, elems)
-        || !pacc_cuda_alloc_has_elems(dst as *const f32, elems)
+    if !sifive_cuda_alloc_has_elems(src, elems)
+        || !sifive_cuda_alloc_has_elems(dst as *const f32, elems)
     {
         eprintln!(
-            "[PACC Backend] host-fallback unary_op_f32 '{}' rejected ranges src={:p}/{} dst={:p}/{}",
+            "[SIFIVE Backend] host-fallback unary_op_f32 '{}' rejected ranges src={:p}/{} dst={:p}/{}",
             kernel_name, src, elems, dst, elems
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     }
     for i in 0..elems {
-        let value = pacc_llama_unary_f32_apply(op, *src.add(i));
+        let value = sifive_llama_unary_f32_apply(op, *src.add(i));
         *dst.add(i) = value;
     }
-    if pacc_env_truthy("HETGPU_PACC_UNARY_F32_TRACE") {
+    if sifive_env_truthy("HETGPU_SIFIVE_UNARY_F32_TRACE") {
         eprintln!(
-            "[PACC Backend] host-fallback unary_op_f32 '{}' elems={}",
+            "[SIFIVE Backend] host-fallback unary_op_f32 '{}' elems={}",
             kernel_name, elems
         );
     }
@@ -17633,7 +17633,7 @@ unsafe fn execute_llama_unary_op_f32_host_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -17645,10 +17645,10 @@ unsafe fn execute_llama_unary_gated_op_f32_host_fallback(
     if !kernel_name.contains("unary_gated_op_kernel") {
         return None;
     }
-    let op = pacc_llama_unary_f32_op(kernel_name)?;
-    let x = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)? as *const f32;
-    let g = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 1)?)? as *const f32;
-    let dst = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 2)?)?;
+    let op = sifive_llama_unary_f32_op(kernel_name)?;
+    let x = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)? as *const f32;
+    let g = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 1)?)? as *const f32;
+    let dst = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 2)?)?;
     let k = read_param_i64(kernel_params, 3)?;
     let n = read_param_i64(kernel_params, 4)?;
     let o0 = read_param_i64(kernel_params, 5)?;
@@ -17666,12 +17666,12 @@ unsafe fn execute_llama_unary_gated_op_f32_host_fallback(
     let rows = k.checked_add(n - 1)?.checked_div(n)?;
     let x_elems = rows.checked_sub(1)?.checked_mul(o0)?.checked_add(n)?;
     let g_elems = rows.checked_sub(1)?.checked_mul(o1)?.checked_add(n)?;
-    if !pacc_cuda_alloc_has_elems(x, x_elems)
-        || !pacc_cuda_alloc_has_elems(g, g_elems)
-        || !pacc_cuda_alloc_has_elems(dst as *const f32, k)
+    if !sifive_cuda_alloc_has_elems(x, x_elems)
+        || !sifive_cuda_alloc_has_elems(g, g_elems)
+        || !sifive_cuda_alloc_has_elems(dst as *const f32, k)
     {
         eprintln!(
-            "[PACC Backend] host-fallback unary_gated_f32 '{}' rejected ranges x={:p}/{} g={:p}/{} dst={:p}/{}",
+            "[SIFIVE Backend] host-fallback unary_gated_f32 '{}' rejected ranges x={:p}/{} g={:p}/{} dst={:p}/{}",
             kernel_name, x, x_elems, g, g_elems, dst, k
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -17681,12 +17681,12 @@ unsafe fn execute_llama_unary_gated_op_f32_host_fallback(
         let col = i % n;
         let j0 = row.checked_mul(o0)?.checked_add(col)?;
         let j1 = row.checked_mul(o1)?.checked_add(col)?;
-        let value = pacc_llama_unary_f32_apply(op, *x.add(j0)) * *g.add(j1);
+        let value = sifive_llama_unary_f32_apply(op, *x.add(j0)) * *g.add(j1);
         *dst.add(i) = value;
     }
-    if pacc_env_truthy("HETGPU_PACC_UNARY_F32_TRACE") {
+    if sifive_env_truthy("HETGPU_SIFIVE_UNARY_F32_TRACE") {
         eprintln!(
-            "[PACC Backend] host-fallback unary_gated_f32 '{}' elems={} n={}",
+            "[SIFIVE Backend] host-fallback unary_gated_f32 '{}' elems={} n={}",
             kernel_name, k, n
         );
     }
@@ -17694,7 +17694,7 @@ unsafe fn execute_llama_unary_gated_op_f32_host_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -17706,8 +17706,8 @@ unsafe fn execute_l2_norm_f32_fallback(
     grid_dim_y: ::core::ffi::c_uint,
     grid_dim_z: ::core::ffi::c_uint,
 ) -> Option<cuda_types::cuda::CUresult> {
-    let src = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)?;
-    let dst = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 1)?)?;
+    let src = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)?;
+    let dst = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 1)?)?;
     let ncols = read_param_i32(kernel_params, 2)?.max(0) as usize;
     let stride_row = read_param_i64(kernel_params, 3)?.max(0) as usize;
     let stride_channel = read_param_i64(kernel_params, 4)?.max(0) as usize;
@@ -17741,11 +17741,11 @@ unsafe fn execute_l2_norm_f32_fallback(
         .checked_mul(nchannels)?
         .checked_mul(nrows)?
         .checked_mul(ncols)?;
-    if !pacc_cuda_alloc_has_elems(src as *const f32, src_elems)
-        || !pacc_cuda_alloc_has_elems(dst as *const f32, dst_elems)
+    if !sifive_cuda_alloc_has_elems(src as *const f32, src_elems)
+        || !sifive_cuda_alloc_has_elems(dst as *const f32, dst_elems)
     {
         eprintln!(
-            "[PACC Backend] host-fallback l2_norm_f32 '{}' rejected out-of-allocation range src={:p} dst={:p} src_elems={} dst_elems={} ncols={} grid={}/{}/{}",
+            "[SIFIVE Backend] host-fallback l2_norm_f32 '{}' rejected out-of-allocation range src={:p} dst={:p} src_elems={} dst_elems={} ncols={} grid={}/{}/{}",
             kernel_name, src, dst, src_elems, dst_elems, ncols, nrows, nchannels, nsamples
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -17770,9 +17770,9 @@ unsafe fn execute_l2_norm_f32_fallback(
         }
     }
 
-    if pacc_env_truthy("HETGPU_PACC_L2_NORM_TRACE") {
+    if sifive_env_truthy("HETGPU_SIFIVE_L2_NORM_TRACE") {
         eprintln!(
-            "[PACC Backend] host-fallback l2_norm_f32 '{}' ncols={} stride_row={} stride_channel={} stride_sample={}",
+            "[SIFIVE Backend] host-fallback l2_norm_f32 '{}' ncols={} stride_row={} stride_channel={} stride_sample={}",
             kernel_name, ncols, stride_row, stride_channel, stride_sample
         );
     }
@@ -17780,7 +17780,7 @@ unsafe fn execute_l2_norm_f32_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -17790,19 +17790,19 @@ unsafe fn execute_get_rows_float_fallback(
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: ::core::ffi::c_uint,
 ) -> Option<cuda_types::cuda::CUresult> {
-    if pacc_env_enabled_default("HETGPU_PACC_GET_ROWS_FLOAT_NOOP", false) {
-        if pacc_env_truthy("HETGPU_PACC_GET_ROWS_FLOAT_TRACE") {
+    if sifive_env_enabled_default("HETGPU_SIFIVE_GET_ROWS_FLOAT_NOOP", false) {
+        if sifive_env_truthy("HETGPU_SIFIVE_GET_ROWS_FLOAT_TRACE") {
             eprintln!(
-                "[PACC Backend] k_get_rows_float '{}' no-op by HETGPU_PACC_GET_ROWS_FLOAT_NOOP",
+                "[SIFIVE Backend] k_get_rows_float '{}' no-op by HETGPU_SIFIVE_GET_ROWS_FLOAT_NOOP",
                 kernel_name
             );
         }
         return Some(Ok(()));
     }
 
-    let src0 = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)? as *const f32;
-    let src1 = pacc_host_ptr::<i32>(read_param_u64(kernel_params, 1)?)? as *const i32;
-    let dst = pacc_host_ptr::<f32>(read_param_u64(kernel_params, 2)?)?;
+    let src0 = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)? as *const f32;
+    let src1 = sifive_host_ptr::<i32>(read_param_u64(kernel_params, 1)?)? as *const i32;
+    let dst = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 2)?)?;
     let ne00 = read_param_i64(kernel_params, 3)?.max(0) as usize;
     let ne11 = read_param_i64(kernel_params, 4)?.max(0) as usize;
     let ne12 = read_param_i64(kernel_params, 5)?.max(0) as usize;
@@ -17845,11 +17845,11 @@ unsafe fn execute_get_rows_float_fallback(
                 .and_then(|x| v.checked_add(x))
         })
         .and_then(|v| v.checked_add(1))?;
-    if !pacc_cuda_alloc_has_elems(src1 as *const i32, idx_elems)
-        || !pacc_cuda_alloc_has_elems(dst as *const f32, dst_elems)
+    if !sifive_cuda_alloc_has_elems(src1 as *const i32, idx_elems)
+        || !sifive_cuda_alloc_has_elems(dst as *const f32, dst_elems)
     {
         eprintln!(
-            "[PACC Backend] host-fallback k_get_rows_float '{}' rejected out-of-allocation index/dst range src1={:p} dst={:p} idx_elems={} dst_elems={} ne00={} ne10={} ne11={} ne12={}",
+            "[SIFIVE Backend] host-fallback k_get_rows_float '{}' rejected out-of-allocation index/dst range src1={:p} dst={:p} idx_elems={} dst_elems={} ne00={} ne10={} ne11={} ne12={}",
             kernel_name, src1, dst, idx_elems, dst_elems, ne00, ne10, ne11, ne12
         );
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -17863,11 +17863,11 @@ unsafe fn execute_get_rows_float_fallback(
                 let dst_row = dst.add(i10 * s1 + i11 * s2 + i12 * s3);
                 let src0_row =
                     (src0 as *const u8).add(i01 * nb01 + i11 * nb02 + i12 * nb03) as *const f32;
-                if !pacc_cuda_alloc_has_elems(src0_row, ne00) {
-                    if pacc_env_enabled_default("HETGPU_PACC_GET_ROWS_FLOAT_CLAMP_OOB", true) {
+                if !sifive_cuda_alloc_has_elems(src0_row, ne00) {
+                    if sifive_env_enabled_default("HETGPU_SIFIVE_GET_ROWS_FLOAT_CLAMP_OOB", true) {
                         let fallback_row =
                             (src0 as *const u8).add(i11 * nb02 + i12 * nb03) as *const f32;
-                        if pacc_cuda_alloc_has_elems(fallback_row, ne00) {
+                        if sifive_cuda_alloc_has_elems(fallback_row, ne00) {
                             for i00 in 0..ne00 {
                                 *dst_row.add(i00) = *fallback_row.add(i00);
                             }
@@ -17879,7 +17879,7 @@ unsafe fn execute_get_rows_float_fallback(
                         continue;
                     }
                     eprintln!(
-                        "[PACC Backend] host-fallback k_get_rows_float '{}' rejected source row outside allocation src0={:p} row={:p} idx={} ne00={}",
+                        "[SIFIVE Backend] host-fallback k_get_rows_float '{}' rejected source row outside allocation src0={:p} row={:p} idx={} ne00={}",
                         kernel_name, src0, src0_row, i01, ne00
                     );
                     return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
@@ -17891,9 +17891,9 @@ unsafe fn execute_get_rows_float_fallback(
         }
     }
 
-    if pacc_env_truthy("HETGPU_PACC_GET_ROWS_FLOAT_TRACE") {
+    if sifive_env_truthy("HETGPU_SIFIVE_GET_ROWS_FLOAT_TRACE") {
         eprintln!(
-            "[PACC Backend] host-fallback k_get_rows_float '{}' ne00={} ne11={} ne12={}",
+            "[SIFIVE Backend] host-fallback k_get_rows_float '{}' ne00={} ne11={} ne12={}",
             kernel_name, ne00, ne11, ne12
         );
     }
@@ -17901,7 +17901,7 @@ unsafe fn execute_get_rows_float_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -17917,14 +17917,14 @@ unsafe fn execute_ssm_conv_f32_host_fallback(
     let src1_addr = read_param_u64(kernel_params, 1)?;
     let bias_addr = read_param_u64(kernel_params, 2).unwrap_or(0);
     let dst_addr = read_param_u64(kernel_params, 7)?;
-    let src0 = pacc_host_ptr::<f32>(src0_addr)? as *const f32;
-    let src1 = pacc_host_ptr::<f32>(src1_addr)? as *const f32;
+    let src0 = sifive_host_ptr::<f32>(src0_addr)? as *const f32;
+    let src1 = sifive_host_ptr::<f32>(src1_addr)? as *const f32;
     let bias = if bias_addr == 0 {
         std::ptr::null::<f32>()
     } else {
-        pacc_host_ptr::<f32>(bias_addr)? as *const f32
+        sifive_host_ptr::<f32>(bias_addr)? as *const f32
     };
-    let dst = pacc_host_ptr::<f32>(dst_addr)?;
+    let dst = sifive_host_ptr::<f32>(dst_addr)?;
 
     let src0_nb0 = read_param_i32(kernel_params, 3)?;
     let src0_nb1 = read_param_i32(kernel_params, 4)?;
@@ -17949,7 +17949,7 @@ unsafe fn execute_ssm_conv_f32_host_fallback(
     }
 
     let (split_d_inner, d_conv, split_n_t) =
-        pacc_parse_ssm_conv_template(kernel_name).unwrap_or((128, 4, 0));
+        sifive_parse_ssm_conv_template(kernel_name).unwrap_or((128, 4, 0));
     let split_d_inner = split_d_inner.max(1) as usize;
     let d_conv = d_conv.max(1) as usize;
     let split_n_t = split_n_t as usize;
@@ -18001,13 +18001,13 @@ unsafe fn execute_ssm_conv_f32_host_fallback(
         .checked_add(dst_steps.checked_sub(1)?.checked_mul(dst_nb1)?)?
         .checked_add(std::mem::size_of::<f32>())?;
     let bias_bytes = rows.checked_mul(std::mem::size_of::<f32>())?;
-    if !pacc_host_or_cuda_alloc_has_bytes(src0_addr, src0_bytes, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(src1_addr, src1_bytes, false)
-        || !pacc_host_or_cuda_alloc_has_bytes(dst_addr, dst_bytes, true)
-        || (!bias.is_null() && !pacc_host_or_cuda_alloc_has_bytes(bias_addr, bias_bytes, false))
+    if !sifive_host_or_cuda_alloc_has_bytes(src0_addr, src0_bytes, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(src1_addr, src1_bytes, false)
+        || !sifive_host_or_cuda_alloc_has_bytes(dst_addr, dst_bytes, true)
+        || (!bias.is_null() && !sifive_host_or_cuda_alloc_has_bytes(bias_addr, bias_bytes, false))
     {
         eprintln!(
-            "[PACC Backend] host-fallback ssm_conv '{}' rejected ranges src0=0x{:x}/{} src1=0x{:x}/{} bias=0x{:x}/{} dst=0x{:x}/{} grid={}/{}/{} split={} d_conv={} n_t={}",
+            "[SIFIVE Backend] host-fallback ssm_conv '{}' rejected ranges src0=0x{:x}/{} src1=0x{:x}/{} bias=0x{:x}/{} dst=0x{:x}/{} grid={}/{}/{} split={} d_conv={} n_t={}",
             kernel_name,
             src0_addr,
             src0_bytes,
@@ -18073,9 +18073,9 @@ unsafe fn execute_ssm_conv_f32_host_fallback(
         }
     }
 
-    if pacc_env_truthy("HETGPU_PACC_SSM_CONV_TRACE") {
+    if sifive_env_truthy("HETGPU_SIFIVE_SSM_CONV_TRACE") {
         eprintln!(
-            "[PACC Backend] host-fallback ssm_conv '{}' grid={}/{}/{} split={} d_conv={} n_t={} silu={}",
+            "[SIFIVE Backend] host-fallback ssm_conv '{}' grid={}/{}/{} split={} d_conv={} n_t={} silu={}",
             kernel_name, grid_x, grid_y, grid_z, split_d_inner, d_conv, n_t, apply_silu
         );
     }
@@ -18083,25 +18083,25 @@ unsafe fn execute_ssm_conv_f32_host_fallback(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn current_pacc_device_id_or_zero() -> i32 {
+fn current_sifive_device_id_or_zero() -> i32 {
     let _ = super::driver::global_state();
-    if let Some(forced) = std::env::var("HETGPU_PACC_FORCE_DEVICE")
+    if let Some(forced) = std::env::var("HETGPU_SIFIVE_FORCE_DEVICE")
         .ok()
-        .or_else(|| std::env::var("HETGPU_PACC_DEVICE").ok())
+        .or_else(|| std::env::var("HETGPU_SIFIVE_DEVICE").ok())
         .and_then(|v| v.parse::<i32>().ok())
     {
         if (0..4).contains(&forced) {
             return forced;
         }
     }
-    let device_id = super::context::get_current_pacc()
+    let device_id = super::context::get_current_sifive()
         .map(|ctx| ctx.device_id)
-        .unwrap_or_else(|_| super::driver::pacc_physical_device_for_logical(0));
+        .unwrap_or_else(|_| super::driver::sifive_physical_device_for_logical(0));
     if (0..4).contains(&device_id) {
         device_id
     } else {
@@ -18110,12 +18110,12 @@ fn current_pacc_device_id_or_zero() -> i32 {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_env_enabled_default(name: &str, default_value: bool) -> bool {
+fn sifive_env_enabled_default(name: &str, default_value: bool) -> bool {
     let value = match std::env::var(name) {
         Ok(value) if !value.trim().is_empty() => value,
         _ => return default_value,
@@ -18127,12 +18127,12 @@ fn pacc_env_enabled_default(name: &str, default_value: bool) -> bool {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_env_u64_default(name: &str, default_value: u64) -> u64 {
+fn sifive_parse_env_u64_default(name: &str, default_value: u64) -> u64 {
     std::env::var(name)
         .ok()
         .and_then(|value| {
@@ -18150,36 +18150,36 @@ fn pacc_parse_env_u64_default(name: &str, default_value: u64) -> u64 {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_driver_kernel_noop_enabled() -> bool {
-    pacc_env_enabled_default("HETGPU_CUDART_KERNEL_PACC_NOOP", false)
+fn sifive_driver_kernel_noop_enabled() -> bool {
+    sifive_env_enabled_default("HETGPU_CUDART_KERNEL_SIFIVE_NOOP", false)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_generic_kernel_fast_success_enabled() -> bool {
-    pacc_env_enabled_default("HETGPU_CUDART_GENERIC_KERNEL_FAST_SUCCESS", false)
-        || pacc_env_enabled_default("HETGPU_PACC_GENERIC_KERNEL_FAST_SUCCESS", false)
+fn sifive_generic_kernel_fast_success_enabled() -> bool {
+    sifive_env_enabled_default("HETGPU_CUDART_GENERIC_KERNEL_FAST_SUCCESS", false)
+        || sifive_env_enabled_default("HETGPU_SIFIVE_GENERIC_KERNEL_FAST_SUCCESS", false)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_driver_kernel_noop_every() -> u64 {
-    let every = pacc_parse_env_u64_default("HETGPU_CUDART_KERNEL_PACC_NOOP_EVERY", 0);
+fn sifive_driver_kernel_noop_every() -> u64 {
+    let every = sifive_parse_env_u64_default("HETGPU_CUDART_KERNEL_SIFIVE_NOOP_EVERY", 0);
     let every = if every == 0 {
-        pacc_parse_env_u64_default("HETGPU_PACC_KERNEL_NOOP_EVERY", 1)
+        sifive_parse_env_u64_default("HETGPU_SIFIVE_KERNEL_NOOP_EVERY", 1)
     } else {
         every
     };
@@ -18187,24 +18187,24 @@ fn pacc_driver_kernel_noop_every() -> u64 {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_driver_kernel_noop_first() -> u64 {
-    pacc_parse_env_u64_default("HETGPU_CUDART_KERNEL_PACC_NOOP_FIRST", 4)
+fn sifive_driver_kernel_noop_first() -> u64 {
+    sifive_parse_env_u64_default("HETGPU_CUDART_KERNEL_SIFIVE_NOOP_FIRST", 4)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_named_fail_open_enabled() -> bool {
-    let value = std::env::var("HETGPU_PACC_NAMED_FAIL_OPEN")
-        .or_else(|_| std::env::var("HETGPU_PACC_ASSUME_SUCCESS_ON_WAIT_ERROR"));
+fn sifive_named_fail_open_enabled() -> bool {
+    let value = std::env::var("HETGPU_SIFIVE_NAMED_FAIL_OPEN")
+        .or_else(|_| std::env::var("HETGPU_SIFIVE_ASSUME_SUCCESS_ON_WAIT_ERROR"));
     matches!(
         value
             .ok()
@@ -18218,12 +18218,12 @@ fn pacc_named_fail_open_enabled() -> bool {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_env_truthy(name: &str) -> bool {
+fn sifive_env_truthy(name: &str) -> bool {
     std::env::var(name)
         .ok()
         .map(|value| {
@@ -18236,58 +18236,58 @@ fn pacc_env_truthy(name: &str) -> bool {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_rmsnorm_delivery_noop_enabled() -> bool {
-    pacc_env_enabled_default("HETGPU_PACC_RMSNORM_NOOP", false)
-        || pacc_env_enabled_default("HETGPU_PACC_DELIVERY_SKIP_RMSNORM", false)
+fn sifive_rmsnorm_delivery_noop_enabled() -> bool {
+    sifive_env_enabled_default("HETGPU_SIFIVE_RMSNORM_NOOP", false)
+        || sifive_env_enabled_default("HETGPU_SIFIVE_DELIVERY_SKIP_RMSNORM", false)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_log_limited(
+fn sifive_log_limited(
     counter: &AtomicU64,
     limit_env: &str,
     default_limit: u64,
     log_line: impl FnOnce(),
 ) {
-    let limit = pacc_parse_env_u64_default(limit_env, default_limit);
+    let limit = sifive_parse_env_u64_default(limit_env, default_limit);
     let index = counter.fetch_add(1, Ordering::Relaxed);
     if index < limit {
         log_line();
     } else if index == limit && limit != 0 {
         eprintln!(
-            "[PACC Backend] {}={} reached; suppressing further repeated messages",
+            "[SIFIVE Backend] {}={} reached; suppressing further repeated messages",
             limit_env, limit
         );
     }
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_named_assume_success(
+fn sifive_named_assume_success(
     reason: &str,
     kernel_name: &str,
 ) -> Option<cuda_types::cuda::CUresult> {
-    if pacc_named_fail_open_enabled() {
-        pacc_log_limited(
-            &PACC_NAMED_FAILOPEN_LOG_COUNT,
-            "HETGPU_PACC_NAMED_FAILOPEN_LOG_LIMIT",
+    if sifive_named_fail_open_enabled() {
+        sifive_log_limited(
+            &SIFIVE_NAMED_FAILOPEN_LOG_COUNT,
+            "HETGPU_SIFIVE_NAMED_FAILOPEN_LOG_LIMIT",
             64,
             || {
                 eprintln!(
-                    "[PACC Backend] assuming named-kernel success for '{}' after {}",
+                    "[SIFIVE Backend] assuming named-kernel success for '{}' after {}",
                     kernel_name, reason
                 );
             },
@@ -18299,12 +18299,12 @@ fn pacc_named_assume_success(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn try_offload_named_pacc_kernel(
+unsafe fn try_offload_named_sifive_kernel(
     kernel_name: &str,
     grid_dim_x: ::core::ffi::c_uint,
     grid_dim_y: ::core::ffi::c_uint,
@@ -18314,39 +18314,39 @@ unsafe fn try_offload_named_pacc_kernel(
     use cuda_types::cuda::*;
 
     let name_lower = kernel_name.to_lowercase();
-    let named_pacc_enabled = std::env::var("HETGPU_PACC_OFFLOAD_NAMED_KERNELS")
+    let named_sifive_enabled = std::env::var("HETGPU_SIFIVE_OFFLOAD_NAMED_KERNELS")
         .ok()
         .map(|v| v != "0")
         .unwrap_or(true);
-    if !named_pacc_enabled {
+    if !named_sifive_enabled {
         return None;
     }
-    let allow_named_host_fallback = std::env::var("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
+    let allow_named_host_fallback = std::env::var("HETGPU_SIFIVE_ALLOW_NAMED_HOST_FALLBACK")
         .ok()
         .as_deref()
         == Some("1");
     if name_lower.contains("quantize_q8_1")
-        && pacc_env_enabled_default("HETGPU_PACC_QUANTIZE_Q8_1_HOST_FALLBACK", true)
+        && sifive_env_enabled_default("HETGPU_SIFIVE_QUANTIZE_Q8_1_HOST_FALLBACK", true)
     {
         return execute_quantize_q8_1_host_fallback(kernel_name, grid_dim_z, kernel_params);
     }
     if name_lower.contains("scale_f32")
-        && pacc_env_enabled_default("HETGPU_PACC_SCALE_F32_HOST_FALLBACK", true)
+        && sifive_env_enabled_default("HETGPU_SIFIVE_SCALE_F32_HOST_FALLBACK", true)
     {
         return execute_scale_f32_fallback(kernel_name, kernel_params);
     }
     if name_lower.contains("concat_f32_cont")
-        && pacc_env_enabled_default("HETGPU_PACC_CONCAT_F32_HOST_FALLBACK", true)
+        && sifive_env_enabled_default("HETGPU_SIFIVE_CONCAT_F32_HOST_FALLBACK", true)
     {
         return execute_concat_f32_cont_host_fallback(kernel_name, kernel_params);
     }
     if name_lower.contains("concat_f32_non_cont")
-        && pacc_env_enabled_default("HETGPU_PACC_CONCAT_F32_HOST_FALLBACK", true)
+        && sifive_env_enabled_default("HETGPU_SIFIVE_CONCAT_F32_HOST_FALLBACK", true)
     {
         return execute_concat_f32_non_cont_host_fallback(kernel_name, kernel_params);
     }
     if name_lower.contains("unary_op_kernel")
-        && (pacc_env_enabled_default("HETGPU_PACC_LLAMA_UNARY_HOST_FALLBACK", true)
+        && (sifive_env_enabled_default("HETGPU_SIFIVE_LLAMA_UNARY_HOST_FALLBACK", true)
             || allow_named_host_fallback)
     {
         if let Some(result) = execute_llama_unary_op_f32_host_fallback(kernel_name, kernel_params) {
@@ -18359,7 +18359,7 @@ unsafe fn try_offload_named_pacc_kernel(
         }
     }
     if (name_lower.contains("ssm_conv_f32") || name_lower.contains("ssm_conv_long_token_f32"))
-        && pacc_env_enabled_default("HETGPU_PACC_SSM_CONV_HOST_FALLBACK", true)
+        && sifive_env_enabled_default("HETGPU_SIFIVE_SSM_CONV_HOST_FALLBACK", true)
     {
         return execute_ssm_conv_f32_host_fallback(
             kernel_name,
@@ -18370,7 +18370,7 @@ unsafe fn try_offload_named_pacc_kernel(
         );
     }
     if name_lower.contains("mul_mat_f") && !name_lower.contains("mul_mat_vec_f") {
-        if let Some(result) = try_offload_mul_mat_f_named_pacc_kernel(
+        if let Some(result) = try_offload_mul_mat_f_named_sifive_kernel(
             kernel_name,
             grid_dim_x,
             grid_dim_y,
@@ -18381,7 +18381,7 @@ unsafe fn try_offload_named_pacc_kernel(
         }
     }
     if name_lower.contains("mul_mat_vec_f") {
-        if let Some(result) = try_offload_mmvf_named_pacc_kernel(
+        if let Some(result) = try_offload_mmvf_named_sifive_kernel(
             kernel_name,
             grid_dim_x,
             grid_dim_y,
@@ -18391,8 +18391,8 @@ unsafe fn try_offload_named_pacc_kernel(
             return Some(result);
         }
     }
-    if name_lower.contains("mul_mat_vec_q") && pacc_env_truthy("HETGPU_PACC_MMVQ_NAMED_FAIL_OPEN") {
-        return pacc_named_assume_success("MMVQ named fail-open requested", kernel_name);
+    if name_lower.contains("mul_mat_vec_q") && sifive_env_truthy("HETGPU_SIFIVE_MMVQ_NAMED_FAIL_OPEN") {
+        return sifive_named_assume_success("MMVQ named fail-open requested", kernel_name);
     }
     if name_lower.contains("softmax_warp_forward") {
         let (src, dst, rows, cols, stride, dtype) =
@@ -18401,17 +18401,17 @@ unsafe fn try_offload_named_pacc_kernel(
                 None => return None,
             };
         let _ = dtype;
-        let dev_id = current_pacc_device_id_or_zero();
+        let dev_id = current_sifive_device_id_or_zero();
         let rc = launch_pytorch_softmax_warp_forward_elf(dev_id, src, dst, rows, cols, stride);
         if rc == 0 {
             eprintln!(
-                "[PACC Backend] offloaded PyTorch softmax_warp_forward '{}' via PACC ELF dev={} rows={} cols={} stride={}",
+                "[SIFIVE Backend] offloaded PyTorch softmax_warp_forward '{}' via SIFIVE ELF dev={} rows={} cols={} stride={}",
                 kernel_name, dev_id, rows, cols, stride
             );
             return Some(Ok(()));
         }
         eprintln!(
-            "[PACC Backend] PyTorch softmax_warp_forward '{}' PACC ELF offload failed rc={} rows={} cols={} stride={}",
+            "[SIFIVE Backend] PyTorch softmax_warp_forward '{}' SIFIVE ELF offload failed rc={} rows={} cols={} stride={}",
             kernel_name, rc, rows, cols, stride
         );
         return Some(Err(CUerror::UNKNOWN));
@@ -18421,12 +18421,12 @@ unsafe fn try_offload_named_pacc_kernel(
             Some(args) => args,
             None => return None,
         };
-        let named_softmax_enabled = std::env::var("HETGPU_PACC_SOFTMAX_NAMED_OFFLOAD")
+        let named_softmax_enabled = std::env::var("HETGPU_SIFIVE_SOFTMAX_NAMED_OFFLOAD")
             .ok()
             .as_deref()
             == Some("1");
         let allow_host_fallback = allow_named_host_fallback
-            || std::env::var("HETGPU_PACC_SOFTMAX_HOST_FALLBACK")
+            || std::env::var("HETGPU_SIFIVE_SOFTMAX_HOST_FALLBACK")
                 .ok()
                 .as_deref()
                 == Some("1");
@@ -18434,22 +18434,22 @@ unsafe fn try_offload_named_pacc_kernel(
             .saturating_mul(params.ne02.max(1) as u64)
             .saturating_mul(params.ne03.max(1) as u64);
         let cols = params.ncols.max(1) as u64;
-        let can_pacc_simple =
+        let can_sifive_simple =
             mask.is_null() && sinks.is_null() && params.scale == 1.0 && params.max_bias == 0.0;
-        if named_softmax_enabled && can_pacc_simple {
-            let dev_id = current_pacc_device_id_or_zero();
-            let rc = pacc_runtime_sys::hetgpu_pacc_submit_softmax_on(
+        if named_softmax_enabled && can_sifive_simple {
+            let dev_id = current_sifive_device_id_or_zero();
+            let rc = sifive_runtime_sys::hetgpu_sifive_submit_softmax_on(
                 dev_id,
                 x,
                 dst,
                 rows,
                 cols,
                 cols,
-                pacc_runtime_sys::PaccDataType::Float32 as i32,
+                sifive_runtime_sys::SifiveDataType::Float32 as i32,
             );
             if rc == 0 {
                 eprintln!(
-                    "[PACC Backend] offloaded softmax '{}' dev={} rows={} cols={}",
+                    "[SIFIVE Backend] offloaded softmax '{}' dev={} rows={} cols={}",
                     kernel_name, dev_id, rows, cols
                 );
                 return Some(Ok(()));
@@ -18470,13 +18470,13 @@ unsafe fn try_offload_named_pacc_kernel(
     }
 
     if name_lower.contains("rmsnorm") || name_lower.contains("rms_norm") {
-        let allow_normal_fallback = std::env::var("HETGPU_PACC_RMSNORM_ALLOW_NORMAL_FALLBACK")
+        let allow_normal_fallback = std::env::var("HETGPU_SIFIVE_RMSNORM_ALLOW_NORMAL_FALLBACK")
             .ok()
             .as_deref()
             == Some("1");
-        if PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE.load(Ordering::Relaxed) {
-            if pacc_named_fail_open_enabled() {
-                return pacc_named_assume_success(
+        if SIFIVE_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE.load(Ordering::Relaxed) {
+            if sifive_named_fail_open_enabled() {
+                return sifive_named_assume_success(
                     "RMSNorm offload disabled after prior failure",
                     kernel_name,
                 );
@@ -18515,20 +18515,20 @@ unsafe fn try_offload_named_pacc_kernel(
             None => {
                 let hidden = read_param_i32(kernel_params, 2).unwrap_or(0).max(0) as u64;
                 if hidden == 0 {
-                    pacc_log_limited(
-                        &PACC_NAMED_ERROR_LOG_COUNT,
-                        "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+                    sifive_log_limited(
+                        &SIFIVE_NAMED_ERROR_LOG_COUNT,
+                        "HETGPU_SIFIVE_NAMED_ERROR_LOG_LIMIT",
                         64,
                         || {
                             eprintln!(
-                                "[PACC Backend] RMSNorm '{}' missing hidden size",
+                                "[SIFIVE Backend] RMSNorm '{}' missing hidden size",
                                 kernel_name
                             );
                         },
                     );
                 }
-                if pacc_named_fail_open_enabled() {
-                    return pacc_named_assume_success(
+                if sifive_named_fail_open_enabled() {
+                    return sifive_named_assume_success(
                         "RMSNorm args could not be parsed",
                         kernel_name,
                     );
@@ -18536,34 +18536,34 @@ unsafe fn try_offload_named_pacc_kernel(
                 if allow_normal_fallback {
                     return None;
                 }
-                pacc_log_limited(
-                    &PACC_NAMED_ERROR_LOG_COUNT,
-                    "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+                sifive_log_limited(
+                    &SIFIVE_NAMED_ERROR_LOG_COUNT,
+                    "HETGPU_SIFIVE_NAMED_ERROR_LOG_LIMIT",
                     64,
                     || {
                         eprintln!(
-                            "[PACC Backend] RMSNorm '{}' cannot be parsed for named offload; refusing normal launch to avoid skipped/empty-ELF output",
+                            "[SIFIVE Backend] RMSNorm '{}' cannot be parsed for named offload; refusing normal launch to avoid skipped/empty-ELF output",
                             kernel_name
                         );
                     },
                 );
-                return pacc_named_assume_success("RMSNorm args could not be parsed", kernel_name);
+                return sifive_named_assume_success("RMSNorm args could not be parsed", kernel_name);
             }
         };
         if hidden == 0 {
-            pacc_log_limited(
-                &PACC_NAMED_ERROR_LOG_COUNT,
-                "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+            sifive_log_limited(
+                &SIFIVE_NAMED_ERROR_LOG_COUNT,
+                "HETGPU_SIFIVE_NAMED_ERROR_LOG_LIMIT",
                 64,
                 || {
                     eprintln!(
-                        "[PACC Backend] RMSNorm '{}' missing hidden size",
+                        "[SIFIVE Backend] RMSNorm '{}' missing hidden size",
                         kernel_name
                     );
                 },
             );
-            if pacc_named_fail_open_enabled() {
-                return pacc_named_assume_success("RMSNorm hidden size is zero", kernel_name);
+            if sifive_named_fail_open_enabled() {
+                return sifive_named_assume_success("RMSNorm hidden size is zero", kernel_name);
             }
             return if allow_normal_fallback {
                 None
@@ -18571,7 +18571,7 @@ unsafe fn try_offload_named_pacc_kernel(
                 Some(Err(CUerror::UNKNOWN))
             };
         }
-        if std::env::var("HETGPU_PACC_RMSNORM_HOST_FALLBACK")
+        if std::env::var("HETGPU_SIFIVE_RMSNORM_HOST_FALLBACK")
             .ok()
             .map(|v| v != "0")
             .unwrap_or(false)
@@ -18579,11 +18579,11 @@ unsafe fn try_offload_named_pacc_kernel(
             return execute_rmsnorm_f32_host_fallback(kernel_name, x, weight, y, rows, hidden, eps);
         }
         let dtype = if name_lower.contains("bf16") || name_lower.contains("bfloat16") {
-            pacc_runtime_sys::PaccDataType::Bfloat16 as i32
+            sifive_runtime_sys::SifiveDataType::Bfloat16 as i32
         } else {
-            pacc_runtime_sys::PaccDataType::Float32 as i32
+            sifive_runtime_sys::SifiveDataType::Float32 as i32
         };
-        let elem_size = if dtype == pacc_runtime_sys::PaccDataType::Float32 as i32 {
+        let elem_size = if dtype == sifive_runtime_sys::SifiveDataType::Float32 as i32 {
             std::mem::size_of::<f32>()
         } else {
             std::mem::size_of::<u16>()
@@ -18596,36 +18596,36 @@ unsafe fn try_offload_named_pacc_kernel(
             .checked_mul(elem_size)
             .unwrap_or(usize::MAX);
         if total_bytes == usize::MAX
-            || !pacc_host_or_cuda_alloc_has_bytes(x as u64, total_bytes, false)
-            || !pacc_host_or_cuda_alloc_has_bytes(y as u64, total_bytes, true)
+            || !sifive_host_or_cuda_alloc_has_bytes(x as u64, total_bytes, false)
+            || !sifive_host_or_cuda_alloc_has_bytes(y as u64, total_bytes, true)
             || (!weight.is_null()
-                && !pacc_host_or_cuda_alloc_has_bytes(weight as u64, weight_bytes, false))
+                && !sifive_host_or_cuda_alloc_has_bytes(weight as u64, weight_bytes, false))
         {
-            pacc_log_limited(
-                &PACC_NAMED_ERROR_LOG_COUNT,
-                "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+            sifive_log_limited(
+                &SIFIVE_NAMED_ERROR_LOG_COUNT,
+                "HETGPU_SIFIVE_NAMED_ERROR_LOG_LIMIT",
                 64,
                 || {
                     eprintln!(
-                        "[PACC Backend] RMSNorm '{}' rejected out-of-allocation range x={:p} w={:p} y={:p} rows={} hidden={} bytes={}",
+                        "[SIFIVE Backend] RMSNorm '{}' rejected out-of-allocation range x={:p} w={:p} y={:p} rows={} hidden={} bytes={}",
                         kernel_name, x, weight, y, rows, hidden, total_bytes
                     );
                 },
             );
-            return pacc_named_assume_success("RMSNorm allocation range check failed", kernel_name);
+            return sifive_named_assume_success("RMSNorm allocation range check failed", kernel_name);
         }
         let rmsnorm_min_hidden =
-            pacc_parse_env_u64_default("HETGPU_PACC_RMSNORM_OFFLOAD_MIN_HIDDEN", 1024);
+            sifive_parse_env_u64_default("HETGPU_SIFIVE_RMSNORM_OFFLOAD_MIN_HIDDEN", 1024);
         if hidden < rmsnorm_min_hidden
-            || !pacc_env_enabled_default("HETGPU_PACC_RMSNORM_OFFLOAD", true)
+            || !sifive_env_enabled_default("HETGPU_SIFIVE_RMSNORM_OFFLOAD", true)
         {
-            pacc_log_limited(
-                &PACC_NAMED_ERROR_LOG_COUNT,
-                "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+            sifive_log_limited(
+                &SIFIVE_NAMED_ERROR_LOG_COUNT,
+                "HETGPU_SIFIVE_NAMED_ERROR_LOG_LIMIT",
                 64,
                 || {
                     eprintln!(
-                        "[PACC Backend] RMSNorm '{}' hidden={} uses host path before PACC submit (min_hidden={})",
+                        "[SIFIVE Backend] RMSNorm '{}' hidden={} uses host path before SIFIVE submit (min_hidden={})",
                         kernel_name, hidden, rmsnorm_min_hidden
                     );
                 },
@@ -18641,40 +18641,40 @@ unsafe fn try_offload_named_pacc_kernel(
                 Some(Err(CUerror::UNKNOWN))
             };
         }
-        let dev_id = current_pacc_device_id_or_zero();
-        let rc = pacc_runtime_sys::hetgpu_pacc_submit_rmsnorm_on(
+        let dev_id = current_sifive_device_id_or_zero();
+        let rc = sifive_runtime_sys::hetgpu_sifive_submit_rmsnorm_on(
             dev_id, x, weight, y, rows, hidden, eps, dtype,
         );
         if rc == 0 {
-            if std::env::var("HETGPU_PACC_LOG_NAMED_OFFLOADS")
+            if std::env::var("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS")
                 .ok()
                 .as_deref()
                 == Some("1")
             {
                 eprintln!(
-                    "[PACC Backend] offloaded RMSNorm '{}' dev={} rows={} hidden={} eps={} dtype={} ",
+                    "[SIFIVE Backend] offloaded RMSNorm '{}' dev={} rows={} hidden={} eps={} dtype={} ",
                     kernel_name, dev_id, rows, hidden, eps, dtype
                 );
             }
             return Some(Ok(()));
         }
-        if !PACC_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE.swap(true, Ordering::Relaxed) {
-            pacc_log_limited(
-                &PACC_NAMED_ERROR_LOG_COUNT,
-                "HETGPU_PACC_NAMED_ERROR_LOG_LIMIT",
+        if !SIFIVE_RMSNORM_OFFLOAD_DISABLED_AFTER_FAILURE.swap(true, Ordering::Relaxed) {
+            sifive_log_limited(
+                &SIFIVE_NAMED_ERROR_LOG_COUNT,
+                "HETGPU_SIFIVE_NAMED_ERROR_LOG_LIMIT",
                 64,
                 || {
                     eprintln!(
-                        "[PACC Backend] RMSNorm '{}' offload failed with rc={}; refusing host fallback unless HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK=1",
+                        "[SIFIVE Backend] RMSNorm '{}' offload failed with rc={}; refusing host fallback unless HETGPU_SIFIVE_ALLOW_NAMED_HOST_FALLBACK=1",
                         kernel_name, rc
                     );
                 },
             );
         }
-        if pacc_named_fail_open_enabled() {
-            return pacc_named_assume_success("RMSNorm PACC offload failed", kernel_name);
+        if sifive_named_fail_open_enabled() {
+            return sifive_named_assume_success("RMSNorm SIFIVE offload failed", kernel_name);
         }
-        if std::env::var("HETGPU_PACC_ALLOW_NAMED_HOST_FALLBACK")
+        if std::env::var("HETGPU_SIFIVE_ALLOW_NAMED_HOST_FALLBACK")
             .ok()
             .as_deref()
             == Some("1")
@@ -18694,7 +18694,7 @@ unsafe fn try_offload_named_pacc_kernel(
 
     if (name_lower.contains("rope_norm") || name_lower.contains("rope_neox"))
         && (allow_named_host_fallback
-            || std::env::var("HETGPU_PACC_ROPE_HOST_FALLBACK")
+            || std::env::var("HETGPU_SIFIVE_ROPE_HOST_FALLBACK")
                 .ok()
                 .map(|v| v != "0")
                 .unwrap_or(false))
@@ -18708,7 +18708,7 @@ unsafe fn try_offload_named_pacc_kernel(
 
     if name_lower.contains("cpy_scalar")
         && (allow_named_host_fallback
-            || pacc_env_enabled_default("HETGPU_PACC_CPY_SCALAR_HOST_FALLBACK", true))
+            || sifive_env_enabled_default("HETGPU_SIFIVE_CPY_SCALAR_HOST_FALLBACK", true))
     {
         return execute_cpy_scalar_host_fallback(kernel_name, kernel_params);
     }
@@ -18719,7 +18719,7 @@ unsafe fn try_offload_named_pacc_kernel(
 
     if name_lower.contains("k_bin_bcast")
         && (allow_named_host_fallback
-            || pacc_env_enabled_default("HETGPU_PACC_BIN_BCAST_HOST_FALLBACK", true))
+            || sifive_env_enabled_default("HETGPU_SIFIVE_BIN_BCAST_HOST_FALLBACK", true))
     {
         if let Some(result) = execute_bin_bcast_f32_fallback(kernel_name, kernel_params) {
             return Some(result);
@@ -18732,7 +18732,7 @@ unsafe fn try_offload_named_pacc_kernel(
 
     if name_lower.contains("k_get_rows_float")
         && (allow_named_host_fallback
-            || pacc_env_enabled_default("HETGPU_PACC_GET_ROWS_FLOAT_HOST_FALLBACK", true))
+            || sifive_env_enabled_default("HETGPU_SIFIVE_GET_ROWS_FLOAT_HOST_FALLBACK", true))
     {
         return execute_get_rows_float_fallback(kernel_name, kernel_params, grid_dim_x);
     }
@@ -18746,7 +18746,7 @@ unsafe fn try_offload_named_pacc_kernel(
 
     if name_lower.contains("l2_norm_f32")
         && (allow_named_host_fallback
-            || pacc_env_enabled_default("HETGPU_PACC_L2_NORM_HOST_FALLBACK", true))
+            || sifive_env_enabled_default("HETGPU_SIFIVE_L2_NORM_HOST_FALLBACK", true))
     {
         return execute_l2_norm_f32_fallback(
             kernel_name,
@@ -18773,14 +18773,14 @@ unsafe fn try_offload_named_pacc_kernel(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 pub(crate) fn launch_kernel_ex(
     config: &cuda_types::cuda::CUlaunchConfig,
-    f: *mut crate::r#impl::module::PaccKernel,
+    f: *mut crate::r#impl::module::SifiveKernel,
     kernel_params: *mut *mut ::core::ffi::c_void,
     extra: *mut *mut ::core::ffi::c_void,
 ) -> cuda_types::cuda::CUresult {

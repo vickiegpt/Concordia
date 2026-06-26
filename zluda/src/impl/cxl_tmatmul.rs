@@ -538,8 +538,9 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
     let matrix_len = matrix_bytes(dim)?;
     let vector_len = vector_bytes(dim)?;
     let matrix_offset = matrix_dpa_offset()?;
+    let matrix_stage_mode = matrix_stage_mode()?;
     validate_fixed_layout_at_offsets(matrix_offset, matrix_len, vector_len, program.len())?;
-    match matrix_stage_mode()? {
+    match matrix_stage_mode {
         MatrixStageMode::Host => {
             validate_allocations(dim, input_alloc, output_alloc, matrix_alloc)?
         }
@@ -552,7 +553,7 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
         }
     }
 
-    let matrix_stage = match matrix_stage_mode()? {
+    let matrix_stage = match matrix_stage_mode {
         MatrixStageMode::Host => {
             MatrixStage::Host(std::slice::from_raw_parts(matrix_ptr, matrix_len))
         }

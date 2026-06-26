@@ -200,7 +200,7 @@ fn llvm_ir_contains_debug_metadata() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn ggml_extern_symbol_is_preserved_for_pacc_link() -> Result<(), Box<dyn std::error::Error>> {
+fn ggml_extern_symbol_is_preserved_for_sifive_link() -> Result<(), Box<dyn std::error::Error>> {
     let ptx_source = r#"
 .version 6.5
 .target sm_80
@@ -260,7 +260,7 @@ fn ggml_extern_symbol_is_preserved_for_pacc_link() -> Result<(), Box<dyn std::er
     );
     assert!(
         !llvm_ir.contains("declare hidden i64 @ggml_vec_dot_f16"),
-        "ggml operator symbols should stay externally visible for later PACC linking.\n{}",
+        "ggml operator symbols should stay externally visible for later SIFIVE linking.\n{}",
         llvm_ir
     );
 
@@ -268,7 +268,7 @@ fn ggml_extern_symbol_is_preserved_for_pacc_link() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-fn micro_kernel_symbol_is_preserved_for_pacc_link() -> Result<(), Box<dyn std::error::Error>> {
+fn micro_kernel_symbol_is_preserved_for_sifive_link() -> Result<(), Box<dyn std::error::Error>> {
     let ptx_source = r#"
 .version 6.5
 .target sm_80
@@ -337,7 +337,7 @@ fn micro_kernel_symbol_is_preserved_for_pacc_link() -> Result<(), Box<dyn std::e
 
     assert!(
         llvm_ir.contains("@micro_kernel_bf16bf16fp32_tile_k1_tile_n_gemv("),
-        "LLVM IR should keep the PACC micro-kernel symbol name intact.\n{}",
+        "LLVM IR should keep the SIFIVE micro-kernel symbol name intact.\n{}",
         llvm_ir
     );
     assert!(
@@ -347,7 +347,7 @@ fn micro_kernel_symbol_is_preserved_for_pacc_link() -> Result<(), Box<dyn std::e
     );
     assert!(
         !llvm_ir.contains("declare hidden void @micro_kernel_bf16bf16fp32_tile_k1_tile_n_gemv"),
-        "micro_kernel symbols should stay externally visible for later PACC linking.\n{}",
+        "micro_kernel symbols should stay externally visible for later SIFIVE linking.\n{}",
         llvm_ir
     );
 

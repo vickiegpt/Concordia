@@ -95,7 +95,7 @@ thread_local! {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1367,7 +1367,7 @@ pub(crate) fn peek_current() -> Option<CUcontext> {
         })
     }
     #[cfg(all(
-        feature = "pacc",
+        feature = "sifive",
         not(feature = "amd"),
         not(feature = "intel"),
         not(feature = "tenstorrent")
@@ -1558,34 +1558,34 @@ pub(crate) fn pop_current_v2(pctx: *mut CUcontext) -> CUresult {
 }
 
 // ============================================================================
-// PACC context implementation (SiFive Intelligence XM / RISC-V IME)
+// SIFIVE context implementation (SiFive Intelligence XM / RISC-V IME)
 // ============================================================================
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 pub(crate) struct Context {
     pub(crate) device_id: i32,
-    pub(crate) mutable: std::sync::Mutex<PaccOwnedByContext>,
+    pub(crate) mutable: std::sync::Mutex<SifiveOwnedByContext>,
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-pub(crate) struct PaccOwnedByContext {
+pub(crate) struct SifiveOwnedByContext {
     pub(crate) ref_count: usize,
     pub(crate) _memory: rustc_hash::FxHashSet<usize>,
     pub(crate) _modules: rustc_hash::FxHashSet<usize>,
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1593,7 +1593,7 @@ pub(crate) struct PaccOwnedByContext {
 unsafe impl Send for Context {}
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1601,7 +1601,7 @@ unsafe impl Send for Context {}
 unsafe impl Sync for Context {}
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1611,7 +1611,7 @@ impl Clone for Context {
         let guard = self.mutable.lock().unwrap();
         Self {
             device_id: self.device_id,
-            mutable: std::sync::Mutex::new(PaccOwnedByContext {
+            mutable: std::sync::Mutex::new(SifiveOwnedByContext {
                 ref_count: guard.ref_count,
                 _memory: guard._memory.clone(),
                 _modules: guard._modules.clone(),
@@ -1621,7 +1621,7 @@ impl Clone for Context {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1630,7 +1630,7 @@ impl Context {
     pub(crate) fn new(device_id: i32) -> Self {
         Self {
             device_id,
-            mutable: std::sync::Mutex::new(PaccOwnedByContext {
+            mutable: std::sync::Mutex::new(SifiveOwnedByContext {
                 ref_count: 0,
                 _memory: rustc_hash::FxHashSet::default(),
                 _modules: rustc_hash::FxHashSet::default(),
@@ -1665,7 +1665,7 @@ impl Context {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1680,18 +1680,18 @@ impl ZludaObject for Context {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-pub(crate) fn get_primary_pacc(device_id: i32) -> Result<(&'static Context, CUcontext), CUerror> {
-    let dev = driver::device_pacc(device_id)?;
+pub(crate) fn get_primary_sifive(device_id: i32) -> Result<(&'static Context, CUcontext), CUerror> {
+    let dev = driver::device_sifive(device_id)?;
     Ok(dev.primary_context())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1702,7 +1702,7 @@ pub(crate) fn synchronize() -> Result<(), String> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1730,7 +1730,7 @@ pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1743,19 +1743,19 @@ pub(crate) fn push(ctx: CUcontext, device_id: i32) {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-pub(crate) fn get_current_pacc() -> Result<&'static Context, CUerror> {
+pub(crate) fn get_current_sifive() -> Result<&'static Context, CUerror> {
     let current = peek_current().ok_or(CUerror::INVALID_CONTEXT)?;
     let context: &Context = FromCuda::from_cuda(&current)?;
     Ok(unsafe { std::mem::transmute(context) })
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1768,7 +1768,7 @@ pub(crate) fn get_limit(_pvalue: *mut usize, _limit: std::ffi::c_uint) -> Result
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1777,9 +1777,9 @@ pub(crate) fn set_limit(_limit: std::ffi::c_uint, _value: usize) -> Result<(), S
     Ok(())
 }
 
-// ─── PACC context API functions ───────────────────────────────────────────────
+// ─── SIFIVE context API functions ───────────────────────────────────────────────
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1799,7 +1799,7 @@ pub(crate) fn get_device(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1824,7 +1824,7 @@ pub(crate) fn create_v2(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1842,7 +1842,7 @@ pub(crate) fn destroy_v2(ctx: cuda_types::cuda::CUcontext) -> cuda_types::cuda::
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1859,7 +1859,7 @@ pub(crate) fn push_current_v2(ctx: cuda_types::cuda::CUcontext) -> cuda_types::c
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")

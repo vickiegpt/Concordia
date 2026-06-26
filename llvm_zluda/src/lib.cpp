@@ -76,7 +76,7 @@ static bool zludaBuilderCanInsert(llvm::IRBuilder<> *Builder) {
 }
 
 static llvm::SyncScope::ID zludaSyncScopeID(const char *Scope) {
-  // The PACC path does not need LLVM's named sync scopes, and some incoming
+  // The SIFIVE path does not need LLVM's named sync scopes, and some incoming
   // PTX scopes arrive after the builder/module state is already fragile. Keep
   // the IR verifier path simple and conservative by using system scope.
   (void)Scope;

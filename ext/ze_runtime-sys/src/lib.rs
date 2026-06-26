@@ -8127,7 +8127,7 @@ pub struct _ze_virtual_mem_map_params_t {
     pub psize: *mut usize,
     pub phPhysicalMemory: *mut ze_physical_mem_handle_t,
     pub poffset: *mut usize,
-    pub paccess: *mut ze_memory_access_attribute_t,
+    pub sifiveess: *mut ze_memory_access_attribute_t,
 }
 pub type ze_virtual_mem_map_params_t = _ze_virtual_mem_map_params_t;
 pub type ze_pfnVirtualMemMapCb_t = ::core::option::Option<
@@ -8160,7 +8160,7 @@ pub struct _ze_virtual_mem_set_access_attribute_params_t {
     pub phContext: *mut ze_context_handle_t,
     pub pptr: *mut *const ::core::ffi::c_void,
     pub psize: *mut usize,
-    pub paccess: *mut ze_memory_access_attribute_t,
+    pub sifiveess: *mut ze_memory_access_attribute_t,
 }
 pub type ze_virtual_mem_set_access_attribute_params_t =
     _ze_virtual_mem_set_access_attribute_params_t;
@@ -8178,7 +8178,7 @@ pub struct _ze_virtual_mem_get_access_attribute_params_t {
     pub phContext: *mut ze_context_handle_t,
     pub pptr: *mut *const ::core::ffi::c_void,
     pub psize: *mut usize,
-    pub paccess: *mut *mut ze_memory_access_attribute_t,
+    pub sifiveess: *mut *mut ze_memory_access_attribute_t,
     pub poutSize: *mut *mut usize,
 }
 pub type ze_virtual_mem_get_access_attribute_params_t =

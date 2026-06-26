@@ -110,7 +110,7 @@ def sanitize_ptx_for_parser(path: str) -> None:
 
     # Our PTX parser only accepts the base target directive.  Clang can emit
     # ".target sm_80, debug" when the original compile command carried debug
-    # flags; the target option is not needed by the PACC lowering path.
+    # flags; the target option is not needed by the SIFIVE lowering path.
     text = re.sub(r"(?m)^(\s*\.target\s+[^,\n]+),[^\n]*$", r"\1", text)
 
     with open(path, "w") as f:

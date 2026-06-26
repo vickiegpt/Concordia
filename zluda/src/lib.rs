@@ -80,13 +80,13 @@ fn hetgpu_log_cuda_calls_enabled() -> bool {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[no_mangle]
-pub unsafe extern "C" fn hetgpu_pacc_launch_named_kernel(
+pub unsafe extern "C" fn hetgpu_sifive_launch_named_kernel(
     kernel_name: *const c_char,
     grid_dim_x: ::core::ffi::c_uint,
     grid_dim_y: ::core::ffi::c_uint,
@@ -317,9 +317,9 @@ macro_rules! implemented_in_function {
     };
 }
 
-// PACC backend macros
+// SIFIVE backend macros
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -339,7 +339,7 @@ macro_rules! implemented {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")

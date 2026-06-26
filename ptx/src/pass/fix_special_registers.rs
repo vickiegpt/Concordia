@@ -123,7 +123,7 @@ impl<'a, 'b, 'input> SpecialRegisterResolver<'a, 'input> {
             if is_dst {
                 return Err(error_mismatched_type());
             }
-            #[cfg(feature = "pacc")]
+            #[cfg(feature = "sifive")]
             if matches!(sreg, PtxSpecialRegister::Envreg(_)) {
                 let constant = self.resolver.register_unnamed(Some((
                     ast::Type::Scalar(ast::ScalarType::U32),

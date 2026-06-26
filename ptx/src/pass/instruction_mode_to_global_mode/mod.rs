@@ -702,7 +702,7 @@ fn compute_full_mode_insertions(
     rounding_f32: MandatoryModeInsertions<RoundingMode>,
     rounding_f16f64: MandatoryModeInsertions<RoundingMode>,
 ) -> Result<FullModeInsertion, TranslateError> {
-    #[cfg(feature = "pacc")]
+    #[cfg(feature = "sifive")]
     {
         fn default_entry_state(
             flat_resolver: &mut GlobalStringIdentResolver2,
@@ -779,7 +779,7 @@ fn compute_full_mode_insertions(
         });
     }
 
-    #[cfg(not(feature = "pacc"))]
+    #[cfg(not(feature = "sifive"))]
     let resolved_cfg = ResolvedControlFlowGraph::new(
         cfg,
         &denormal_f32.kernels,
@@ -788,7 +788,7 @@ fn compute_full_mode_insertions(
         &rounding_f16f64.kernels,
     )?;
 
-    #[cfg(not(feature = "pacc"))]
+    #[cfg(not(feature = "sifive"))]
     return join_modes(
         flat_resolver,
         directives,
@@ -1769,7 +1769,7 @@ fn optimize_mode_insertions<
 >(
     partial: PartialModeInsertion<T>,
 ) -> MandatoryModeInsertions<T> {
-    #[cfg(feature = "pacc")]
+    #[cfg(feature = "sifive")]
     {
         let mut basic_blocks = partial.bb_must_insert_mode;
         basic_blocks.extend(partial.bb_maybe_insert_mode.into_keys());
@@ -1779,7 +1779,7 @@ fn optimize_mode_insertions<
         };
     }
 
-    #[cfg(not(feature = "pacc"))]
+    #[cfg(not(feature = "sifive"))]
     {
         let mut problem = Problem::new(OptimizationDirection::Maximize);
         let mut kernel_modes = FxHashMap::default();

@@ -19,14 +19,14 @@ pub const COMPUTE_CAPABILITY_MAJOR: i32 = 8;
 pub const COMPUTE_CAPABILITY_MINOR: i32 = 0;
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_virtual_total_mem_bytes() -> usize {
+fn sifive_virtual_total_mem_bytes() -> usize {
     const DEFAULT_BYTES: usize = 4 * 1024 * 1024 * 1024;
-    let Ok(raw) = std::env::var("HETGPU_PACC_VRAM_BYTES") else {
+    let Ok(raw) = std::env::var("HETGPU_SIFIVE_VRAM_BYTES") else {
         return DEFAULT_BYTES;
     };
     let value = raw.trim();
@@ -1351,7 +1351,7 @@ pub(crate) fn get_attribute(
 pub(crate) fn get_count(count: &mut ::core::ffi::c_int) -> CUresult {
     let devices = super::driver::global_state()?;
     *count = devices.devices.len() as ::core::ffi::c_int;
-    if let Ok(override_count) = std::env::var("HETGPU_PACC_VISIBLE_DEVICES") {
+    if let Ok(override_count) = std::env::var("HETGPU_SIFIVE_VISIBLE_DEVICES") {
         if let Ok(parsed) = override_count.parse::<i32>() {
             *count = parsed.clamp(1, 4);
         }
@@ -2169,11 +2169,11 @@ pub(crate) fn primary_context_get_state(dev: i32, flags: &mut u32, active: &mut 
 }
 
 // ============================================================================
-// PACC device function implementations (SiFive Intelligence XM / RISC-V IME)
+// SIFIVE device function implementations (SiFive Intelligence XM / RISC-V IME)
 // ============================================================================
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2185,7 +2185,7 @@ pub(crate) fn compute_capability(major: &mut i32, minor: &mut i32, _dev: i32) ->
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2200,7 +2200,7 @@ pub(crate) fn get(device: *mut i32, ordinal: i32) -> CUresult {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2212,7 +2212,7 @@ pub(crate) fn get_count(count: &mut ::core::ffi::c_int) -> CUresult {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2229,7 +2229,7 @@ pub(crate) fn get_name(
     if dev < 0 || dev >= devices.devices.len() as i32 {
         return Err(CUerror::INVALID_DEVICE);
     }
-    let device_name = b"SiFive Intelligence XM PACC\0";
+    let device_name = b"SiFive Intelligence XM SIFIVE\0";
     let copy_len = std::cmp::min(device_name.len(), len as usize - 1);
     unsafe {
         std::ptr::copy_nonoverlapping(device_name.as_ptr(), name as *mut u8, copy_len);
@@ -2239,7 +2239,7 @@ pub(crate) fn get_name(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2254,14 +2254,14 @@ pub(crate) fn get_uuid(uuid: *mut [u8; 16], dev: i32) -> CUresult {
     }
     let mut device_uuid = [0u8; 16];
     device_uuid[0..4].copy_from_slice(&(dev as u32).to_le_bytes());
-    device_uuid[4..8].copy_from_slice(b"PACC");
+    device_uuid[4..8].copy_from_slice(b"SIFIVE");
     device_uuid[8..16].copy_from_slice(b"ZLUDA001");
     unsafe { *uuid = device_uuid };
     Ok(())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2271,7 +2271,7 @@ pub(crate) fn get_uuid_v2(uuid: *mut [u8; 16], dev: i32) -> CUresult {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2290,7 +2290,7 @@ pub(crate) fn get_luid(
     }
     let mut device_luid = [0u8; 8];
     device_luid[0..4].copy_from_slice(&(dev as u32).to_le_bytes());
-    device_luid[4..8].copy_from_slice(b"PACC");
+    device_luid[4..8].copy_from_slice(b"SIFIVE");
     unsafe {
         *luid = device_luid;
         *device_node_mask = 1u32 << (dev as u32 % 32);
@@ -2299,7 +2299,7 @@ pub(crate) fn get_luid(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2312,12 +2312,12 @@ pub(crate) fn total_mem_v2(bytes: *mut usize, dev: i32) -> CUresult {
     if dev < 0 || dev >= devices.devices.len() as i32 {
         return Err(CUerror::INVALID_DEVICE);
     }
-    unsafe { *bytes = pacc_virtual_total_mem_bytes() };
+    unsafe { *bytes = sifive_virtual_total_mem_bytes() };
     Ok(())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2341,7 +2341,7 @@ pub(crate) fn get_properties(prop: &mut CUdevprop, dev: i32) -> CUresult {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2350,20 +2350,20 @@ pub(crate) fn primary_context_retain(pctx: *mut CUcontext, dev: i32) -> CUresult
     if pctx.is_null() {
         return Err(CUerror::INVALID_VALUE);
     }
-    let (primary_ctx, handle) = super::context::get_primary_pacc(dev)?;
+    let (primary_ctx, handle) = super::context::get_primary_sifive(dev)?;
     primary_ctx.increment_ref_count();
     unsafe { *pctx = handle };
     Ok(())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 pub(crate) fn primary_context_release(dev: i32) -> CUresult {
-    let (primary_ctx, _) = super::context::get_primary_pacc(dev)?;
+    let (primary_ctx, _) = super::context::get_primary_sifive(dev)?;
     let ref_count = primary_ctx.decrement_ref_count();
     if ref_count == 0 {
         primary_ctx.destroy()?;
@@ -2372,7 +2372,7 @@ pub(crate) fn primary_context_release(dev: i32) -> CUresult {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2490,9 +2490,9 @@ pub(crate) fn get_attribute(
     Ok(())
 }
 
-// ─── PACC primary_context_get_state ──────────────────────────────────────────
+// ─── SIFIVE primary_context_get_state ──────────────────────────────────────────
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")

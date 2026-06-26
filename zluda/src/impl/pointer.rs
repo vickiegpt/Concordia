@@ -482,9 +482,9 @@ pub(crate) unsafe fn get_attribute(
     Ok(())
 }
 
-// ─── PACC pointer attribute stub ──────────────────────────────────────────────
+// ─── SIFIVE pointer attribute stub ──────────────────────────────────────────────
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")

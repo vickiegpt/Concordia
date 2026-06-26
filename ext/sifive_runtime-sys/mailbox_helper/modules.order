@@ -1,0 +1,6 @@
+/home/ubuntu/Documents/hetGPU_sifive/ext/sifive_runtime-sys/mailbox_helper/hetgpu_sifive_mbox.o
+/home/ubuntu/Documents/hetGPU_sifive/ext/sifive_runtime-sys/mailbox_helper/hetgpu_sifive_mbox_live.o
+/home/ubuntu/Documents/hetGPU_sifive/ext/sifive_runtime-sys/mailbox_helper/hetgpu_sifive_live.o
+/home/ubuntu/Documents/hetGPU_sifive/ext/sifive_runtime-sys/mailbox_helper/hetgpu_sifive_mbox_full.o
+/home/ubuntu/Documents/hetGPU_sifive/ext/sifive_runtime-sys/mailbox_helper/hetgpu_sifive_mbox_ddr.o
+/home/ubuntu/Documents/hetGPU_sifive/ext/sifive_runtime-sys/mailbox_helper/hetgpu_sifive_mbox_ddr_coh.o

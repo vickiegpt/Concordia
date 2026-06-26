@@ -64,8 +64,8 @@ pub(crate) mod tmatmul_interpreter;
 #[cfg(feature = "cutile")]
 pub mod cutile;
 
-#[cfg(feature = "pacc")]
-pub mod pacc;
+#[cfg(feature = "sifive")]
+pub mod sifive;
 
 // In both debug and release builds, return SUCCESS for unimplemented functions
 // to allow frameworks like PyTorch to proceed with virtual device
@@ -362,7 +362,7 @@ impl<'a> FromCuda<'a, CUdeviceptr_v2> for () {
     feature = "tenstorrent",
     feature = "tmatmul",
     feature = "nvidia",
-    feature = "pacc"
+    feature = "sifive"
 ))]
 from_cuda_object!(module::Module);
 
@@ -382,14 +382,14 @@ from_cuda_object!(module::ZeKernel);
 ))]
 from_cuda_object!(module::NvidiaKernel);
 
-// PaccKernel is only for PACC backend
+// SifiveKernel is only for SIFIVE backend
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-from_cuda_object!(module::PaccKernel);
+from_cuda_object!(module::SifiveKernel);
 
 #[cfg(feature = "amd")]
 impl<'a> FromCuda<'a, CUlimit> for hipLimit_t {
@@ -787,9 +787,9 @@ impl<'a> FromCuda<'a, CUfunction_attribute_enum> for CUfunction_attribute_enum {
     }
 }
 
-// PACC-specific FromCuda implementations
+// SIFIVE-specific FromCuda implementations
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -801,7 +801,7 @@ impl<'a> FromCuda<'a, *mut CUuuid_st> for *mut [u8; 16] {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -813,7 +813,7 @@ impl<'a> FromCuda<'a, *mut i8> for *mut [u8; 8] {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -827,19 +827,19 @@ impl<'a> FromCuda<'a, *mut u32> for *mut u32 {
 // *mut CUcontext and *mut CUfunction already covered by from_cuda_nop!
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-impl<'a> FromCuda<'a, CUfunction> for *mut module::PaccKernel {
+impl<'a> FromCuda<'a, CUfunction> for *mut module::SifiveKernel {
     fn from_cuda(handle: &'a CUfunction) -> Result<Self, CUerror> {
-        Ok(handle.0 as *mut module::PaccKernel)
+        Ok(handle.0 as *mut module::SifiveKernel)
     }
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -851,7 +851,7 @@ impl<'a> FromCuda<'a, CUstream> for *mut ::core::ffi::c_void {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -863,7 +863,7 @@ impl<'a> FromCuda<'a, CUdeviceptr_v2> for CUdeviceptr_v2 {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -875,7 +875,7 @@ impl<'a> FromCuda<'a, CUpointer_attribute_enum> for CUpointer_attribute_enum {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -887,7 +887,7 @@ impl<'a> FromCuda<'a, CUfunction_attribute_enum> for CUfunction_attribute_enum {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -898,9 +898,9 @@ impl<'a> FromCuda<'a, CUlimit> for CUlimit {
     }
 }
 
-// PACC-specific FromCuda: *mut u8 (llvm-sys 201 changed i8->u8)
+// SIFIVE-specific FromCuda: *mut u8 (llvm-sys 201 changed i8->u8)
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -912,7 +912,7 @@ impl<'a> FromCuda<'a, *mut u8> for *mut u8 {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -924,7 +924,7 @@ impl<'a> FromCuda<'a, *mut u8> for *mut [u8; 8] {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -940,9 +940,9 @@ impl<'a> FromCuda<'a, *const cuda_types::cuda::CUlaunchConfig_st>
     }
 }
 
-// *mut CUfunction for PACC (removed from nop list since tenstorrent has it feature-gated)
+// *mut CUfunction for SIFIVE (removed from nop list since tenstorrent has it feature-gated)
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")

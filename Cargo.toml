@@ -25,8 +25,8 @@ members = [
     "ext/tt_comgr-sys",
     "ext/tt_runtime-sys",
     "ext/cutile_comgr-sys",
-    "ext/pacc_comgr-sys",
-    "ext/pacc_runtime-sys",
+    "ext/sifive_comgr-sys",
+    "ext/sifive_runtime-sys",
     "nvidia_sass",
     "ptxas",
     "ext/aie_comgr-sys",
@@ -41,7 +41,7 @@ features = [
     "tenstorrent",
     "gemmini",
     "cutile",
-    "pacc",
+    "sifive",
     "nvidia",
 ]
 default = [

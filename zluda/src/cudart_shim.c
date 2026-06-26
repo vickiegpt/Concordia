@@ -57,8 +57,8 @@ static void hetgpu_cudart_compute_capability(int *major, int *minor) {
     if (minor) *minor = cc_minor;
 }
 
-static int hetgpu_pacc_physical_device_for_logical(int logical) {
-    const char *visible = getenv("HETGPU_PACC_VISIBLE_DEVICES");
+static int hetgpu_sifive_physical_device_for_logical(int logical) {
+    const char *visible = getenv("HETGPU_SIFIVE_VISIBLE_DEVICES");
     if (!visible || !*visible) return logical;
     if (!strchr(visible, ',') && !strchr(visible, ';') && !strchr(visible, ':') &&
         !strchr(visible, ' ') && !strchr(visible, '\t')) {
@@ -216,15 +216,15 @@ struct cudaPointerAttributes {
 
 static cudaError_t g_last_cuda_error = HETGPU_CUDA_SUCCESS;
 
-static int hetgpu_strict_pacc(void) {
-    const char* strict = getenv("HETGPU_PACC_STRICT");
+static int hetgpu_strict_sifive(void) {
+    const char* strict = getenv("HETGPU_SIFIVE_STRICT");
     return strict && strcmp(strict, "1") == 0;
 }
 
-static int hetgpu_pacc_requires_tracked_allocations(void) {
-    const char* shared_mem = getenv("HETGPU_PACC_SHARED_DEVICE_MEM");
-    const char* kernel_submit = getenv("HETGPU_PACC_KERNEL_MBOX_SUBMIT");
-    const char* control_backend = getenv("HETGPU_PACC_CONTROL_BACKEND");
+static int hetgpu_sifive_requires_tracked_allocations(void) {
+    const char* shared_mem = getenv("HETGPU_SIFIVE_SHARED_DEVICE_MEM");
+    const char* kernel_submit = getenv("HETGPU_SIFIVE_KERNEL_MBOX_SUBMIT");
+    const char* control_backend = getenv("HETGPU_SIFIVE_CONTROL_BACKEND");
     return (shared_mem && strcmp(shared_mem, "1") == 0) ||
            (kernel_submit && strcmp(kernel_submit, "1") == 0) ||
            (control_backend && strcmp(control_backend, "shared_ddr") == 0);
@@ -259,33 +259,33 @@ static int hetgpu_env_matches_any(const char *name, const char *a, const char *b
            (c && strcasecmp(value, c) == 0);
 }
 
-static int hetgpu_pacc_jobd_emulator_mode(void) {
-    if (hetgpu_env_enabled_default("HETGPU_PACC_JOBD_EMULATOR", 0) ||
-        hetgpu_env_enabled_default("HETGPU_PACC_EMULATE_JOBD", 0) ||
-        hetgpu_env_matches_any("HETGPU_PACC_ZLUDA_IRQ_MOCK", "jobd", "emulator", "emu")) {
+static int hetgpu_sifive_jobd_emulator_mode(void) {
+    if (hetgpu_env_enabled_default("HETGPU_SIFIVE_JOBD_EMULATOR", 0) ||
+        hetgpu_env_enabled_default("HETGPU_SIFIVE_EMULATE_JOBD", 0) ||
+        hetgpu_env_matches_any("HETGPU_SIFIVE_ZLUDA_IRQ_MOCK", "jobd", "emulator", "emu")) {
         return 1;
     }
-    if (hetgpu_env_enabled_default("HETGPU_PACC_DISABLE_JOBD_EMULATOR_AUTO", 0) ||
-        hetgpu_env_enabled_default("HETGPU_PACC_REAL_DEVICE_REQUIRED", 0)) {
+    if (hetgpu_env_enabled_default("HETGPU_SIFIVE_DISABLE_JOBD_EMULATOR_AUTO", 0) ||
+        hetgpu_env_enabled_default("HETGPU_SIFIVE_REAL_DEVICE_REQUIRED", 0)) {
         return 0;
     }
 #if defined(__x86_64__) || defined(__i386__)
-    if (access("/dev/pacc0", F_OK) == 0) {
+    if (access("/dev/sifive0", F_OK) == 0) {
         return 0;
     }
-    const char *explicit_mbox = getenv("HETGPU_PACC_MBOX_DEVICE");
+    const char *explicit_mbox = getenv("HETGPU_SIFIVE_MBOX_DEVICE");
     if (explicit_mbox && explicit_mbox[0] && access(explicit_mbox, R_OK | W_OK) == 0) {
         return 0;
     }
     const char *helpers[] = {
-        "/dev/hetgpu_pacc_mbox_ddr_coh0",
-        "/dev/hetgpu_pacc_mbox_ddr_coh",
-        "/dev/hetgpu_pacc_mbox_ddr0",
-        "/dev/hetgpu_pacc_mbox_ddr",
-        "/dev/hetgpu_pacc_mbox_full0",
-        "/dev/hetgpu_pacc_mbox_full",
-        "/dev/hetgpu_pacc_mbox0",
-        "/dev/hetgpu_pacc_mbox",
+        "/dev/hetgpu_sifive_mbox_ddr_coh0",
+        "/dev/hetgpu_sifive_mbox_ddr_coh",
+        "/dev/hetgpu_sifive_mbox_ddr0",
+        "/dev/hetgpu_sifive_mbox_ddr",
+        "/dev/hetgpu_sifive_mbox_full0",
+        "/dev/hetgpu_sifive_mbox_full",
+        "/dev/hetgpu_sifive_mbox0",
+        "/dev/hetgpu_sifive_mbox",
         NULL
     };
     for (int i = 0; helpers[i]; ++i) {
@@ -302,7 +302,7 @@ static int hetgpu_pacc_jobd_emulator_mode(void) {
 static int hetgpu_cudart_fail_open_enabled(void) {
     const char *value = getenv("HETGPU_CUDART_FAIL_OPEN");
     if (!value || !*value) {
-        value = getenv("HETGPU_PACC_ASSUME_SUCCESS_ON_WAIT_ERROR");
+        value = getenv("HETGPU_SIFIVE_ASSUME_SUCCESS_ON_WAIT_ERROR");
     }
     if (!value || !*value) {
         return 0;
@@ -346,8 +346,8 @@ static int hetgpu_cudart_kernel_noop_log_enabled(void) {
     return hetgpu_env_enabled_default("HETGPU_CUDART_KERNEL_NOOP_LOG", 0);
 }
 
-static int hetgpu_cudart_kernel_pacc_noop_enabled(void) {
-    return hetgpu_env_enabled_default("HETGPU_CUDART_KERNEL_PACC_NOOP", 0);
+static int hetgpu_cudart_kernel_sifive_noop_enabled(void) {
+    return hetgpu_env_enabled_default("HETGPU_CUDART_KERNEL_SIFIVE_NOOP", 0);
 }
 
 static unsigned long long hetgpu_parse_env_ull_default(const char *name, unsigned long long default_value) {
@@ -363,12 +363,12 @@ static unsigned long long hetgpu_parse_env_ull_default(const char *name, unsigne
     return parsed;
 }
 
-static unsigned long long hetgpu_cudart_kernel_pacc_noop_every(void) {
+static unsigned long long hetgpu_cudart_kernel_sifive_noop_every(void) {
     static unsigned long long cached = 0;
     if (cached == 0) {
-        cached = hetgpu_parse_env_ull_default("HETGPU_CUDART_KERNEL_PACC_NOOP_EVERY", 0);
+        cached = hetgpu_parse_env_ull_default("HETGPU_CUDART_KERNEL_SIFIVE_NOOP_EVERY", 0);
         if (cached == 0) {
-            cached = hetgpu_parse_env_ull_default("HETGPU_PACC_KERNEL_NOOP_EVERY", 1);
+            cached = hetgpu_parse_env_ull_default("HETGPU_SIFIVE_KERNEL_NOOP_EVERY", 1);
         }
         if (cached == 0) {
             cached = 1;
@@ -377,25 +377,25 @@ static unsigned long long hetgpu_cudart_kernel_pacc_noop_every(void) {
     return cached;
 }
 
-static unsigned long long hetgpu_cudart_kernel_pacc_noop_first(void) {
+static unsigned long long hetgpu_cudart_kernel_sifive_noop_first(void) {
     static unsigned long long cached = (unsigned long long)-1;
     if (cached == (unsigned long long)-1) {
-        cached = hetgpu_parse_env_ull_default("HETGPU_CUDART_KERNEL_PACC_NOOP_FIRST", 4);
+        cached = hetgpu_parse_env_ull_default("HETGPU_CUDART_KERNEL_SIFIVE_NOOP_FIRST", 4);
     }
     return cached;
 }
 
-static int hetgpu_cudart_should_submit_pacc_noop(unsigned long long *launch_index_out) {
+static int hetgpu_cudart_should_submit_sifive_noop(unsigned long long *launch_index_out) {
     static unsigned long long launch_counter = 0;
     unsigned long long launch_index = __sync_add_and_fetch(&launch_counter, 1);
     if (launch_index_out) {
         *launch_index_out = launch_index;
     }
-    unsigned long long first = hetgpu_cudart_kernel_pacc_noop_first();
+    unsigned long long first = hetgpu_cudart_kernel_sifive_noop_first();
     if (launch_index <= first) {
         return 1;
     }
-    unsigned long long every = hetgpu_cudart_kernel_pacc_noop_every();
+    unsigned long long every = hetgpu_cudart_kernel_sifive_noop_every();
     return every <= 1 || (launch_index % every) == 0;
 }
 
@@ -411,9 +411,9 @@ static cudaError_t hetgpu_set_last_error(cudaError_t error) {
 
 extern CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void* srcHost, size_t ByteCount);
 extern CUresult cuMemcpyDtoH_v2(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount);
-extern int hetgpu_pacc_is_device_ptr(const void* ptr) __attribute__((weak));
+extern int hetgpu_sifive_is_device_ptr(const void* ptr) __attribute__((weak));
 
-typedef int (*hetgpu_pacc_launch_named_kernel_fn)(
+typedef int (*hetgpu_sifive_launch_named_kernel_fn)(
     const char* kernel_name,
     unsigned int grid_dim_x,
     unsigned int grid_dim_y,
@@ -426,7 +426,7 @@ typedef int (*hetgpu_pacc_launch_named_kernel_fn)(
     void** kernel_params,
     void** extra);
 
-typedef int (*hetgpu_pacc_launch_kernel_noop_fn)(
+typedef int (*hetgpu_sifive_launch_kernel_noop_fn)(
     unsigned int device_id,
     const char* kernel_name,
     unsigned int grid_dim_x,
@@ -436,22 +436,22 @@ typedef int (*hetgpu_pacc_launch_kernel_noop_fn)(
     unsigned int block_dim_y,
     unsigned int block_dim_z);
 
-static hetgpu_pacc_launch_named_kernel_fn resolve_hetgpu_pacc_launch_named_kernel(void) {
-    static hetgpu_pacc_launch_named_kernel_fn cached = NULL;
+static hetgpu_sifive_launch_named_kernel_fn resolve_hetgpu_sifive_launch_named_kernel(void) {
+    static hetgpu_sifive_launch_named_kernel_fn cached = NULL;
     static int tried = 0;
     if (!tried) {
         tried = 1;
-        cached = (hetgpu_pacc_launch_named_kernel_fn)dlsym(RTLD_DEFAULT, "hetgpu_pacc_launch_named_kernel");
+        cached = (hetgpu_sifive_launch_named_kernel_fn)dlsym(RTLD_DEFAULT, "hetgpu_sifive_launch_named_kernel");
     }
     return cached;
 }
 
-static hetgpu_pacc_launch_kernel_noop_fn resolve_hetgpu_pacc_launch_kernel_noop(void) {
-    static hetgpu_pacc_launch_kernel_noop_fn cached = NULL;
+static hetgpu_sifive_launch_kernel_noop_fn resolve_hetgpu_sifive_launch_kernel_noop(void) {
+    static hetgpu_sifive_launch_kernel_noop_fn cached = NULL;
     static int tried = 0;
     if (!tried) {
         tried = 1;
-        cached = (hetgpu_pacc_launch_kernel_noop_fn)dlsym(RTLD_DEFAULT, "hetgpu_pacc_launch_kernel_noop");
+        cached = (hetgpu_sifive_launch_kernel_noop_fn)dlsym(RTLD_DEFAULT, "hetgpu_sifive_launch_kernel_noop");
     }
     return cached;
 }
@@ -550,11 +550,11 @@ static cudaError_t hetgpu_cuda_memset_host_backed_fallback(
 }
 
 static int hetgpu_likely_device_ptr(const void* ptr) {
-    if (hetgpu_pacc_is_device_ptr && hetgpu_pacc_is_device_ptr(ptr)) {
+    if (hetgpu_sifive_is_device_ptr && hetgpu_sifive_is_device_ptr(ptr)) {
         return 1;
     }
     uintptr_t value = (uintptr_t)ptr;
-    // Real PACC CUDA pointers are PACC-visible physical addresses. Host
+    // Real SIFIVE CUDA pointers are SIFIVE-visible physical addresses. Host
     // userspace pointers are high virtual addresses on the target Linux ABI.
     return value >= 0x1000ULL && value < 0x100000000ULL;
 }
@@ -573,11 +573,11 @@ static cudaError_t hetgpu_cuda_memcpy_d2d(void* dst, const void* src, size_t cou
     return hetgpu_cuda_from_cu(result);
 }
 
-static int hetgpu_pacc_kernel_has_handle(CUfunction func) {
+static int hetgpu_sifive_kernel_has_handle(CUfunction func) {
     if (!func) return 0;
-    // PaccKernel is #[repr(C)] with `device` followed by `kernel_ptr`.
+    // SifiveKernel is #[repr(C)] with `device` followed by `kernel_ptr`.
     // The C runtime shim only needs to know whether Rust created a real
-    // pacc_Kernel handle; it does not dereference the device or Rust String.
+    // sifive_Kernel handle; it does not dereference the device or Rust String.
     void** words = (void**)func;
     return words[1] != NULL;
 }
@@ -592,9 +592,9 @@ extern CUresult cuMemFree_v2(CUdeviceptr dptr);
 extern CUresult cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void* srcHost, size_t ByteCount);
 extern CUresult cuMemcpyDtoH_v2(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount);
 extern CUresult cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc, size_t N);
-extern int hetgpu_pacc_ipc_get_mem_handle(const void* ptr, void* handle, size_t handle_len);
-extern int hetgpu_pacc_ipc_open_mem_handle(void** devPtr, const void* handle, unsigned int flags);
-extern int hetgpu_pacc_ipc_close_mem_handle(void* devPtr);
+extern int hetgpu_sifive_ipc_get_mem_handle(const void* ptr, void* handle, size_t handle_len);
+extern int hetgpu_sifive_ipc_open_mem_handle(void** devPtr, const void* handle, unsigned int flags);
+extern int hetgpu_sifive_ipc_close_mem_handle(void* devPtr);
 extern CUresult cuLaunchKernel(CUfunction f,
                                unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ,
                                unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ,
@@ -636,7 +636,7 @@ typedef int cudaMemcpyKind; // use int placeholder
 
 // CUDA runtime current device is per host thread. llama.cpp schedules work for
 // multiple visible devices from multiple threads, so a process-global current
-// device makes workers race and submit kernels to the wrong PACC context.
+// device makes workers race and submit kernels to the wrong SIFIVE context.
 static __thread int current_device = 0;
 
 #define HETGPU_STREAM_MAGIC UINT64_C(0x485447505354524d)
@@ -1005,23 +1005,23 @@ extern int cuDeviceGetCount(int* count);
 extern int cuDriverGetVersion(int* version);
 extern int cuInit(unsigned int flags);
 
-static int hetgpu_pacc_normalize_device_ordinal(int device) {
+static int hetgpu_sifive_normalize_device_ordinal(int device) {
     if (device < 0) {
         return 0;
     }
     return device;
 }
 
-static int hetgpu_pacc_pci_bus_id(int device) {
-    return 0x02 + hetgpu_pacc_normalize_device_ordinal(device);
+static int hetgpu_sifive_pci_bus_id(int device) {
+    return 0x02 + hetgpu_sifive_normalize_device_ordinal(device);
 }
 
-static int hetgpu_pacc_pci_device_id(int device) {
+static int hetgpu_sifive_pci_device_id(int device) {
     (void)device;
     return 0;
 }
 
-static int hetgpu_pacc_pci_domain_id(int device) {
+static int hetgpu_sifive_pci_domain_id(int device) {
     (void)device;
     return 0;
 }
@@ -1136,18 +1136,18 @@ cudaError_t cudaGetDeviceProperties(cudaDeviceProp_t prop, int device) {
     cudaDeviceProp_full p;
     memset(&p, 0, sizeof(p));
 
-    int physical_device = hetgpu_pacc_physical_device_for_logical(device);
+    int physical_device = hetgpu_sifive_physical_device_for_logical(device);
     int cc_major = 8;
     int cc_minor = 0;
     hetgpu_cudart_compute_capability(&cc_major, &cc_minor);
 
     // Device name
-    snprintf(p.name, sizeof(p.name), "Virtual GPU (hetGPU PACC%d sm_%d%d)",
+    snprintf(p.name, sizeof(p.name), "Virtual GPU (hetGPU SIFIVE%d sm_%d%d)",
              physical_device, cc_major, cc_minor);
 
     // Memory properties
     p.totalGlobalMem = (size_t)hetgpu_parse_u64_env(
-        "HETGPU_PACC_VRAM_BYTES",
+        "HETGPU_SIFIVE_VRAM_BYTES",
         4ULL * 1024 * 1024 * 1024
     );
     p.sharedMemPerBlock = 48 * 1024;               // 48KB portable default
@@ -1213,9 +1213,9 @@ cudaError_t cudaGetDeviceProperties(cudaDeviceProp_t prop, int device) {
     p.maxTexture3D[2] = 16384;
 
     // PCI info (fake but stable): llama.cpp uses this to de-duplicate devices.
-    p.pciBusID = hetgpu_pacc_pci_bus_id(device);
-    p.pciDeviceID = hetgpu_pacc_pci_device_id(device);
-    p.pciDomainID = hetgpu_pacc_pci_domain_id(device);
+    p.pciBusID = hetgpu_sifive_pci_bus_id(device);
+    p.pciDeviceID = hetgpu_sifive_pci_device_id(device);
+    p.pciDomainID = hetgpu_sifive_pci_domain_id(device);
 
     // Copy full struct to caller's buffer
     memcpy(prop, &p, sizeof(p));
@@ -1392,9 +1392,9 @@ cudaError_t cudaDeviceGetAttribute(int* value, int attr, int device) {
         case 33: // cudaDevAttrEccEnabled
             *value = 0; break;
         case 34: // cudaDevAttrPciBusId
-            *value = hetgpu_pacc_pci_bus_id(device); break;
+            *value = hetgpu_sifive_pci_bus_id(device); break;
         case 35: // cudaDevAttrPciDeviceId
-            *value = hetgpu_pacc_pci_device_id(device); break;
+            *value = hetgpu_sifive_pci_device_id(device); break;
         case 36: // cudaDevAttrTccDriver
             *value = 0; break;
         case 37: // cudaDevAttrMemoryClockRate
@@ -1414,7 +1414,7 @@ cudaError_t cudaDeviceGetAttribute(int* value, int attr, int device) {
         case 45: // cudaDevAttrMaxTexture1DLayeredLayers
             *value = 2048; break;
         case 50: // cudaDevAttrPciDomainId
-            *value = hetgpu_pacc_pci_domain_id(device); break;
+            *value = hetgpu_sifive_pci_domain_id(device); break;
         case 53: // cudaDevAttrMaxTexture2DGatherWidth
             *value = 32768; break;
         case 54: // cudaDevAttrMaxTexture2DGatherHeight
@@ -1547,9 +1547,9 @@ cudaError_t cudaHostGetDevicePointer(void** pDevice, void* pHost, unsigned int f
 cudaError_t cudaDeviceGetPCIBusId(char* pciBusId, int len, int device) {
     if (!pciBusId || len <= 0) return 1;
     snprintf(pciBusId, (size_t)len, "%04x:%02x:%02x.0",
-             hetgpu_pacc_pci_domain_id(device),
-             hetgpu_pacc_pci_bus_id(device),
-             hetgpu_pacc_pci_device_id(device));
+             hetgpu_sifive_pci_domain_id(device),
+             hetgpu_sifive_pci_bus_id(device),
+             hetgpu_sifive_pci_device_id(device));
     return 0;
 }
 
@@ -1589,14 +1589,14 @@ cudaError_t cudaIpcGetEventHandle(void* handle, cudaEvent_t event) { (void)handl
 cudaError_t cudaIpcOpenEventHandle(cudaEvent_t* event, void* handle) { if (event) *event = (cudaEvent_t)0; (void)handle; return 0; }
 cudaError_t cudaIpcGetMemHandle(void* handle, void* devPtr) {
     if (!handle || !devPtr) return 1;
-    return hetgpu_pacc_ipc_get_mem_handle(devPtr, handle, 64) == 0 ? 0 : 1;
+    return hetgpu_sifive_ipc_get_mem_handle(devPtr, handle, 64) == 0 ? 0 : 1;
 }
 cudaError_t cudaIpcOpenMemHandle(void** devPtr, void* handle, unsigned int flags) {
     if (!devPtr || !handle) return 1;
-    return hetgpu_pacc_ipc_open_mem_handle(devPtr, handle, flags) == 0 ? 0 : 1;
+    return hetgpu_sifive_ipc_open_mem_handle(devPtr, handle, flags) == 0 ? 0 : 1;
 }
 cudaError_t cudaIpcCloseMemHandle(void* devPtr) {
-    return hetgpu_pacc_ipc_close_mem_handle(devPtr) == 0 ? 0 : 1;
+    return hetgpu_sifive_ipc_close_mem_handle(devPtr) == 0 ? 0 : 1;
 }
 
 // Graph APIs (additional)
@@ -2344,7 +2344,7 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                 funcName, func, cuFunc);
     }
 
-    if (hetgpu_cudart_kernel_pacc_noop_enabled()) {
+    if (hetgpu_cudart_kernel_sifive_noop_enabled()) {
         const char* launch_name = funcName;
         char dladdr_name[512];
         dladdr_name[0] = '\0';
@@ -2358,20 +2358,20 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
             }
         }
 
-        unsigned long long pacc_noop_launch_index = 0;
-        if (!hetgpu_cudart_should_submit_pacc_noop(&pacc_noop_launch_index)) {
-            static int pacc_noop_skip_log_count = 0;
-            if (pacc_noop_skip_log_count < 5) {
+        unsigned long long sifive_noop_launch_index = 0;
+        if (!hetgpu_cudart_should_submit_sifive_noop(&sifive_noop_launch_index)) {
+            static int sifive_noop_skip_log_count = 0;
+            if (sifive_noop_skip_log_count < 5) {
                 fprintf(stderr,
-                        "[cudart_shim] KERNEL_PACC_NOOP sampled out launch #%llu; reporting success without PACC submit (every=%llu)\n",
-                        pacc_noop_launch_index,
-                        hetgpu_cudart_kernel_pacc_noop_every());
-                pacc_noop_skip_log_count++;
+                        "[cudart_shim] KERNEL_SIFIVE_NOOP sampled out launch #%llu; reporting success without SIFIVE submit (every=%llu)\n",
+                        sifive_noop_launch_index,
+                        hetgpu_cudart_kernel_sifive_noop_every());
+                sifive_noop_skip_log_count++;
             }
             return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
         }
 
-        hetgpu_pacc_launch_kernel_noop_fn launch_noop = resolve_hetgpu_pacc_launch_kernel_noop();
+        hetgpu_sifive_launch_kernel_noop_fn launch_noop = resolve_hetgpu_sifive_launch_kernel_noop();
         if (launch_noop) {
             int rc = launch_noop(
                 (unsigned int)stream_device,
@@ -2379,20 +2379,20 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                 gridDim.x, gridDim.y, gridDim.z,
                 blockDim.x, blockDim.y, blockDim.z);
             if (rc == HETGPU_CUDA_SUCCESS) {
-                static int pacc_noop_log_count = 0;
-                if (pacc_noop_log_count < 20) {
+                static int sifive_noop_log_count = 0;
+                if (sifive_noop_log_count < 20) {
                     fprintf(stderr,
-                            "[cudart_shim] KERNEL_PACC_NOOP submitted '%s' to pacc%d grid=(%u,%u,%u) block=(%u,%u,%u)\n",
+                            "[cudart_shim] KERNEL_SIFIVE_NOOP submitted '%s' to sifive%d grid=(%u,%u,%u) block=(%u,%u,%u)\n",
                             launch_name, stream_device,
                             gridDim.x, gridDim.y, gridDim.z,
                             blockDim.x, blockDim.y, blockDim.z);
-                    pacc_noop_log_count++;
+                    sifive_noop_log_count++;
                 }
                 return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
             }
             if (hetgpu_cudart_fail_open_enabled()) {
                 fprintf(stderr,
-                        "[cudart_shim] KERNEL_PACC_NOOP submit failed for '%s' on pacc%d rc=%d; fail-open success\n",
+                        "[cudart_shim] KERNEL_SIFIVE_NOOP submit failed for '%s' on sifive%d rc=%d; fail-open success\n",
                         launch_name, stream_device, rc);
                 return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
             }
@@ -2400,7 +2400,7 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
         }
         if (hetgpu_cudart_fail_open_enabled()) {
             fprintf(stderr,
-                    "[cudart_shim] KERNEL_PACC_NOOP requested but hetgpu_pacc_launch_kernel_noop is missing; fail-open success\n");
+                    "[cudart_shim] KERNEL_SIFIVE_NOOP requested but hetgpu_sifive_launch_kernel_noop is missing; fail-open success\n");
             return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
         }
         return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
@@ -2414,7 +2414,7 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                 goto launch_registered_kernel;
             }
 
-            hetgpu_pacc_launch_named_kernel_fn launch_named = resolve_hetgpu_pacc_launch_named_kernel();
+            hetgpu_sifive_launch_named_kernel_fn launch_named = resolve_hetgpu_sifive_launch_named_kernel();
             if (launch_named) {
                 int named_result = launch_named(
                     funcName,
@@ -2453,14 +2453,14 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
             int requires_named_launch = hetgpu_requires_named_launch(funcName);
             if (requires_named_launch) {
                 int allow_rmsnorm_null_success =
-                    hetgpu_env_enabled_default("HETGPU_PACC_RMSNORM_NULL_FUNC_SUCCESS", 0) ||
+                    hetgpu_env_enabled_default("HETGPU_SIFIVE_RMSNORM_NULL_FUNC_SUCCESS", 0) ||
                     hetgpu_cudart_fail_open_enabled();
                 if (strstr(funcName, "rms_norm_f32") || strstr(funcName, "rmsnorm_f32")) {
                     if (!hetgpu_is_ggml_cuda_rms_norm_f32(funcName)) {
                         static unsigned long long rmsnorm_unsupported_sig_log_count = 0;
                         unsigned long long log_index =
                             __sync_fetch_and_add(&rmsnorm_unsupported_sig_log_count, 1);
-                        if (hetgpu_strict_pacc() || !allow_rmsnorm_null_success) {
+                        if (hetgpu_strict_sifive() || !allow_rmsnorm_null_success) {
                             fprintf(stderr,
                                     "[cudart_shim] ERROR: RMSNorm named-only kernel '%s' has unsupported host fallback signature\n",
                                     funcName);
@@ -2501,7 +2501,7 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                             static unsigned long long rmsnorm_device_ptr_success_log_count = 0;
                             unsigned long long log_index =
                             __sync_fetch_and_add(&rmsnorm_device_ptr_success_log_count, 1);
-                            if (hetgpu_strict_pacc() || !allow_rmsnorm_null_success) {
+                            if (hetgpu_strict_sifive() || !allow_rmsnorm_null_success) {
                                 fprintf(stderr,
                                         "[cudart_shim] ERROR: RMSNorm named-only kernel '%s' has non-host-accessible args x=%p y=%p weight=%p rows=%llu hidden=%d\n",
                                         funcName,
@@ -2555,12 +2555,12 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                 }
                 if (hetgpu_cudart_fail_open_enabled()) {
                     fprintf(stderr,
-                            "[cudart_shim] named-only PACC kernel '%s' has NULL CUfunction; explicit fail-open success\n",
+                            "[cudart_shim] named-only SIFIVE kernel '%s' has NULL CUfunction; explicit fail-open success\n",
                             funcName);
                     return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
                 }
                 fprintf(stderr,
-                        "[cudart_shim] ERROR: named-only PACC kernel '%s' has NULL CUfunction after lazy module/function lookup\n",
+                        "[cudart_shim] ERROR: named-only SIFIVE kernel '%s' has NULL CUfunction after lazy module/function lookup\n",
                         funcName);
                 return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
             }
@@ -2572,7 +2572,7 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
                     hetgpu_cudart_lazy_ptx_fail_open_log_limit();
                 if (log_index < log_limit) {
                     fprintf(stderr,
-                            "[cudart_shim] lazy PTX fail-open for '%s'; skipping module load/compile during PACC bring-up\n",
+                            "[cudart_shim] lazy PTX fail-open for '%s'; skipping module load/compile during SIFIVE bring-up\n",
                             funcName);
                 } else if (log_limit != 0 && log_index == log_limit) {
                     fprintf(stderr,
@@ -2589,7 +2589,7 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
             }
             if (!hetgpu_allow_skip_null_registered_kernel()) {
                 fprintf(stderr,
-                        "[cudart_shim] ERROR: registered kernel '%s' has no CUfunction and no named PACC handler; refusing to skip uninitialized output\n",
+                        "[cudart_shim] ERROR: registered kernel '%s' has no CUfunction and no named SIFIVE handler; refusing to skip uninitialized output\n",
                         funcName);
                 return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
             }
@@ -2615,7 +2615,7 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
             }
             g_registry_miss_log_count++;
         }
-        if (hetgpu_strict_pacc() || !hetgpu_allow_skip_unregistered_kernel()) {
+        if (hetgpu_strict_sifive() || !hetgpu_allow_skip_unregistered_kernel()) {
             fprintf(stderr,
                     "[cudart_shim] ERROR: Function %p not in registry; refusing to skip uninitialized kernel output\n",
                     func);
@@ -2627,8 +2627,8 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
     }
 
 launch_registered_kernel:
-    if (hetgpu_strict_pacc() && !hetgpu_pacc_kernel_has_handle(cuFunc)) {
-        fprintf(stderr, "[cudart_shim] ERROR: PACC kernel '%s' has no executable handle\n", funcName);
+    if (hetgpu_strict_sifive() && !hetgpu_sifive_kernel_has_handle(cuFunc)) {
+        fprintf(stderr, "[cudart_shim] ERROR: SIFIVE kernel '%s' has no executable handle\n", funcName);
         return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
     }
 
@@ -2806,7 +2806,7 @@ static int compile_ggml_cuda_sources_to_ptx(const char* so_path, const char* ptx
 
     fprintf(stderr, "[cudart_shim] Falling back to source->PTX compilation using %s\n", compile_db);
 
-    const char* script = "/home/ubuntu/Documents/hetGPU_pacc/tools/source_to_ptx.py";
+    const char* script = "/home/ubuntu/Documents/hetGPU_sifive/tools/source_to_ptx.py";
     if (access(script, R_OK) != 0) {
         fprintf(stderr, "[cudart_shim] source->PTX helper not found at %s\n", script);
         return 0;
@@ -2830,8 +2830,8 @@ static int compile_ggml_cuda_sources_to_ptx(const char* so_path, const char* ptx
         close(pipefd[1]);
 
         unsetenv("LD_PRELOAD");
-        unsetenv("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM");
-        unsetenv("HETGPU_PACC_LOG_KERNEL_LAUNCHES");
+        unsetenv("HETGPU_SIFIVE_ALLOW_HOST_DEVICE_MEM");
+        unsetenv("HETGPU_SIFIVE_LOG_KERNEL_LAUNCHES");
         unsetenv("HETGPU_CUDART_REGISTRY_LOG");
         unsetenv("HETGPU_PTX_EXTRACT_LOG");
 
@@ -2931,7 +2931,7 @@ static int compile_deepep_legacy_sources_to_ptx(const char* so_path, const char*
     int written = snprintf(
         cmd,
         sizeof(cmd),
-        "unset LD_PRELOAD HETGPU_PACC_ALLOW_HOST_DEVICE_MEM HETGPU_PACC_LOG_KERNEL_LAUNCHES "
+        "unset LD_PRELOAD HETGPU_SIFIVE_ALLOW_HOST_DEVICE_MEM HETGPU_SIFIVE_LOG_KERNEL_LAUNCHES "
         "HETGPU_CUDART_REGISTRY_LOG HETGPU_PTX_EXTRACT_LOG HETGPU_CUDART_LOG_LAUNCH_EX; "
         "/usr/bin/clang++-20 %s -I\"%s/deep_ep/include\" -I\"%s/third-party/fmt/include\" "
         "\"%s\" -o \"%s\" && "
@@ -3037,7 +3037,7 @@ static const char* extract_ptx_from_so(const char* so_path) {
     // Run cuobjdump to extract all PTX
     char cmd[1024];
     snprintf(cmd, sizeof(cmd),
-             "cd %s && /home/ubuntu/Documents/hetGPU_pacc/tools/cuobjdump --extract-ptx all '%s' 2>&1",
+             "cd %s && /home/ubuntu/Documents/hetGPU_sifive/tools/cuobjdump --extract-ptx all '%s' 2>&1",
              g_ptx_cache[cache_idx].ptx_dir, so_path);
 
     FILE* p = popen(cmd, "r");
@@ -4345,7 +4345,7 @@ cudaError_t cudaMallocFromPoolAsync(void** ptr,
 // Memory info
 cudaError_t cudaMemGetInfo(size_t* free, size_t* total) {
     size_t bytes = (size_t)hetgpu_parse_u64_env(
-        "HETGPU_PACC_VRAM_BYTES",
+        "HETGPU_SIFIVE_VRAM_BYTES",
         4ULL * 1024 * 1024 * 1024
     );
     if (free) *free = bytes;
@@ -4358,7 +4358,7 @@ cudaError_t cudaMalloc(void** devPtr, size_t size) {
     hetgpu_cuda_malloc_trace("[cudart_malloc] entry");
     if (!devPtr) return 1; // cudaErrorInvalidValue
 
-    // In PACC mode cuMemAlloc_v2 can allocate from the shared-DDR arena without
+    // In SIFIVE mode cuMemAlloc_v2 can allocate from the shared-DDR arena without
     // a CUDA context. Calling cudaSetDevice from this low-level allocation path
     // re-enters Rust global_state initialization and can trap on this RISC-V
     // toolchain, so keep the old context creation path opt-in for diagnostics.
@@ -4385,15 +4385,15 @@ cudaError_t cudaMalloc(void** devPtr, size_t size) {
     CUresult result = cuMemAlloc_v2(&dptr, size);
     hetgpu_cuda_malloc_trace("[cudart_malloc] cuMemAlloc after");
     if (result != 0) {
-        const char* real_mem = getenv("HETGPU_PACC_REAL_DEVICE_MEM");
-        const char* allow_host_mem = getenv("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM");
+        const char* real_mem = getenv("HETGPU_SIFIVE_REAL_DEVICE_MEM");
+        const char* allow_host_mem = getenv("HETGPU_SIFIVE_ALLOW_HOST_DEVICE_MEM");
         int allow_host_device_mem = allow_host_mem && strcmp(allow_host_mem, "1") == 0;
-        if (hetgpu_strict_pacc() ||
-            (hetgpu_pacc_requires_tracked_allocations() && !allow_host_device_mem) ||
+        if (hetgpu_strict_sifive() ||
+            (hetgpu_sifive_requires_tracked_allocations() && !allow_host_device_mem) ||
             (real_mem && strcmp(real_mem, "1") == 0)) {
             fprintf(stderr,
                     "[cudart_shim] cudaMalloc(%zu) cuMemAlloc_v2 failed (%d); "
-                    "refusing untracked host allocation in PACC mode\n",
+                    "refusing untracked host allocation in SIFIVE mode\n",
                     size, result);
             return hetgpu_set_last_error(2); // cudaErrorMemoryAllocation
         }

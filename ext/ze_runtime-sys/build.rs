@@ -22,7 +22,7 @@ fn main() -> Result<(), VarError> {
     } else {
         // Only link ze_loader if it is actually present on this system.
         // On non-Intel platforms (RISC-V, ARM, etc.) ze_loader is not installed,
-        // and building pacc/gemmini/tenstorrent features should not fail because of it.
+        // and building sifive/gemmini/tenstorrent features should not fail because of it.
         let search_dirs = [
             "/usr/lib/x86_64-linux-gnu",
             "/usr/lib/aarch64-linux-gnu",

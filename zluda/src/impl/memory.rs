@@ -1,7 +1,12 @@
 use crate::r#impl::context;
 #[cfg(feature = "intel")]
 use crate::r#impl::ze_to_cuda_result;
-#[cfg(any(feature = "intel", feature = "nvidia", feature = "tmatmul"))]
+#[cfg(any(
+    feature = "intel",
+    feature = "nvidia",
+    feature = "tmatmul",
+    feature = "sifive"
+))]
 use cuda_types::cuda::*;
 #[cfg(feature = "amd")]
 use hip_runtime_sys::*;
@@ -15,7 +20,7 @@ use hip_runtime_sys::*;
 use nvidia_runtime_sys;
 use std::ptr;
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -24,12 +29,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "intel")]
 use ze_runtime_sys::*;
 
-#[cfg(any(feature = "intel", feature = "tmatmul"))]
+#[cfg(any(feature = "intel", feature = "tmatmul", feature = "sifive"))]
 use std::collections::HashMap;
 /// Global allocation tracker for virtual backend.
 /// Maps pointer addresses to their allocation sizes in bytes.
 /// Used by invoke_emulator_bridge to determine safe read sizes.
-#[cfg(any(feature = "intel", feature = "tmatmul"))]
+#[cfg(any(feature = "intel", feature = "tmatmul", feature = "sifive"))]
 use std::sync::Mutex;
 
 #[cfg(feature = "intel")]
@@ -42,6 +47,12 @@ lazy_static::lazy_static! {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
+        not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
         not(feature = "tenstorrent")
     )
 ))]
@@ -57,6 +68,12 @@ lazy_static::lazy_static! {
         feature = "tmatmul",
         not(feature = "amd"),
         not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent")
     )
 ))]
 #[derive(Clone, Copy)]
@@ -69,6 +86,12 @@ struct TmatmulVmmHandle {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
+        not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
         not(feature = "tenstorrent")
     )
 ))]
@@ -122,6 +145,12 @@ fn virtual_alloc_range(addr: usize, bytes: usize) -> Option<(usize, usize)> {
         feature = "tmatmul",
         not(feature = "amd"),
         not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent")
     )
 ))]
 const TMATMUL_VMM_GRANULARITY: usize = 64 * 1024;
@@ -131,6 +160,12 @@ const TMATMUL_VMM_GRANULARITY: usize = 64 * 1024;
     all(
         feature = "tmatmul",
         not(feature = "amd"),
+        not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
         not(feature = "tenstorrent")
     )
 ))]
@@ -146,6 +181,12 @@ fn tmatmul_vmm_align(alignment: usize) -> Result<usize, CUerror> {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
+        not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
         not(feature = "tenstorrent")
     )
 ))]
@@ -165,6 +206,12 @@ fn tmatmul_vmm_contains(base: usize, len: usize, addr: usize, size: usize) -> bo
         feature = "tmatmul",
         not(feature = "amd"),
         not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent")
     )
 ))]
 fn tmatmul_vmm_range_end(start: usize, size: usize) -> Result<usize, CUerror> {
@@ -176,6 +223,12 @@ fn tmatmul_vmm_range_end(start: usize, size: usize) -> Result<usize, CUerror> {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
+        not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
         not(feature = "tenstorrent")
     )
 ))]
@@ -375,6 +428,12 @@ fn tmatmul_debug_host_backed_miss(label: &str, addr: usize, bytes: usize) {
         feature = "tmatmul",
         not(feature = "amd"),
         not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent")
     )
 ))]
 pub(crate) fn get_allocation_granularity(
@@ -396,6 +455,12 @@ pub(crate) fn get_allocation_granularity(
     all(
         feature = "tmatmul",
         not(feature = "amd"),
+        not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
         not(feature = "tenstorrent")
     )
 ))]
@@ -432,6 +497,12 @@ pub(crate) fn create(
         feature = "tmatmul",
         not(feature = "amd"),
         not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent")
     )
 ))]
 pub(crate) fn release(handle: CUmemGenericAllocationHandle) -> CUresult {
@@ -450,6 +521,12 @@ pub(crate) fn release(handle: CUmemGenericAllocationHandle) -> CUresult {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
+        not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
         not(feature = "tenstorrent")
     )
 ))]
@@ -499,6 +576,12 @@ pub(crate) fn address_reserve(
     all(
         feature = "tmatmul",
         not(feature = "amd"),
+        not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
         not(feature = "tenstorrent")
     )
 ))]
@@ -567,6 +650,12 @@ pub(crate) fn map(
         feature = "tmatmul",
         not(feature = "amd"),
         not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent")
     )
 ))]
 pub(crate) fn set_access(
@@ -606,6 +695,12 @@ pub(crate) fn set_access(
     all(
         feature = "tmatmul",
         not(feature = "amd"),
+        not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
         not(feature = "tenstorrent")
     )
 ))]
@@ -659,6 +754,12 @@ pub(crate) fn unmap(ptr: CUdeviceptr, size: usize) -> CUresult {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
+        not(feature = "tenstorrent")
+    ),
+    all(
+        feature = "sifive",
+        not(feature = "amd"),
+        not(feature = "intel"),
         not(feature = "tenstorrent")
     )
 ))]
@@ -1925,9 +2026,9 @@ pub(crate) fn get_allocation_granularity(
     }
 }
 
-// ─── PACC memory API ─────────────────────────────────────────────────────────
+// ─── SIFIVE memory API ─────────────────────────────────────────────────────────
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1935,72 +2036,72 @@ pub(crate) fn get_allocation_granularity(
 use cuda_types::cuda::*;
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-enum PaccAllocKind {
+enum SifiveAllocKind {
     Host { align: usize },
-    Driver { bo: pacc_runtime_sys::PaccBoMap },
+    Driver { bo: sifive_runtime_sys::SifiveBoMap },
     SharedDdr,
     SharedDdrIpc { map_ptr: usize, map_len: usize },
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-struct PaccAlloc {
+struct SifiveAlloc {
     size: usize,
     phys: u64,
-    kind: PaccAllocKind,
+    kind: SifiveAllocKind,
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_ALLOC_MAP: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<u64, PaccAlloc>>,
+static SIFIVE_ALLOC_MAP: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u64, SifiveAlloc>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_MEMORY_READ_BYTES: AtomicU64 = AtomicU64::new(0);
+static SIFIVE_MEMORY_READ_BYTES: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_MEMORY_WRITE_BYTES: AtomicU64 = AtomicU64::new(0);
+static SIFIVE_MEMORY_WRITE_BYTES: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-const PACC_ALLOC_STATS_DEFAULT_DIR: &str = "/tmp/hetgpu_pacc_allocs";
+const SIFIVE_ALLOC_STATS_DEFAULT_DIR: &str = "/tmp/hetgpu_sifive_allocs";
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_alloc_stats_enabled() -> bool {
-    match std::env::var("HETGPU_PACC_ALLOC_STATS") {
+fn sifive_alloc_stats_enabled() -> bool {
+    match std::env::var("HETGPU_SIFIVE_ALLOC_STATS") {
         Ok(value) => {
             !(value == "0"
                 || value.eq_ignore_ascii_case("false")
@@ -2012,19 +2113,19 @@ fn pacc_alloc_stats_enabled() -> bool {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_alloc_stats_dir() -> Option<String> {
-    if !pacc_alloc_stats_enabled() {
+fn sifive_alloc_stats_dir() -> Option<String> {
+    if !sifive_alloc_stats_enabled() {
         return None;
     }
-    let dir = std::env::var("HETGPU_PACC_ALLOC_STATS_DIR")
+    let dir = std::env::var("HETGPU_SIFIVE_ALLOC_STATS_DIR")
         .ok()
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| PACC_ALLOC_STATS_DEFAULT_DIR.to_string());
+        .unwrap_or_else(|| SIFIVE_ALLOC_STATS_DEFAULT_DIR.to_string());
     if std::fs::create_dir_all(&dir).is_err() {
         return None;
     }
@@ -2032,12 +2133,12 @@ fn pacc_alloc_stats_dir() -> Option<String> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_atomic_saturating_add(counter: &AtomicU64, bytes: usize) {
+fn sifive_atomic_saturating_add(counter: &AtomicU64, bytes: usize) {
     let add = if bytes > u64::MAX as usize {
         u64::MAX
     } else {
@@ -2057,20 +2158,20 @@ fn pacc_atomic_saturating_add(counter: &AtomicU64, bytes: usize) {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_write_memory_bandwidth_stats() {
-    let Some(dir) = pacc_alloc_stats_dir() else {
+fn sifive_write_memory_bandwidth_stats() {
+    let Some(dir) = sifive_alloc_stats_dir() else {
         return;
     };
     let pid = std::process::id();
     let path = format!("{}/{}.bw", dir, pid);
     let tmp_path = format!("{}/{}.bw.tmp", dir, pid);
-    let read_bytes = PACC_MEMORY_READ_BYTES.load(Ordering::Relaxed);
-    let write_bytes = PACC_MEMORY_WRITE_BYTES.load(Ordering::Relaxed);
+    let read_bytes = SIFIVE_MEMORY_READ_BYTES.load(Ordering::Relaxed);
+    let write_bytes = SIFIVE_MEMORY_WRITE_BYTES.load(Ordering::Relaxed);
     let body = format!(
         "version=1\npid={}\nmemory_read_bytes={}\nmemory_write_bytes={}\n",
         pid, read_bytes, write_bytes
@@ -2081,28 +2182,28 @@ fn pacc_write_memory_bandwidth_stats() {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_record_memory_transfer(read_bytes: usize, write_bytes: usize) {
+fn sifive_record_memory_transfer(read_bytes: usize, write_bytes: usize) {
     if read_bytes == 0 && write_bytes == 0 {
         return;
     }
-    pacc_atomic_saturating_add(&PACC_MEMORY_READ_BYTES, read_bytes);
-    pacc_atomic_saturating_add(&PACC_MEMORY_WRITE_BYTES, write_bytes);
-    pacc_write_memory_bandwidth_stats();
+    sifive_atomic_saturating_add(&SIFIVE_MEMORY_READ_BYTES, read_bytes);
+    sifive_atomic_saturating_add(&SIFIVE_MEMORY_WRITE_BYTES, write_bytes);
+    sifive_write_memory_bandwidth_stats();
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_update_alloc_stats_locked(map: &std::collections::HashMap<u64, PaccAlloc>) {
-    if !pacc_alloc_stats_enabled() {
+fn sifive_update_alloc_stats_locked(map: &std::collections::HashMap<u64, SifiveAlloc>) {
+    if !sifive_alloc_stats_enabled() {
         return;
     }
 
@@ -2115,24 +2216,24 @@ fn pacc_update_alloc_stats_locked(map: &std::collections::HashMap<u64, PaccAlloc
     for alloc in map.values() {
         total = total.saturating_add(alloc.size);
         match &alloc.kind {
-            PaccAllocKind::Host { .. } => host = host.saturating_add(alloc.size),
-            PaccAllocKind::Driver { .. } => driver = driver.saturating_add(alloc.size),
-            PaccAllocKind::SharedDdr => shared_ddr = shared_ddr.saturating_add(alloc.size),
-            PaccAllocKind::SharedDdrIpc { .. } => {
+            SifiveAllocKind::Host { .. } => host = host.saturating_add(alloc.size),
+            SifiveAllocKind::Driver { .. } => driver = driver.saturating_add(alloc.size),
+            SifiveAllocKind::SharedDdr => shared_ddr = shared_ddr.saturating_add(alloc.size),
+            SifiveAllocKind::SharedDdrIpc { .. } => {
                 shared_ddr_ipc = shared_ddr_ipc.saturating_add(alloc.size)
             }
         }
     }
 
     let pid = std::process::id();
-    let Some(dir) = pacc_alloc_stats_dir() else {
+    let Some(dir) = sifive_alloc_stats_dir() else {
         return;
     };
     let device_memory = shared_ddr
         .saturating_add(shared_ddr_ipc)
         .saturating_add(driver);
-    let memory_read_bytes = PACC_MEMORY_READ_BYTES.load(Ordering::Relaxed);
-    let memory_write_bytes = PACC_MEMORY_WRITE_BYTES.load(Ordering::Relaxed);
+    let memory_read_bytes = SIFIVE_MEMORY_READ_BYTES.load(Ordering::Relaxed);
+    let memory_write_bytes = SIFIVE_MEMORY_WRITE_BYTES.load(Ordering::Relaxed);
 
     let path = format!("{}/{}", dir, pid);
     let tmp_path = format!("{}/{}.tmp", dir, pid);
@@ -2156,28 +2257,28 @@ fn pacc_update_alloc_stats_locked(map: &std::collections::HashMap<u64, PaccAlloc
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-const PACC_IPC_HANDLE_BYTES: usize = 64;
+const SIFIVE_IPC_HANDLE_BYTES: usize = 64;
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-const PACC_IPC_HANDLE_MAGIC: u64 = 0x4845_5447_5055_4943; // "HETGPUIC"
+const SIFIVE_IPC_HANDLE_MAGIC: u64 = 0x4845_5447_5055_4943; // "HETGPUIC"
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-struct PaccSharedDdrArena {
+struct SifiveSharedDdrArena {
     ptr: usize,
     phys: u64,
     size: usize,
@@ -2186,29 +2287,29 @@ struct PaccSharedDdrArena {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe impl Send for PaccSharedDdrArena {}
+unsafe impl Send for SifiveSharedDdrArena {}
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static PACC_SHARED_DDR_ARENA: std::sync::LazyLock<std::sync::Mutex<Option<PaccSharedDdrArena>>> =
+static SIFIVE_SHARED_DDR_ARENA: std::sync::LazyLock<std::sync::Mutex<Option<SifiveSharedDdrArena>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_u64_text(value: &str) -> Option<u64> {
+fn sifive_parse_u64_text(value: &str) -> Option<u64> {
     let value = value.trim();
     if let Some(hex) = value
         .strip_prefix("0x")
@@ -2221,24 +2322,24 @@ fn pacc_parse_u64_text(value: &str) -> Option<u64> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_read_u64(path: &str) -> Option<u64> {
+fn sifive_read_u64(path: &str) -> Option<u64> {
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|v| pacc_parse_u64_text(&v))
+        .and_then(|v| sifive_parse_u64_text(&v))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_read_helper_u64_at(path: &str, offset: u64) -> Option<u64> {
+fn sifive_read_helper_u64_at(path: &str, offset: u64) -> Option<u64> {
     use std::os::unix::fs::FileExt;
 
     let file = std::fs::OpenOptions::new().read(true).open(path).ok()?;
@@ -2248,96 +2349,96 @@ fn pacc_read_helper_u64_at(path: &str, offset: u64) -> Option<u64> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_shared_ddr_base_from_helper() -> Option<u64> {
+fn sifive_shared_ddr_base_from_helper() -> Option<u64> {
     const SHARED_DDR_BASE_INFO_OFF: u64 = 0x0200_4000;
-    let path = pacc_helper_path_for_device0();
-    pacc_read_helper_u64_at(&path, SHARED_DDR_BASE_INFO_OFF).filter(|&v| v != 0)
+    let path = sifive_helper_path_for_device0();
+    sifive_read_helper_u64_at(&path, SHARED_DDR_BASE_INFO_OFF).filter(|&v| v != 0)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_shared_ddr_base() -> Option<u64> {
-    pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr_coh/shared_ddr_base")
-        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr/shared_ddr_base"))
-        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_full/shared_ddr_base"))
-        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_base"))
-        .or_else(|| pacc_shared_ddr_base_from_helper())
+fn sifive_shared_ddr_base() -> Option<u64> {
+    sifive_read_u64("/sys/kernel/debug/hetgpu_sifive_mbox_ddr_coh/shared_ddr_base")
+        .or_else(|| sifive_read_u64("/sys/kernel/debug/hetgpu_sifive_mbox_ddr/shared_ddr_base"))
+        .or_else(|| sifive_read_u64("/sys/kernel/debug/hetgpu_sifive_mbox_full/shared_ddr_base"))
+        .or_else(|| sifive_read_u64("/sys/kernel/debug/hetgpu_sifive_mbox/shared_ddr_base"))
+        .or_else(|| sifive_shared_ddr_base_from_helper())
         .or_else(|| {
-            std::env::var("HETGPU_PACC_SHARED_DDR_BASE")
+            std::env::var("HETGPU_SIFIVE_SHARED_DDR_BASE")
                 .ok()
-                .and_then(|v| pacc_parse_u64_text(&v))
+                .and_then(|v| sifive_parse_u64_text(&v))
         })
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_shared_ddr_bytes() -> Option<usize> {
-    pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr_coh/shared_ddr_size")
-        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_ddr/shared_ddr_size"))
-        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox_full/shared_ddr_size"))
-        .or_else(|| pacc_read_u64("/sys/kernel/debug/hetgpu_pacc_mbox/shared_ddr_size"))
+fn sifive_shared_ddr_bytes() -> Option<usize> {
+    sifive_read_u64("/sys/kernel/debug/hetgpu_sifive_mbox_ddr_coh/shared_ddr_size")
+        .or_else(|| sifive_read_u64("/sys/kernel/debug/hetgpu_sifive_mbox_ddr/shared_ddr_size"))
+        .or_else(|| sifive_read_u64("/sys/kernel/debug/hetgpu_sifive_mbox_full/shared_ddr_size"))
+        .or_else(|| sifive_read_u64("/sys/kernel/debug/hetgpu_sifive_mbox/shared_ddr_size"))
         .or_else(|| {
-            pacc_read_u64("/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_size")
+            sifive_read_u64("/sys/module/hetgpu_sifive_mbox_ddr_coh/parameters/shared_ddr_size")
         })
-        .or_else(|| pacc_read_u64("/sys/module/hetgpu_pacc_mbox_ddr/parameters/shared_ddr_size"))
+        .or_else(|| sifive_read_u64("/sys/module/hetgpu_sifive_mbox_ddr/parameters/shared_ddr_size"))
         .or_else(|| {
-            std::env::var("HETGPU_PACC_SHARED_DDR_BYTES")
+            std::env::var("HETGPU_SIFIVE_SHARED_DDR_BYTES")
                 .ok()
-                .and_then(|v| pacc_parse_u64_text(&v))
+                .and_then(|v| sifive_parse_u64_text(&v))
         })
         .and_then(|v| usize::try_from(v).ok())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_parse_env_usize(name: &str) -> Option<usize> {
+fn sifive_parse_env_usize(name: &str) -> Option<usize> {
     std::env::var(name)
         .ok()
-        .and_then(|v| pacc_parse_u64_text(&v))
+        .and_then(|v| sifive_parse_u64_text(&v))
         .and_then(|v| usize::try_from(v).ok())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_helper_path_for_device0() -> String {
-    match std::env::var("HETGPU_PACC_MBOX_DEVICE") {
+fn sifive_helper_path_for_device0() -> String {
+    match std::env::var("HETGPU_SIFIVE_MBOX_DEVICE") {
         Ok(pattern) if pattern.contains("%d") => pattern.replace("%d", "0"),
         Ok(pattern) if pattern.contains("{}") => pattern.replace("{}", "0"),
         Ok(path) => path,
-        Err(_) => "/dev/hetgpu_pacc_mbox_ddr_coh0".to_string(),
+        Err(_) => "/dev/hetgpu_sifive_mbox_ddr_coh0".to_string(),
     }
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_alloc_trace(tag: &'static [u8]) {
+fn sifive_alloc_trace(tag: &'static [u8]) {
     let enabled = unsafe {
-        let env = libc::getenv(b"HETGPU_PACC_ALLOC_TRACE\0".as_ptr() as *const libc::c_char);
+        let env = libc::getenv(b"HETGPU_SIFIVE_ALLOC_TRACE\0".as_ptr() as *const libc::c_char);
         !env.is_null() && *env == b'1' as libc::c_char
     };
     if enabled {
@@ -2357,12 +2458,12 @@ fn pacc_alloc_trace(tag: &'static [u8]) {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_process_range_has_perms(addr: usize, len: usize, need_write: bool) -> bool {
+fn sifive_process_range_has_perms(addr: usize, len: usize, need_write: bool) -> bool {
     if len == 0 {
         return true;
     }
@@ -2401,12 +2502,12 @@ fn pacc_process_range_has_perms(addr: usize, len: usize, need_write: bool) -> bo
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_align_up(value: usize, align: usize) -> Option<usize> {
+fn sifive_align_up(value: usize, align: usize) -> Option<usize> {
     if align == 0 {
         return Some(value);
     }
@@ -2414,76 +2515,76 @@ fn pacc_align_up(value: usize, align: usize) -> Option<usize> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_shared_ddr_kernel_reserve(bytes: usize) -> usize {
-    if let Some(reserve) = pacc_parse_env_usize("HETGPU_PACC_SHARED_DEVICE_MEM_KERNEL_RESERVE") {
+fn sifive_shared_ddr_kernel_reserve(bytes: usize) -> usize {
+    if let Some(reserve) = sifive_parse_env_usize("HETGPU_SIFIVE_SHARED_DEVICE_MEM_KERNEL_RESERVE") {
         return reserve.min(bytes);
     }
-    let slot_count = pacc_parse_env_usize("HETGPU_PACC_KERNEL_TOTAL_SLOTS")
-        .or_else(|| pacc_parse_env_usize("HETGPU_PACC_KERNEL_SLOT_COUNT"))
+    let slot_count = sifive_parse_env_usize("HETGPU_SIFIVE_KERNEL_TOTAL_SLOTS")
+        .or_else(|| sifive_parse_env_usize("HETGPU_SIFIVE_KERNEL_SLOT_COUNT"))
         .unwrap_or(4)
         .max(1);
-    let slot_bytes = pacc_parse_env_usize("HETGPU_PACC_KERNEL_SLOT_BYTES")
-        .or_else(|| pacc_parse_env_usize("HETGPU_PACC_KERNEL_DEFAULT_SLOT_BYTES"))
+    let slot_bytes = sifive_parse_env_usize("HETGPU_SIFIVE_KERNEL_SLOT_BYTES")
+        .or_else(|| sifive_parse_env_usize("HETGPU_SIFIVE_KERNEL_DEFAULT_SLOT_BYTES"))
         .unwrap_or(64 * 1024 * 1024)
         .max(64 * 1024);
     slot_count.saturating_mul(slot_bytes).min(bytes)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
+fn sifive_alloc_shared_ddr(bytesize: usize) -> Result<(u64, SifiveAlloc), CUerror> {
     use std::fs::OpenOptions;
     use std::os::fd::AsRawFd;
 
-    pacc_alloc_trace(b"[pacc_alloc] shared entry");
-    let mut guard = PACC_SHARED_DDR_ARENA.lock().map_err(|_| CUerror::UNKNOWN)?;
-    pacc_alloc_trace(b"[pacc_alloc] shared lock");
+    sifive_alloc_trace(b"[sifive_alloc] shared entry");
+    let mut guard = SIFIVE_SHARED_DDR_ARENA.lock().map_err(|_| CUerror::UNKNOWN)?;
+    sifive_alloc_trace(b"[sifive_alloc] shared lock");
     if guard.is_none() {
-        pacc_alloc_trace(b"[pacc_alloc] shared init");
-        let phys = pacc_shared_ddr_base().ok_or(CUerror::OUT_OF_MEMORY)?;
-        pacc_alloc_trace(b"[pacc_alloc] shared base");
-        let size = pacc_shared_ddr_bytes().ok_or(CUerror::OUT_OF_MEMORY)?;
-        pacc_alloc_trace(b"[pacc_alloc] shared bytes");
+        sifive_alloc_trace(b"[sifive_alloc] shared init");
+        let phys = sifive_shared_ddr_base().ok_or(CUerror::OUT_OF_MEMORY)?;
+        sifive_alloc_trace(b"[sifive_alloc] shared base");
+        let size = sifive_shared_ddr_bytes().ok_or(CUerror::OUT_OF_MEMORY)?;
+        sifive_alloc_trace(b"[sifive_alloc] shared bytes");
         let heap_offset =
-            pacc_parse_env_usize("HETGPU_PACC_SHARED_DEVICE_MEM_HEAP_OFFSET").unwrap_or(0);
+            sifive_parse_env_usize("HETGPU_SIFIVE_SHARED_DEVICE_MEM_HEAP_OFFSET").unwrap_or(0);
         if heap_offset >= size || heap_offset % 4096 != 0 {
             return Err(CUerror::OUT_OF_MEMORY);
         }
-        pacc_alloc_trace(b"[pacc_alloc] shared heap offset");
-        let window_bytes = pacc_parse_env_usize("HETGPU_PACC_SHARED_DEVICE_MEM_HEAP_BYTES")
+        sifive_alloc_trace(b"[sifive_alloc] shared heap offset");
+        let window_bytes = sifive_parse_env_usize("HETGPU_SIFIVE_SHARED_DEVICE_MEM_HEAP_BYTES")
             .unwrap_or(size - heap_offset)
             .min(size - heap_offset);
         if window_bytes == 0 || window_bytes % 4096 != 0 {
             return Err(CUerror::OUT_OF_MEMORY);
         }
-        pacc_alloc_trace(b"[pacc_alloc] shared window");
-        let path = pacc_helper_path_for_device0();
-        pacc_alloc_trace(b"[pacc_alloc] shared path");
+        sifive_alloc_trace(b"[sifive_alloc] shared window");
+        let path = sifive_helper_path_for_device0();
+        sifive_alloc_trace(b"[sifive_alloc] shared path");
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(&path)
             .map_err(|err| {
-                if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+                if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
                     eprintln!(
-                        "[PACC Backend] shared-DDR CUDA heap open {} failed: {}",
+                        "[SIFIVE Backend] shared-DDR CUDA heap open {} failed: {}",
                         path, err
                     );
                 }
                 CUerror::OUT_OF_MEMORY
             })?;
-        pacc_alloc_trace(b"[pacc_alloc] shared open");
+        sifive_alloc_trace(b"[sifive_alloc] shared open");
         let ptr = unsafe {
-            pacc_alloc_trace(b"[pacc_alloc] shared mmap before");
+            sifive_alloc_trace(b"[sifive_alloc] shared mmap before");
             libc::mmap(
                 std::ptr::null_mut(),
                 window_bytes,
@@ -2493,11 +2594,11 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
                 heap_offset as libc::off_t,
             )
         };
-        pacc_alloc_trace(b"[pacc_alloc] shared mmap after");
+        sifive_alloc_trace(b"[sifive_alloc] shared mmap after");
         if ptr == libc::MAP_FAILED {
-            if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+            if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
                 eprintln!(
-                    "[PACC Backend] shared-DDR CUDA heap mmap {} offset=0x{:x} bytes={} failed: {}",
+                    "[SIFIVE Backend] shared-DDR CUDA heap mmap {} offset=0x{:x} bytes={} failed: {}",
                     path,
                     heap_offset,
                     window_bytes,
@@ -2512,18 +2613,18 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
         } else {
             0
         };
-        let kernel_reserved = pacc_shared_ddr_kernel_reserve(window_bytes);
+        let kernel_reserved = sifive_shared_ddr_kernel_reserve(window_bytes);
         let heap_end = window_bytes.saturating_sub(kernel_reserved);
-        pacc_alloc_trace(b"[pacc_alloc] shared reserve");
+        sifive_alloc_trace(b"[sifive_alloc] shared reserve");
         if heap_end <= control_reserved {
             unsafe {
                 libc::munmap(ptr, window_bytes);
             }
             return Err(CUerror::OUT_OF_MEMORY);
         }
-        if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+        if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
             eprintln!(
-                "[PACC Backend] shared-DDR CUDA heap mmap {} phys=0x{:x} offset=0x{:x} bytes={} heap=[0x{:x},0x{:x}) kernel_reserve={}",
+                "[SIFIVE Backend] shared-DDR CUDA heap mmap {} phys=0x{:x} offset=0x{:x} bytes={} heap=[0x{:x},0x{:x}) kernel_reserve={}",
                 path,
                 phys.saturating_add(heap_offset as u64),
                 heap_offset,
@@ -2533,21 +2634,21 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
                 kernel_reserved
             );
         }
-        pacc_alloc_trace(b"[pacc_alloc] shared guard before");
-        *guard = Some(PaccSharedDdrArena {
+        sifive_alloc_trace(b"[sifive_alloc] shared guard before");
+        *guard = Some(SifiveSharedDdrArena {
             ptr: ptr as usize,
             phys: phys.saturating_add(heap_offset as u64),
             size: window_bytes,
             cursor: control_reserved,
             heap_end,
         });
-        pacc_alloc_trace(b"[pacc_alloc] shared guard after");
+        sifive_alloc_trace(b"[sifive_alloc] shared guard after");
     }
 
     let arena = guard.as_mut().ok_or(CUerror::OUT_OF_MEMORY)?;
-    pacc_alloc_trace(b"[pacc_alloc] shared arena");
+    sifive_alloc_trace(b"[sifive_alloc] shared arena");
     let alloc_size = bytesize.max(1);
-    let offset = pacc_align_up(arena.cursor, 256).ok_or(CUerror::OUT_OF_MEMORY)?;
+    let offset = sifive_align_up(arena.cursor, 256).ok_or(CUerror::OUT_OF_MEMORY)?;
     let end = offset
         .checked_add(alloc_size)
         .ok_or(CUerror::OUT_OF_MEMORY)?;
@@ -2557,36 +2658,36 @@ fn pacc_alloc_shared_ddr(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
     arena.cursor = end;
     let addr = (arena.ptr + offset) as u64;
     let phys = arena.phys.saturating_add(offset as u64);
-    pacc_alloc_trace(b"[pacc_alloc] shared alloc ready");
-    if std::env::var("HETGPU_PACC_SHARED_DEVICE_MEM_ZERO")
+    sifive_alloc_trace(b"[sifive_alloc] shared alloc ready");
+    if std::env::var("HETGPU_SIFIVE_SHARED_DEVICE_MEM_ZERO")
         .ok()
         .as_deref()
         == Some("1")
     {
-        pacc_alloc_trace(b"[pacc_alloc] shared zero before");
+        sifive_alloc_trace(b"[sifive_alloc] shared zero before");
         unsafe {
             std::ptr::write_bytes(addr as *mut u8, 0, alloc_size);
         }
-        pacc_alloc_trace(b"[pacc_alloc] shared zero after");
+        sifive_alloc_trace(b"[sifive_alloc] shared zero after");
     }
-    pacc_alloc_trace(b"[pacc_alloc] shared return");
+    sifive_alloc_trace(b"[sifive_alloc] shared return");
     Ok((
         addr,
-        PaccAlloc {
+        SifiveAlloc {
             size: alloc_size,
             phys,
-            kind: PaccAllocKind::SharedDdr,
+            kind: SifiveAllocKind::SharedDdr,
         },
     ))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_alloc_host(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
+fn sifive_alloc_host(bytesize: usize) -> Result<(u64, SifiveAlloc), CUerror> {
     use std::alloc::{alloc_zeroed, Layout};
 
     let align = 128;
@@ -2598,108 +2699,108 @@ fn pacc_alloc_host(bytesize: usize) -> Result<(u64, PaccAlloc), CUerror> {
     }
     Ok((
         ptr as u64,
-        PaccAlloc {
+        SifiveAlloc {
             size: alloc_size,
             phys: 0,
-            kind: PaccAllocKind::Host { align },
+            kind: SifiveAllocKind::Host { align },
         },
     ))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
-    pacc_alloc_trace(b"[pacc_alloc] alloc_v2 entry");
+    sifive_alloc_trace(b"[sifive_alloc] alloc_v2 entry");
     if dptr.is_null() {
         return Err(CUerror::INVALID_VALUE);
     }
 
     let real_driver_alloc =
-        std::env::var("HETGPU_PACC_REAL_DEVICE_MEM").ok().as_deref() == Some("1");
-    let shared_device_mem = std::env::var("HETGPU_PACC_SHARED_DEVICE_MEM")
+        std::env::var("HETGPU_SIFIVE_REAL_DEVICE_MEM").ok().as_deref() == Some("1");
+    let shared_device_mem = std::env::var("HETGPU_SIFIVE_SHARED_DEVICE_MEM")
         .ok()
         .as_deref()
         == Some("1");
-    let allow_host_device_mem = std::env::var("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM")
+    let allow_host_device_mem = std::env::var("HETGPU_SIFIVE_ALLOW_HOST_DEVICE_MEM")
         .ok()
         .as_deref()
         == Some("1");
-    pacc_alloc_trace(b"[pacc_alloc] alloc_v2 env");
+    sifive_alloc_trace(b"[sifive_alloc] alloc_v2 env");
 
     let (addr, alloc) = if real_driver_alloc {
-        pacc_alloc_trace(b"[pacc_alloc] alloc_v2 real driver");
-        match pacc_runtime_sys::PaccDevice::open(0).and_then(|dev| dev.bo_alloc_map(bytesize)) {
+        sifive_alloc_trace(b"[sifive_alloc] alloc_v2 real driver");
+        match sifive_runtime_sys::SifiveDevice::open(0).and_then(|dev| dev.bo_alloc_map(bytesize)) {
             Ok(mut bo) => {
                 let phys = bo.phys();
                 let cuda_ptr = bo.as_mut_slice().as_mut_ptr() as u64;
                 (
                     cuda_ptr,
-                    PaccAlloc {
+                    SifiveAlloc {
                         size: bytesize,
                         phys,
-                        kind: PaccAllocKind::Driver { bo },
+                        kind: SifiveAllocKind::Driver { bo },
                     },
                 )
             }
             Err(e) => {
-                eprintln!("[PACC Backend] cuMemAlloc real device memory failed: {}", e);
+                eprintln!("[SIFIVE Backend] cuMemAlloc real device memory failed: {}", e);
                 return Err(CUerror::OUT_OF_MEMORY);
             }
         }
     } else if shared_device_mem {
-        pacc_alloc_trace(b"[pacc_alloc] alloc_v2 shared before");
-        match pacc_alloc_shared_ddr(bytesize) {
+        sifive_alloc_trace(b"[sifive_alloc] alloc_v2 shared before");
+        match sifive_alloc_shared_ddr(bytesize) {
             Ok((addr, alloc)) => {
-                pacc_alloc_trace(b"[pacc_alloc] alloc_v2 shared ok");
+                sifive_alloc_trace(b"[sifive_alloc] alloc_v2 shared ok");
                 (addr, alloc)
             }
             Err(e) if allow_host_device_mem => {
-                pacc_alloc_trace(b"[pacc_alloc] alloc_v2 shared fallback");
-                if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+                sifive_alloc_trace(b"[sifive_alloc] alloc_v2 shared fallback");
+                if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
                     eprintln!(
-                        "[PACC Backend] shared-DDR CUDA memory failed; falling back to host-backed memory"
+                        "[SIFIVE Backend] shared-DDR CUDA memory failed; falling back to host-backed memory"
                     );
                 }
-                pacc_alloc_host(bytesize).map_err(|_| e)?
+                sifive_alloc_host(bytesize).map_err(|_| e)?
             }
             Err(e) => return Err(e),
         }
     } else if allow_host_device_mem {
-        pacc_alloc_trace(b"[pacc_alloc] alloc_v2 host");
-        if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+        sifive_alloc_trace(b"[sifive_alloc] alloc_v2 host");
+        if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
             eprintln!(
-                "[PACC Backend] HETGPU_PACC_ALLOW_HOST_DEVICE_MEM=1: using host-backed CUDA memory"
+                "[SIFIVE Backend] HETGPU_SIFIVE_ALLOW_HOST_DEVICE_MEM=1: using host-backed CUDA memory"
             );
         }
-        pacc_alloc_host(bytesize)?
+        sifive_alloc_host(bytesize)?
     } else {
         eprintln!(
-            "[PACC Backend] refusing host-backed CUDA memory; set HETGPU_PACC_REAL_DEVICE_MEM=1 \
-             for driver memory or HETGPU_PACC_ALLOW_HOST_DEVICE_MEM=1 only for non-PACC debugging"
+            "[SIFIVE Backend] refusing host-backed CUDA memory; set HETGPU_SIFIVE_REAL_DEVICE_MEM=1 \
+             for driver memory or HETGPU_SIFIVE_ALLOW_HOST_DEVICE_MEM=1 only for non-SIFIVE debugging"
         );
         return Err(CUerror::OUT_OF_MEMORY);
     };
 
-    pacc_alloc_trace(b"[pacc_alloc] alloc_v2 map before");
+    sifive_alloc_trace(b"[sifive_alloc] alloc_v2 map before");
     {
-        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let mut map = SIFIVE_ALLOC_MAP.lock().unwrap();
         map.insert(addr, alloc);
-        pacc_update_alloc_stats_locked(&map);
+        sifive_update_alloc_stats_locked(&map);
     }
-    pacc_alloc_trace(b"[pacc_alloc] alloc_v2 map after");
+    sifive_alloc_trace(b"[sifive_alloc] alloc_v2 map after");
     unsafe {
         *dptr = CUdeviceptr_v2(addr as *mut _);
     }
-    pacc_alloc_trace(b"[pacc_alloc] alloc_v2 done");
+    sifive_alloc_trace(b"[sifive_alloc] alloc_v2 done");
     Ok(())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2710,31 +2811,31 @@ pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
         return Ok(());
     }
     let alloc = {
-        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let mut map = SIFIVE_ALLOC_MAP.lock().unwrap();
         let alloc = map.remove(&addr);
-        pacc_update_alloc_stats_locked(&map);
+        sifive_update_alloc_stats_locked(&map);
         alloc
     };
     if let Some(alloc) = alloc {
         match alloc.kind {
-            PaccAllocKind::Host { align } => {
+            SifiveAllocKind::Host { align } => {
                 if let Ok(layout) = std::alloc::Layout::from_size_align(alloc.size.max(1), align) {
                     unsafe {
                         std::alloc::dealloc(addr as *mut u8, layout);
                     }
                 }
             }
-            PaccAllocKind::Driver { .. } => {
-                // Dropping PaccBoMap unmaps the userspace view. The current
+            SifiveAllocKind::Driver { .. } => {
+                // Dropping SifiveBoMap unmaps the userspace view. The current
                 // driver does not expose a safe free ioctl; ioctl nr=3 is BO
-                // submit and is deliberately safety-gated in pacc_runtime_sys.
+                // submit and is deliberately safety-gated in sifive_runtime_sys.
             }
-            PaccAllocKind::SharedDdr => {
+            SifiveAllocKind::SharedDdr => {
                 // Shared-DDR allocations come from a monotonic process-local
                 // arena. The mmap stays alive until process exit so outstanding
                 // kernel bindings cannot dangle.
             }
-            PaccAllocKind::SharedDdrIpc { map_ptr, map_len } => {
+            SifiveAllocKind::SharedDdrIpc { map_ptr, map_len } => {
                 if map_ptr != 0 && map_len != 0 {
                     unsafe {
                         libc::munmap(map_ptr as *mut libc::c_void, map_len);
@@ -2747,7 +2848,7 @@ pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2762,7 +2863,7 @@ pub(crate) fn copy_dto_h_v2(
     }
     let addr = src_device.0 as u64;
     {
-        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let mut map = SIFIVE_ALLOC_MAP.lock().unwrap();
         let map_entries = map.len();
         if let Some((base, alloc)) = map.iter_mut().find(|(base, alloc)| {
             let start = **base;
@@ -2776,26 +2877,26 @@ pub(crate) fn copy_dto_h_v2(
             {
                 return Err(CUerror::INVALID_VALUE);
             }
-            if let PaccAllocKind::Driver { bo } = &mut alloc.kind {
+            if let SifiveAllocKind::Driver { bo } = &mut alloc.kind {
                 let src = &bo.as_mut_slice()[offset..offset + byte_count];
                 unsafe {
                     std::ptr::copy_nonoverlapping(src.as_ptr(), dst_host as *mut u8, byte_count);
                 }
-                pacc_record_memory_transfer(byte_count, 0);
+                sifive_record_memory_transfer(byte_count, 0);
                 return Ok(());
             }
-            if !pacc_process_range_has_perms(addr as usize, byte_count, false) {
-                if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+            if !sifive_process_range_has_perms(addr as usize, byte_count, false) {
+                if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
                     eprintln!(
-                        "[PACC Backend] cuMemcpyDtoH refusing unmapped non-driver src=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
+                        "[SIFIVE Backend] cuMemcpyDtoH refusing unmapped non-driver src=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
                         addr, *base, offset, byte_count, alloc.size, map_entries
                     );
                 }
                 return Err(CUerror::INVALID_VALUE);
             }
-            if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+            if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
                 eprintln!(
-                    "[PACC Backend] cuMemcpyDtoH host-backed src=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
+                    "[SIFIVE Backend] cuMemcpyDtoH host-backed src=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
                     addr, *base, offset, byte_count, alloc.size, map_entries
                 );
             }
@@ -2806,12 +2907,12 @@ pub(crate) fn copy_dto_h_v2(
                     byte_count,
                 );
             }
-            pacc_record_memory_transfer(byte_count, 0);
+            sifive_record_memory_transfer(byte_count, 0);
             return Ok(());
         }
-        if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+        if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
             eprintln!(
-                "[PACC Backend] cuMemcpyDtoH src not in alloc map: src=0x{:x} bytes={} map_entries={}",
+                "[SIFIVE Backend] cuMemcpyDtoH src not in alloc map: src=0x{:x} bytes={} map_entries={}",
                 addr, byte_count, map_entries
             );
         }
@@ -2822,12 +2923,12 @@ pub(crate) fn copy_dto_h_v2(
     unsafe {
         std::ptr::copy_nonoverlapping(src_device.0 as *const u8, dst_host as *mut u8, byte_count);
     }
-    pacc_record_memory_transfer(byte_count, 0);
+    sifive_record_memory_transfer(byte_count, 0);
     Ok(())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2842,7 +2943,7 @@ pub(crate) fn copy_hto_d_v2(
     }
     let addr = dst_device.0 as u64;
     {
-        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let mut map = SIFIVE_ALLOC_MAP.lock().unwrap();
         let map_entries = map.len();
         if let Some((base, alloc)) = map.iter_mut().find(|(base, alloc)| {
             let start = **base;
@@ -2856,7 +2957,7 @@ pub(crate) fn copy_hto_d_v2(
             {
                 return Err(CUerror::INVALID_VALUE);
             }
-            if let PaccAllocKind::Driver { bo } = &mut alloc.kind {
+            if let SifiveAllocKind::Driver { bo } = &mut alloc.kind {
                 let dst = &mut bo.as_mut_slice()[offset..offset + byte_count];
                 unsafe {
                     std::ptr::copy_nonoverlapping(
@@ -2866,21 +2967,21 @@ pub(crate) fn copy_hto_d_v2(
                     );
                 }
                 bo.flush().map_err(|_| CUerror::UNKNOWN)?;
-                pacc_record_memory_transfer(0, byte_count);
+                sifive_record_memory_transfer(0, byte_count);
                 return Ok(());
             }
-            if !pacc_process_range_has_perms(addr as usize, byte_count, true) {
-                if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+            if !sifive_process_range_has_perms(addr as usize, byte_count, true) {
+                if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
                     eprintln!(
-                        "[PACC Backend] cuMemcpyHtoD refusing unmapped non-driver dst=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
+                        "[SIFIVE Backend] cuMemcpyHtoD refusing unmapped non-driver dst=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
                         addr, *base, offset, byte_count, alloc.size, map_entries
                     );
                 }
                 return Err(CUerror::INVALID_VALUE);
             }
-            if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+            if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
                 eprintln!(
-                    "[PACC Backend] cuMemcpyHtoD host-backed dst=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
+                    "[SIFIVE Backend] cuMemcpyHtoD host-backed dst=0x{:x} base=0x{:x} offset={} bytes={} alloc_size={} map_entries={}",
                     addr, *base, offset, byte_count, alloc.size, map_entries
                 );
             }
@@ -2891,12 +2992,12 @@ pub(crate) fn copy_hto_d_v2(
                     byte_count,
                 );
             }
-            pacc_record_memory_transfer(0, byte_count);
+            sifive_record_memory_transfer(0, byte_count);
             return Ok(());
         }
-        if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+        if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
             eprintln!(
-                "[PACC Backend] cuMemcpyHtoD dst not in alloc map: dst=0x{:x} bytes={} map_entries={}",
+                "[SIFIVE Backend] cuMemcpyHtoD dst not in alloc map: dst=0x{:x} bytes={} map_entries={}",
                 addr, byte_count, map_entries
             );
         }
@@ -2907,12 +3008,12 @@ pub(crate) fn copy_hto_d_v2(
     unsafe {
         std::ptr::copy_nonoverlapping(src_host as *const u8, dst_device.0 as *mut u8, byte_count);
     }
-    pacc_record_memory_transfer(0, byte_count);
+    sifive_record_memory_transfer(0, byte_count);
     Ok(())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2923,7 +3024,7 @@ pub(crate) fn get_address_range_v2(
     dptr: CUdeviceptr,
 ) -> CUresult {
     let addr = dptr.0 as u64;
-    let map = PACC_ALLOC_MAP.lock().unwrap();
+    let map = SIFIVE_ALLOC_MAP.lock().unwrap();
     if let Some((base, alloc)) = map.iter().find(|(base, alloc)| {
         let start = **base;
         let end = start.saturating_add(alloc.size as u64);
@@ -2946,7 +3047,7 @@ pub(crate) fn get_address_range_v2(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -2957,7 +3058,7 @@ pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) ->
         .checked_mul(std::mem::size_of::<u32>())
         .ok_or(CUerror::INVALID_VALUE)?;
     {
-        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let mut map = SIFIVE_ALLOC_MAP.lock().unwrap();
         if let Some((base, alloc)) = map.iter_mut().find(|(base, alloc)| {
             let start = **base;
             let end = start.saturating_add(alloc.size as u64);
@@ -2970,13 +3071,13 @@ pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) ->
             {
                 return Err(CUerror::INVALID_VALUE);
             }
-            if let PaccAllocKind::Driver { bo } = &mut alloc.kind {
+            if let SifiveAllocKind::Driver { bo } = &mut alloc.kind {
                 let dst = &mut bo.as_mut_slice()[offset..offset + byte_count];
                 for chunk in dst.chunks_exact_mut(std::mem::size_of::<u32>()) {
                     chunk.copy_from_slice(&ui.to_ne_bytes());
                 }
                 bo.flush().map_err(|_| CUerror::UNKNOWN)?;
-                pacc_record_memory_transfer(0, byte_count);
+                sifive_record_memory_transfer(0, byte_count);
                 return Ok(());
             }
         }
@@ -2992,12 +3093,12 @@ pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) ->
         let slice = unsafe { std::slice::from_raw_parts_mut(dst.0 as *mut u32, n) };
         slice.fill(ui);
     }
-    pacc_record_memory_transfer(0, byte_count);
+    sifive_record_memory_transfer(0, byte_count);
     Ok(())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -3005,7 +3106,7 @@ pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) ->
 pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize) -> CUresult {
     let addr = dst.0 as u64;
     {
-        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let mut map = SIFIVE_ALLOC_MAP.lock().unwrap();
         if let Some((base, alloc)) = map.iter_mut().find(|(base, alloc)| {
             let start = **base;
             let end = start.saturating_add(alloc.size as u64);
@@ -3015,10 +3116,10 @@ pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize)
             if offset.checked_add(n).map_or(true, |end| end > alloc.size) {
                 return Err(CUerror::INVALID_VALUE);
             }
-            if let PaccAllocKind::Driver { bo } = &mut alloc.kind {
+            if let SifiveAllocKind::Driver { bo } = &mut alloc.kind {
                 bo.as_mut_slice()[offset..offset + n].fill(value);
                 bo.flush().map_err(|_| CUerror::UNKNOWN)?;
-                pacc_record_memory_transfer(0, n);
+                sifive_record_memory_transfer(0, n);
                 return Ok(());
             }
         }
@@ -3031,30 +3132,30 @@ pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize)
             std::ptr::write_bytes(dst.0 as *mut u8, value, n);
         }
     }
-    pacc_record_memory_transfer(0, n);
+    sifive_record_memory_transfer(0, n);
     Ok(())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-pub(crate) fn pacc_resolve_device_addr(ptr: *const ::core::ffi::c_void) -> Option<u64> {
+pub(crate) fn sifive_resolve_device_addr(ptr: *const ::core::ffi::c_void) -> Option<u64> {
     let addr = ptr as u64;
-    let map = PACC_ALLOC_MAP.lock().unwrap();
+    let map = SIFIVE_ALLOC_MAP.lock().unwrap();
     map.iter().find_map(|(base, alloc)| {
         let start = *base;
         let end = start.saturating_add(alloc.size as u64);
         if addr >= start && addr < end {
             let offset = addr.saturating_sub(start);
             match &alloc.kind {
-                PaccAllocKind::Driver { .. } => Some(alloc.phys.saturating_add(offset)),
-                PaccAllocKind::SharedDdr | PaccAllocKind::SharedDdrIpc { .. } => {
+                SifiveAllocKind::Driver { .. } => Some(alloc.phys.saturating_add(offset)),
+                SifiveAllocKind::SharedDdr | SifiveAllocKind::SharedDdrIpc { .. } => {
                     Some(alloc.phys.saturating_add(offset))
                 }
-                PaccAllocKind::Host { .. } => Some(addr),
+                SifiveAllocKind::Host { .. } => Some(addr),
             }
         } else {
             None
@@ -3063,24 +3164,24 @@ pub(crate) fn pacc_resolve_device_addr(ptr: *const ::core::ffi::c_void) -> Optio
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-pub(crate) fn pacc_driver_physical_addr(addr: u64) -> Option<u64> {
-    let map = PACC_ALLOC_MAP.lock().unwrap();
+pub(crate) fn sifive_driver_physical_addr(addr: u64) -> Option<u64> {
+    let map = SIFIVE_ALLOC_MAP.lock().unwrap();
     map.iter().find_map(|(base, alloc)| {
         let start = *base;
         let end = start.saturating_add(alloc.size as u64);
         if addr >= start && addr < end {
             let offset = addr.saturating_sub(start);
             match &alloc.kind {
-                PaccAllocKind::Driver { .. } => Some(alloc.phys.saturating_add(offset)),
-                PaccAllocKind::SharedDdr | PaccAllocKind::SharedDdrIpc { .. } => {
+                SifiveAllocKind::Driver { .. } => Some(alloc.phys.saturating_add(offset)),
+                SifiveAllocKind::SharedDdr | SifiveAllocKind::SharedDdrIpc { .. } => {
                     Some(alloc.phys.saturating_add(offset))
                 }
-                PaccAllocKind::Host { .. } => None,
+                SifiveAllocKind::Host { .. } => None,
             }
         } else {
             None
@@ -3089,23 +3190,23 @@ pub(crate) fn pacc_driver_physical_addr(addr: u64) -> Option<u64> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-pub(crate) fn pacc_shared_ddr_physical_addr(addr: u64) -> Option<u64> {
-    let map = PACC_ALLOC_MAP.lock().unwrap();
+pub(crate) fn sifive_shared_ddr_physical_addr(addr: u64) -> Option<u64> {
+    let map = SIFIVE_ALLOC_MAP.lock().unwrap();
     map.iter().find_map(|(base, alloc)| {
         let start = *base;
         let end = start.saturating_add(alloc.size as u64);
         if addr >= start && addr < end {
             let offset = addr.saturating_sub(start);
             match &alloc.kind {
-                PaccAllocKind::SharedDdr | PaccAllocKind::SharedDdrIpc { .. } => {
+                SifiveAllocKind::SharedDdr | SifiveAllocKind::SharedDdrIpc { .. } => {
                     Some(alloc.phys.saturating_add(offset))
                 }
-                PaccAllocKind::Driver { .. } | PaccAllocKind::Host { .. } => None,
+                SifiveAllocKind::Driver { .. } | SifiveAllocKind::Host { .. } => None,
             }
         } else {
             None
@@ -3114,13 +3215,13 @@ pub(crate) fn pacc_shared_ddr_physical_addr(addr: u64) -> Option<u64> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-pub(crate) fn pacc_allocation_remaining_addr(addr: u64) -> Option<usize> {
-    let map = PACC_ALLOC_MAP.lock().unwrap();
+pub(crate) fn sifive_allocation_remaining_addr(addr: u64) -> Option<usize> {
+    let map = SIFIVE_ALLOC_MAP.lock().unwrap();
     map.iter().find_map(|(base, alloc)| {
         let start = *base;
         let end = start.saturating_add(alloc.size as u64);
@@ -3133,44 +3234,44 @@ pub(crate) fn pacc_allocation_remaining_addr(addr: u64) -> Option<usize> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_ipc_write_u64(buf: &mut [u8; PACC_IPC_HANDLE_BYTES], offset: usize, value: u64) {
+fn sifive_ipc_write_u64(buf: &mut [u8; SIFIVE_IPC_HANDLE_BYTES], offset: usize, value: u64) {
     buf[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_ipc_read_u64(buf: &[u8], offset: usize) -> Option<u64> {
+fn sifive_ipc_read_u64(buf: &[u8], offset: usize) -> Option<u64> {
     let bytes: [u8; 8] = buf.get(offset..offset + 8)?.try_into().ok()?;
     Some(u64::from_le_bytes(bytes))
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[no_mangle]
-pub unsafe extern "C" fn hetgpu_pacc_ipc_get_mem_handle(
+pub unsafe extern "C" fn hetgpu_sifive_ipc_get_mem_handle(
     ptr: *const ::core::ffi::c_void,
     handle: *mut ::core::ffi::c_void,
     handle_len: usize,
 ) -> i32 {
-    if ptr.is_null() || handle.is_null() || handle_len < PACC_IPC_HANDLE_BYTES {
+    if ptr.is_null() || handle.is_null() || handle_len < SIFIVE_IPC_HANDLE_BYTES {
         return 1;
     }
 
     let addr = ptr as u64;
-    let map = PACC_ALLOC_MAP.lock().unwrap();
+    let map = SIFIVE_ALLOC_MAP.lock().unwrap();
     let found = map.iter().find_map(|(base, alloc)| {
         let start = *base;
         let end = start.saturating_add(alloc.size as u64);
@@ -3178,7 +3279,7 @@ pub unsafe extern "C" fn hetgpu_pacc_ipc_get_mem_handle(
             let offset = addr.saturating_sub(start);
             if matches!(
                 &alloc.kind,
-                PaccAllocKind::SharedDdr | PaccAllocKind::SharedDdrIpc { .. }
+                SifiveAllocKind::SharedDdr | SifiveAllocKind::SharedDdrIpc { .. }
             ) {
                 Some((
                     alloc.phys.saturating_add(offset),
@@ -3200,23 +3301,23 @@ pub unsafe extern "C" fn hetgpu_pacc_ipc_get_mem_handle(
         return 1;
     }
 
-    let mut encoded = [0u8; PACC_IPC_HANDLE_BYTES];
-    pacc_ipc_write_u64(&mut encoded, 0, PACC_IPC_HANDLE_MAGIC);
-    pacc_ipc_write_u64(&mut encoded, 8, 1);
-    pacc_ipc_write_u64(&mut encoded, 16, phys);
-    pacc_ipc_write_u64(&mut encoded, 24, size as u64);
+    let mut encoded = [0u8; SIFIVE_IPC_HANDLE_BYTES];
+    sifive_ipc_write_u64(&mut encoded, 0, SIFIVE_IPC_HANDLE_MAGIC);
+    sifive_ipc_write_u64(&mut encoded, 8, 1);
+    sifive_ipc_write_u64(&mut encoded, 16, phys);
+    sifive_ipc_write_u64(&mut encoded, 24, size as u64);
     std::ptr::copy_nonoverlapping(encoded.as_ptr(), handle as *mut u8, encoded.len());
     0
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[no_mangle]
-pub unsafe extern "C" fn hetgpu_pacc_ipc_open_mem_handle(
+pub unsafe extern "C" fn hetgpu_sifive_ipc_open_mem_handle(
     dev_ptr: *mut *mut ::core::ffi::c_void,
     handle: *const ::core::ffi::c_void,
     _flags: ::core::ffi::c_uint,
@@ -3228,26 +3329,26 @@ pub unsafe extern "C" fn hetgpu_pacc_ipc_open_mem_handle(
         return 1;
     }
 
-    let encoded = std::slice::from_raw_parts(handle as *const u8, PACC_IPC_HANDLE_BYTES);
-    if pacc_ipc_read_u64(encoded, 0) != Some(PACC_IPC_HANDLE_MAGIC)
-        || pacc_ipc_read_u64(encoded, 8) != Some(1)
+    let encoded = std::slice::from_raw_parts(handle as *const u8, SIFIVE_IPC_HANDLE_BYTES);
+    if sifive_ipc_read_u64(encoded, 0) != Some(SIFIVE_IPC_HANDLE_MAGIC)
+        || sifive_ipc_read_u64(encoded, 8) != Some(1)
     {
         return 1;
     }
-    let phys = match pacc_ipc_read_u64(encoded, 16) {
+    let phys = match sifive_ipc_read_u64(encoded, 16) {
         Some(v) if v != 0 => v,
         _ => return 1,
     };
-    let size = match pacc_ipc_read_u64(encoded, 24).and_then(|v| usize::try_from(v).ok()) {
+    let size = match sifive_ipc_read_u64(encoded, 24).and_then(|v| usize::try_from(v).ok()) {
         Some(v) if v != 0 => v,
         _ => return 1,
     };
 
-    let shared_base = match pacc_shared_ddr_base() {
+    let shared_base = match sifive_shared_ddr_base() {
         Some(v) => v,
         None => return 1,
     };
-    let shared_bytes = match pacc_shared_ddr_bytes() {
+    let shared_bytes = match sifive_shared_ddr_bytes() {
         Some(v) => v,
         None => return 1,
     };
@@ -3267,12 +3368,12 @@ pub unsafe extern "C" fn hetgpu_pacc_ipc_open_mem_handle(
     let page_delta = ddr_offset as usize - page_offset;
     let map_len = match page_delta
         .checked_add(size)
-        .and_then(|v| pacc_align_up(v, page))
+        .and_then(|v| sifive_align_up(v, page))
     {
         Some(v) if v != 0 => v,
         _ => return 1,
     };
-    let path = pacc_helper_path_for_device0();
+    let path = sifive_helper_path_for_device0();
     let file = match OpenOptions::new().read(true).write(true).open(&path) {
         Ok(v) => v,
         Err(_) => return 1,
@@ -3291,23 +3392,23 @@ pub unsafe extern "C" fn hetgpu_pacc_ipc_open_mem_handle(
 
     let addr = (map_ptr as usize).saturating_add(page_delta);
     {
-        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let mut map = SIFIVE_ALLOC_MAP.lock().unwrap();
         map.insert(
             addr as u64,
-            PaccAlloc {
+            SifiveAlloc {
                 size,
                 phys,
-                kind: PaccAllocKind::SharedDdrIpc {
+                kind: SifiveAllocKind::SharedDdrIpc {
                     map_ptr: map_ptr as usize,
                     map_len,
                 },
             },
         );
-        pacc_update_alloc_stats_locked(&map);
+        sifive_update_alloc_stats_locked(&map);
     }
-    if std::env::var("HETGPU_PACC_LOG_MEMORY").ok().as_deref() == Some("1") {
+    if std::env::var("HETGPU_SIFIVE_LOG_MEMORY").ok().as_deref() == Some("1") {
         eprintln!(
-            "[PACC Backend] cudaIpcOpenMemHandle shared-DDR {} phys=0x{:x} offset=0x{:x} size={} -> {:p}",
+            "[SIFIVE Backend] cudaIpcOpenMemHandle shared-DDR {} phys=0x{:x} offset=0x{:x} size={} -> {:p}",
             path, phys, ddr_offset, size, addr as *mut ::core::ffi::c_void
         );
     }
@@ -3316,19 +3417,19 @@ pub unsafe extern "C" fn hetgpu_pacc_ipc_open_mem_handle(
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[no_mangle]
-pub unsafe extern "C" fn hetgpu_pacc_ipc_close_mem_handle(ptr: *mut ::core::ffi::c_void) -> i32 {
+pub unsafe extern "C" fn hetgpu_sifive_ipc_close_mem_handle(ptr: *mut ::core::ffi::c_void) -> i32 {
     if ptr.is_null() {
         return 0;
     }
     let addr = ptr as u64;
     let alloc = {
-        let mut map = PACC_ALLOC_MAP.lock().unwrap();
+        let mut map = SIFIVE_ALLOC_MAP.lock().unwrap();
         let key = if map.contains_key(&addr) {
             Some(addr)
         } else {
@@ -3346,11 +3447,11 @@ pub unsafe extern "C" fn hetgpu_pacc_ipc_close_mem_handle(ptr: *mut ::core::ffi:
             return 0;
         };
         let alloc = map.remove(&key);
-        pacc_update_alloc_stats_locked(&map);
+        sifive_update_alloc_stats_locked(&map);
         alloc
     };
     if let Some(alloc) = alloc {
-        if let PaccAllocKind::SharedDdrIpc { map_ptr, map_len } = alloc.kind {
+        if let SifiveAllocKind::SharedDdrIpc { map_ptr, map_len } = alloc.kind {
             if map_ptr != 0 && map_len != 0 {
                 libc::munmap(map_ptr as *mut libc::c_void, map_len);
             }
@@ -3360,26 +3461,26 @@ pub unsafe extern "C" fn hetgpu_pacc_ipc_close_mem_handle(ptr: *mut ::core::ffi:
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[no_mangle]
-pub unsafe extern "C" fn hetgpu_pacc_resolve_device_addr(ptr: *const ::core::ffi::c_void) -> u64 {
-    pacc_resolve_device_addr(ptr).unwrap_or(ptr as u64)
+pub unsafe extern "C" fn hetgpu_sifive_resolve_device_addr(ptr: *const ::core::ffi::c_void) -> u64 {
+    sifive_resolve_device_addr(ptr).unwrap_or(ptr as u64)
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[no_mangle]
-pub unsafe extern "C" fn hetgpu_pacc_is_device_ptr(ptr: *const ::core::ffi::c_void) -> i32 {
+pub unsafe extern "C" fn hetgpu_sifive_is_device_ptr(ptr: *const ::core::ffi::c_void) -> i32 {
     let addr = ptr as u64;
-    let map = PACC_ALLOC_MAP.lock().unwrap();
+    let map = SIFIVE_ALLOC_MAP.lock().unwrap();
     if map.iter().any(|(base, alloc)| {
         let start = *base;
         let end = start.saturating_add(alloc.size as u64);
@@ -3387,9 +3488,9 @@ pub unsafe extern "C" fn hetgpu_pacc_is_device_ptr(ptr: *const ::core::ffi::c_vo
             && addr < end
             && matches!(
                 &alloc.kind,
-                PaccAllocKind::Driver { .. }
-                    | PaccAllocKind::SharedDdr
-                    | PaccAllocKind::SharedDdrIpc { .. }
+                SifiveAllocKind::Driver { .. }
+                    | SifiveAllocKind::SharedDdr
+                    | SifiveAllocKind::SharedDdrIpc { .. }
             )
     }) {
         1
@@ -3399,18 +3500,18 @@ pub unsafe extern "C" fn hetgpu_pacc_is_device_ptr(ptr: *const ::core::ffi::c_vo
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[no_mangle]
-pub unsafe extern "C" fn hetgpu_pacc_allocation_remaining(
+pub unsafe extern "C" fn hetgpu_sifive_allocation_remaining(
     ptr: *const ::core::ffi::c_void,
 ) -> usize {
     let addr = ptr as u64;
     if addr == 0 {
         return 0;
     }
-    pacc_allocation_remaining_addr(addr).unwrap_or(0)
+    sifive_allocation_remaining_addr(addr).unwrap_or(0)
 }

@@ -14,7 +14,7 @@ The proof has two contracts:
 ## Shim Fix Under Test
 
 For `--features nvidia,embed_cudart`, `zluda/build.rs` defines
-`HETGPU_SHIM_ENABLE_REAL_CUBLAS_BY_DEFAULT` when PACC is not enabled. That makes
+`HETGPU_SHIM_ENABLE_REAL_CUBLAS_BY_DEFAULT` when SIFIVE is not enabled. That makes
 the cuBLAS shim default to forwarding real NVIDIA cuBLAS calls in the passthrough
 path.
 
@@ -27,7 +27,7 @@ path.
   calls when real cuBLAS is available
 - maps cudart-shim managed stream objects to `NULL` before forwarding them to
   real cuBLAS
-- keeps the lazy PACC submit/staging path available for virtual/PACC builds
+- keeps the lazy SIFIVE submit/staging path available for virtual/SIFIVE builds
 
 The old failure was:
 
@@ -37,7 +37,7 @@ current device: 0, in function ggml_cuda_op_mul_mat_cublas
 cublasSgemm_v2(...)
 ```
 
-`HETGPU_PACC_ALLOW_HOST_GEMM_FALLBACK=1` is not a valid proof escape for the real
+`HETGPU_SIFIVE_ALLOW_HOST_GEMM_FALLBACK=1` is not a valid proof escape for the real
 NVIDIA path, because real GPU device pointers cannot be treated as host memory.
 
 ## Kimi SASS/CUBIN Exposure

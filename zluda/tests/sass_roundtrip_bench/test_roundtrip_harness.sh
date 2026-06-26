@@ -139,15 +139,15 @@ if rg -q '\(CUstream\)stream,' "${REPO_ROOT}/zluda/src/cudart_shim.c"; then
     echo "cudart shim must not pass managed cudaStream_t wrappers directly to driver cuLaunchKernel" >&2
     exit 1
 fi
-rg -q 'hetgpu_resolve_pacc_submit_gemm_mmvf_small_n_fn' "${REPO_ROOT}/zluda/src/cublas_shim.c"
-rg -q 'hetgpu_pacc_submit_gemm_mmvf_small_n_checked' "${REPO_ROOT}/zluda/src/cublas_shim.c"
+rg -q 'hetgpu_resolve_sifive_submit_gemm_mmvf_small_n_fn' "${REPO_ROOT}/zluda/src/cublas_shim.c"
+rg -q 'hetgpu_sifive_submit_gemm_mmvf_small_n_checked' "${REPO_ROOT}/zluda/src/cublas_shim.c"
 rg -q 'HETGPU_CUBLAS_FORWARD_REAL' "${REPO_ROOT}/zluda/src/cublas_shim.c"
 rg -q 'hetgpu_cublas_real_forward_enabled' "${REPO_ROOT}/zluda/src/cublas_shim.c"
 rg -q 'hetgpu_cublas_driver_stream' "${REPO_ROOT}/zluda/src/cublas_shim.c"
 rg -q 'real_cublasSetStream_v2' "${REPO_ROOT}/zluda/src/cublas_shim.c"
 rg -q 'HETGPU_SHIM_ENABLE_REAL_CUBLAS_BY_DEFAULT' "${REPO_ROOT}/zluda/build.rs"
-if rg -q '^extern int hetgpu_pacc_submit_gemm' "${REPO_ROOT}/zluda/src/cublas_shim.c"; then
-    echo "cublas shim must resolve optional PACC GEMM submit symbols lazily, not require externs at load time" >&2
+if rg -q '^extern int hetgpu_sifive_submit_gemm' "${REPO_ROOT}/zluda/src/cublas_shim.c"; then
+    echo "cublas shim must resolve optional SIFIVE GEMM submit symbols lazily, not require externs at load time" >&2
     exit 1
 fi
 rg -q 'hetgpu_is_ggml_cuda_rms_norm_f32' "${REPO_ROOT}/zluda/src/cudart_shim.c"

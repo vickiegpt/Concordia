@@ -32,10 +32,10 @@ extern "C"
 {
     uint32_t FUNC(activemask)()
     {
-        // PACC lowers the shared PTX helper bitcode through a RISC-V backend.
+        // SIFIVE lowers the shared PTX helper bitcode through a RISC-V backend.
         // The original AMD-specific exec-mask intrinsic survives into linked_0.bc
         // and currently crashes LLVM during RISC-V instruction selection. For the
-        // PACC path we only need a conservative single-lane mask to keep PTX ->
+        // SIFIVE path we only need a conservative single-lane mask to keep PTX ->
         // ELF launch moving; GEMM/runtime correctness is handled elsewhere.
         return 1U;
     }

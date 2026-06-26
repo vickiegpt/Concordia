@@ -13,7 +13,7 @@ use std::{
 pub(crate) mod debug_integration;
 mod deparamize_functions;
 pub(crate) mod emit_llvm;
-pub mod emit_pacc_vcix;
+pub mod emit_sifive_vcix;
 pub mod emit_tmatmul_asm;
 pub(crate) mod emit_tosa_aie;
 pub(crate) mod emit_tosa_mlir;
@@ -52,7 +52,7 @@ static ZLUDA_PTX_IMPL: &'static [u8] = include_bytes!("../../lib/zluda_ptx_ze_im
 static ZLUDA_PTX_IMPL: &'static [u8] = include_bytes!("../../lib/zluda_ptx_impl.bc");
 const ZLUDA_PTX_PREFIX: &'static str = "__zluda_ptx_impl_";
 
-/// `ggml_*` and `micro_kernel_*` symbols are implemented by the linked PACC
+/// `ggml_*` and `micro_kernel_*` symbols are implemented by the linked SIFIVE
 /// operator bitcode compiled from the llama.cpp-side operator sources. Keep
 /// their names stable so the later ELF/device-side link step can resolve them
 /// directly instead of rewriting them into the generic ZLUDA helper namespace.
@@ -126,12 +126,12 @@ pub fn to_llvm_module<'input>(
     on_pass_end("normalize_basic_blocks");
     let directives = remove_unreachable_basic_blocks::run(directives)?;
     on_pass_end("remove_unreachable_basic_blocks");
-    #[cfg(feature = "pacc")]
+    #[cfg(feature = "sifive")]
     let directives = {
-        on_pass_end("instruction_mode_to_global_mode(skipped_pacc)");
+        on_pass_end("instruction_mode_to_global_mode(skipped_sifive)");
         directives
     };
-    #[cfg(not(feature = "pacc"))]
+    #[cfg(not(feature = "sifive"))]
     let directives = {
         let directives = instruction_mode_to_global_mode::run(&mut flat_resolver, directives)?;
         on_pass_end("instruction_mode_to_global_mode");
@@ -147,7 +147,7 @@ pub fn to_llvm_module<'input>(
     on_pass_end("hoist_globals");
     let context = llvm::Context::new();
     let llvm_ir = llvm::emit::run(&context, flat_resolver, directives)?;
-    #[cfg(feature = "pacc")]
+    #[cfg(feature = "sifive")]
     llvm_ir.force_all_function_call_conv(0);
     let attributes_ir = llvm::attributes::run(&context, attributes)?;
     on_pass_end("emit_llvm");

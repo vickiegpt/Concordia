@@ -37,7 +37,7 @@ static int hetgpu_nccl_logs_enabled(void) {
 
 #define NCCL_LOG(...) do { if (hetgpu_nccl_logs_enabled()) fprintf(stderr, __VA_ARGS__); } while (0)
 
-extern int hetgpu_pacc_nccl_all_reduce_f32(
+extern int hetgpu_sifive_nccl_all_reduce_f32(
     const float *sendbuff,
     float *recvbuff,
     size_t count,
@@ -46,7 +46,7 @@ extern int hetgpu_pacc_nccl_all_reduce_f32(
     int nranks
 ) __attribute__((weak));
 
-extern int hetgpu_pacc_nccl_reduce_sum_f32(
+extern int hetgpu_sifive_nccl_reduce_sum_f32(
     const float *rank_inputs,
     float *recvbuff,
     size_t count,
@@ -108,7 +108,7 @@ ncclResult_t ncclGetVersion(int *version) {
 ncclResult_t ncclGetUniqueId(ncclUniqueId *uniqueId) {
     if (!uniqueId) return ncclInvalidArgument;
     memset(uniqueId, 0x50, sizeof(*uniqueId));
-    memcpy(uniqueId->internal, "HETGPU-PACC-NCCL-SHIM", 21);
+    memcpy(uniqueId->internal, "HETGPU-SIFIVE-NCCL-SHIM", 21);
     return ncclSuccess;
 }
 
@@ -280,16 +280,16 @@ static ncclResult_t rendezvous_allreduce_f32(
     }
 
     if (comm->rank == 0) {
-        int use_pacc = env_enabled("HETGPU_NCCL_USE_PACC");
+        int use_sifive = env_enabled("HETGPU_NCCL_USE_SIFIVE");
         float *accum = (float *)calloc(count, sizeof(float));
         float *rank_inputs = NULL;
         float *tmp = NULL;
-        if (use_pacc) {
+        if (use_sifive) {
             rank_inputs = (float *)malloc(count * sizeof(float) * (size_t)comm->nranks);
         } else {
             tmp = (float *)malloc(count * sizeof(float));
         }
-        if (!accum || (use_pacc && !rank_inputs) || (!use_pacc && !tmp)) {
+        if (!accum || (use_sifive && !rank_inputs) || (!use_sifive && !tmp)) {
             publish_abort(abort_path, "rank0 allocation failed\n");
             free(accum);
             free(rank_inputs);
@@ -314,42 +314,42 @@ static ncclResult_t rendezvous_allreduce_f32(
             }
         }
 
-        if (use_pacc) {
-            if (hetgpu_pacc_nccl_reduce_sum_f32) {
-                int rc = hetgpu_pacc_nccl_reduce_sum_f32(
+        if (use_sifive) {
+            if (hetgpu_sifive_nccl_reduce_sum_f32) {
+                int rc = hetgpu_sifive_nccl_reduce_sum_f32(
                     rank_inputs,
                     accum,
                     count,
                     comm->nranks
                 );
                 if (rc != 0) {
-                    if (env_enabled("HETGPU_NCCL_CPU_FALLBACK_AFTER_PACC")) {
-                        fprintf(stderr, "[hetGPU nccl_shim] PACC reduce-sum hook failed rc=%d; falling back to CPU sum\n", rc);
+                    if (env_enabled("HETGPU_NCCL_CPU_FALLBACK_AFTER_SIFIVE")) {
+                        fprintf(stderr, "[hetGPU nccl_shim] SIFIVE reduce-sum hook failed rc=%d; falling back to CPU sum\n", rc);
                         for (int r = 0; r < comm->nranks; ++r) {
                             float *src = rank_inputs + ((size_t)r * count);
                             for (size_t i = 0; i < count; ++i) accum[i] += src[i];
                         }
                     } else {
-                        fprintf(stderr, "[hetGPU nccl_shim] PACC reduce-sum hook failed rc=%d\n", rc);
-                        publish_abort(abort_path, "PACC reduce-sum hook failed\n");
+                        fprintf(stderr, "[hetGPU nccl_shim] SIFIVE reduce-sum hook failed rc=%d\n", rc);
+                        publish_abort(abort_path, "SIFIVE reduce-sum hook failed\n");
                         free(accum);
                         free(rank_inputs);
                         free(tmp);
                         return ncclSystemError;
                     }
                 }
-            } else if (hetgpu_pacc_nccl_all_reduce_f32) {
+            } else if (hetgpu_sifive_nccl_all_reduce_f32) {
                 for (int r = 0; r < comm->nranks; ++r) {
                     float *src = rank_inputs + ((size_t)r * count);
                     for (size_t i = 0; i < count; ++i) accum[i] += src[i];
                 }
-                int rc = hetgpu_pacc_nccl_all_reduce_f32(accum, accum, count, op, comm->rank, comm->nranks);
+                int rc = hetgpu_sifive_nccl_all_reduce_f32(accum, accum, count, op, comm->rank, comm->nranks);
                 if (rc != 0) {
-                    if (env_enabled("HETGPU_NCCL_CPU_FALLBACK_AFTER_PACC")) {
-                        fprintf(stderr, "[hetGPU nccl_shim] PACC allreduce hook failed rc=%d; keeping CPU sum result\n", rc);
+                    if (env_enabled("HETGPU_NCCL_CPU_FALLBACK_AFTER_SIFIVE")) {
+                        fprintf(stderr, "[hetGPU nccl_shim] SIFIVE allreduce hook failed rc=%d; keeping CPU sum result\n", rc);
                     } else {
-                        fprintf(stderr, "[hetGPU nccl_shim] PACC allreduce hook failed rc=%d\n", rc);
-                        publish_abort(abort_path, "PACC allreduce hook failed\n");
+                        fprintf(stderr, "[hetGPU nccl_shim] SIFIVE allreduce hook failed rc=%d\n", rc);
+                        publish_abort(abort_path, "SIFIVE allreduce hook failed\n");
                         free(accum);
                         free(rank_inputs);
                         free(tmp);
@@ -357,8 +357,8 @@ static ncclResult_t rendezvous_allreduce_f32(
                     }
                 }
             } else {
-                fprintf(stderr, "[hetGPU nccl_shim] PACC hook symbol unavailable\n");
-                publish_abort(abort_path, "PACC hook symbol unavailable\n");
+                fprintf(stderr, "[hetGPU nccl_shim] SIFIVE hook symbol unavailable\n");
+                publish_abort(abort_path, "SIFIVE hook symbol unavailable\n");
                 free(accum);
                 free(rank_inputs);
                 free(tmp);
@@ -413,10 +413,10 @@ ncclResult_t ncclAllReduce(
         return rendezvous_allreduce_f32((const float *)sendbuff, (float *)recvbuff, count, op, comm);
     }
 
-    if (datatype == 7 && op == 0 && env_enabled("HETGPU_NCCL_USE_PACC") && hetgpu_pacc_nccl_all_reduce_f32) {
+    if (datatype == 7 && op == 0 && env_enabled("HETGPU_NCCL_USE_SIFIVE") && hetgpu_sifive_nccl_all_reduce_f32) {
         int rank = comm ? comm->rank : read_env_i32("RANK", 0);
         int nranks = comm ? comm->nranks : read_env_i32("WORLD_SIZE", 1);
-        int rc = hetgpu_pacc_nccl_all_reduce_f32(
+        int rc = hetgpu_sifive_nccl_all_reduce_f32(
             (const float *)sendbuff,
             (float *)recvbuff,
             count,

@@ -944,7 +944,7 @@ intel = []
 tenstorrent = []
 gemmini = []
 cutile = []
-pacc = []
+sifive = []
 nvidia = ["dep:nvidia_sass"]
 aie = ["dep:aie_comgr_sys", "dep:aie_runtime_sys"]
 
@@ -956,7 +956,7 @@ intel_comgr_sys = { path = "../ext/intel_comgr-sys"  }
 tt_comgr_sys = { path = "../ext/tt_comgr-sys" }
 gemmini_comgr_sys = { path = "../ext/gemmini_comgr-sys" }
 cutile_comgr_sys = { path = "../ext/cutile_comgr-sys" }
-pacc_comgr_sys = { path = "../ext/pacc_comgr-sys" }
+sifive_comgr_sys = { path = "../ext/sifive_comgr-sys" }
 nvidia_sass = { path = "../nvidia_sass", optional = true }
 aie_comgr_sys = { path = "../ext/aie_comgr-sys", optional = true }
 aie_runtime_sys = { path = "../ext/aie_runtime-sys", optional = true }
@@ -1496,7 +1496,7 @@ intel = []
 tenstorrent = []
 gemmini = []
 cutile = []
-pacc = []
+sifive = []
 nvidia = ["dep:nvidia_sass"]
 aie = ["dep:aie_comgr_sys", "dep:aie_runtime_sys"]
 hw-test = ["aie", "aie_runtime_sys?/hw-test"]

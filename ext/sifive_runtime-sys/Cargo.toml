@@ -1,0 +1,19 @@
+[package]
+name = "sifive_runtime_sys"
+version = "0.1.0"
+authors = ["ZLUDA Team"]
+edition = "2021"
+description = "Rust bindings for SIFIVE Runtime (SiFive Intelligence XM / RISC-V IME)"
+license = "MIT"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+tempfile = "3.8.0"
+libc = "0.2"
+comgr = { path = "../../comgr", default-features = false, features = ["sifive"] }
+ptx = { path = "../../ptx", features = ["sifive"] }
+ptx_parser = { path = "../../ptx_parser" }
+
+[build-dependencies]

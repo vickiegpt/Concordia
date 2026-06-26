@@ -13,12 +13,12 @@ use hip_runtime_sys::*;
 ))]
 use nvidia_runtime_sys;
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-use pacc_runtime_sys;
+use sifive_runtime_sys;
 use std::{ffi::CStr, ptr, sync::Arc};
 #[cfg(all(feature = "tenstorrent", not(feature = "amd"), not(feature = "intel")))]
 use tt_runtime_sys;
@@ -88,7 +88,7 @@ impl ZludaObject for Module {
     feature = "tenstorrent",
     feature = "tmatmul",
     feature = "nvidia",
-    feature = "pacc"
+    feature = "sifive"
 ))]
 pub(crate) fn get_loading_mode(mode: *mut cuda_types::cuda::CUmoduleLoadingMode) -> CUresult {
     if mode.is_null() {
@@ -3566,23 +3566,23 @@ impl ZludaObject for NvidiaKernel {
 }
 
 // ============================================================================
-// PACC backend module implementations (SiFive Intelligence XM / RISC-V IME)
+// SIFIVE backend module implementations (SiFive Intelligence XM / RISC-V IME)
 // ============================================================================
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 pub(crate) struct Module {
-    device: *mut pacc_runtime_sys::pacc_Device,
-    program: Option<*mut pacc_runtime_sys::pacc_Program>,
-    kernels: Vec<(String, *mut pacc_runtime_sys::pacc_Kernel)>,
+    device: *mut sifive_runtime_sys::sifive_Device,
+    program: Option<*mut sifive_runtime_sys::sifive_Program>,
+    kernels: Vec<(String, *mut sifive_runtime_sys::sifive_Kernel)>,
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -3590,7 +3590,7 @@ pub(crate) struct Module {
 unsafe impl Send for Module {}
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -3598,16 +3598,16 @@ unsafe impl Send for Module {}
 unsafe impl Sync for Module {}
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn current_pacc_device_id() -> Result<i32, CUerror> {
+fn current_sifive_device_id() -> Result<i32, CUerror> {
     let _ = super::driver::global_state()?;
-    let device_id = match super::context::get_current_pacc() {
+    let device_id = match super::context::get_current_sifive() {
         Ok(ctx) => ctx.device_id,
-        Err(_) => super::driver::pacc_physical_device_for_logical(0),
+        Err(_) => super::driver::sifive_physical_device_for_logical(0),
     };
     if (0..4).contains(&device_id) {
         Ok(device_id)
@@ -3617,7 +3617,7 @@ fn current_pacc_device_id() -> Result<i32, CUerror> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -3635,7 +3635,7 @@ impl ZludaObject for Module {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -3656,43 +3656,43 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
         }
     }
 
-    let device_id = current_pacc_device_id()?;
-    // Bind this CUDA module to the current logical PACC device/context.
-    let device = unsafe { pacc_runtime_sys::pacc_CreateDevice(device_id as u32) };
+    let device_id = current_sifive_device_id()?;
+    // Bind this CUDA module to the current logical SIFIVE device/context.
+    let device = unsafe { sifive_runtime_sys::sifive_CreateDevice(device_id as u32) };
     if device.is_null() {
-        eprintln!("[PACC Backend] Failed to create PACC device {}", device_id);
+        eprintln!("[SIFIVE Backend] Failed to create SIFIVE device {}", device_id);
         return Err(CUerror::UNKNOWN);
     }
-    if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+    if std::env::var("HETGPU_SIFIVE_LOG_PROGRAM_LOADS")
         .ok()
         .as_deref()
         == Some("1")
     {
         eprintln!(
-            "[PACC Backend] cuModuleLoadData binding module to pacc{}",
+            "[SIFIVE Backend] cuModuleLoadData binding module to sifive{}",
             device_id
         );
     }
 
-    // Create PACC program
-    let program_ptr = unsafe { pacc_runtime_sys::pacc_CreateProgram() };
+    // Create SIFIVE program
+    let program_ptr = unsafe { sifive_runtime_sys::sifive_CreateProgram() };
 
-    // If PTX, ask the PACC runtime to compile PTX -> LLVM -> XM ELF and load it.
+    // If PTX, ask the SIFIVE runtime to compile PTX -> LLVM -> XM ELF and load it.
     if is_ptx && !program_ptr.is_null() {
         let c_str = unsafe { std::ffi::CStr::from_ptr(image as *const std::ffi::c_char) };
         if let Ok(ptx_text) = c_str.to_str() {
-            if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+            if std::env::var("HETGPU_SIFIVE_LOG_PROGRAM_LOADS")
                 .ok()
                 .as_deref()
                 == Some("1")
             {
                 eprintln!(
-                    "[PACC Backend] Compiling PTX ({} bytes) through pacc runtime...",
+                    "[SIFIVE Backend] Compiling PTX ({} bytes) through sifive runtime...",
                     ptx_text.len()
                 );
             }
             let result = unsafe {
-                pacc_runtime_sys::pacc_LoadProgramPtx(
+                sifive_runtime_sys::sifive_LoadProgramPtx(
                     program_ptr,
                     std::ptr::null(),
                     c"module.ptx".as_ptr(),
@@ -3702,7 +3702,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
                     0,
                 )
             };
-            if result != pacc_runtime_sys::pacc_Result_Success {
+            if result != sifive_runtime_sys::sifive_Result_Success {
                 let compile_error = unsafe {
                     program_ptr
                         .as_ref()
@@ -3710,20 +3710,20 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
                         .map(str::to_owned)
                 };
                 eprintln!(
-                    "[PACC Backend] pacc_LoadProgramPtx failed: {}{}",
+                    "[SIFIVE Backend] sifive_LoadProgramPtx failed: {}{}",
                     result,
                     compile_error
                         .as_deref()
                         .map(|msg| format!(" ({})", msg))
                         .unwrap_or_default()
                 );
-            } else if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+            } else if std::env::var("HETGPU_SIFIVE_LOG_PROGRAM_LOADS")
                 .ok()
                 .as_deref()
                 == Some("1")
             {
                 eprintln!(
-                    "[PACC Backend] pacc_LoadProgramPtx succeeded for {} bytes of PTX",
+                    "[SIFIVE Backend] sifive_LoadProgramPtx succeeded for {} bytes of PTX",
                     ptx_text.len()
                 );
             }
@@ -3742,7 +3742,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
 
     *module = new_module.wrap();
 
-    if std::env::var("HETGPU_PACC_LOG_PROGRAM_LOADS")
+    if std::env::var("HETGPU_SIFIVE_LOG_PROGRAM_LOADS")
         .ok()
         .as_deref()
         == Some("1")
@@ -3753,7 +3753,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
             .map(|p| unsafe { (*p).elf_bytes.len() })
             .unwrap_or(0);
         eprintln!(
-            "[PACC Backend] cuModuleLoadData installed module={:?} program={:?} elf_bytes={}",
+            "[SIFIVE Backend] cuModuleLoadData installed module={:?} program={:?} elf_bytes={}",
             *module, module_ref.program, elf_len
         );
     }
@@ -3769,7 +3769,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -3782,7 +3782,7 @@ pub(crate) fn unload(hmod: CUmodule) -> CUresult {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -3802,25 +3802,25 @@ pub(crate) fn get_function(
             .map_err(|_| CUerror::INVALID_VALUE)?
     };
 
-    crate::r#impl::hetgpu_debug!("[PACC Backend] Getting function: {}", function_name);
+    crate::r#impl::hetgpu_debug!("[SIFIVE Backend] Getting function: {}", function_name);
 
-    // Get program from the wrapped CUDA module handle. PACC modules use the
+    // Get program from the wrapped CUDA module handle. SIFIVE modules use the
     // same LiveCheck wrapper as the other backends; casting CUmodule directly
     // to Module reads the cookie as fields and makes program look like None.
     let module_ref = super::as_ref::<Module>(&hmod).as_result()?;
     let kernel_ptr = if let Some(program) = module_ref.program {
-        unsafe { pacc_runtime_sys::pacc_CreateKernelOnDevice(program, module_ref.device, name) }
+        unsafe { sifive_runtime_sys::sifive_CreateKernelOnDevice(program, module_ref.device, name) }
     } else {
         std::ptr::null_mut()
     };
 
-    if std::env::var("HETGPU_PACC_LOG_KERNEL_HANDLES")
+    if std::env::var("HETGPU_SIFIVE_LOG_KERNEL_HANDLES")
         .ok()
         .as_deref()
         == Some("1")
     {
         eprintln!(
-            "[PACC Backend] Function '{}' module_device={:?} program={:?} elf_bytes={} kernel_ptr={:?}",
+            "[SIFIVE Backend] Function '{}' module_device={:?} program={:?} elf_bytes={} kernel_ptr={:?}",
             function_name,
             module_ref.device,
             module_ref.program,
@@ -3832,63 +3832,63 @@ pub(crate) fn get_function(
         );
     }
 
-    let pacc_kernel = PaccKernel {
+    let sifive_kernel = SifiveKernel {
         device: module_ref.device,
         kernel_ptr,
         kernel_name: function_name.to_string(),
     };
 
-    let kernel_box = Box::new(pacc_kernel);
+    let kernel_box = Box::new(sifive_kernel);
     let kernel_raw = Box::into_raw(kernel_box);
     unsafe { *hfunc = CUfunction(kernel_raw as *mut _) };
     Ok(())
 }
 
-// PACC kernel structure
+// SIFIVE kernel structure
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 #[repr(C)]
-pub(crate) struct PaccKernel {
-    pub device: *mut pacc_runtime_sys::pacc_Device,
-    pub kernel_ptr: *mut pacc_runtime_sys::pacc_Kernel,
+pub(crate) struct SifiveKernel {
+    pub device: *mut sifive_runtime_sys::sifive_Device,
+    pub kernel_ptr: *mut sifive_runtime_sys::sifive_Kernel,
     pub kernel_name: String,
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe impl Send for PaccKernel {}
+unsafe impl Send for SifiveKernel {}
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe impl Sync for PaccKernel {}
+unsafe impl Sync for SifiveKernel {}
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-impl ZludaObject for PaccKernel {
+impl ZludaObject for SifiveKernel {
     const COOKIE: usize = 0xad74ceadb9b2d51c;
 
     type CudaHandle = CUfunction;
 
     fn drop_checked(&mut self) -> CUresult {
-        eprintln!("[PACC Backend] Cleaning up kernel: {}", self.kernel_name);
+        eprintln!("[SIFIVE Backend] Cleaning up kernel: {}", self.kernel_name);
         Ok(())
     }
 }
 
-// FromCuda<CUfunction> for &PaccKernel is generated by from_cuda_object!(module::PaccKernel)
+// FromCuda<CUfunction> for &SifiveKernel is generated by from_cuda_object!(module::SifiveKernel)

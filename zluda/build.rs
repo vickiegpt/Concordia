@@ -69,7 +69,7 @@ fn main() {
             shim_build.arg("-DHETGPU_DEBUG_LOGS");
         }
         if std::env::var("CARGO_FEATURE_NVIDIA").is_ok()
-            && std::env::var("CARGO_FEATURE_PACC").is_err()
+            && std::env::var("CARGO_FEATURE_SIFIVE").is_err()
         {
             shim_build.arg("-DHETGPU_SHIM_ENABLE_REAL_CUBLAS_BY_DEFAULT");
         }

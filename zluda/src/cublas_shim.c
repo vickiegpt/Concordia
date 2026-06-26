@@ -1,7 +1,7 @@
 /*
  * cuBLAS Shim for hetGPU
  *
- * Routes GEMM calls into the PACC runtime job ABI.
+ * Routes GEMM calls into the SIFIVE runtime job ABI.
  * Optional host-memory CPU fallback is env-gated for fake-CUDA inference bring-up.
  */
 
@@ -47,7 +47,7 @@ static int hetgpu_cublas_real_forward_enabled(void) {
 }
 
 // Loading real cuBLAS is correct for the NVIDIA passthrough shim, but remains
-// opt-in for virtual/PACC backends where real cuBLAS would see fake contexts.
+// opt-in for virtual/SIFIVE backends where real cuBLAS would see fake contexts.
 static void* get_real_cublas() {
     if (!hetgpu_cublas_real_forward_enabled()) {
         return NULL;
@@ -161,27 +161,27 @@ enum {
     HETGPU_CUDA_MEMCPY_DEFAULT = 4,
 };
 
-#define HETGPU_PACC_DTYPE_INT8 0
-#define HETGPU_PACC_DTYPE_UINT8 1
-#define HETGPU_PACC_DTYPE_INT32 2
-#define HETGPU_PACC_DTYPE_F16 3
-#define HETGPU_PACC_DTYPE_F32 4
-#define HETGPU_PACC_DTYPE_BF16 5
+#define HETGPU_SIFIVE_DTYPE_INT8 0
+#define HETGPU_SIFIVE_DTYPE_UINT8 1
+#define HETGPU_SIFIVE_DTYPE_INT32 2
+#define HETGPU_SIFIVE_DTYPE_F16 3
+#define HETGPU_SIFIVE_DTYPE_F32 4
+#define HETGPU_SIFIVE_DTYPE_BF16 5
 
-static int hetgpu_pacc_dtype(cudaDataType type) {
+static int hetgpu_sifive_dtype(cudaDataType type) {
     switch (type) {
         case CUDA_R_8I:
-            return HETGPU_PACC_DTYPE_INT8;
+            return HETGPU_SIFIVE_DTYPE_INT8;
         case CUDA_R_8U:
-            return HETGPU_PACC_DTYPE_UINT8;
+            return HETGPU_SIFIVE_DTYPE_UINT8;
         case CUDA_R_32I:
-            return HETGPU_PACC_DTYPE_INT32;
+            return HETGPU_SIFIVE_DTYPE_INT32;
         case CUDA_R_16F:
-            return HETGPU_PACC_DTYPE_F16;
+            return HETGPU_SIFIVE_DTYPE_F16;
         case CUDA_R_32F:
-            return HETGPU_PACC_DTYPE_F32;
+            return HETGPU_SIFIVE_DTYPE_F32;
         case CUDA_R_16BF:
-            return HETGPU_PACC_DTYPE_BF16;
+            return HETGPU_SIFIVE_DTYPE_BF16;
         default:
             return (int)type;
     }
@@ -240,7 +240,7 @@ static int hetgpu_cublas_trace_enabled(void) {
 static cublasMath_t g_math_mode = CUBLAS_DEFAULT_MATH;
 static size_t host_dtype_size(cudaDataType type);
 
-typedef int (*hetgpu_pacc_submit_gemm_fn)(
+typedef int (*hetgpu_sifive_submit_gemm_fn)(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -248,7 +248,7 @@ typedef int (*hetgpu_pacc_submit_gemm_fn)(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType);
-typedef int (*hetgpu_pacc_submit_gemm_staged_fn)(
+typedef int (*hetgpu_sifive_submit_gemm_staged_fn)(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -256,7 +256,7 @@ typedef int (*hetgpu_pacc_submit_gemm_staged_fn)(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType);
-typedef int (*hetgpu_pacc_submit_gemm_staged_on_fn)(
+typedef int (*hetgpu_sifive_submit_gemm_staged_on_fn)(
     int dev_id, int slot_id,
     int transa, int transb, int m, int n, int k,
     const void *alpha,
@@ -265,7 +265,7 @@ typedef int (*hetgpu_pacc_submit_gemm_staged_on_fn)(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType);
-typedef int (*hetgpu_pacc_submit_gemm_staged_tiled_fn)(
+typedef int (*hetgpu_sifive_submit_gemm_staged_tiled_fn)(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -274,7 +274,7 @@ typedef int (*hetgpu_pacc_submit_gemm_staged_tiled_fn)(
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType,
     int max_m, int max_n, int max_k);
-typedef int (*hetgpu_pacc_submit_gemm_mmvf_small_n_fn)(
+typedef int (*hetgpu_sifive_submit_gemm_mmvf_small_n_fn)(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -282,9 +282,9 @@ typedef int (*hetgpu_pacc_submit_gemm_mmvf_small_n_fn)(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType);
-typedef unsigned long long (*hetgpu_pacc_resolve_device_addr_fn)(const void *ptr);
-typedef int (*hetgpu_pacc_is_device_ptr_fn)(const void *ptr);
-typedef size_t (*hetgpu_pacc_allocation_remaining_fn)(const void *ptr);
+typedef unsigned long long (*hetgpu_sifive_resolve_device_addr_fn)(const void *ptr);
+typedef int (*hetgpu_sifive_is_device_ptr_fn)(const void *ptr);
+typedef size_t (*hetgpu_sifive_allocation_remaining_fn)(const void *ptr);
 typedef int (*hetgpu_cuda_get_device_fn)(int *device);
 
 static void *hetgpu_resolve_runtime_symbol(const char *name) {
@@ -293,67 +293,67 @@ static void *hetgpu_resolve_runtime_symbol(const char *name) {
     return sym;
 }
 
-static int hetgpu_pacc_missing_submit_symbol(const char *name) {
-    DEBUG_LOG("optional PACC GEMM submit symbol is unavailable: %s", name);
+static int hetgpu_sifive_missing_submit_symbol(const char *name) {
+    DEBUG_LOG("optional SIFIVE GEMM submit symbol is unavailable: %s", name);
     return -127;
 }
 
-static hetgpu_pacc_submit_gemm_fn hetgpu_resolve_pacc_submit_gemm_fn(void) {
-    static hetgpu_pacc_submit_gemm_fn fn = NULL;
+static hetgpu_sifive_submit_gemm_fn hetgpu_resolve_sifive_submit_gemm_fn(void) {
+    static hetgpu_sifive_submit_gemm_fn fn = NULL;
     static int attempted = 0;
     if (!attempted) {
         attempted = 1;
-        fn = (hetgpu_pacc_submit_gemm_fn)
-            hetgpu_resolve_runtime_symbol("hetgpu_pacc_submit_gemm");
+        fn = (hetgpu_sifive_submit_gemm_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_sifive_submit_gemm");
     }
     return fn;
 }
 
-static hetgpu_pacc_submit_gemm_staged_fn hetgpu_resolve_pacc_submit_gemm_staged_fn(void) {
-    static hetgpu_pacc_submit_gemm_staged_fn fn = NULL;
+static hetgpu_sifive_submit_gemm_staged_fn hetgpu_resolve_sifive_submit_gemm_staged_fn(void) {
+    static hetgpu_sifive_submit_gemm_staged_fn fn = NULL;
     static int attempted = 0;
     if (!attempted) {
         attempted = 1;
-        fn = (hetgpu_pacc_submit_gemm_staged_fn)
-            hetgpu_resolve_runtime_symbol("hetgpu_pacc_submit_gemm_staged");
+        fn = (hetgpu_sifive_submit_gemm_staged_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_sifive_submit_gemm_staged");
     }
     return fn;
 }
 
-static hetgpu_pacc_submit_gemm_staged_on_fn hetgpu_resolve_pacc_submit_gemm_staged_on_fn(void) {
-    static hetgpu_pacc_submit_gemm_staged_on_fn fn = NULL;
+static hetgpu_sifive_submit_gemm_staged_on_fn hetgpu_resolve_sifive_submit_gemm_staged_on_fn(void) {
+    static hetgpu_sifive_submit_gemm_staged_on_fn fn = NULL;
     static int attempted = 0;
     if (!attempted) {
         attempted = 1;
-        fn = (hetgpu_pacc_submit_gemm_staged_on_fn)
-            hetgpu_resolve_runtime_symbol("hetgpu_pacc_submit_gemm_staged_on");
+        fn = (hetgpu_sifive_submit_gemm_staged_on_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_sifive_submit_gemm_staged_on");
     }
     return fn;
 }
 
-static hetgpu_pacc_submit_gemm_staged_tiled_fn hetgpu_resolve_pacc_submit_gemm_staged_tiled_fn(void) {
-    static hetgpu_pacc_submit_gemm_staged_tiled_fn fn = NULL;
+static hetgpu_sifive_submit_gemm_staged_tiled_fn hetgpu_resolve_sifive_submit_gemm_staged_tiled_fn(void) {
+    static hetgpu_sifive_submit_gemm_staged_tiled_fn fn = NULL;
     static int attempted = 0;
     if (!attempted) {
         attempted = 1;
-        fn = (hetgpu_pacc_submit_gemm_staged_tiled_fn)
-            hetgpu_resolve_runtime_symbol("hetgpu_pacc_submit_gemm_staged_tiled");
+        fn = (hetgpu_sifive_submit_gemm_staged_tiled_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_sifive_submit_gemm_staged_tiled");
     }
     return fn;
 }
 
-static hetgpu_pacc_submit_gemm_mmvf_small_n_fn hetgpu_resolve_pacc_submit_gemm_mmvf_small_n_fn(void) {
-    static hetgpu_pacc_submit_gemm_mmvf_small_n_fn fn = NULL;
+static hetgpu_sifive_submit_gemm_mmvf_small_n_fn hetgpu_resolve_sifive_submit_gemm_mmvf_small_n_fn(void) {
+    static hetgpu_sifive_submit_gemm_mmvf_small_n_fn fn = NULL;
     static int attempted = 0;
     if (!attempted) {
         attempted = 1;
-        fn = (hetgpu_pacc_submit_gemm_mmvf_small_n_fn)
-            hetgpu_resolve_runtime_symbol("hetgpu_pacc_submit_gemm_mmvf_small_n");
+        fn = (hetgpu_sifive_submit_gemm_mmvf_small_n_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_sifive_submit_gemm_mmvf_small_n");
     }
     return fn;
 }
 
-static int hetgpu_pacc_submit_gemm_checked(
+static int hetgpu_sifive_submit_gemm_checked(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -361,9 +361,9 @@ static int hetgpu_pacc_submit_gemm_checked(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType) {
-    hetgpu_pacc_submit_gemm_fn fn = hetgpu_resolve_pacc_submit_gemm_fn();
+    hetgpu_sifive_submit_gemm_fn fn = hetgpu_resolve_sifive_submit_gemm_fn();
     if (!fn) {
-        return hetgpu_pacc_missing_submit_symbol("hetgpu_pacc_submit_gemm");
+        return hetgpu_sifive_missing_submit_symbol("hetgpu_sifive_submit_gemm");
     }
     return fn(transa, transb, m, n, k,
               alpha,
@@ -374,7 +374,7 @@ static int hetgpu_pacc_submit_gemm_checked(
               batchCount, computeType);
 }
 
-static int hetgpu_pacc_submit_gemm_staged_checked(
+static int hetgpu_sifive_submit_gemm_staged_checked(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -382,9 +382,9 @@ static int hetgpu_pacc_submit_gemm_staged_checked(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType) {
-    hetgpu_pacc_submit_gemm_staged_fn fn = hetgpu_resolve_pacc_submit_gemm_staged_fn();
+    hetgpu_sifive_submit_gemm_staged_fn fn = hetgpu_resolve_sifive_submit_gemm_staged_fn();
     if (!fn) {
-        return hetgpu_pacc_missing_submit_symbol("hetgpu_pacc_submit_gemm_staged");
+        return hetgpu_sifive_missing_submit_symbol("hetgpu_sifive_submit_gemm_staged");
     }
     return fn(transa, transb, m, n, k,
               alpha,
@@ -395,7 +395,7 @@ static int hetgpu_pacc_submit_gemm_staged_checked(
               batchCount, computeType);
 }
 
-static int hetgpu_pacc_submit_gemm_staged_on_checked(
+static int hetgpu_sifive_submit_gemm_staged_on_checked(
     int dev_id, int slot_id,
     int transa, int transb, int m, int n, int k,
     const void *alpha,
@@ -404,9 +404,9 @@ static int hetgpu_pacc_submit_gemm_staged_on_checked(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType) {
-    hetgpu_pacc_submit_gemm_staged_on_fn fn = hetgpu_resolve_pacc_submit_gemm_staged_on_fn();
+    hetgpu_sifive_submit_gemm_staged_on_fn fn = hetgpu_resolve_sifive_submit_gemm_staged_on_fn();
     if (!fn) {
-        return hetgpu_pacc_missing_submit_symbol("hetgpu_pacc_submit_gemm_staged_on");
+        return hetgpu_sifive_missing_submit_symbol("hetgpu_sifive_submit_gemm_staged_on");
     }
     return fn(dev_id, slot_id,
               transa, transb, m, n, k,
@@ -418,7 +418,7 @@ static int hetgpu_pacc_submit_gemm_staged_on_checked(
               batchCount, computeType);
 }
 
-static int hetgpu_pacc_submit_gemm_staged_tiled_checked(
+static int hetgpu_sifive_submit_gemm_staged_tiled_checked(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -427,10 +427,10 @@ static int hetgpu_pacc_submit_gemm_staged_tiled_checked(
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType,
     int max_m, int max_n, int max_k) {
-    hetgpu_pacc_submit_gemm_staged_tiled_fn fn =
-        hetgpu_resolve_pacc_submit_gemm_staged_tiled_fn();
+    hetgpu_sifive_submit_gemm_staged_tiled_fn fn =
+        hetgpu_resolve_sifive_submit_gemm_staged_tiled_fn();
     if (!fn) {
-        return hetgpu_pacc_missing_submit_symbol("hetgpu_pacc_submit_gemm_staged_tiled");
+        return hetgpu_sifive_missing_submit_symbol("hetgpu_sifive_submit_gemm_staged_tiled");
     }
     return fn(transa, transb, m, n, k,
               alpha,
@@ -442,7 +442,7 @@ static int hetgpu_pacc_submit_gemm_staged_tiled_checked(
               max_m, max_n, max_k);
 }
 
-static int hetgpu_pacc_submit_gemm_mmvf_small_n_checked(
+static int hetgpu_sifive_submit_gemm_mmvf_small_n_checked(
     int transa, int transb, int m, int n, int k,
     const void *alpha,
     const void *A, int Atype, int lda, long long strideA,
@@ -450,10 +450,10 @@ static int hetgpu_pacc_submit_gemm_mmvf_small_n_checked(
     const void *beta,
     void *C, int Ctype, int ldc, long long strideC,
     int batchCount, int computeType) {
-    hetgpu_pacc_submit_gemm_mmvf_small_n_fn fn =
-        hetgpu_resolve_pacc_submit_gemm_mmvf_small_n_fn();
+    hetgpu_sifive_submit_gemm_mmvf_small_n_fn fn =
+        hetgpu_resolve_sifive_submit_gemm_mmvf_small_n_fn();
     if (!fn) {
-        return hetgpu_pacc_missing_submit_symbol("hetgpu_pacc_submit_gemm_mmvf_small_n");
+        return hetgpu_sifive_missing_submit_symbol("hetgpu_sifive_submit_gemm_mmvf_small_n");
     }
     return fn(transa, transb, m, n, k,
               alpha,
@@ -464,62 +464,62 @@ static int hetgpu_pacc_submit_gemm_mmvf_small_n_checked(
               batchCount, computeType);
 }
 
-static hetgpu_pacc_resolve_device_addr_fn hetgpu_resolve_device_addr_fn(void) {
-    static hetgpu_pacc_resolve_device_addr_fn fn = NULL;
+static hetgpu_sifive_resolve_device_addr_fn hetgpu_resolve_device_addr_fn(void) {
+    static hetgpu_sifive_resolve_device_addr_fn fn = NULL;
     static int attempted = 0;
     if (!attempted) {
         attempted = 1;
-        fn = (hetgpu_pacc_resolve_device_addr_fn)
-            hetgpu_resolve_runtime_symbol("hetgpu_pacc_resolve_device_addr");
+        fn = (hetgpu_sifive_resolve_device_addr_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_sifive_resolve_device_addr");
     }
     return fn;
 }
 
-static hetgpu_pacc_is_device_ptr_fn hetgpu_is_device_ptr_fn(void) {
-    static hetgpu_pacc_is_device_ptr_fn fn = NULL;
+static hetgpu_sifive_is_device_ptr_fn hetgpu_is_device_ptr_fn(void) {
+    static hetgpu_sifive_is_device_ptr_fn fn = NULL;
     static int attempted = 0;
     if (!attempted) {
         attempted = 1;
-        fn = (hetgpu_pacc_is_device_ptr_fn)
-            hetgpu_resolve_runtime_symbol("hetgpu_pacc_is_device_ptr");
+        fn = (hetgpu_sifive_is_device_ptr_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_sifive_is_device_ptr");
     }
     return fn;
 }
 
-static hetgpu_pacc_allocation_remaining_fn hetgpu_allocation_remaining_fn(void) {
-    static hetgpu_pacc_allocation_remaining_fn fn = NULL;
+static hetgpu_sifive_allocation_remaining_fn hetgpu_allocation_remaining_fn(void) {
+    static hetgpu_sifive_allocation_remaining_fn fn = NULL;
     static int attempted = 0;
     if (!attempted) {
         attempted = 1;
-        fn = (hetgpu_pacc_allocation_remaining_fn)
-            hetgpu_resolve_runtime_symbol("hetgpu_pacc_allocation_remaining");
+        fn = (hetgpu_sifive_allocation_remaining_fn)
+            hetgpu_resolve_runtime_symbol("hetgpu_sifive_allocation_remaining");
     }
     return fn;
 }
 
-static unsigned long long hetgpu_pacc_resolve_device_addr_checked(const void *ptr) {
-    hetgpu_pacc_resolve_device_addr_fn fn = hetgpu_resolve_device_addr_fn();
+static unsigned long long hetgpu_sifive_resolve_device_addr_checked(const void *ptr) {
+    hetgpu_sifive_resolve_device_addr_fn fn = hetgpu_resolve_device_addr_fn();
     return fn ? fn(ptr) : (unsigned long long)(uintptr_t)ptr;
 }
 
-static int hetgpu_pacc_is_device_ptr_checked(const void *ptr) {
-    hetgpu_pacc_is_device_ptr_fn fn = hetgpu_is_device_ptr_fn();
+static int hetgpu_sifive_is_device_ptr_checked(const void *ptr) {
+    hetgpu_sifive_is_device_ptr_fn fn = hetgpu_is_device_ptr_fn();
     return fn ? fn(ptr) : 0;
 }
 
-static size_t hetgpu_pacc_allocation_remaining_checked(const void *ptr) {
-    hetgpu_pacc_allocation_remaining_fn fn = hetgpu_allocation_remaining_fn();
+static size_t hetgpu_sifive_allocation_remaining_checked(const void *ptr) {
+    hetgpu_sifive_allocation_remaining_fn fn = hetgpu_allocation_remaining_fn();
     return fn ? fn(ptr) : SIZE_MAX;
 }
 
-#define hetgpu_pacc_resolve_device_addr hetgpu_pacc_resolve_device_addr_checked
-#define hetgpu_pacc_is_device_ptr hetgpu_pacc_is_device_ptr_checked
-#define hetgpu_pacc_allocation_remaining hetgpu_pacc_allocation_remaining_checked
-#define hetgpu_pacc_submit_gemm hetgpu_pacc_submit_gemm_checked
-#define hetgpu_pacc_submit_gemm_staged hetgpu_pacc_submit_gemm_staged_checked
-#define hetgpu_pacc_submit_gemm_staged_on hetgpu_pacc_submit_gemm_staged_on_checked
-#define hetgpu_pacc_submit_gemm_staged_tiled hetgpu_pacc_submit_gemm_staged_tiled_checked
-#define hetgpu_pacc_submit_gemm_mmvf_small_n hetgpu_pacc_submit_gemm_mmvf_small_n_checked
+#define hetgpu_sifive_resolve_device_addr hetgpu_sifive_resolve_device_addr_checked
+#define hetgpu_sifive_is_device_ptr hetgpu_sifive_is_device_ptr_checked
+#define hetgpu_sifive_allocation_remaining hetgpu_sifive_allocation_remaining_checked
+#define hetgpu_sifive_submit_gemm hetgpu_sifive_submit_gemm_checked
+#define hetgpu_sifive_submit_gemm_staged hetgpu_sifive_submit_gemm_staged_checked
+#define hetgpu_sifive_submit_gemm_staged_on hetgpu_sifive_submit_gemm_staged_on_checked
+#define hetgpu_sifive_submit_gemm_staged_tiled hetgpu_sifive_submit_gemm_staged_tiled_checked
+#define hetgpu_sifive_submit_gemm_mmvf_small_n hetgpu_sifive_submit_gemm_mmvf_small_n_checked
 extern cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, cudaMemcpyKind kind);
 
 static int hetgpu_env_is_one(const char *name) {
@@ -555,9 +555,9 @@ static unsigned long long hetgpu_env_u64_default(const char *name, unsigned long
 }
 
 static int hetgpu_cublas_fail_open_enabled(void) {
-    const char *value = getenv("HETGPU_PACC_CUBLAS_FAIL_OPEN");
+    const char *value = getenv("HETGPU_SIFIVE_CUBLAS_FAIL_OPEN");
     if (!value || !*value) {
-        value = getenv("HETGPU_PACC_ASSUME_SUCCESS_ON_WAIT_ERROR");
+        value = getenv("HETGPU_SIFIVE_ASSUME_SUCCESS_ON_WAIT_ERROR");
     }
     if (!value || !*value) {
         return 0;
@@ -572,11 +572,11 @@ static int hetgpu_cublas_fail_open_enabled(void) {
 }
 
 static int hetgpu_allow_host_gemm_fallback(void) {
-    return hetgpu_env_is_one("HETGPU_PACC_ALLOW_HOST_GEMM_FALLBACK");
+    return hetgpu_env_is_one("HETGPU_SIFIVE_ALLOW_HOST_GEMM_FALLBACK");
 }
 
 static int hetgpu_small_gemm_host_fallback_enabled(int m, int n, int k, int batchCount) {
-    if (!hetgpu_env_enabled_default("HETGPU_PACC_GEMM_SMALL_HOST_FALLBACK", 0)) {
+    if (!hetgpu_env_enabled_default("HETGPU_SIFIVE_GEMM_SMALL_HOST_FALLBACK", 0)) {
         return 0;
     }
     if (m <= 0 || n <= 0 || k <= 0 || batchCount <= 0) {
@@ -584,20 +584,20 @@ static int hetgpu_small_gemm_host_fallback_enabled(int m, int n, int k, int batc
     }
 
     const unsigned long long max_ops =
-        hetgpu_env_u64_default("HETGPU_PACC_GEMM_SMALL_MAX_OPS", 65536ULL);
+        hetgpu_env_u64_default("HETGPU_SIFIVE_GEMM_SMALL_MAX_OPS", 65536ULL);
     const unsigned long long max_m =
-        hetgpu_env_u64_default("HETGPU_PACC_GEMM_SMALL_MAX_M", 0ULL);
+        hetgpu_env_u64_default("HETGPU_SIFIVE_GEMM_SMALL_MAX_M", 0ULL);
     const unsigned long long max_n =
-        hetgpu_env_u64_default("HETGPU_PACC_GEMM_SMALL_MAX_N", 4ULL);
+        hetgpu_env_u64_default("HETGPU_SIFIVE_GEMM_SMALL_MAX_N", 4ULL);
     const unsigned long long max_k =
-        hetgpu_env_u64_default("HETGPU_PACC_GEMM_SMALL_MAX_K", 0ULL);
+        hetgpu_env_u64_default("HETGPU_SIFIVE_GEMM_SMALL_MAX_K", 0ULL);
     const unsigned long long um = (unsigned long long)m;
     const unsigned long long un = (unsigned long long)n;
     const unsigned long long uk = (unsigned long long)k;
     const unsigned long long ub = (unsigned long long)batchCount;
 
     const int any_small_dim =
-        hetgpu_env_enabled_default("HETGPU_PACC_GEMM_SMALL_ANY_DIM", 1);
+        hetgpu_env_enabled_default("HETGPU_SIFIVE_GEMM_SMALL_ANY_DIM", 1);
     if (max_m && um > max_m) {
         return 0;
     }
@@ -623,7 +623,7 @@ static int hetgpu_small_gemm_host_fallback_enabled(int m, int n, int k, int batc
 }
 
 static int hetgpu_skinny_n_gemm_host_fallback_enabled(int m, int n, int k, int batchCount) {
-    if (!hetgpu_env_enabled_default("HETGPU_PACC_GEMM_SKINNY_N_HOST_FALLBACK", 0)) {
+    if (!hetgpu_env_enabled_default("HETGPU_SIFIVE_GEMM_SKINNY_N_HOST_FALLBACK", 0)) {
         return 0;
     }
     if (m <= 0 || n <= 0 || k <= 0 || batchCount <= 0) {
@@ -631,40 +631,40 @@ static int hetgpu_skinny_n_gemm_host_fallback_enabled(int m, int n, int k, int b
     }
 
     const unsigned long long max_n =
-        hetgpu_env_u64_default("HETGPU_PACC_GEMM_SKINNY_N_MAX_N", 1ULL);
+        hetgpu_env_u64_default("HETGPU_SIFIVE_GEMM_SKINNY_N_MAX_N", 1ULL);
     const unsigned long long min_k =
-        hetgpu_env_u64_default("HETGPU_PACC_GEMM_SKINNY_N_MIN_K", 64ULL);
+        hetgpu_env_u64_default("HETGPU_SIFIVE_GEMM_SKINNY_N_MIN_K", 64ULL);
     return (unsigned long long)n <= max_n && (unsigned long long)k >= min_k;
 }
 
 static int hetgpu_non_skinny_n_gemm_host_fallback_enabled(int m, int n, int k, int batchCount) {
-    if (!hetgpu_env_enabled_default("HETGPU_PACC_GEMM_NON_SKINNY_N_HOST_FALLBACK", 0)) {
+    if (!hetgpu_env_enabled_default("HETGPU_SIFIVE_GEMM_NON_SKINNY_N_HOST_FALLBACK", 0)) {
         return 0;
     }
     if (m <= 0 || n <= 0 || k <= 0 || batchCount <= 0) {
         return 0;
     }
 
-    const unsigned long long max_pacc_n =
-        hetgpu_env_u64_default("HETGPU_PACC_GEMM_PACC_MAX_N", 1ULL);
-    return (unsigned long long)n > max_pacc_n;
+    const unsigned long long max_sifive_n =
+        hetgpu_env_u64_default("HETGPU_SIFIVE_GEMM_SIFIVE_MAX_N", 1ULL);
+    return (unsigned long long)n > max_sifive_n;
 }
 
 static int hetgpu_tail_gemm_host_fallback_enabled(int m, int n, int k, int batchCount) {
-    if (!hetgpu_env_enabled_default("HETGPU_PACC_GEMM_TAIL_HOST_FALLBACK", 1)) {
+    if (!hetgpu_env_enabled_default("HETGPU_SIFIVE_GEMM_TAIL_HOST_FALLBACK", 1)) {
         return 0;
     }
     return hetgpu_small_gemm_host_fallback_enabled(m, n, k, batchCount);
 }
 
-static int hetgpu_default_pacc_gemm_devices(int devices[4]) {
+static int hetgpu_default_sifive_gemm_devices(int devices[4]) {
     int count = 0;
     for (int dev = 0; dev < 4; ++dev) {
-        char pacc_path[32];
+        char sifive_path[32];
         char helper_path[64];
-        snprintf(pacc_path, sizeof(pacc_path), "/dev/pacc%d", dev);
-        snprintf(helper_path, sizeof(helper_path), "/dev/hetgpu_pacc_mbox_ddr_coh%d", dev);
-        if (access(pacc_path, F_OK) == 0 || access(helper_path, F_OK) == 0) {
+        snprintf(sifive_path, sizeof(sifive_path), "/dev/sifive%d", dev);
+        snprintf(helper_path, sizeof(helper_path), "/dev/hetgpu_sifive_mbox_ddr_coh%d", dev);
+        if (access(sifive_path, F_OK) == 0 || access(helper_path, F_OK) == 0) {
             devices[count++] = dev;
         }
     }
@@ -674,11 +674,11 @@ static int hetgpu_default_pacc_gemm_devices(int devices[4]) {
     return count;
 }
 
-static int hetgpu_parse_pacc_gemm_devices(int devices[4]) {
-    const char *env = getenv("HETGPU_PACC_GEMM_DEVICES");
+static int hetgpu_parse_sifive_gemm_devices(int devices[4]) {
+    const char *env = getenv("HETGPU_SIFIVE_GEMM_DEVICES");
     int count = 0;
     if (!env || !*env) {
-        return hetgpu_default_pacc_gemm_devices(devices);
+        return hetgpu_default_sifive_gemm_devices(devices);
     }
 
     const char *p = env;
@@ -714,8 +714,8 @@ static int hetgpu_parse_pacc_gemm_devices(int devices[4]) {
     return count;
 }
 
-static int hetgpu_pacc_physical_device_for_logical_cublas(int logical) {
-    const char *visible = getenv("HETGPU_PACC_VISIBLE_DEVICES");
+static int hetgpu_sifive_physical_device_for_logical_cublas(int logical) {
+    const char *visible = getenv("HETGPU_SIFIVE_VISIBLE_DEVICES");
     if (!visible || !*visible) {
         return logical;
     }
@@ -748,7 +748,7 @@ static int hetgpu_pacc_physical_device_for_logical_cublas(int logical) {
     return logical;
 }
 
-static int hetgpu_current_pacc_device_for_cublas(void) {
+static int hetgpu_current_sifive_device_for_cublas(void) {
     static hetgpu_cuda_get_device_fn cuda_get_device = NULL;
     static int attempted = 0;
     if (!attempted) {
@@ -762,16 +762,16 @@ static int hetgpu_current_pacc_device_for_cublas(void) {
             logical = tmp;
         }
     }
-    int physical = hetgpu_pacc_physical_device_for_logical_cublas(logical);
+    int physical = hetgpu_sifive_physical_device_for_logical_cublas(logical);
     return (physical >= 0 && physical < 4) ? physical : 0;
 }
 
-static int hetgpu_pacc_gemm_layer_local_enabled(void) {
-    return hetgpu_env_enabled_default("HETGPU_PACC_GEMM_LAYER_LOCAL", 0);
+static int hetgpu_sifive_gemm_layer_local_enabled(void) {
+    return hetgpu_env_enabled_default("HETGPU_SIFIVE_GEMM_LAYER_LOCAL", 0);
 }
 
 static int hetgpu_cublas_noop_enabled(void) {
-    return hetgpu_env_enabled_default("HETGPU_PACC_CUBLAS_NOOP", 0);
+    return hetgpu_env_enabled_default("HETGPU_SIFIVE_CUBLAS_NOOP", 0);
 }
 
 static int hetgpu_cublas_noop_return_success(const char *name, int m, int n, int k, int batchCount) {
@@ -783,12 +783,12 @@ static int hetgpu_cublas_noop_return_success(const char *name, int m, int n, int
     return 1;
 }
 
-static int pacc_runtime_marked_ready(void) {
-    if (!hetgpu_env_is_one("HETGPU_PACC_ENFORCE_RUNTIME_READY")) {
+static int sifive_runtime_marked_ready(void) {
+    if (!hetgpu_env_is_one("HETGPU_SIFIVE_ENFORCE_RUNTIME_READY")) {
         return 1;
     }
-    return hetgpu_env_is_one("HETGPU_PACC_RUNTIME_READY") ||
-           hetgpu_env_is_one("HETGPU_PACC_BOOT_RUNTIME");
+    return hetgpu_env_is_one("HETGPU_SIFIVE_RUNTIME_READY") ||
+           hetgpu_env_is_one("HETGPU_SIFIVE_BOOT_RUNTIME");
 }
 
 static int hetgpu_checked_add_size(size_t a, size_t b, size_t *out) {
@@ -859,16 +859,16 @@ static int hetgpu_gemm_validate_region(
         DEBUG_LOG("%s invalid %s GEMM region ptr=%p elems=%zu elem=%zu", name, which, ptr, elems, elem_size);
         return 0;
     }
-    if (!hetgpu_pacc_is_device_ptr(ptr)) {
-        if (hetgpu_env_is_one("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM")) {
+    if (!hetgpu_sifive_is_device_ptr(ptr)) {
+        if (hetgpu_env_is_one("HETGPU_SIFIVE_ALLOW_HOST_DEVICE_MEM")) {
             return 1;
         }
         fprintf(stderr,
-                "[hetGPU cublas_shim] %s refuses host %s GEMM region without HETGPU_PACC_ALLOW_HOST_DEVICE_MEM=1: ptr=%p need=%zu\n",
+                "[hetGPU cublas_shim] %s refuses host %s GEMM region without HETGPU_SIFIVE_ALLOW_HOST_DEVICE_MEM=1: ptr=%p need=%zu\n",
                 name, which, ptr, bytes);
         return 0;
     }
-    size_t remaining = hetgpu_pacc_allocation_remaining(ptr);
+    size_t remaining = hetgpu_sifive_allocation_remaining(ptr);
     if (remaining != SIZE_MAX && bytes > remaining) {
         fprintf(stderr,
                 "[hetGPU cublas_shim] %s refuses %s out-of-bounds GEMM region: ptr=%p need=%zu remaining=%zu\n",
@@ -911,14 +911,14 @@ static int hetgpu_copy_pointer_array_to_host(void **dst, const void *src, size_t
     if (!dst || !src) {
         return -1;
     }
-    if (!hetgpu_pacc_is_device_ptr(src)) {
+    if (!hetgpu_sifive_is_device_ptr(src)) {
         memcpy(dst, src, ptr_bytes);
         return 0;
     }
     if (cudaMemcpy(dst, src, ptr_bytes, HETGPU_CUDA_MEMCPY_DEVICE_TO_HOST) == 0) {
         return 0;
     }
-    unsigned long long resolved = hetgpu_pacc_resolve_device_addr(src);
+    unsigned long long resolved = hetgpu_sifive_resolve_device_addr(src);
     if (resolved != 0) {
         memcpy(dst, (const void *)(uintptr_t)resolved, ptr_bytes);
         return 0;
@@ -1117,7 +1117,7 @@ static int hetgpu_host_gemm_thread_count(int tasks) {
     if (tasks <= 1) {
         return 1;
     }
-    unsigned long long requested = hetgpu_env_u64_default("HETGPU_PACC_HOST_GEMM_THREADS", 32ULL);
+    unsigned long long requested = hetgpu_env_u64_default("HETGPU_SIFIVE_HOST_GEMM_THREADS", 32ULL);
     if (requested < 1ULL) {
         requested = 1ULL;
     }
@@ -1160,7 +1160,7 @@ static cublasStatus_t host_gemm_fallback(
     const void *beta,
     void *C, cudaDataType Ctype, int ldc, long long strideC,
     int batchCount, cublasComputeType_t computeType) {
-    if (!hetgpu_env_is_one("HETGPU_PACC_ALLOW_HOST_DEVICE_MEM")) {
+    if (!hetgpu_env_is_one("HETGPU_SIFIVE_ALLOW_HOST_DEVICE_MEM")) {
         return CUBLAS_STATUS_NOT_SUPPORTED;
     }
     if (!alpha || !A || !B || !beta || !C) {
@@ -1223,12 +1223,12 @@ static cublasStatus_t host_gemm_fallback(
     void *tmp_B = NULL;
     void *tmp_C = NULL;
     int copy_C_back = 0;
-    const int a_is_device = hetgpu_pacc_is_device_ptr(A);
-    const int b_is_device = hetgpu_pacc_is_device_ptr(B);
-    const int c_is_device = hetgpu_pacc_is_device_ptr(C);
-    const void *host_A = a_is_device ? (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(A) : A;
-    const void *host_B = b_is_device ? (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(B) : B;
-    void *host_C = c_is_device ? (void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(C) : C;
+    const int a_is_device = hetgpu_sifive_is_device_ptr(A);
+    const int b_is_device = hetgpu_sifive_is_device_ptr(B);
+    const int c_is_device = hetgpu_sifive_is_device_ptr(C);
+    const void *host_A = a_is_device ? (const void *)(uintptr_t)hetgpu_sifive_resolve_device_addr(A) : A;
+    const void *host_B = b_is_device ? (const void *)(uintptr_t)hetgpu_sifive_resolve_device_addr(B) : B;
+    void *host_C = c_is_device ? (void *)(uintptr_t)hetgpu_sifive_resolve_device_addr(C) : C;
 
     if (a_is_device && !host_A) {
         tmp_A = malloc(a_bytes ? a_bytes : 1);
@@ -1274,7 +1274,7 @@ static cublasStatus_t host_gemm_fallback(
         return CUBLAS_STATUS_NOT_SUPPORTED;
     }
 
-    DEBUG_LOG("%s using host GEMM fallback after PACC failure (A=%d B=%d C=%d)", name, Atype, Btype, Ctype);
+    DEBUG_LOG("%s using host GEMM fallback after SIFIVE failure (A=%d B=%d C=%d)", name, Atype, Btype, Ctype);
     for (int batch = 0; batch < batchCount; ++batch) {
         const char *Ab = (const char *)host_A + (size_t)batch * (size_t)a_stride * a_elem_size;
         const char *Bb = (const char *)host_B + (size_t)batch * (size_t)b_stride * b_elem_size;
@@ -1332,29 +1332,29 @@ static cublasStatus_t host_gemm_fallback(
     return CUBLAS_STATUS_SUCCESS;
 }
 
-static int g_pacc_gemm_disabled_after_failure = 0;
-static int g_pacc_gemm_coarse_stage_disabled_after_failure = 0;
-static int g_pacc_gemm_mmvf_route_disabled_after_failure = 0;
+static int g_sifive_gemm_disabled_after_failure = 0;
+static int g_sifive_gemm_coarse_stage_disabled_after_failure = 0;
+static int g_sifive_gemm_mmvf_route_disabled_after_failure = 0;
 
-static int prefer_pacc_gemm_stage_shared_ddr(void) {
-    const char *stage_shared = getenv("HETGPU_PACC_GEMM_STAGE_SHARED_DDR");
+static int prefer_sifive_gemm_stage_shared_ddr(void) {
+    const char *stage_shared = getenv("HETGPU_SIFIVE_GEMM_STAGE_SHARED_DDR");
     if (!stage_shared) {
         return 1;
     }
     return strcmp(stage_shared, "0") != 0;
 }
 
-static int prefer_pacc_gemm_coarse_stage(void) {
-    const char *coarse = getenv("HETGPU_PACC_GEMM_COARSE_STAGE");
-    return coarse && strcmp(coarse, "force") == 0 && pacc_runtime_marked_ready();
+static int prefer_sifive_gemm_coarse_stage(void) {
+    const char *coarse = getenv("HETGPU_SIFIVE_GEMM_COARSE_STAGE");
+    return coarse && strcmp(coarse, "force") == 0 && sifive_runtime_marked_ready();
 }
 
-static int disable_pacc_gemm_mmvf_after_failure(void) {
-    const char *env = getenv("HETGPU_PACC_GEMM_MMVF_DISABLE_AFTER_FAILURE");
+static int disable_sifive_gemm_mmvf_after_failure(void) {
+    const char *env = getenv("HETGPU_SIFIVE_GEMM_MMVF_DISABLE_AFTER_FAILURE");
     if (env) {
         return strcmp(env, "0") != 0;
     }
-    return hetgpu_env_is_one("HETGPU_PACC_GEMM_DISABLE_AFTER_FAILURE");
+    return hetgpu_env_is_one("HETGPU_SIFIVE_GEMM_DISABLE_AFTER_FAILURE");
 }
 
 
@@ -1454,19 +1454,19 @@ static void *hetgpu_parallel_gemm_worker(void *arg) {
                 if (fallback == CUBLAS_STATUS_SUCCESS) {
                     continue;
                 }
-                if (hetgpu_env_enabled_default("HETGPU_PACC_GEMM_TAIL_HOST_REQUIRED", 1)) {
+                if (hetgpu_env_enabled_default("HETGPU_SIFIVE_GEMM_TAIL_HOST_REQUIRED", 1)) {
                     ctx->rc = -2;
                     break;
                 }
             }
-            int chunk_rc = hetgpu_pacc_submit_gemm_staged_on(
+            int chunk_rc = hetgpu_sifive_submit_gemm_staged_on(
                 worker->dev_id, worker->slot_id,
                 (int)ctx->transa, (int)ctx->transb, chunk_m, chunk_n, chunk_k,
                 ctx->alpha,
-                chunk_A, hetgpu_pacc_dtype(ctx->Atype), ctx->lda, 0,
-                chunk_B, hetgpu_pacc_dtype(ctx->Btype), ctx->ldb, 0,
+                chunk_A, hetgpu_sifive_dtype(ctx->Atype), ctx->lda, 0,
+                chunk_B, hetgpu_sifive_dtype(ctx->Btype), ctx->ldb, 0,
                 chunk_beta,
-                chunk_C, hetgpu_pacc_dtype(ctx->Ctype), ctx->ldc, 0,
+                chunk_C, hetgpu_sifive_dtype(ctx->Ctype), ctx->ldc, 0,
                 1, (int)ctx->computeType);
             if (chunk_rc != 0) {
                 if (hetgpu_allow_host_gemm_fallback()) {
@@ -1490,7 +1490,7 @@ static void *hetgpu_parallel_gemm_worker(void *arg) {
     return NULL;
 }
 
-static cublasStatus_t submit_pacc_gemm(
+static cublasStatus_t submit_sifive_gemm(
     const char *name,
     cublasOperation_t transa, cublasOperation_t transb,
     int m, int n, int k,
@@ -1522,7 +1522,7 @@ static cublasStatus_t submit_pacc_gemm(
     const void *alpha_arg = alpha ? (const void *)&alpha_f32 : NULL;
     const void *beta_arg = beta ? (const void *)&beta_f32 : NULL;
 
-    if (hetgpu_env_is_one("HETGPU_PACC_GEMM_HOST_ONLY")) {
+    if (hetgpu_env_is_one("HETGPU_SIFIVE_GEMM_HOST_ONLY")) {
         return host_gemm_fallback(
             name, transa, transb, m, n, k,
             alpha_arg, A, Atype, lda, strideA,
@@ -1543,7 +1543,7 @@ static cublasStatus_t submit_pacc_gemm(
                       name, m, n, k, batchCount);
             return fallback;
         }
-        DEBUG_LOG("%s non-skinny-N host GEMM fallback returned %d; continuing with PACC",
+        DEBUG_LOG("%s non-skinny-N host GEMM fallback returned %d; continuing with SIFIVE",
                   name, (int)fallback);
     }
 
@@ -1559,7 +1559,7 @@ static cublasStatus_t submit_pacc_gemm(
                       name, m, n, k, batchCount);
             return fallback;
         }
-        DEBUG_LOG("%s skinny-N host GEMM fallback returned %d; continuing with PACC",
+        DEBUG_LOG("%s skinny-N host GEMM fallback returned %d; continuing with SIFIVE",
                   name, (int)fallback);
     }
 
@@ -1575,12 +1575,12 @@ static cublasStatus_t submit_pacc_gemm(
                       name, m, n, k, batchCount);
             return fallback;
         }
-        DEBUG_LOG("%s small-GEMM host fallback returned %d; continuing with PACC",
+        DEBUG_LOG("%s small-GEMM host fallback returned %d; continuing with SIFIVE",
                   name, (int)fallback);
     }
 
-    if (hetgpu_env_is_one("HETGPU_PACC_GEMM_DISABLE_AFTER_FAILURE") &&
-        g_pacc_gemm_disabled_after_failure) {
+    if (hetgpu_env_is_one("HETGPU_SIFIVE_GEMM_DISABLE_AFTER_FAILURE") &&
+        g_sifive_gemm_disabled_after_failure) {
         if (hetgpu_allow_host_gemm_fallback()) {
             return host_gemm_fallback(
                 name, transa, transb, m, n, k,
@@ -1589,13 +1589,13 @@ static cublasStatus_t submit_pacc_gemm(
                 beta_arg, C, Ctype, ldc, strideC,
                 batchCount, computeType);
         }
-        DEBUG_LOG("%s PACC GEMM disabled after prior failure; host GEMM fallback is not enabled", name);
+        DEBUG_LOG("%s SIFIVE GEMM disabled after prior failure; host GEMM fallback is not enabled", name);
         return CUBLAS_STATUS_NOT_SUPPORTED;
     }
 
-    if (!pacc_runtime_marked_ready()) {
+    if (!sifive_runtime_marked_ready()) {
         if (hetgpu_allow_host_gemm_fallback()) {
-            DEBUG_LOG("%s skipping PACC GEMM submit because runtime is not marked ready; using host fallback", name);
+            DEBUG_LOG("%s skipping SIFIVE GEMM submit because runtime is not marked ready; using host fallback", name);
             cublasStatus_t fallback = host_gemm_fallback(
                 name, transa, transb, m, n, k,
                 alpha_arg, A, Atype, lda, strideA,
@@ -1613,26 +1613,26 @@ static cublasStatus_t submit_pacc_gemm(
             DEBUG_LOG("%s runtime not ready; CUBLAS_FAIL_OPEN treating GEMM as successful", name);
             return CUBLAS_STATUS_SUCCESS;
         }
-        DEBUG_LOG("%s requires PACC GEMM runtime readiness; host GEMM fallback is not enabled", name);
+        DEBUG_LOG("%s requires SIFIVE GEMM runtime readiness; host GEMM fallback is not enabled", name);
         return CUBLAS_STATUS_NOT_SUPPORTED;
     }
 
-    const void *pacc_A = (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(A);
-    const void *pacc_B = (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(B);
-    void *pacc_C = (void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(C);
-    const void *pacc_alpha = hetgpu_pacc_is_device_ptr(alpha_arg)
-        ? (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(alpha_arg)
+    const void *sifive_A = (const void *)(uintptr_t)hetgpu_sifive_resolve_device_addr(A);
+    const void *sifive_B = (const void *)(uintptr_t)hetgpu_sifive_resolve_device_addr(B);
+    void *sifive_C = (void *)(uintptr_t)hetgpu_sifive_resolve_device_addr(C);
+    const void *sifive_alpha = hetgpu_sifive_is_device_ptr(alpha_arg)
+        ? (const void *)(uintptr_t)hetgpu_sifive_resolve_device_addr(alpha_arg)
         : NULL;
-    const void *pacc_beta = hetgpu_pacc_is_device_ptr(beta_arg)
-        ? (const void *)(uintptr_t)hetgpu_pacc_resolve_device_addr(beta_arg)
+    const void *sifive_beta = hetgpu_sifive_is_device_ptr(beta_arg)
+        ? (const void *)(uintptr_t)hetgpu_sifive_resolve_device_addr(beta_arg)
         : NULL;
 
     int rc = -1;
-    if (prefer_pacc_gemm_stage_shared_ddr()) {
-        const char *max_m_env = getenv("HETGPU_PACC_GEMM_MAX_M");
-        const char *max_n_env = getenv("HETGPU_PACC_GEMM_MAX_N");
-        const char *max_k_env = getenv("HETGPU_PACC_GEMM_MAX_K");
-        const char *large_mv_max_n_env = getenv("HETGPU_PACC_GEMM_LARGE_MV_MAX_N");
+    if (prefer_sifive_gemm_stage_shared_ddr()) {
+        const char *max_m_env = getenv("HETGPU_SIFIVE_GEMM_MAX_M");
+        const char *max_n_env = getenv("HETGPU_SIFIVE_GEMM_MAX_N");
+        const char *max_k_env = getenv("HETGPU_SIFIVE_GEMM_MAX_K");
+        const char *large_mv_max_n_env = getenv("HETGPU_SIFIVE_GEMM_LARGE_MV_MAX_N");
         int large_mv_max_n = large_mv_max_n_env ? atoi(large_mv_max_n_env) : 32;
         if (large_mv_max_n < 1) {
             large_mv_max_n = 1;
@@ -1653,16 +1653,16 @@ static cublasStatus_t submit_pacc_gemm(
         if (max_k <= 0) {
             max_k = k;
         }
-        const char *fw_max_m_env = getenv("HETGPU_PACC_GEMM_FW_MAX_M");
-        const char *fw_max_n_env = getenv("HETGPU_PACC_GEMM_FW_MAX_N");
-        const char *fw_max_k_env = getenv("HETGPU_PACC_GEMM_FW_MAX_K");
+        const char *fw_max_m_env = getenv("HETGPU_SIFIVE_GEMM_FW_MAX_M");
+        const char *fw_max_n_env = getenv("HETGPU_SIFIVE_GEMM_FW_MAX_N");
+        const char *fw_max_k_env = getenv("HETGPU_SIFIVE_GEMM_FW_MAX_K");
         int fw_max_m = fw_max_m_env ? atoi(fw_max_m_env) : 0;
         int fw_max_n = fw_max_n_env ? atoi(fw_max_n_env) : 0;
         int fw_max_k = fw_max_k_env ? atoi(fw_max_k_env) : 0;
         if (fw_max_m > 0 && max_m > fw_max_m) max_m = fw_max_m;
         if (fw_max_n > 0 && max_n > fw_max_n) max_n = fw_max_n;
         if (fw_max_k > 0 && max_k > fw_max_k) max_k = fw_max_k;
-        DEBUG_LOG("%s using PACC shared-DDR staged submit trans=%d/%d m=%d n=%d k=%d tile=%dx%dx%d lda=%d ldb=%d ldc=%d batch=%d stride=%lld/%lld/%lld",
+        DEBUG_LOG("%s using SIFIVE shared-DDR staged submit trans=%d/%d m=%d n=%d k=%d tile=%dx%dx%d lda=%d ldb=%d ldc=%d batch=%d stride=%lld/%lld/%lld",
                   name, (int)transa, (int)transb, m, n, k, max_m, max_n, max_k,
                   lda, ldb, ldc, batchCount, strideA, strideB, strideC);
         rc = 0;
@@ -1670,63 +1670,63 @@ static cublasStatus_t submit_pacc_gemm(
         size_t b_size = host_dtype_size(Btype);
         size_t c_size = host_dtype_size(Ctype);
         int parallel_workers = 4;
-        int pacc_devices[4] = {0, 1, 2, 3};
-        int pacc_device_count = hetgpu_parse_pacc_gemm_devices(pacc_devices);
-        const int layer_local = hetgpu_pacc_gemm_layer_local_enabled();
-        const int layer_local_dev = hetgpu_current_pacc_device_for_cublas();
+        int sifive_devices[4] = {0, 1, 2, 3};
+        int sifive_device_count = hetgpu_parse_sifive_gemm_devices(sifive_devices);
+        const int layer_local = hetgpu_sifive_gemm_layer_local_enabled();
+        const int layer_local_dev = hetgpu_current_sifive_device_for_cublas();
         if (layer_local) {
-            pacc_devices[0] = layer_local_dev;
-            pacc_device_count = 1;
+            sifive_devices[0] = layer_local_dev;
+            sifive_device_count = 1;
         }
-        const char *parallel_env = getenv("HETGPU_PACC_GEMM_PARALLEL");
+        const char *parallel_env = getenv("HETGPU_SIFIVE_GEMM_PARALLEL");
         if (layer_local || (parallel_env && strcmp(parallel_env, "0") == 0)) {
             parallel_workers = 1;
         } else {
-            const char *workers_env = getenv("HETGPU_PACC_GEMM_WORKERS");
-            parallel_workers = workers_env ? atoi(workers_env) : pacc_device_count;
+            const char *workers_env = getenv("HETGPU_SIFIVE_GEMM_WORKERS");
+            parallel_workers = workers_env ? atoi(workers_env) : sifive_device_count;
             if (parallel_workers < 1) parallel_workers = 1;
             if (parallel_workers > 4) parallel_workers = 4;
         }
-        if (parallel_workers > pacc_device_count) {
-            parallel_workers = pacc_device_count;
+        if (parallel_workers > sifive_device_count) {
+            parallel_workers = sifive_device_count;
         }
-        if (!layer_local && !g_pacc_gemm_mmvf_route_disabled_after_failure) {
-            int mmvf_rc = hetgpu_pacc_submit_gemm_mmvf_small_n(
+        if (!layer_local && !g_sifive_gemm_mmvf_route_disabled_after_failure) {
+            int mmvf_rc = hetgpu_sifive_submit_gemm_mmvf_small_n(
                 (int)transa, (int)transb, m, n, k,
                 alpha_arg,
-                pacc_A, hetgpu_pacc_dtype(Atype), lda, strideA,
-                pacc_B, hetgpu_pacc_dtype(Btype), ldb, strideB,
+                sifive_A, hetgpu_sifive_dtype(Atype), lda, strideA,
+                sifive_B, hetgpu_sifive_dtype(Btype), ldb, strideB,
                 beta_arg,
-                pacc_C, hetgpu_pacc_dtype(Ctype), ldc, strideC,
+                sifive_C, hetgpu_sifive_dtype(Ctype), ldc, strideC,
                 batchCount, (int)computeType);
             if (mmvf_rc == 0) {
                 return CUBLAS_STATUS_SUCCESS;
             }
-            if (mmvf_rc != 0 && disable_pacc_gemm_mmvf_after_failure()) {
-                g_pacc_gemm_mmvf_route_disabled_after_failure = 1;
-                DEBUG_LOG("%s disabling PACC MMVF small-N route after failure rc=%d", name, mmvf_rc);
+            if (mmvf_rc != 0 && disable_sifive_gemm_mmvf_after_failure()) {
+                g_sifive_gemm_mmvf_route_disabled_after_failure = 1;
+                DEBUG_LOG("%s disabling SIFIVE MMVF small-N route after failure rc=%d", name, mmvf_rc);
             }
-            if (mmvf_rc < 0 && hetgpu_env_enabled_default("HETGPU_PACC_GEMM_MMVF_ROUTE_STRICT", 0)) {
-                DEBUG_LOG("%s PACC MMVF small-N route failed rc=%d in strict mode", name, mmvf_rc);
+            if (mmvf_rc < 0 && hetgpu_env_enabled_default("HETGPU_SIFIVE_GEMM_MMVF_ROUTE_STRICT", 0)) {
+                DEBUG_LOG("%s SIFIVE MMVF small-N route failed rc=%d in strict mode", name, mmvf_rc);
                 return CUBLAS_STATUS_NOT_SUPPORTED;
             }
         }
         if (!layer_local &&
-            !g_pacc_gemm_coarse_stage_disabled_after_failure &&
-            prefer_pacc_gemm_coarse_stage()) {
-            rc = hetgpu_pacc_submit_gemm_staged_tiled(
+            !g_sifive_gemm_coarse_stage_disabled_after_failure &&
+            prefer_sifive_gemm_coarse_stage()) {
+            rc = hetgpu_sifive_submit_gemm_staged_tiled(
                 (int)transa, (int)transb, m, n, k,
                 alpha_arg,
-                pacc_A, hetgpu_pacc_dtype(Atype), lda, strideA,
-                pacc_B, hetgpu_pacc_dtype(Btype), ldb, strideB,
+                sifive_A, hetgpu_sifive_dtype(Atype), lda, strideA,
+                sifive_B, hetgpu_sifive_dtype(Btype), ldb, strideB,
                 beta_arg,
-                pacc_C, hetgpu_pacc_dtype(Ctype), ldc, strideC,
+                sifive_C, hetgpu_sifive_dtype(Ctype), ldc, strideC,
                 batchCount, (int)computeType,
                 max_m, max_n, max_k);
             if (rc == 0) {
                 return CUBLAS_STATUS_SUCCESS;
             }
-            g_pacc_gemm_coarse_stage_disabled_after_failure = 1;
+            g_sifive_gemm_coarse_stage_disabled_after_failure = 1;
             DEBUG_LOG("%s disabling coarse staged GEMM after failure rc=%d", name, rc);
         }
         int row_tiles = (m + max_m - 1) / max_m;
@@ -1734,9 +1734,9 @@ static cublasStatus_t submit_pacc_gemm(
         if (parallel_workers > 1 && row_tiles * col_tiles * batchCount > 1) {
             hetgpu_parallel_gemm_ctx_t ctx = {
                 name, transa, transb, m, n, k,
-                alpha_arg, pacc_A, Atype, lda, strideA,
-                pacc_B, Btype, ldb, strideB,
-                beta_arg, pacc_C, Ctype, ldc, strideC,
+                alpha_arg, sifive_A, Atype, lda, strideA,
+                sifive_B, Btype, ldb, strideB,
+                beta_arg, sifive_C, Ctype, ldc, strideC,
                 batchCount, computeType,
                 max_m, max_n, max_k,
                 a_size, b_size, c_size,
@@ -1748,7 +1748,7 @@ static cublasStatus_t submit_pacc_gemm(
             for (int i = 0; i < parallel_workers; ++i) {
                 workers[i].ctx = &ctx;
                 workers[i].worker_id = i;
-                workers[i].dev_id = pacc_devices[i];
+                workers[i].dev_id = sifive_devices[i];
                 workers[i].slot_id = i;
                 int trc = pthread_create(&threads[i], NULL, hetgpu_parallel_gemm_worker, &workers[i]);
                 if (trc != 0) {
@@ -1764,9 +1764,9 @@ static cublasStatus_t submit_pacc_gemm(
         } else {
             float one_beta = 1.0f;
             for (int batch = 0; batch < batchCount && rc == 0; ++batch) {
-                const char *batch_A = (const char *)pacc_A + (strideA > 0 ? (size_t)batch * (size_t)strideA * a_size : 0);
-                const char *batch_B = (const char *)pacc_B + (strideB > 0 ? (size_t)batch * (size_t)strideB * b_size : 0);
-                char *batch_C = (char *)pacc_C + (strideC > 0 ? (size_t)batch * (size_t)strideC * c_size : 0);
+                const char *batch_A = (const char *)sifive_A + (strideA > 0 ? (size_t)batch * (size_t)strideA * a_size : 0);
+                const char *batch_B = (const char *)sifive_B + (strideB > 0 ? (size_t)batch * (size_t)strideB * b_size : 0);
+                char *batch_C = (char *)sifive_C + (strideC > 0 ? (size_t)batch * (size_t)strideC * c_size : 0);
                 for (int col = 0; col < n && rc == 0; col += max_n) {
                     int chunk_n = n - col;
                     if (chunk_n > max_n) chunk_n = max_n;
@@ -1802,28 +1802,28 @@ static cublasStatus_t submit_pacc_gemm(
                                 if (fallback == CUBLAS_STATUS_SUCCESS) {
                                     continue;
                                 }
-                                if (hetgpu_env_enabled_default("HETGPU_PACC_GEMM_TAIL_HOST_REQUIRED", 1)) {
+                                if (hetgpu_env_enabled_default("HETGPU_SIFIVE_GEMM_TAIL_HOST_REQUIRED", 1)) {
                                     rc = -2;
                                     break;
                                 }
                             }
                             int chunk_rc = layer_local
-                                ? hetgpu_pacc_submit_gemm_staged_on(
+                                ? hetgpu_sifive_submit_gemm_staged_on(
                                     layer_local_dev, 0,
                                     (int)transa, (int)transb, chunk_m, chunk_n, chunk_k,
                                     alpha_arg,
-                                    chunk_A, hetgpu_pacc_dtype(Atype), lda, 0,
-                                    chunk_B, hetgpu_pacc_dtype(Btype), ldb, 0,
+                                    chunk_A, hetgpu_sifive_dtype(Atype), lda, 0,
+                                    chunk_B, hetgpu_sifive_dtype(Btype), ldb, 0,
                                     chunk_beta,
-                                    chunk_C, hetgpu_pacc_dtype(Ctype), ldc, 0,
+                                    chunk_C, hetgpu_sifive_dtype(Ctype), ldc, 0,
                                     1, (int)computeType)
-                                : hetgpu_pacc_submit_gemm_staged(
+                                : hetgpu_sifive_submit_gemm_staged(
                                     (int)transa, (int)transb, chunk_m, chunk_n, chunk_k,
                                     alpha_arg,
-                                    chunk_A, hetgpu_pacc_dtype(Atype), lda, 0,
-                                    chunk_B, hetgpu_pacc_dtype(Btype), ldb, 0,
+                                    chunk_A, hetgpu_sifive_dtype(Atype), lda, 0,
+                                    chunk_B, hetgpu_sifive_dtype(Btype), ldb, 0,
                                     chunk_beta,
-                                    chunk_C, hetgpu_pacc_dtype(Ctype), ldc, 0,
+                                    chunk_C, hetgpu_sifive_dtype(Ctype), ldc, 0,
                                     1, (int)computeType);
                             if (chunk_rc != 0) {
                                 if (hetgpu_allow_host_gemm_fallback()) {
@@ -1848,25 +1848,25 @@ static cublasStatus_t submit_pacc_gemm(
             }
         }
     } else {
-        rc = hetgpu_pacc_submit_gemm(
+        rc = hetgpu_sifive_submit_gemm(
         (int)transa, (int)transb, m, n, k,
-        pacc_alpha,
-        pacc_A, hetgpu_pacc_dtype(Atype), lda, strideA,
-        pacc_B, hetgpu_pacc_dtype(Btype), ldb, strideB,
-        pacc_beta,
-        pacc_C, hetgpu_pacc_dtype(Ctype), ldc, strideC,
+        sifive_alpha,
+        sifive_A, hetgpu_sifive_dtype(Atype), lda, strideA,
+        sifive_B, hetgpu_sifive_dtype(Btype), ldb, strideB,
+        sifive_beta,
+        sifive_C, hetgpu_sifive_dtype(Ctype), ldc, strideC,
         batchCount, (int)computeType);
     }
     if (rc == 0) {
         return CUBLAS_STATUS_SUCCESS;
     }
     if (hetgpu_cublas_fail_open_enabled()) {
-        DEBUG_LOG("%s PACC GEMM rc=%d; CUBLAS_FAIL_OPEN treating GEMM as successful without host fallback",
+        DEBUG_LOG("%s SIFIVE GEMM rc=%d; CUBLAS_FAIL_OPEN treating GEMM as successful without host fallback",
                   name, rc);
         return CUBLAS_STATUS_SUCCESS;
     }
-    if (hetgpu_env_is_one("HETGPU_PACC_GEMM_DISABLE_AFTER_FAILURE")) {
-        g_pacc_gemm_disabled_after_failure = 1;
+    if (hetgpu_env_is_one("HETGPU_SIFIVE_GEMM_DISABLE_AFTER_FAILURE")) {
+        g_sifive_gemm_disabled_after_failure = 1;
     }
     if (hetgpu_allow_host_gemm_fallback()) {
         cublasStatus_t fallback = host_gemm_fallback(
@@ -1879,7 +1879,7 @@ static cublasStatus_t submit_pacc_gemm(
             return fallback;
         }
     }
-    DEBUG_LOG("%s requires PACC GEMM runtime submit; no CPU fallback active/supported", name);
+    DEBUG_LOG("%s requires SIFIVE GEMM runtime submit; no CPU fallback active/supported", name);
     return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
@@ -2011,7 +2011,7 @@ cublasStatus_t cublasDdot_v2(cublasHandle_t handle, int n,
     return CUBLAS_STATUS_SUCCESS;
 }
 
-static cublasStatus_t submit_pacc_gemv_as_gemm(
+static cublasStatus_t submit_sifive_gemv_as_gemm(
     const char *name,
     cublasOperation_t trans,
     int m, int n,
@@ -2022,8 +2022,8 @@ static cublasStatus_t submit_pacc_gemv_as_gemm(
     void *y, int incy,
     cudaDataType dtype,
     cublasComputeType_t computeType) {
-    if (!hetgpu_env_enabled_default("HETGPU_PACC_FUSE_GEMV_TO_GEMM", 1)) {
-        DEBUG_LOG("%s GEMV->GEMM fuse disabled by HETGPU_PACC_FUSE_GEMV_TO_GEMM=0", name);
+    if (!hetgpu_env_enabled_default("HETGPU_SIFIVE_FUSE_GEMV_TO_GEMM", 1)) {
+        DEBUG_LOG("%s GEMV->GEMM fuse disabled by HETGPU_SIFIVE_FUSE_GEMV_TO_GEMM=0", name);
         return hetgpu_cublas_fail_open_enabled() ? CUBLAS_STATUS_SUCCESS : CUBLAS_STATUS_NOT_SUPPORTED;
     }
     if (trans != CUBLAS_OP_N && trans != CUBLAS_OP_T && trans != CUBLAS_OP_C) {
@@ -2047,7 +2047,7 @@ static cublasStatus_t submit_pacc_gemv_as_gemm(
     int ldc = gemm_m > 0 ? gemm_m : 1;
     DEBUG_LOG("%s fused through GEMM transa=%d transb=N m=%d n=1 k=%d lda=%d ldb=%d ldc=%d",
               name, (int)trans, gemm_m, gemm_k, lda, ldb, ldc);
-    return submit_pacc_gemm(name, trans, CUBLAS_OP_N, gemm_m, 1, gemm_k,
+    return submit_sifive_gemm(name, trans, CUBLAS_OP_N, gemm_m, 1, gemm_k,
                             alpha, A, dtype, lda, 0,
                             x, dtype, ldb, 0,
                             beta, y, dtype, ldc, 0,
@@ -2064,7 +2064,7 @@ cublasStatus_t cublasSgemv_v2(cublasHandle_t handle, cublasOperation_t trans,
                                float *y, int incy) {
     DEBUG_LOG("cublasSgemv_v2 called: m=%d, n=%d trans=%d incx=%d incy=%d",
               m, n, (int)trans, incx, incy);
-    return submit_pacc_gemv_as_gemm("cublasSgemv_v2", trans, m, n,
+    return submit_sifive_gemv_as_gemm("cublasSgemv_v2", trans, m, n,
                                     alpha, A, lda, x, incx, beta, y, incy,
                                     CUDA_R_32F, CUBLAS_COMPUTE_32F);
 }
@@ -2078,7 +2078,7 @@ cublasStatus_t cublasDgemv_v2(cublasHandle_t handle, cublasOperation_t trans,
                                double *y, int incy) {
     DEBUG_LOG("cublasDgemv_v2 called: m=%d, n=%d trans=%d incx=%d incy=%d",
               m, n, (int)trans, incx, incy);
-    return submit_pacc_gemv_as_gemm("cublasDgemv_v2", trans, m, n,
+    return submit_sifive_gemv_as_gemm("cublasDgemv_v2", trans, m, n,
                                     alpha, A, lda, x, incx, beta, y, incy,
                                     CUDA_R_64F, CUBLAS_COMPUTE_64F);
 }
@@ -2103,7 +2103,7 @@ cublasStatus_t cublasSgemm_v2(cublasHandle_t handle,
     if (real_cublasSgemm_v2) {
         return real_cublasSgemm_v2(handle, transa, transb, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
     }
-    return submit_pacc_gemm("cublasSgemm_v2", transa, transb, m, n, k,
+    return submit_sifive_gemm("cublasSgemm_v2", transa, transb, m, n, k,
                             alpha, A, CUDA_R_32F, lda, 0,
                             B, CUDA_R_32F, ldb, 0,
                             beta, C, CUDA_R_32F, ldc, 0,
@@ -2122,7 +2122,7 @@ cublasStatus_t cublasDgemm_v2(cublasHandle_t handle,
     if (hetgpu_cublas_noop_return_success("cublasDgemm_v2", m, n, k, 1)) {
         return CUBLAS_STATUS_SUCCESS;
     }
-    return submit_pacc_gemm("cublasDgemm_v2", transa, transb, m, n, k,
+    return submit_sifive_gemm("cublasDgemm_v2", transa, transb, m, n, k,
                             alpha, A, CUDA_R_64F, lda, 0,
                             B, CUDA_R_64F, ldb, 0,
                             beta, C, CUDA_R_64F, ldc, 0,
@@ -2141,7 +2141,7 @@ cublasStatus_t cublasHgemm(cublasHandle_t handle,
     if (hetgpu_cublas_noop_return_success("cublasHgemm", m, n, k, 1)) {
         return CUBLAS_STATUS_SUCCESS;
     }
-    return submit_pacc_gemm("cublasHgemm", transa, transb, m, n, k,
+    return submit_sifive_gemm("cublasHgemm", transa, transb, m, n, k,
                             alpha, A, CUDA_R_16F, lda, 0,
                             B, CUDA_R_16F, ldb, 0,
                             beta, C, CUDA_R_16F, ldc, 0,
@@ -2162,7 +2162,7 @@ cublasStatus_t cublasSgemmStridedBatched(cublasHandle_t handle,
     if (hetgpu_cublas_noop_return_success("cublasSgemmStridedBatched", m, n, k, batchCount)) {
         return CUBLAS_STATUS_SUCCESS;
     }
-    return submit_pacc_gemm("cublasSgemmStridedBatched", transa, transb, m, n, k,
+    return submit_sifive_gemm("cublasSgemmStridedBatched", transa, transb, m, n, k,
                             alpha, A, CUDA_R_32F, lda, strideA,
                             B, CUDA_R_32F, ldb, strideB,
                             beta, C, CUDA_R_32F, ldc, strideC,
@@ -2182,7 +2182,7 @@ cublasStatus_t cublasDgemmStridedBatched(cublasHandle_t handle,
     if (hetgpu_cublas_noop_return_success("cublasDgemmStridedBatched", m, n, k, batchCount)) {
         return CUBLAS_STATUS_SUCCESS;
     }
-    return submit_pacc_gemm("cublasDgemmStridedBatched", transa, transb, m, n, k,
+    return submit_sifive_gemm("cublasDgemmStridedBatched", transa, transb, m, n, k,
                             alpha, A, CUDA_R_64F, lda, strideA,
                             B, CUDA_R_64F, ldb, strideB,
                             beta, C, CUDA_R_64F, ldc, strideC,
@@ -2204,7 +2204,7 @@ cublasStatus_t cublasGemmEx(cublasHandle_t handle,
     if (hetgpu_cublas_noop_return_success("cublasGemmEx", m, n, k, 1)) {
         return CUBLAS_STATUS_SUCCESS;
     }
-    return submit_pacc_gemm("cublasGemmEx", transa, transb, m, n, k,
+    return submit_sifive_gemm("cublasGemmEx", transa, transb, m, n, k,
                             alpha, A, Atype, lda, 0,
                             B, Btype, ldb, 0,
                             beta, C, Ctype, ldc, 0,
@@ -2224,7 +2224,7 @@ cublasStatus_t cublasCgemm_v2(cublasHandle_t handle,
     if (hetgpu_cublas_noop_return_success("cublasCgemm_v2", m, n, k, 1)) {
         return CUBLAS_STATUS_SUCCESS;
     }
-    DEBUG_LOG("cublasCgemm_v2 complex GEMM is not implemented on PACC yet; no stub fallback active");
+    DEBUG_LOG("cublasCgemm_v2 complex GEMM is not implemented on SIFIVE yet; no stub fallback active");
     return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
@@ -2240,7 +2240,7 @@ cublasStatus_t cublasZgemm_v2(cublasHandle_t handle,
     if (hetgpu_cublas_noop_return_success("cublasZgemm_v2", m, n, k, 1)) {
         return CUBLAS_STATUS_SUCCESS;
     }
-    DEBUG_LOG("cublasZgemm_v2 complex GEMM is not implemented on PACC yet; no stub fallback active");
+    DEBUG_LOG("cublasZgemm_v2 complex GEMM is not implemented on SIFIVE yet; no stub fallback active");
     return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
@@ -2258,7 +2258,7 @@ cublasStatus_t cublasCgemmStridedBatched(cublasHandle_t handle,
     if (hetgpu_cublas_noop_return_success("cublasCgemmStridedBatched", m, n, k, batchCount)) {
         return CUBLAS_STATUS_SUCCESS;
     }
-    DEBUG_LOG("cublasCgemmStridedBatched complex GEMM is not implemented on PACC yet; no stub fallback active");
+    DEBUG_LOG("cublasCgemmStridedBatched complex GEMM is not implemented on SIFIVE yet; no stub fallback active");
     return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
@@ -2373,7 +2373,7 @@ cublasStatus_t cublasSgemmBatched(cublasHandle_t handle,
         DEBUG_LOG("cublasSgemmBatched CUBLAS_FAIL_OPEN active; treating pointer-array GEMM as successful");
         return CUBLAS_STATUS_SUCCESS;
     }
-    DEBUG_LOG("cublasSgemmBatched pointer-array GEMM is not implemented on PACC yet; no stub fallback active");
+    DEBUG_LOG("cublasSgemmBatched pointer-array GEMM is not implemented on SIFIVE yet; no stub fallback active");
     return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
@@ -2394,7 +2394,7 @@ cublasStatus_t cublasDgemmBatched(cublasHandle_t handle,
         DEBUG_LOG("cublasDgemmBatched CUBLAS_FAIL_OPEN active; treating pointer-array GEMM as successful");
         return CUBLAS_STATUS_SUCCESS;
     }
-    DEBUG_LOG("cublasDgemmBatched pointer-array GEMM is not implemented on PACC yet; no stub fallback active");
+    DEBUG_LOG("cublasDgemmBatched pointer-array GEMM is not implemented on SIFIVE yet; no stub fallback active");
     return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
@@ -2512,7 +2512,7 @@ cublasStatus_t cublasSgemmEx(cublasHandle_t handle,
     if (hetgpu_cublas_noop_return_success("cublasSgemmEx", m, n, k, 1)) {
         return CUBLAS_STATUS_SUCCESS;
     }
-    return submit_pacc_gemm("cublasSgemmEx", transa, transb, m, n, k,
+    return submit_sifive_gemm("cublasSgemmEx", transa, transb, m, n, k,
                             alpha, A, Atype, lda, 0,
                             B, Btype, ldb, 0,
                             beta, C, Ctype, ldc, 0,
@@ -2546,7 +2546,7 @@ cublasStatus_t cublasGemmStridedBatchedEx(cublasHandle_t handle,
     if (hetgpu_cublas_noop_return_success("cublasGemmStridedBatchedEx", m, n, k, batchCount)) {
         return CUBLAS_STATUS_SUCCESS;
     }
-    return submit_pacc_gemm("cublasGemmStridedBatchedEx", transa, transb, m, n, k,
+    return submit_sifive_gemm("cublasGemmStridedBatchedEx", transa, transb, m, n, k,
                             alpha, A, Atype, lda, strideA,
                             B, Btype, ldb, strideB,
                             beta, C, Ctype, ldc, strideC,
@@ -2588,7 +2588,7 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
     void **tmp_Carray = NULL;
     size_t ptr_bytes = (size_t)batchCount * sizeof(void *);
 
-    if (hetgpu_pacc_is_device_ptr(Aarray)) {
+    if (hetgpu_sifive_is_device_ptr(Aarray)) {
         tmp_Aarray = (void **)malloc(ptr_bytes);
         if (!tmp_Aarray || hetgpu_copy_pointer_array_to_host(tmp_Aarray, Aarray, ptr_bytes) != 0) {
             fprintf(stderr,
@@ -2599,7 +2599,7 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
         }
         host_Aarray = (const void *const *)tmp_Aarray;
     }
-    if (hetgpu_pacc_is_device_ptr(Barray)) {
+    if (hetgpu_sifive_is_device_ptr(Barray)) {
         tmp_Barray = (void **)malloc(ptr_bytes);
         if (!tmp_Barray || hetgpu_copy_pointer_array_to_host(tmp_Barray, Barray, ptr_bytes) != 0) {
             fprintf(stderr,
@@ -2611,7 +2611,7 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
         }
         host_Barray = (const void *const *)tmp_Barray;
     }
-    if (hetgpu_pacc_is_device_ptr(Carray)) {
+    if (hetgpu_sifive_is_device_ptr(Carray)) {
         tmp_Carray = (void **)malloc(ptr_bytes);
         if (!tmp_Carray || hetgpu_copy_pointer_array_to_host(tmp_Carray, Carray, ptr_bytes) != 0) {
             fprintf(stderr,
@@ -2638,7 +2638,7 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
             free(tmp_Carray);
             return CUBLAS_STATUS_INVALID_VALUE;
         }
-        cublasStatus_t st = submit_pacc_gemm("cublasGemmBatchedEx", transa, transb, m, n, k,
+        cublasStatus_t st = submit_sifive_gemm("cublasGemmBatchedEx", transa, transb, m, n, k,
                                              alpha,
                                              host_Aarray[i], Atype, lda, 0,
                                              host_Barray[i], Btype, ldb, 0,
@@ -2877,6 +2877,6 @@ cublasStatus_t cublasZgemmStridedBatched(cublasHandle_t handle,
                                           void *C, int ldc, long long int strideC,
                                           int batchCount) {
     DEBUG_LOG("cublasZgemmStridedBatched called: m=%d, n=%d, k=%d, batchCount=%d", m, n, k, batchCount);
-    DEBUG_LOG("cublasZgemmStridedBatched complex GEMM is not implemented on PACC yet; no stub fallback active");
+    DEBUG_LOG("cublasZgemmStridedBatched complex GEMM is not implemented on SIFIVE yet; no stub fallback active");
     return CUBLAS_STATUS_NOT_SUPPORTED;
 }

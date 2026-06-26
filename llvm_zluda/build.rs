@@ -18,7 +18,7 @@ const COMPONENTS: &[&'static str] = &[
     "LLVMNVPTXCodeGen",
     "LLVMNVPTXDesc",
     "LLVMNVPTXInfo",
-    // RISC-V target support for PACC codegen.
+    // RISC-V target support for SIFIVE codegen.
     "LLVMRISCVCodeGen",
     "LLVMRISCVAsmParser",
     "LLVMRISCVDesc",
@@ -86,8 +86,8 @@ fn main() {
         .define("LLVM_INCLUDE_TESTS", "OFF")
         .define("LLVM_BUILD_TOOLS", "ON")
         // Build X86 for host-side helpers, NVPTX for PTX/debug flows, and
-        // RISCV for PACC object generation. Clang is built from the same
-        // LLVM tree so PACC never has to fall back to system clang.
+        // RISCV for SIFIVE object generation. Clang is built from the same
+        // LLVM tree so SIFIVE never has to fall back to system clang.
         .define("LLVM_TARGETS_TO_BUILD", "X86;NVPTX;RISCV")
         .define("LLVM_ENABLE_PROJECTS", "clang");
 
@@ -108,7 +108,7 @@ fn main() {
     cmake.build_target("llvm-config");
     let llvm_dir = cmake.build();
 
-    // Build the tools PACC uses from this LLVM tree. Keeping llvm-link/opt/
+    // Build the tools SIFIVE uses from this LLVM tree. Keeping llvm-link/opt/
     // clang in lockstep with llvm-sys avoids mixing system tools with
     // the llvm_zluda LLVM 21 libraries.
     for tool in ["llc", "llvm-dis", "llvm-link", "opt", "clang"] {

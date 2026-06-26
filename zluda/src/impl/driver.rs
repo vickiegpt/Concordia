@@ -28,13 +28,13 @@ use super::LiveCheck;
 use libc::{dlsym, RTLD_DEFAULT};
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-fn pacc_visible_physical_devices() -> Vec<i32> {
-    let raw = std::env::var("HETGPU_PACC_VISIBLE_DEVICES").unwrap_or_else(|_| "4".to_string());
+fn sifive_visible_physical_devices() -> Vec<i32> {
+    let raw = std::env::var("HETGPU_SIFIVE_VISIBLE_DEVICES").unwrap_or_else(|_| "4".to_string());
     if raw
         .chars()
         .any(|c| c == ',' || c == ';' || c == ':' || c.is_ascii_whitespace())
@@ -60,13 +60,13 @@ fn pacc_visible_physical_devices() -> Vec<i32> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-pub(crate) fn pacc_physical_device_for_logical(logical_id: i32) -> i32 {
-    let visible = pacc_visible_physical_devices();
+pub(crate) fn sifive_physical_device_for_logical(logical_id: i32) -> i32 {
+    let visible = sifive_visible_physical_devices();
     if logical_id >= 0 {
         if let Some(&physical_id) = visible.get(logical_id as usize) {
             return physical_id;
@@ -955,11 +955,11 @@ thread_local! {
 }
 
 // ============================================================================
-// PACC backend driver implementations (SiFive Intelligence XM / RISC-V IME)
+// SIFIVE backend driver implementations (SiFive Intelligence XM / RISC-V IME)
 // ============================================================================
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -969,13 +969,13 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
 
     GLOBAL_STATE
         .get_or_init(|| {
-            let visible_physical_devices = pacc_visible_physical_devices();
+            let visible_physical_devices = sifive_visible_physical_devices();
 
-            // PACC can expose one logical CUDA device per physical PACC.
-            let comgr_isa = CString::new("riscv64-pacc-ime").map_err(|_| CUerror::UNKNOWN)?;
+            // SIFIVE can expose one logical CUDA device per physical SIFIVE.
+            let comgr_isa = CString::new("riscv64-sifive-ime").map_err(|_| CUerror::UNKNOWN)?;
             let mut devices = Vec::with_capacity(visible_physical_devices.len());
 
-            PACC_DEVICES.with(|map| {
+            SIFIVE_DEVICES.with(|map| {
                 let mut map = map.borrow_mut();
                 for (logical_id, physical_id) in
                     visible_physical_devices.iter().copied().enumerate()
@@ -993,7 +993,7 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
             });
 
             eprintln!(
-                "[PACC Backend] exposing {} CUDA-visible PACC device(s): {:?}",
+                "[SIFIVE Backend] exposing {} CUDA-visible SIFIVE device(s): {:?}",
                 visible_physical_devices.len(),
                 visible_physical_devices
             );
@@ -1005,7 +1005,7 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1024,12 +1024,12 @@ pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
         }
     }
 
-    eprintln!("[PACC Backend] cuInit: RISC-V IME backend initialized");
+    eprintln!("[SIFIVE Backend] cuInit: RISC-V IME backend initialized");
     Ok(())
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -1040,12 +1040,12 @@ pub(crate) fn get_version(version: &mut ::core::ffi::c_int) -> CUresult {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-pub(crate) fn device_pacc(dev_id: i32) -> Result<&'static Device, CUerror> {
+pub(crate) fn device_sifive(dev_id: i32) -> Result<&'static Device, CUerror> {
     if dev_id < 0 {
         return Err(CUerror::INVALID_DEVICE);
     }
@@ -1056,11 +1056,11 @@ pub(crate) fn device_pacc(dev_id: i32) -> Result<&'static Device, CUerror> {
 }
 
 #[cfg(all(
-    feature = "pacc",
+    feature = "sifive",
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
 thread_local! {
-    static PACC_DEVICES: RefCell<HashMap<i32, NonNull<Device>>> = RefCell::new(HashMap::new());
+    static SIFIVE_DEVICES: RefCell<HashMap<i32, NonNull<Device>>> = RefCell::new(HashMap::new());
 }

@@ -54,9 +54,9 @@ int-enum = "1.1"
 
 
 [[example]]
-name = "pacc_benchmark"
-path = "examples/pacc_benchmark.rs"
-required-features = ["pacc"]
+name = "sifive_benchmark"
+path = "examples/sifive_benchmark.rs"
+required-features = ["sifive"]
 
 [[example]]
 name = "emit_mlir_example"
@@ -87,5 +87,5 @@ intel = ["comgr/intel"]
 amd = ["comgr/amd"]
 tenstorrent = ["comgr/tenstorrent"]
 gemmini = ["comgr/gemmini"]
-pacc = ["comgr/pacc"]
+sifive = ["comgr/sifive"]
 nvidia = []
