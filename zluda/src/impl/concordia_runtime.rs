@@ -1,4 +1,4 @@
-use crate::r#impl::concordia_delta::{apply_records_to_region, AofDiskLog, DeltaCheckpointState};
+use crate::r#impl::concordia_delta::{AofDiskLog, DeltaCheckpointState, apply_records_to_region};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::PathBuf;

@@ -1,5 +1,7 @@
 target/
 Cargo.lock
+bench/concordia_delta_checkpoint/*.ll
+bench/concordia_delta_checkpoint/*.ptx
 
 .vscode/
 .idea/

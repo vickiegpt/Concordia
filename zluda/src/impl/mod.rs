@@ -49,6 +49,7 @@ pub(super) mod pointer;
 pub mod checkpoint;
 pub(crate) mod concordia_delta;
 pub(crate) mod concordia_instrument;
+pub(crate) mod kimi_concordia;
 pub(crate) mod concordia_runtime;
 #[cfg(all(
     feature = "nvidia",

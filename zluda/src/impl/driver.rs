@@ -24,7 +24,7 @@ use crate::r#impl::context;
 use super::LiveCheck;
 
 #[cfg(unix)]
-use libc::{dlsym, RTLD_DEFAULT};
+use libc::{RTLD_DEFAULT, dlsym};
 
 fn prefer_self_proc_address(symbol: &str) -> bool {
     matches!(

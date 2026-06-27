@@ -1770,6 +1770,7 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
         bytesize as u64,
         super::replay::AllocationType::Device,
     );
+    super::kimi_concordia::note_allocation(ptr_val.0 as u64, bytesize);
 
     Ok(())
 }
@@ -1783,6 +1784,7 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
 pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
     // Record deallocation for replay
     super::replay::record_deallocation(dptr.0 as u64);
+    super::kimi_concordia::note_deallocation(dptr.0 as u64);
 
     let result = nvidia_runtime_sys::cuMemFree_v2(dptr);
     if result != 0 {

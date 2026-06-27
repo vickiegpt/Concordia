@@ -128,15 +128,21 @@ mod tests {
 
         let safe_points = discover_ptx_safe_points(ptx);
 
-        assert!(safe_points
-            .iter()
-            .any(|point| point.kind == SafePointKind::Entry));
-        assert!(safe_points
-            .iter()
-            .any(|point| point.kind == SafePointKind::Barrier));
-        assert!(safe_points
-            .iter()
-            .any(|point| point.kind == SafePointKind::Exit));
+        assert!(
+            safe_points
+                .iter()
+                .any(|point| point.kind == SafePointKind::Entry)
+        );
+        assert!(
+            safe_points
+                .iter()
+                .any(|point| point.kind == SafePointKind::Barrier)
+        );
+        assert!(
+            safe_points
+                .iter()
+                .any(|point| point.kind == SafePointKind::Exit)
+        );
     }
 
     #[test]

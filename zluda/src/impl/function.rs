@@ -8493,6 +8493,7 @@ pub(crate) fn launch_kernel(
         );
         return Err(CUerror::UNKNOWN);
     }
+    super::kimi_concordia::observe_kernel_launch(&f.function_name, h_stream);
     Ok(())
 }
 
@@ -8531,6 +8532,7 @@ pub(crate) fn launch_kernel_ex(
         );
         return Err(CUerror::UNKNOWN);
     }
+    super::kimi_concordia::observe_kernel_launch(&f.function_name, config.hStream);
     Ok(())
 }
 

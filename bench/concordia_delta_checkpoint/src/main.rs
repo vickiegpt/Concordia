@@ -1,5 +1,5 @@
-use cuda_core::{CudaContext, DeviceBuffer, IntoResult, LaunchConfig, memory, sys};
-use cuda_device::{DisjointSlice, cuda_module, kernel, thread};
+use cuda_core::{memory, sys, CudaContext, DeviceBuffer, IntoResult, LaunchConfig};
+use cuda_device::{cuda_module, kernel, thread, DisjointSlice};
 use std::cmp;
 use std::env;
 use std::error::Error;
@@ -278,7 +278,7 @@ fn append_dirty_payloads(
 
     for (slot, page) in dirty_pages.iter().copied().enumerate() {
         let payload = &mut append_log[slot * PAGE_SIZE..(slot + 1) * PAGE_SIZE];
-        let offset = (page * PAGE_SIZE) as _;
+        let offset = (page * PAGE_SIZE) as sys::CUdeviceptr;
         let src = current.cu_deviceptr() + offset;
         unsafe {
             memory::memcpy_dtoh_async(payload.as_mut_ptr(), src, PAGE_SIZE, stream.cu_stream())?;
