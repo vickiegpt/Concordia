@@ -14,8 +14,7 @@ use hip_runtime_sys::*;
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 use nvidia_runtime_sys;
 use std::ptr;
@@ -47,7 +46,8 @@ lazy_static::lazy_static! {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -67,7 +67,8 @@ lazy_static::lazy_static! {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -86,7 +87,8 @@ struct TmatmulVmmHandle {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -144,7 +146,8 @@ fn virtual_alloc_range(addr: usize, bytes: usize) -> Option<(usize, usize)> {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -160,7 +163,8 @@ const TMATMUL_VMM_GRANULARITY: usize = 64 * 1024;
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -181,7 +185,8 @@ fn tmatmul_vmm_align(alignment: usize) -> Result<usize, CUerror> {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -205,7 +210,8 @@ fn tmatmul_vmm_contains(base: usize, len: usize, addr: usize, size: usize) -> bo
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -223,7 +229,8 @@ fn tmatmul_vmm_range_end(start: usize, size: usize) -> Result<usize, CUerror> {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -248,7 +255,8 @@ fn tmatmul_vmm_ranges_overlap(
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     )
 ))]
 fn tmatmul_vmm_mapped_range(addr: usize, bytes: usize) -> Option<(usize, usize)> {
@@ -306,7 +314,8 @@ fn tmatmul_vmm_mapped_range(addr: usize, bytes: usize) -> Option<(usize, usize)>
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     )
 ))]
 fn tmatmul_mapped_range(addr: usize, bytes: usize) -> Option<(usize, usize)> {
@@ -359,7 +368,8 @@ fn tmatmul_mapped_range(addr: usize, bytes: usize) -> Option<(usize, usize)> {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     )
 ))]
 fn tmatmul_debug_host_backed_miss(label: &str, addr: usize, bytes: usize) {
@@ -427,7 +437,8 @@ fn tmatmul_debug_host_backed_miss(label: &str, addr: usize, bytes: usize) {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -455,7 +466,8 @@ pub(crate) fn get_allocation_granularity(
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -496,7 +508,8 @@ pub(crate) fn create(
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -521,7 +534,8 @@ pub(crate) fn release(handle: CUmemGenericAllocationHandle) -> CUresult {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -576,7 +590,8 @@ pub(crate) fn address_reserve(
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -649,7 +664,8 @@ pub(crate) fn map(
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -695,7 +711,8 @@ pub(crate) fn set_access(
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -754,7 +771,8 @@ pub(crate) fn unmap(ptr: CUdeviceptr, size: usize) -> CUresult {
     all(
         feature = "tmatmul",
         not(feature = "amd"),
-        not(feature = "tenstorrent")
+        not(feature = "tenstorrent"),
+        not(feature = "nvidia")
     ),
     all(
         feature = "sifive",
@@ -796,7 +814,8 @@ pub(crate) fn address_free(ptr: CUdeviceptr, size: usize) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
     if dptr.is_null() {
@@ -831,7 +850,8 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
     let addr = dptr.0 as usize;
@@ -853,7 +873,8 @@ pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn copy_dto_h_v2(
     dst_host: *mut ::core::ffi::c_void,
@@ -876,7 +897,8 @@ pub(crate) fn copy_dto_h_v2(
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn copy_hto_d_v2(
     dst_device: CUdeviceptr,
@@ -899,7 +921,8 @@ pub(crate) fn copy_hto_d_v2(
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_address_range_v2(
     pbase: *mut CUdeviceptr,
@@ -932,7 +955,8 @@ pub(crate) fn get_address_range_v2(
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize) -> CUresult {
     if n == 0 {
@@ -951,7 +975,8 @@ pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize)
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) -> CUresult {
     if n == 0 {
@@ -1687,8 +1712,7 @@ pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize)
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
     eprintln!("[hetGPU memory] alloc_v2 called: bytesize={}", bytesize);
@@ -1754,8 +1778,7 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
     // Record deallocation for replay
@@ -1772,8 +1795,7 @@ pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn copy_dto_h_v2(
     dst_host: *mut ::core::ffi::c_void,
@@ -1791,8 +1813,7 @@ pub(crate) fn copy_dto_h_v2(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn copy_hto_d_v2(
     dst_device: CUdeviceptr,
@@ -1814,8 +1835,7 @@ pub(crate) fn copy_hto_d_v2(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_address_range_v2(
     pbase: *mut CUdeviceptr,
@@ -1833,8 +1853,7 @@ pub(crate) fn get_address_range_v2(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn set_d8_v2(dst_device: CUdeviceptr, uc: u8, n: usize) -> CUresult {
     let result = nvidia_runtime_sys::cuMemsetD8_v2(dst_device, uc, n);
@@ -1848,8 +1867,7 @@ pub(crate) fn set_d8_v2(dst_device: CUdeviceptr, uc: u8, n: usize) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn set_d32_v2(dst_device: CUdeviceptr, ui: u32, n: usize) -> CUresult {
     let result = nvidia_runtime_sys::cuMemsetD32_v2(dst_device, ui, n);
@@ -1863,8 +1881,7 @@ pub(crate) fn set_d32_v2(dst_device: CUdeviceptr, ui: u32, n: usize) -> CUresult
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 unsafe fn nvidia_driver_symbol<T>(name: &'static [u8]) -> Result<T, CUerror>
 where
@@ -1883,8 +1900,7 @@ where
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn address_reserve(
     ptr: *mut CUdeviceptr,
@@ -1909,8 +1925,7 @@ pub(crate) fn address_reserve(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn address_free(ptr: CUdeviceptr, size: usize) -> CUresult {
     type FnTy = unsafe extern "C" fn(CUdeviceptr, usize) -> CUresult;
@@ -1921,8 +1936,7 @@ pub(crate) fn address_free(ptr: CUdeviceptr, size: usize) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn create(
     handle: *mut CUmemGenericAllocationHandle,
@@ -1943,8 +1957,7 @@ pub(crate) fn create(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn release(handle: CUmemGenericAllocationHandle) -> CUresult {
     type FnTy = unsafe extern "C" fn(CUmemGenericAllocationHandle) -> CUresult;
@@ -1955,8 +1968,7 @@ pub(crate) fn release(handle: CUmemGenericAllocationHandle) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn map(
     ptr: CUdeviceptr,
@@ -1979,8 +1991,7 @@ pub(crate) fn map(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn unmap(ptr: CUdeviceptr, size: usize) -> CUresult {
     type FnTy = unsafe extern "C" fn(CUdeviceptr, usize) -> CUresult;
@@ -1991,8 +2002,7 @@ pub(crate) fn unmap(ptr: CUdeviceptr, size: usize) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn set_access(
     ptr: CUdeviceptr,
@@ -2008,8 +2018,7 @@ pub(crate) fn set_access(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_allocation_granularity(
     granularity: *mut usize,

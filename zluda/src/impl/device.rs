@@ -6,8 +6,7 @@ use hip_runtime_sys::*;
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 use nvidia_runtime_sys;
 use std::{ffi::c_void, mem, ptr};
@@ -1507,7 +1506,8 @@ pub(crate) fn primary_context_release(dev: i32) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn compute_capability(major: &mut i32, minor: &mut i32, _dev: i32) -> CUresult {
     *major = COMPUTE_CAPABILITY_MAJOR;
@@ -1519,7 +1519,8 @@ pub(crate) fn compute_capability(major: &mut i32, minor: &mut i32, _dev: i32) ->
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get(device: *mut i32, ordinal: i32) -> CUresult {
     let devices = super::driver::global_state()?;
@@ -1534,7 +1535,8 @@ pub(crate) fn get(device: *mut i32, ordinal: i32) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_attribute(
     pi: *mut ::core::ffi::c_int,
@@ -1614,7 +1616,8 @@ pub(crate) fn get_attribute(
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_count(count: &mut ::core::ffi::c_int) -> CUresult {
     let devices = super::driver::global_state()?;
@@ -1626,7 +1629,8 @@ pub(crate) fn get_count(count: &mut ::core::ffi::c_int) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_name(
     name: *mut ::core::ffi::c_char,
@@ -1657,7 +1661,8 @@ pub(crate) fn get_name(
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_uuid(uuid: *mut [u8; 16], dev: i32) -> CUresult {
     if uuid.is_null() {
@@ -1682,7 +1687,8 @@ pub(crate) fn get_uuid(uuid: *mut [u8; 16], dev: i32) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_uuid_v2(uuid: *mut [u8; 16], dev: i32) -> CUresult {
     get_uuid(uuid, dev)
@@ -1692,7 +1698,8 @@ pub(crate) fn get_uuid_v2(uuid: *mut [u8; 16], dev: i32) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_luid(
     luid: *mut [u8; 8],
@@ -1724,7 +1731,8 @@ pub(crate) fn get_luid(
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn total_mem_v2(bytes: *mut usize, dev: i32) -> CUresult {
     if bytes.is_null() {
@@ -1745,7 +1753,8 @@ pub(crate) fn total_mem_v2(bytes: *mut usize, dev: i32) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_properties(prop: &mut CUdevprop, dev: i32) -> CUresult {
     let devices = super::driver::global_state()?;
@@ -1771,7 +1780,8 @@ pub(crate) fn get_properties(prop: &mut CUdevprop, dev: i32) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn primary_context_retain(pctx: *mut CUcontext, dev: i32) -> CUresult {
     if pctx.is_null() {
@@ -1792,7 +1802,8 @@ pub(crate) fn primary_context_retain(pctx: *mut CUcontext, dev: i32) -> CUresult
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn primary_context_release(dev: i32) -> CUresult {
     let (ctx, _) = super::context::get_primary_tmatmul(dev)?;
@@ -1853,7 +1864,8 @@ pub(crate) fn primary_context_get_state(dev: i32, flags: &mut u32, active: &mut 
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn primary_context_get_state(dev: i32, flags: &mut u32, active: &mut i32) -> CUresult {
     // For TMatmul virtual device, report that context exists and is active
@@ -1878,8 +1890,7 @@ pub(crate) fn primary_context_get_state(dev: i32, flags: &mut u32, active: &mut 
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn compute_capability(major: &mut i32, minor: &mut i32, dev: i32) -> CUresult {
     let result = nvidia_runtime_sys::cuDeviceComputeCapability(major, minor, dev);
@@ -1893,8 +1904,7 @@ pub(crate) fn compute_capability(major: &mut i32, minor: &mut i32, dev: i32) -> 
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get(device: *mut i32, ordinal: i32) -> CUresult {
     let result = nvidia_runtime_sys::cuDeviceGet(device, ordinal);
@@ -1908,8 +1918,7 @@ pub(crate) fn get(device: *mut i32, ordinal: i32) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_attribute(pi: &mut i32, attrib: CUdevice_attribute, dev: i32) -> CUresult {
     let result = nvidia_runtime_sys::cuDeviceGetAttribute(pi, attrib, dev);
@@ -1923,8 +1932,7 @@ pub(crate) fn get_attribute(pi: &mut i32, attrib: CUdevice_attribute, dev: i32) 
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_count(count: &mut ::core::ffi::c_int) -> CUresult {
     eprintln!("[hetGPU device] get_count called");
@@ -1945,8 +1953,7 @@ pub(crate) fn get_count(count: &mut ::core::ffi::c_int) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_name(
     name: *mut ::core::ffi::c_char,
@@ -1964,8 +1971,7 @@ pub(crate) fn get_name(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_uuid(uuid: *mut cuda_types::cuda::CUuuid, dev: i32) -> CUresult {
     let result = nvidia_runtime_sys::cuDeviceGetUuid(uuid, dev);
@@ -1979,8 +1985,7 @@ pub(crate) fn get_uuid(uuid: *mut cuda_types::cuda::CUuuid, dev: i32) -> CUresul
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_uuid_v2(uuid: *mut cuda_types::cuda::CUuuid, dev: i32) -> CUresult {
     get_uuid(uuid, dev)
@@ -1990,8 +1995,7 @@ pub(crate) fn get_uuid_v2(uuid: *mut cuda_types::cuda::CUuuid, dev: i32) -> CUre
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_luid(
     luid: *mut ::core::ffi::c_char,
@@ -2009,8 +2013,7 @@ pub(crate) fn get_luid(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn total_mem_v2(bytes: *mut usize, dev: i32) -> CUresult {
     let result = nvidia_runtime_sys::cuDeviceTotalMem_v2(bytes, dev);
@@ -2024,8 +2027,7 @@ pub(crate) fn total_mem_v2(bytes: *mut usize, dev: i32) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_properties(prop: &mut CUdevprop, dev: i32) -> CUresult {
     // CUDA doesn't have a direct cuDeviceGetProperties, so we build from attributes
@@ -2127,8 +2129,7 @@ pub(crate) fn get_properties(prop: &mut CUdevprop, dev: i32) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn primary_context_retain(pctx: &mut CUcontext, dev: i32) -> CUresult {
     let result = nvidia_runtime_sys::cuDevicePrimaryCtxRetain(pctx, dev);
@@ -2142,8 +2143,7 @@ pub(crate) fn primary_context_retain(pctx: &mut CUcontext, dev: i32) -> CUresult
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn primary_context_release(dev: i32) -> CUresult {
     let result = nvidia_runtime_sys::cuDevicePrimaryCtxRelease_v2(dev);
@@ -2157,8 +2157,7 @@ pub(crate) fn primary_context_release(dev: i32) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn primary_context_get_state(dev: i32, flags: &mut u32, active: &mut i32) -> CUresult {
     let result = nvidia_runtime_sys::cuDevicePrimaryCtxGetState(dev, flags, active);

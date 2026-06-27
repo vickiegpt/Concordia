@@ -8,8 +8,7 @@ use hip_runtime_sys::*;
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 use nvidia_runtime_sys;
 #[cfg(all(
@@ -1082,7 +1081,8 @@ impl<'a> super::FromCuda<'a, CUfunction> for &'a TtKernel {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) struct Module {
     assembly_code: String,
@@ -1093,14 +1093,16 @@ pub(crate) struct Module {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 unsafe impl Send for Module {}
 #[cfg(all(
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 unsafe impl Sync for Module {}
 
@@ -1108,7 +1110,8 @@ unsafe impl Sync for Module {}
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl ZludaObject for Module {
     const COOKIE: usize = 0xe9138bd040487d4a;
@@ -1126,7 +1129,8 @@ impl ZludaObject for Module {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -> CUresult {
     if image.is_null() {
@@ -1186,7 +1190,8 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn unload(hmod: CUmodule) -> CUresult {
     super::drop_checked::<Module>(hmod)
@@ -1196,7 +1201,8 @@ pub(crate) fn unload(hmod: CUmodule) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_function(
     hfunc: &mut CUfunction,
@@ -1230,7 +1236,8 @@ pub(crate) fn get_function(
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) struct TMatmulKernel {
     function_name: String,
@@ -1241,14 +1248,16 @@ pub(crate) struct TMatmulKernel {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 unsafe impl Send for TMatmulKernel {}
 #[cfg(all(
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 unsafe impl Sync for TMatmulKernel {}
 
@@ -1256,7 +1265,8 @@ unsafe impl Sync for TMatmulKernel {}
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl ZludaObject for TMatmulKernel {
     const COOKIE: usize = 0xad74ceadb9b2d51c;
@@ -1276,7 +1286,8 @@ impl ZludaObject for TMatmulKernel {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl<'a> super::FromCuda<'a, CUfunction> for &'a TMatmulKernel {
     fn from_cuda(handle: &'a CUfunction) -> Result<Self, CUerror> {
@@ -1319,8 +1330,7 @@ fn intel_env_os_value_requested(name: &str) -> Option<std::ffi::OsString> {
         feature = "nvidia",
         not(feature = "amd"),
         not(feature = "intel"),
-        not(feature = "tenstorrent"),
-        not(feature = "tmatmul")
+        not(feature = "tenstorrent")
     )
 ))]
 fn sass_diagnostic_log_limit() -> usize {
@@ -1336,8 +1346,7 @@ fn sass_diagnostic_log_limit() -> usize {
         feature = "nvidia",
         not(feature = "amd"),
         not(feature = "intel"),
-        not(feature = "tenstorrent"),
-        not(feature = "tmatmul")
+        not(feature = "tenstorrent")
     )
 ))]
 fn sass_diagnostic_instruction_for_log(text: &str) -> String {
@@ -1350,8 +1359,7 @@ fn sass_diagnostic_instruction_for_log(text: &str) -> String {
         feature = "nvidia",
         not(feature = "amd"),
         not(feature = "intel"),
-        not(feature = "tenstorrent"),
-        not(feature = "tmatmul")
+        not(feature = "tenstorrent")
     )
 ))]
 static SASS_LIFTER_CUBIN_DUMP_COUNTER: std::sync::atomic::AtomicU64 =
@@ -1363,8 +1371,7 @@ static SASS_LIFTER_CUBIN_DUMP_COUNTER: std::sync::atomic::AtomicU64 =
         feature = "nvidia",
         not(feature = "amd"),
         not(feature = "intel"),
-        not(feature = "tenstorrent"),
-        not(feature = "tmatmul")
+        not(feature = "tenstorrent")
     )
 ))]
 fn dump_sass_lifter_cubin_if_requested(dir: Option<std::ffi::OsString>, label: &str, cubin: &[u8]) {
@@ -2514,8 +2521,7 @@ fn extract_ptx_from_offset(binary: &[u8], start: usize) -> Option<String> {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) struct Module {
     cuda_module: cuda_types::cuda::CUmodule,
@@ -2525,16 +2531,14 @@ pub(crate) struct Module {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 unsafe impl Send for Module {}
 #[cfg(all(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 unsafe impl Sync for Module {}
 
@@ -2542,40 +2546,35 @@ unsafe impl Sync for Module {}
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 const HETGPU_SASS_MAX_CUBIN_BYTES: usize = 256 * 1024 * 1024;
 #[cfg(all(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 const HETGPU_FATBIN_MAGIC: &[u8; 4] = b"\x50\xed\x55\xba";
 #[cfg(all(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 const HETGPU_ZSTD_MAGIC: &[u8; 4] = b"\x28\xb5\x2f\xfd";
 #[cfg(all(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 const HETGPU_FATBIN_KIND_ELF: u16 = 0x02;
 #[cfg(all(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 const HETGPU_FATBIN_FILE_HEADER_MIN_SIZE: usize = 64;
 
@@ -2583,8 +2582,7 @@ const HETGPU_FATBIN_FILE_HEADER_MIN_SIZE: usize = 64;
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
@@ -2603,8 +2601,7 @@ fn env_flag_enabled(name: &str) -> bool {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn env_os_value_requested(name: &str) -> Option<std::ffi::OsString> {
     let value = std::env::var_os(name)?;
@@ -2628,8 +2625,7 @@ fn env_os_value_requested(name: &str) -> Option<std::ffi::OsString> {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn sass_lifter_requested() -> bool {
     env_flag_enabled("HETGPU_SASS_LIFTER_LOG")
@@ -2641,8 +2637,7 @@ fn sass_lifter_requested() -> bool {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn nvidia_module_image_prefix_is_ptx(prefix: &[u8]) -> bool {
     let first_non_ws = prefix
@@ -2658,8 +2653,7 @@ fn nvidia_module_image_prefix_is_ptx(prefix: &[u8]) -> bool {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 unsafe fn nvidia_module_image_is_ptx_text(image: *const std::ffi::c_void) -> bool {
     let prefix = std::slice::from_raw_parts(image as *const u8, 64);
@@ -2671,8 +2665,7 @@ unsafe fn nvidia_module_image_is_ptx_text(image: *const std::ffi::c_void) -> boo
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 mod nvidia_module_tests {
     use super::*;
@@ -2788,8 +2781,7 @@ mod nvidia_module_tests {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
     let end = offset.checked_add(2)?;
@@ -2800,8 +2792,7 @@ fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     let end = offset.checked_add(4)?;
@@ -2812,8 +2803,7 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn read_u64_le(bytes: &[u8], offset: usize) -> Option<u64> {
     let end = offset.checked_add(8)?;
@@ -2824,8 +2814,7 @@ fn read_u64_le(bytes: &[u8], offset: usize) -> Option<u64> {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn bytes_start_with(data: &[u8], magic: &[u8; 4]) -> bool {
     data.get(..4) == Some(magic.as_slice())
@@ -2835,8 +2824,7 @@ fn bytes_start_with(data: &[u8], magic: &[u8; 4]) -> bool {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn try_decompress_zstd_bytes(data: &[u8], label: &str) -> Option<Vec<u8>> {
     if !bytes_start_with(data, HETGPU_ZSTD_MAGIC) {
@@ -2889,8 +2877,7 @@ fn try_decompress_zstd_bytes(data: &[u8], label: &str) -> Option<Vec<u8>> {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn try_decompress_lz4_bytes(data: &[u8], uncompressed_size: usize, label: &str) -> Option<Vec<u8>> {
     if uncompressed_size == 0 || uncompressed_size > HETGPU_SASS_MAX_CUBIN_BYTES {
@@ -2923,8 +2910,7 @@ fn try_decompress_lz4_bytes(data: &[u8], uncompressed_size: usize, label: &str) 
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn elf_table_end(offset: usize, entry_size: usize, count: usize) -> Option<usize> {
     if count == 0 {
@@ -2940,8 +2926,7 @@ fn elf_table_end(offset: usize, entry_size: usize, count: usize) -> Option<usize
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn elf_payload_end(
     header_and_tables: &[u8],
@@ -2996,8 +2981,7 @@ fn elf_payload_end(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 unsafe fn copy_elf_cubin_image(image: *const std::ffi::c_void) -> Option<Vec<u8>> {
     let header = std::slice::from_raw_parts(image as *const u8, 64);
@@ -3043,8 +3027,7 @@ unsafe fn copy_elf_cubin_image(image: *const std::ffi::c_void) -> Option<Vec<u8>
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn nvidia_cubin_payload_view(data: &[u8]) -> Option<&[u8]> {
     if ptx::is_cubin(data) {
@@ -3060,8 +3043,7 @@ fn nvidia_cubin_payload_view(data: &[u8]) -> Option<&[u8]> {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 unsafe fn nvidia_module_image_first16_hex(image: *const std::ffi::c_void) -> String {
     std::slice::from_raw_parts(image as *const u8, 16)
@@ -3075,8 +3057,7 @@ unsafe fn nvidia_module_image_first16_hex(image: *const std::ffi::c_void) -> Str
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 unsafe fn copy_nvidia_module_image_for_lifter(image: *const std::ffi::c_void) -> Option<Vec<u8>> {
     let header = std::slice::from_raw_parts(image as *const u8, 16);
@@ -3100,8 +3081,7 @@ unsafe fn copy_nvidia_module_image_for_lifter(image: *const std::ffi::c_void) ->
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn try_extract_nvidia_cubin_from_fatbin(data: &[u8]) -> Option<Vec<u8>> {
     if data.get(0..4) != Some(HETGPU_FATBIN_MAGIC.as_slice()) {
@@ -3226,8 +3206,7 @@ fn try_extract_nvidia_cubin_from_fatbin(data: &[u8]) -> Option<Vec<u8>> {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn select_nvidia_cubin_for_sass_lifter<'a>(binary: &'a [u8]) -> Option<std::borrow::Cow<'a, [u8]>> {
     if let Some(cubin) = nvidia_cubin_payload_view(binary) {
@@ -3243,8 +3222,7 @@ fn select_nvidia_cubin_for_sass_lifter<'a>(binary: &'a [u8]) -> Option<std::borr
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 fn try_lift_nvidia_cubin_image(image: *const std::ffi::c_void) -> Option<String> {
     if !sass_lifter_requested() {
@@ -3354,8 +3332,7 @@ fn try_lift_nvidia_cubin_image(image: *const std::ffi::c_void) -> Option<String>
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 impl ZludaObject for Module {
     const COOKIE: usize = 0xe9138bd040487d4a;
@@ -3379,8 +3356,7 @@ impl ZludaObject for Module {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -> CUresult {
     if image.is_null() {
@@ -3462,8 +3438,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn unload(hmod: CUmodule) -> CUresult {
     super::drop_checked::<Module>(hmod)
@@ -3473,8 +3448,7 @@ pub(crate) fn unload(hmod: CUmodule) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_function(
     hfunc: &mut CUfunction,
@@ -3522,8 +3496,7 @@ pub(crate) fn get_function(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) struct NvidiaKernel {
     pub cuda_function: cuda_types::cuda::CUfunction,
@@ -3534,16 +3507,14 @@ pub(crate) struct NvidiaKernel {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 unsafe impl Send for NvidiaKernel {}
 #[cfg(all(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 unsafe impl Sync for NvidiaKernel {}
 
@@ -3551,8 +3522,7 @@ unsafe impl Sync for NvidiaKernel {}
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 impl ZludaObject for NvidiaKernel {
     const COOKIE: usize = 0xad74ceadb9b2d51c;

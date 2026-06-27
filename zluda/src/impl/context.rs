@@ -527,7 +527,8 @@ pub(crate) struct Context {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 unsafe impl Send for Context {}
 
@@ -535,7 +536,8 @@ unsafe impl Send for Context {}
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 unsafe impl Sync for Context {}
 
@@ -543,7 +545,8 @@ unsafe impl Sync for Context {}
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl Clone for Context {
     fn clone(&self) -> Self {
@@ -562,7 +565,8 @@ impl Clone for Context {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) struct OwnedByContext {
     pub(crate) ref_count: usize,
@@ -573,7 +577,8 @@ pub(crate) struct OwnedByContext {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl Context {
     pub(crate) fn new(device_id: i32) -> Self {
@@ -596,7 +601,8 @@ impl Context {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl ZludaObject for Context {
     const COOKIE: usize = 0x1c9a63e0bfb35ca4;
@@ -611,7 +617,8 @@ impl ZludaObject for Context {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
     if raw_ctx.0 != ptr::null_mut() {
@@ -634,7 +641,8 @@ pub(crate) fn set_current(raw_ctx: CUcontext) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn push(ctx: CUcontext, device_id: i32) {
     CONTEXT_STACK.with(|stack| {
@@ -647,7 +655,8 @@ pub(crate) fn push(ctx: CUcontext, device_id: i32) {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_primary_tmatmul(
     device_id: i32,
@@ -660,7 +669,8 @@ pub(crate) fn get_primary_tmatmul(
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_limit(pvalue: *mut usize, _limit: CUlimit) -> CUresult {
     if pvalue.is_null() {
@@ -676,7 +686,8 @@ pub(crate) fn get_limit(pvalue: *mut usize, _limit: CUlimit) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn set_limit(_limit: CUlimit, _value: usize) -> CUresult {
     Ok(())
@@ -686,7 +697,8 @@ pub(crate) fn set_limit(_limit: CUlimit, _value: usize) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn synchronize() -> CUresult {
     super::checkpoint::process_pending_checkpoint();
@@ -697,7 +709,8 @@ pub(crate) fn synchronize() -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_device(device_out: *mut CUdevice) -> CUresult {
     if device_out.is_null() {
@@ -728,7 +741,8 @@ pub(crate) fn get_device(device_out: *mut CUdevice) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn create_v2(pctx: *mut CUcontext, _flags: u32, dev: CUdevice) -> CUresult {
     if pctx.is_null() {
@@ -750,7 +764,8 @@ pub(crate) fn create_v2(pctx: *mut CUcontext, _flags: u32, dev: CUdevice) -> CUr
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn destroy_v2(ctx: CUcontext) -> CUresult {
     if ctx.0.is_null() {
@@ -768,7 +783,8 @@ pub(crate) fn destroy_v2(ctx: CUcontext) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn push_current_v2(ctx: CUcontext) -> CUresult {
     if ctx.0.is_null() {
@@ -783,7 +799,8 @@ pub(crate) fn push_current_v2(ctx: CUcontext) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn pop_current_v2(pctx: *mut CUcontext) -> CUresult {
     let popped = CONTEXT_STACK.with(|stack| stack.borrow_mut().pop());

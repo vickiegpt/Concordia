@@ -47,6 +47,15 @@ pub(super) mod pointer;
 
 // Checkpoint/resume support for GPU state
 pub mod checkpoint;
+pub(crate) mod concordia_delta;
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) mod concordia_gpu;
+pub(crate) mod persistent_router;
 
 // Record/replay support for heterogeneous GPU debugging
 pub mod replay;
@@ -57,10 +66,10 @@ pub mod ze_device;
 #[cfg(feature = "intel")]
 pub mod ze_module;
 
-#[cfg(feature = "intel")]
+#[cfg(any(feature = "intel", feature = "nvidia"))]
 pub(crate) mod cxl_tmatmul;
 
-#[cfg(feature = "intel")]
+#[cfg(any(feature = "intel", feature = "nvidia"))]
 pub(crate) mod bitnet_disagg;
 
 #[cfg(test)]
@@ -401,8 +410,7 @@ from_cuda_object!(module::ZeKernel);
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 from_cuda_object!(module::NvidiaKernel);
 
@@ -446,8 +454,7 @@ impl<'a> FromCuda<'a, CUlimit> for ze_device_limit_t {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 impl<'a> FromCuda<'a, CUlimit> for CUlimit {
     fn from_cuda(limit: &'a CUlimit) -> Result<Self, CUerror> {
@@ -459,8 +466,7 @@ impl<'a> FromCuda<'a, CUlimit> for CUlimit {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 impl<'a> FromCuda<'a, CUfunction_attribute> for CUfunction_attribute {
     fn from_cuda(attr: &'a CUfunction_attribute) -> Result<Self, CUerror> {
@@ -472,8 +478,7 @@ impl<'a> FromCuda<'a, CUfunction_attribute> for CUfunction_attribute {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 impl<'a> FromCuda<'a, CUpointer_attribute> for CUpointer_attribute {
     fn from_cuda(attr: &'a CUpointer_attribute) -> Result<Self, CUerror> {
@@ -485,8 +490,7 @@ impl<'a> FromCuda<'a, CUpointer_attribute> for CUpointer_attribute {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 impl<'a> FromCuda<'a, CUstream> for CUstream {
     fn from_cuda(stream: &'a CUstream) -> Result<Self, CUerror> {
@@ -498,8 +502,7 @@ impl<'a> FromCuda<'a, CUstream> for CUstream {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 impl<'a> FromCuda<'a, *mut CUuuid> for *mut CUuuid {
     fn from_cuda(uuid: &'a *mut CUuuid) -> Result<Self, CUerror> {
@@ -511,8 +514,7 @@ impl<'a> FromCuda<'a, *mut CUuuid> for *mut CUuuid {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 impl<'a> FromCuda<'a, *const CUlaunchConfig> for &'a CUlaunchConfig {
     fn from_cuda(config: &'a *const CUlaunchConfig) -> Result<Self, CUerror> {
@@ -527,8 +529,7 @@ impl<'a> FromCuda<'a, *const CUlaunchConfig> for &'a CUlaunchConfig {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 impl<'a> FromCuda<'a, CUdeviceptr> for CUdeviceptr {
     fn from_cuda(ptr: &'a CUdeviceptr) -> Result<Self, CUerror> {
@@ -825,7 +826,8 @@ impl<'a> FromCuda<'a, CUfunction_attribute_enum> for CUfunction_attribute_enum {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl<'a> FromCuda<'a, *mut CUuuid_st> for *mut [u8; 16] {
     fn from_cuda(x: &'a *mut CUuuid_st) -> Result<Self, CUerror> {
@@ -837,7 +839,8 @@ impl<'a> FromCuda<'a, *mut CUuuid_st> for *mut [u8; 16] {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl<'a> FromCuda<'a, *mut i8> for *mut [u8; 8] {
     fn from_cuda(x: &'a *mut i8) -> Result<Self, CUerror> {
@@ -849,7 +852,8 @@ impl<'a> FromCuda<'a, *mut i8> for *mut [u8; 8] {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl<'a> FromCuda<'a, *mut u32> for *mut u32 {
     fn from_cuda(x: &'a *mut u32) -> Result<Self, CUerror> {
@@ -861,7 +865,8 @@ impl<'a> FromCuda<'a, *mut u32> for *mut u32 {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl<'a> FromCuda<'a, *mut CUfunction> for &'a mut CUfunction {
     fn from_cuda(x: &'a *mut CUfunction) -> Result<Self, CUerror> {
@@ -876,7 +881,8 @@ impl<'a> FromCuda<'a, *mut CUfunction> for &'a mut CUfunction {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl<'a> FromCuda<'a, CUstream> for *mut ::core::ffi::c_void {
     fn from_cuda(x: &'a CUstream) -> Result<Self, CUerror> {
@@ -888,7 +894,8 @@ impl<'a> FromCuda<'a, CUstream> for *mut ::core::ffi::c_void {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl<'a> FromCuda<'a, CUdeviceptr_v2> for CUdeviceptr_v2 {
     fn from_cuda(x: &'a CUdeviceptr_v2) -> Result<Self, CUerror> {
@@ -900,7 +907,8 @@ impl<'a> FromCuda<'a, CUdeviceptr_v2> for CUdeviceptr_v2 {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl<'a> FromCuda<'a, CUpointer_attribute_enum> for CUpointer_attribute_enum {
     fn from_cuda(x: &'a CUpointer_attribute_enum) -> Result<Self, CUerror> {
@@ -912,7 +920,8 @@ impl<'a> FromCuda<'a, CUpointer_attribute_enum> for CUpointer_attribute_enum {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl<'a> FromCuda<'a, CUfunction_attribute_enum> for CUfunction_attribute_enum {
     fn from_cuda(x: &'a CUfunction_attribute_enum) -> Result<Self, CUerror> {
@@ -924,7 +933,8 @@ impl<'a> FromCuda<'a, CUfunction_attribute_enum> for CUfunction_attribute_enum {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl<'a> FromCuda<'a, CUlimit> for CUlimit {
     fn from_cuda(x: &'a CUlimit) -> Result<Self, CUerror> {
@@ -936,7 +946,8 @@ impl<'a> FromCuda<'a, CUlimit> for CUlimit {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 impl<'a> FromCuda<'a, *const CUlaunchConfig_st> for &'a CUlaunchConfig_st {
     fn from_cuda(x: &'a *const CUlaunchConfig_st) -> Result<Self, CUerror> {

@@ -93,6 +93,12 @@ type CuDeviceGetUuidFn = unsafe extern "C" fn(*mut CUuuid, CUdevice) -> CUresult
 type CuDeviceGetLuidFn = unsafe extern "C" fn(*mut c_char, *mut c_uint, CUdevice) -> CUresult;
 type CuMemGetAddressRangeFn =
     unsafe extern "C" fn(*mut CUdeviceptr, *mut size_t, CUdeviceptr) -> CUresult;
+type CuMemcpyDtoHAsyncFn =
+    unsafe extern "C" fn(*mut c_void, CUdeviceptr, size_t, CUstream) -> CUresult;
+type CuMemAllocHostFn = unsafe extern "C" fn(*mut *mut c_void, size_t) -> CUresult;
+type CuMemFreeHostFn = unsafe extern "C" fn(*mut c_void) -> CUresult;
+type CuMemHostGetDevicePointerFn =
+    unsafe extern "C" fn(*mut CUdeviceptr, *mut c_void, c_uint) -> CUresult;
 
 // Function pointers struct
 pub struct NvidiaCudaFunctions {
@@ -146,6 +152,10 @@ pub struct NvidiaCudaFunctions {
     pub cuDeviceGetUuid: Option<CuDeviceGetUuidFn>,
     pub cuDeviceGetLuid: Option<CuDeviceGetLuidFn>,
     pub cuMemGetAddressRange_v2: Option<CuMemGetAddressRangeFn>,
+    pub cuMemcpyDtoHAsync_v2: Option<CuMemcpyDtoHAsyncFn>,
+    pub cuMemAllocHost_v2: Option<CuMemAllocHostFn>,
+    pub cuMemFreeHost: Option<CuMemFreeHostFn>,
+    pub cuMemHostGetDevicePointer_v2: Option<CuMemHostGetDevicePointerFn>,
 }
 
 static CUDA_FUNCS: OnceLock<NvidiaCudaFunctions> = OnceLock::new();
@@ -227,6 +237,10 @@ pub fn init() -> Result<(), String> {
                 cuDeviceGetUuid: load_fn(lib, "cuDeviceGetUuid"),
                 cuDeviceGetLuid: load_fn(lib, "cuDeviceGetLuid"),
                 cuMemGetAddressRange_v2: load_fn(lib, "cuMemGetAddressRange_v2"),
+                cuMemcpyDtoHAsync_v2: load_fn(lib, "cuMemcpyDtoHAsync_v2"),
+                cuMemAllocHost_v2: load_fn(lib, "cuMemAllocHost_v2"),
+                cuMemFreeHost: load_fn(lib, "cuMemFreeHost"),
+                cuMemHostGetDevicePointer_v2: load_fn(lib, "cuMemHostGetDevicePointer_v2"),
             }
         }
     });
@@ -318,6 +332,10 @@ impl NvidiaCudaFunctions {
             cuDeviceGetUuid: None,
             cuDeviceGetLuid: None,
             cuMemGetAddressRange_v2: None,
+            cuMemcpyDtoHAsync_v2: None,
+            cuMemAllocHost_v2: None,
+            cuMemFreeHost: None,
+            cuMemHostGetDevicePointer_v2: None,
         }
     }
 }
@@ -629,6 +647,55 @@ pub fn cuMemcpyDtoH_v2(dst: *mut c_void, src: CUdeviceptr, bytecount: size_t) ->
     999
 }
 
+pub fn cuMemcpyDtoHAsync_v2(
+    dst: *mut c_void,
+    src: CUdeviceptr,
+    bytecount: size_t,
+    stream: CUstream,
+) -> i32 {
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuMemcpyDtoHAsync_v2 {
+            let result = unsafe { f(dst, src, bytecount, stream) };
+            return cuda_result_to_int(result);
+        }
+    }
+    999
+}
+
+pub fn cuMemAllocHost_v2(pp: *mut *mut c_void, bytesize: size_t) -> i32 {
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuMemAllocHost_v2 {
+            let result = unsafe { f(pp, bytesize) };
+            return cuda_result_to_int(result);
+        }
+    }
+    999
+}
+
+pub fn cuMemFreeHost(p: *mut c_void) -> i32 {
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuMemFreeHost {
+            let result = unsafe { f(p) };
+            return cuda_result_to_int(result);
+        }
+    }
+    999
+}
+
+pub fn cuMemHostGetDevicePointer_v2(
+    pdptr: *mut CUdeviceptr,
+    p: *mut c_void,
+    flags: c_uint,
+) -> i32 {
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuMemHostGetDevicePointer_v2 {
+            let result = unsafe { f(pdptr, p, flags) };
+            return cuda_result_to_int(result);
+        }
+    }
+    999
+}
+
 pub fn cuMemGetAddressRange_v2(
     pbase: *mut CUdeviceptr,
     psize: *mut size_t,
@@ -754,6 +821,26 @@ pub fn cuCtxSynchronize() -> i32 {
         }
     } else {
         eprintln!("[nvidia-sys] cuCtxSynchronize: get_cuda_funcs returned None!");
+    }
+    999
+}
+
+pub fn cuStreamCreate_ckpt(stream: *mut CUstream, flags: c_uint) -> i32 {
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuStreamCreate {
+            let result = unsafe { f(stream, flags) };
+            return cuda_result_to_int(result);
+        }
+    }
+    999
+}
+
+pub fn cuStreamSynchronize_ckpt(stream: CUstream) -> i32 {
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuStreamSynchronize {
+            let result = unsafe { f(stream) };
+            return cuda_result_to_int(result);
+        }
     }
     999
 }

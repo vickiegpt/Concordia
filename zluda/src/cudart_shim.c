@@ -328,6 +328,16 @@ static int hetgpu_cudart_prefer_fatbin_cubin_for_sass(void) {
     return hetgpu_env_enabled_default("HETGPU_CUDART_PREFER_FATBIN_CUBIN_FOR_SASS", 0);
 }
 
+static int hetgpu_cudart_prelaunch_named_kernel_enabled(void) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_PRELAUNCH_NAMED_KERNEL", 0)) {
+        return 1;
+    }
+    return hetgpu_env_enabled_default("HETGPU_BITNET_DISAGGREGATE", 0) &&
+           (hetgpu_env_enabled_default("HETGPU_CXL_TMATMUL", 0) ||
+            hetgpu_env_enabled_default("HETGPU_TMATMUL_CXL", 0)) &&
+           hetgpu_env_enabled_default("HETGPU_TMATMUL_HARDWARE_MATMUL", 0);
+}
+
 static unsigned long long hetgpu_parse_env_ull_default(const char *name, unsigned long long default_value);
 
 static unsigned long long hetgpu_cudart_lazy_ptx_fail_open_log_limit(void) {
@@ -2342,6 +2352,32 @@ cudaError_t __cudaLaunchKernel(const void* func, dim3 gridDim, dim3 blockDim, vo
     if (cuFunc != NULL) {
         HETGPU_LOG("[cudart_shim] Found registered function '%s': %p -> %p\n",
                 funcName, func, cuFunc);
+    }
+
+    if (hetgpu_cudart_prelaunch_named_kernel_enabled() &&
+        funcName && strcmp(funcName, "<unknown>") != 0) {
+        hetgpu_sifive_launch_named_kernel_fn launch_named =
+            resolve_hetgpu_sifive_launch_named_kernel();
+        if (launch_named) {
+            int named_result = launch_named(
+                funcName,
+                gridDim.x, gridDim.y, gridDim.z,
+                blockDim.x, blockDim.y, blockDim.z,
+                (unsigned int)sharedMem,
+                (void*)stream,
+                args,
+                NULL);
+            if (named_result == HETGPU_CUDA_SUCCESS) {
+                HETGPU_LOG("[cudart_shim] prelaunch named handler completed '%s'\n", funcName);
+                return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+            }
+            if (named_result == HETGPU_CUDA_ERROR_UNKNOWN) {
+                fprintf(stderr,
+                        "[cudart_shim] prelaunch named handler failed for '%s'; refusing native fail-open\n",
+                        funcName);
+                return hetgpu_set_last_error(HETGPU_CUDA_ERROR_UNKNOWN);
+            }
+        }
     }
 
     if (hetgpu_cudart_kernel_sifive_noop_enabled()) {

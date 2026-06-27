@@ -5,8 +5,7 @@ use hip_runtime_sys::*;
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 use nvidia_runtime_sys;
 use std::{ffi::CString, sync::OnceLock};
@@ -615,7 +614,8 @@ pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
     static GLOBAL_STATE: OnceLock<Result<GlobalState, CUerror>> = OnceLock::new();
@@ -652,7 +652,8 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
     let _ = flags;
@@ -700,7 +701,8 @@ pub(crate) fn get_version(version: &mut ::core::ffi::c_int) -> CUresult {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn get_version(version: &mut ::core::ffi::c_int) -> CUresult {
     *version = std::cmp::max(cuda_types::cuda::CUDA_VERSION as i32, 13000);
@@ -755,7 +757,8 @@ thread_local! {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 pub(crate) fn device_tmatmul(dev_id: i32) -> Result<&'static Device, CUerror> {
     TMATMUL_DEVICES.with(|map| {
@@ -771,7 +774,8 @@ pub(crate) fn device_tmatmul(dev_id: i32) -> Result<&'static Device, CUerror> {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 thread_local! {
     static TMATMUL_DEVICES: RefCell<HashMap<i32, NonNull<Device>>> = RefCell::new(HashMap::new());
@@ -782,8 +786,7 @@ thread_local! {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
     static GLOBAL_STATE: OnceLock<Result<GlobalState, CUerror>> = OnceLock::new();
@@ -883,8 +886,7 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
     // Call real cuInit
@@ -913,8 +915,7 @@ pub(crate) fn init(flags: ::core::ffi::c_uint) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_version(version: &mut ::core::ffi::c_int) -> CUresult {
     // Get version from real CUDA driver
@@ -930,8 +931,7 @@ pub(crate) fn get_version(version: &mut ::core::ffi::c_int) -> CUresult {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn device_nvidia(dev_id: i32) -> Result<&'static Device, CUerror> {
     NVIDIA_DEVICES.with(|map| {
@@ -947,8 +947,7 @@ pub(crate) fn device_nvidia(dev_id: i32) -> Result<&'static Device, CUerror> {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 thread_local! {
     static NVIDIA_DEVICES: RefCell<HashMap<i32, NonNull<Device>>> = RefCell::new(HashMap::new());

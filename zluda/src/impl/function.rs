@@ -6,8 +6,7 @@ use hip_runtime_sys::*;
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 use nvidia_runtime_sys;
 #[cfg(feature = "intel")]
@@ -8085,8 +8084,7 @@ pub(crate) fn launch_kernel(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn get_attribute(
     pi: &mut ::core::ffi::c_int,
@@ -8104,8 +8102,351 @@ pub(crate) fn get_attribute(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
+))]
+fn nvidia_log_bitnet_route_for_native_launch(kernel_name: &str) {
+    if !super::bitnet_disagg::enabled_from_env() {
+        return;
+    }
+
+    let route_config = super::bitnet_disagg::config_from_env();
+    let decision = super::bitnet_disagg::classify_kernel_name(kernel_name, &route_config);
+    let cxl_enabled =
+        nvidia_env_truthy("HETGPU_CXL_TMATMUL") || nvidia_env_truthy("HETGPU_TMATMUL_CXL");
+
+    // The NVIDIA backend currently observes the BitNet split while forwarding
+    // launches to native CUDA. The Intel/tmatmul backend owns actual CXL
+    // matmul diversion, so keep this field false here to avoid claiming a
+    // hardware matmul submit happened in the NVIDIA pass-through path.
+    let hardware_matmul_enabled = false;
+    if let Err(err) = super::bitnet_disagg::append_route_log_from_env(
+        &decision,
+        cxl_enabled,
+        hardware_matmul_enabled,
+    ) {
+        eprintln!(
+            "[BitNet Disagg][NVIDIA] route log failed for '{}': {}",
+            kernel_name, err
+        );
+    }
+
+    if decision.route == super::bitnet_disagg::BitnetRoute::CxlTmatmul
+        && nvidia_env_truthy("HETGPU_BITNET_ROUTE_TRACE")
+    {
+        eprintln!(
+            "[BitNet Disagg][NVIDIA] '{}' classified as CXL tmatmul candidate via {}; native CUDA pass-through remains active",
+            kernel_name,
+            decision.source.as_str()
+        );
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_env_usize(name: &str) -> Option<usize> {
+    std::env::var(name).ok().and_then(|value| {
+        let trimmed = value.trim();
+        if let Some(hex) = trimmed
+            .strip_prefix("0x")
+            .or_else(|| trimmed.strip_prefix("0X"))
+        {
+            usize::from_str_radix(hex, 16).ok()
+        } else {
+            trimmed.parse::<usize>().ok()
+        }
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NvidiaCxlMatmulLayout {
+    name: &'static str,
+    matrix_param: usize,
+    vector_param: usize,
+    output_param: usize,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_cxl_matmul_layout(name_lower: &str) -> Option<NvidiaCxlMatmulLayout> {
+    if name_lower.contains("mul_mat_q_stream_k_fixup") || name_lower.contains("stream_k_fixup") {
+        return None;
+    }
+    if name_lower.contains("mul_mat_vec_q") {
+        return Some(NvidiaCxlMatmulLayout {
+            name: "mul_mat_vec_q",
+            matrix_param: nvidia_env_usize("HETGPU_TMATMUL_MATRIX_PARAM").unwrap_or(0),
+            vector_param: nvidia_env_usize("HETGPU_TMATMUL_VECTOR_PARAM").unwrap_or(1),
+            output_param: nvidia_env_usize("HETGPU_TMATMUL_OUTPUT_PARAM").unwrap_or(2),
+        });
+    }
+    if !name_lower.contains("mul_mat_q") {
+        return None;
+    }
+
+    Some(NvidiaCxlMatmulLayout {
+        name: "mul_mat_q",
+        matrix_param: nvidia_env_usize("HETGPU_TMATMUL_MATRIX_PARAM").unwrap_or(0),
+        vector_param: nvidia_env_usize("HETGPU_TMATMUL_VECTOR_PARAM").unwrap_or(1),
+        output_param: nvidia_env_usize("HETGPU_TMATMUL_OUTPUT_PARAM").unwrap_or(2),
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_cxl_generate_matmul_assembly(kernel_name: &str, layout: NvidiaCxlMatmulLayout) -> String {
+    format!(
+        "; IA-780I hardware matmul fallback generated from NVIDIA named kernel
+         ; kernel: {kernel_name}
+         ; layout: {layout_name} matrix=PARAM_{matrix} vector=PARAM_{vector} output=PARAM_{output}
+         ; BIND PARAM_{matrix} matrix
+         ; BIND PARAM_{vector} vector
+         ; BIND PARAM_{output} output
+         ldv v0,PARAM_{vector}
+         tmatmul_import v0
+         tmatmul_go_nvint8 PARAM_{matrix},4
+         tmatmul_export v1
+         sv v1,PARAM_{output}
+         stall
+",
+        kernel_name = kernel_name,
+        layout_name = layout.name,
+        matrix = layout.matrix_param,
+        vector = layout.vector_param,
+        output = layout.output_param,
+    )
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_cxl_read_pointer_param(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+    kernel_name: &str,
+) -> Result<usize, String> {
+    if kernel_params.is_null() {
+        return Err(format!("kernel '{kernel_name}' has null kernel_params"));
+    }
+    let slot = *kernel_params.add(index);
+    if slot.is_null() || (slot as usize) < 0x1000 {
+        return Err(format!(
+            "kernel '{kernel_name}' PARAM_{index} has invalid parameter slot {:#x}",
+            slot as usize
+        ));
+    }
+    let ptr_value = (slot as *const u64).read_unaligned() as usize;
+    if ptr_value < 0x1000 {
+        return Err(format!(
+            "kernel '{kernel_name}' PARAM_{index} has invalid pointer value {ptr_value:#x}"
+        ));
+    }
+    Ok(ptr_value)
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<Result<(), String>> {
+    if !super::bitnet_disagg::enabled_from_env()
+        || !nvidia_env_truthy("HETGPU_TMATMUL_HARDWARE_MATMUL")
+        || !super::cxl_tmatmul::cxl_tmatmul_enabled()
+    {
+        return None;
+    }
+
+    let route_config = super::bitnet_disagg::config_from_env();
+    let decision = super::bitnet_disagg::classify_kernel_name(kernel_name, &route_config);
+    match decision.route {
+        super::bitnet_disagg::BitnetRoute::GpuNative
+        | super::bitnet_disagg::BitnetRoute::Fallback => return None,
+        super::bitnet_disagg::BitnetRoute::Reject => {
+            return Some(Err(format!(
+                "strict route rejected '{}' via {}",
+                kernel_name,
+                decision.source.as_str()
+            )));
+        }
+        super::bitnet_disagg::BitnetRoute::CxlTmatmul => {}
+    }
+
+    if let Err(err) = super::bitnet_disagg::append_route_log_from_env(&decision, true, true) {
+        eprintln!(
+            "[BitNet Disagg][NVIDIA CXL] route log failed for '{}': {}",
+            kernel_name, err
+        );
+        if decision.strict {
+            return Some(Err(format!("route log failed: {err}")));
+        }
+    }
+
+    if !super::cxl_tmatmul::matrix_stage_cuda_dax_enabled() {
+        let msg = "NVIDIA CXL named matmul requires HETGPU_TMATMUL_MATRIX_STAGE=cuda_dax";
+        if decision.strict {
+            return Some(Err(msg.to_string()));
+        }
+        eprintln!("[CXL TMatmul][NVIDIA] {msg}; continuing native for '{kernel_name}'");
+        return None;
+    }
+    match super::cxl_tmatmul::io_stage_mode() {
+        Ok(super::cxl_tmatmul::IoStageMode::CudaDax) => {}
+        Ok(_) => {
+            let msg = "NVIDIA CXL named matmul requires HETGPU_TMATMUL_IO_STAGE=cuda_dax";
+            if decision.strict {
+                return Some(Err(msg.to_string()));
+            }
+            eprintln!("[CXL TMatmul][NVIDIA] {msg}; continuing native for '{kernel_name}'");
+            return None;
+        }
+        Err(err) => {
+            if decision.strict {
+                return Some(Err(err.to_string()));
+            }
+            eprintln!("[CXL TMatmul][NVIDIA] {err}; continuing native for '{kernel_name}'");
+            return None;
+        }
+    }
+
+    let name_lower = kernel_name.to_ascii_lowercase();
+    let Some(layout) = nvidia_cxl_matmul_layout(&name_lower) else {
+        let msg = format!("kernel '{kernel_name}' is not a supported NVIDIA CXL matmul layout");
+        if decision.strict {
+            return Some(Err(msg));
+        }
+        eprintln!("[CXL TMatmul][NVIDIA] {msg}; continuing native");
+        return None;
+    };
+
+    let matrix_ptr =
+        match nvidia_cxl_read_pointer_param(kernel_params, layout.matrix_param, kernel_name) {
+            Ok(value) => value,
+            Err(err) => return Some(Err(err)),
+        };
+    let vector_ptr =
+        match nvidia_cxl_read_pointer_param(kernel_params, layout.vector_param, kernel_name) {
+            Ok(value) => value,
+            Err(err) => return Some(Err(err)),
+        };
+    let output_ptr =
+        match nvidia_cxl_read_pointer_param(kernel_params, layout.output_param, kernel_name) {
+            Ok(value) => value,
+            Err(err) => return Some(Err(err)),
+        };
+
+    let assembly = nvidia_cxl_generate_matmul_assembly(kernel_name, layout);
+    if let Ok(path) = std::env::var("HETGPU_TMATMUL_ASM_PATH") {
+        let _ = std::fs::write(path, assembly.as_bytes());
+    }
+    let matrix_offset = match super::cxl_tmatmul::matrix_dpa_offset() {
+        Ok(value) => value,
+        Err(err) => return Some(Err(err.to_string())),
+    };
+    let labels = std::collections::HashMap::from([
+        (format!("PARAM_{}", layout.matrix_param), matrix_offset),
+        (
+            format!("PARAM_{}", layout.vector_param),
+            super::cxl_tmatmul::TMATMUL_DPA_INPUT,
+        ),
+        (
+            format!("PARAM_{}", layout.output_param),
+            super::cxl_tmatmul::TMATMUL_DPA_OUTPUT,
+        ),
+    ]);
+    let timeout_ms = nvidia_env_usize("HETGPU_CXL_TMATMUL_TIMEOUT_MS")
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+
+    eprintln!(
+        "[CXL TMatmul][NVIDIA] launching '{}' as {} matrix=PARAM_{}:{:#x} vector=PARAM_{}:{:#x} output=PARAM_{}:{:#x}",
+        kernel_name,
+        layout.name,
+        layout.matrix_param,
+        matrix_ptr,
+        layout.vector_param,
+        vector_ptr,
+        layout.output_param,
+        output_ptr,
+    );
+
+    match super::cxl_tmatmul::submit_hardware_matmul_from_ptrs(
+        &assembly,
+        &labels,
+        matrix_ptr as *const u8,
+        usize::MAX,
+        vector_ptr as *const u8,
+        usize::MAX,
+        output_ptr as *mut u8,
+        usize::MAX,
+        timeout_ms,
+    ) {
+        Ok(status) => {
+            eprintln!(
+                "[CXL TMatmul][NVIDIA] Kernel '{}' executed via RUN_CSR_ONLY: {:?}",
+                kernel_name, status
+            );
+            Some(Ok(()))
+        }
+        Err(err) => {
+            let msg = format!("kernel '{kernel_name}' RUN_CSR_ONLY submit failed: {err}");
+            if decision.strict {
+                Some(Err(msg))
+            } else {
+                eprintln!("[CXL TMatmul][NVIDIA] {msg}; continuing native");
+                None
+            }
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn launch_kernel(
     f: &super::module::NvidiaKernel,
@@ -8120,6 +8461,18 @@ pub(crate) fn launch_kernel(
     kernel_params: *mut *mut ::core::ffi::c_void,
     extra: *mut *mut ::core::ffi::c_void,
 ) -> CUresult {
+    nvidia_log_bitnet_route_for_native_launch(&f.function_name);
+
+    if super::persistent_router::try_route(
+        &f.function_name,
+        kernel_params,
+        8,
+        (grid_dim_x, grid_dim_y, grid_dim_z),
+        (block_dim_x, block_dim_y, block_dim_z),
+    ) {
+        return Ok(());
+    }
+
     let result = nvidia_runtime_sys::cuLaunchKernel(
         f.cuda_function,
         grid_dim_x,
@@ -8147,8 +8500,7 @@ pub(crate) fn launch_kernel(
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 pub(crate) fn launch_kernel_ex(
     config: &cuda_types::cuda::CUlaunchConfig,
@@ -8156,6 +8508,8 @@ pub(crate) fn launch_kernel_ex(
     kernel_params: *mut *mut ::core::ffi::c_void,
     extra: *mut *mut ::core::ffi::c_void,
 ) -> CUresult {
+    nvidia_log_bitnet_route_for_native_launch(&f.function_name);
+
     // cuLaunchKernelEx wraps cuLaunchKernel with additional config
     let result = nvidia_runtime_sys::cuLaunchKernel(
         f.cuda_function,
@@ -8178,6 +8532,120 @@ pub(crate) fn launch_kernel_ex(
         return Err(CUerror::UNKNOWN);
     }
     Ok(())
+}
+
+#[cfg(all(
+    test,
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+mod nvidia_bitnet_route_tests {
+    use std::sync::Mutex;
+
+    static NVIDIA_ROUTE_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
+            let lock = super::super::test_env::lock();
+            let previous = vars
+                .iter()
+                .map(|(name, _)| (*name, std::env::var(name).ok()))
+                .collect::<Vec<_>>();
+            for (name, value) in vars {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+            Self {
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in self.previous.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nvidia_native_launch_records_bitnet_route_before_passthrough() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let route_log = dir.path().join("routes.jsonl");
+        let route_log_text = route_log.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_FFN_CXL", None),
+            ("HETGPU_TMATMUL_BITNET_DISAGGREGATE", None),
+            ("HETGPU_BITNET_DISAGG_STRICT", None),
+            ("HETGPU_BITNET_CXL_KERNELS", Some("ffn_gate")),
+            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", Some(&route_log_text)),
+            ("HETGPU_CXL_TMATMUL", Some("1")),
+            ("HETGPU_TMATMUL_CXL", None),
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+        ]);
+
+        super::nvidia_log_bitnet_route_for_native_launch("layer_0_ffn_gate_mul_mat");
+
+        let logged = std::fs::read_to_string(&route_log).unwrap();
+        assert!(logged.contains(r#""kernel":"layer_0_ffn_gate_mul_mat""#));
+        assert!(logged.contains(r#""route":"cxl_tmatmul""#));
+        assert!(logged.contains(r#""source":"explicit_cxl_env""#));
+        assert!(logged.contains(r#""cxl_enabled":true"#));
+        assert!(logged.contains(r#""hardware_matmul_enabled":false"#));
+    }
+
+    #[test]
+    fn nvidia_named_cxl_candidate_rejects_before_native_when_strict() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let route_log = dir.path().join("routes.jsonl");
+        let route_log_text = route_log.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_FFN_CXL", None),
+            ("HETGPU_TMATMUL_BITNET_DISAGGREGATE", None),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
+            ("HETGPU_BITNET_CXL_KERNELS", Some("mul_mat_q")),
+            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", Some(&route_log_text)),
+            ("HETGPU_CXL_TMATMUL", Some("1")),
+            ("HETGPU_TMATMUL_CXL", None),
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_MATRIX_STAGE", Some("cuda_dax")),
+            ("HETGPU_TMATMUL_IO_STAGE", Some("cuda_dax")),
+        ]);
+
+        let result = unsafe {
+            super::nvidia_try_launch_named_cxl_tmatmul(
+                "_Z9mul_mat_qIL9ggml_type20ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
+                std::ptr::null_mut(),
+            )
+        };
+
+        assert!(matches!(result, Some(Err(_))));
+        let logged = std::fs::read_to_string(&route_log).unwrap();
+        assert!(logged.contains(r#""route":"cxl_tmatmul""#));
+        assert!(logged.contains(r#""hardware_matmul_enabled":true"#));
+    }
 }
 
 // ============================================================================
@@ -8260,7 +8728,8 @@ pub(crate) fn launch_kernel(
     }
 
     if sifive_driver_kernel_noop_enabled() {
-        let launch_index = SIFIVE_DRIVER_KERNEL_NOOP_LAUNCH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let launch_index =
+            SIFIVE_DRIVER_KERNEL_NOOP_LAUNCH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let should_submit = {
             let first = sifive_driver_kernel_noop_first();
             let every = sifive_driver_kernel_noop_every();
@@ -8639,7 +9108,7 @@ fn sifive_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
 }
 
 #[cfg(all(
-    feature = "sifive",
+    any(feature = "sifive", feature = "nvidia"),
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -8674,16 +9143,42 @@ pub(crate) unsafe fn launch_named_kernel_c(
         Err(_) => return 1,
     };
 
-    match try_offload_named_sifive_kernel(
-        kernel_name,
-        grid_dim_x,
-        grid_dim_y,
-        grid_dim_z,
-        kernel_params,
-    ) {
-        Some(Ok(())) => 0,
-        Some(Err(_)) => 999,
-        None => 1,
+    #[cfg(all(
+        feature = "nvidia",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent"),
+        not(feature = "tmatmul")
+    ))]
+    if let Some(result) = nvidia_try_launch_named_cxl_tmatmul(kernel_name, kernel_params) {
+        return match result {
+            Ok(()) => 0,
+            Err(err) => {
+                eprintln!("[CXL TMatmul][NVIDIA] named launch failed: {err}");
+                999
+            }
+        };
+    }
+
+    #[cfg(feature = "sifive")]
+    {
+        match try_offload_named_sifive_kernel(
+            kernel_name,
+            grid_dim_x,
+            grid_dim_y,
+            grid_dim_z,
+            kernel_params,
+        ) {
+            Some(Ok(())) => 0,
+            Some(Err(_)) => 999,
+            None => 1,
+        }
+    }
+
+    #[cfg(not(feature = "sifive"))]
+    {
+        let _ = (grid_dim_x, grid_dim_y, grid_dim_z);
+        1
     }
 }
 
@@ -8856,7 +9351,9 @@ fn sifive_host_range_has_perms(addr: usize, len: usize, need_write: bool) -> boo
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-unsafe fn sifive_kernel_has_nonempty_elf(kernel_ptr: *mut sifive_runtime_sys::sifive_Kernel) -> bool {
+unsafe fn sifive_kernel_has_nonempty_elf(
+    kernel_ptr: *mut sifive_runtime_sys::sifive_Kernel,
+) -> bool {
     if kernel_ptr.is_null() {
         return false;
     }
@@ -8969,7 +9466,10 @@ unsafe fn configure_sifive_launch_abi(
         == Some("1");
     let log_arg_records = log_launches
         && (kernel_name.contains("k_bin_bcast")
-            || std::env::var("HETGPU_SIFIVE_LOG_KERNEL_ARGS").ok().as_deref() == Some("1"));
+            || std::env::var("HETGPU_SIFIVE_LOG_KERNEL_ARGS")
+                .ok()
+                .as_deref()
+                == Some("1"));
     let _ = (grid_dim_x, grid_dim_y);
     let mut pushed = 0usize;
     let mut pointer_like = 0usize;
@@ -9408,7 +9908,12 @@ unsafe fn sifive_kernel_binding_metadata(
         return sifive_get_rows_float_binding_metadata(kernel_params, grid_dim_x, index);
     }
     if name.contains("k_get_rows") && name.contains("dequantize_q8_0") {
-        return sifive_get_rows_q8_0_binding_metadata(kernel_name, kernel_params, grid_dim_x, index);
+        return sifive_get_rows_q8_0_binding_metadata(
+            kernel_name,
+            kernel_params,
+            grid_dim_x,
+            index,
+        );
     }
     if name.contains("l2_norm_f32") {
         return sifive_l2_norm_f32_binding_metadata(
@@ -11151,7 +11656,8 @@ unsafe fn sifive_mul_mat_vec_q_binding_metadata(
     let blocks_per_row_x = ncols_x.saturating_add(qk - 1) / qk;
     let q8_1_block_bytes = 36u64;
     let ids_ptr = read_param_u64(kernel_params, 2).unwrap_or(0);
-    let has_ids = ids_ptr != 0 && super::memory::sifive_allocation_remaining_addr(ids_ptr).is_some();
+    let has_ids =
+        ids_ptr != 0 && super::memory::sifive_allocation_remaining_addr(ids_ptr).is_some();
 
     let (bytes, flags) = match index {
         0 => {
@@ -11364,7 +11870,8 @@ unsafe fn sifive_mul_mat_vec_q_moe_binding_metadata(
     let blocks_per_row_x = ncols_x.saturating_add(qk - 1) / qk;
     let q8_1_block_bytes = 36u64;
     let ids_ptr = read_param_u64(kernel_params, 2).unwrap_or(0);
-    let has_ids = ids_ptr != 0 && super::memory::sifive_allocation_remaining_addr(ids_ptr).is_some();
+    let has_ids =
+        ids_ptr != 0 && super::memory::sifive_allocation_remaining_addr(ids_ptr).is_some();
     let ids_max_off = grid_y
         .saturating_sub(1)
         .saturating_add(ncols_dst.saturating_sub(1).saturating_mul(ids_stride));
@@ -11936,8 +12443,8 @@ unsafe fn execute_mmvf_host_fallback(
                         let total = ncols2_i * 2;
                         for i in 0..total {
                             let yv = yf.offset(i as isize).read_unaligned();
-                            sum +=
-                                sifive_read_f16_bf16_or_f32(x_base_ptr, x_base_elem + i, x_type) * yv;
+                            sum += sifive_read_f16_bf16_or_f32(x_base_ptr, x_base_elem + i, x_type)
+                                * yv;
                             if use_gate {
                                 gate_sum += sifive_read_f16_bf16_or_f32(
                                     gate_base_ptr,
@@ -12180,7 +12687,10 @@ unsafe fn try_offload_mmvf_named_sifive_kernel(
     let x_type = match sifive_mmvf_x_type(kernel_name) {
         Some(value) => value,
         None => {
-            trace_mmvf!("[SIFIVE Backend] MMVF '{}' x_type parse failed", kernel_name);
+            trace_mmvf!(
+                "[SIFIVE Backend] MMVF '{}' x_type parse failed",
+                kernel_name
+            );
             return None;
         }
     };
@@ -12230,7 +12740,10 @@ unsafe fn try_offload_mmvf_named_sifive_kernel(
     let dst_host = match read_param_u64(kernel_params, 4) {
         Some(value) => value,
         None => {
-            trace_mmvf!("[SIFIVE Backend] MMVF '{}' missing dst param[4]", kernel_name);
+            trace_mmvf!(
+                "[SIFIVE Backend] MMVF '{}' missing dst param[4]",
+                kernel_name
+            );
             return None;
         }
     };
@@ -12746,11 +13259,13 @@ unsafe fn try_offload_mul_mat_f_named_sifive_kernel(
         sifive_parse_env_u64_default("HETGPU_SIFIVE_MUL_MAT_F_MAX_M", rows.min(2048)).max(1),
     )
     .unwrap_or(i32::MAX);
-    let max_n = i32::try_from(sifive_parse_env_u64_default("HETGPU_SIFIVE_MUL_MAT_F_MAX_N", 1).max(1))
-        .unwrap_or(i32::MAX);
-    let max_k =
-        i32::try_from(sifive_parse_env_u64_default("HETGPU_SIFIVE_MUL_MAT_F_MAX_K", k.min(256)).max(1))
+    let max_n =
+        i32::try_from(sifive_parse_env_u64_default("HETGPU_SIFIVE_MUL_MAT_F_MAX_N", 1).max(1))
             .unwrap_or(i32::MAX);
+    let max_k = i32::try_from(
+        sifive_parse_env_u64_default("HETGPU_SIFIVE_MUL_MAT_F_MAX_K", k.min(256)).max(1),
+    )
+    .unwrap_or(i32::MAX);
 
     let skinny_host_first =
         sifive_env_enabled_default("HETGPU_SIFIVE_MUL_MAT_F_SKINNY_HOST_FIRST", true)
@@ -13652,7 +14167,10 @@ unsafe fn sifive_quantize_q8_1_binding_metadata(
             let bytes = max_off
                 .saturating_add(1)
                 .saturating_mul(std::mem::size_of::<f32>() as u64);
-            Some((bytes, sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT))
+            Some((
+                bytes,
+                sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
+            ))
         }
         1 => {
             let total = ne0.saturating_mul(ne1).saturating_mul(grid_z.max(1));
@@ -14693,7 +15211,8 @@ unsafe fn sifive_get_pytorch_softmax_elf_kernel(
     }
 
     let kernel_name = std::ffi::CString::new(SIFIVE_PYTORCH_SOFTMAX_ELF_SYMBOL).ok()?;
-    let kernel = sifive_runtime_sys::sifive_CreateKernelOnDevice(program, device, kernel_name.as_ptr());
+    let kernel =
+        sifive_runtime_sys::sifive_CreateKernelOnDevice(program, device, kernel_name.as_ptr());
     if kernel.is_null() {
         eprintln!("[SIFIVE Backend] PyTorch softmax ELF failed to create kernel handle");
         return None;
@@ -14733,15 +15252,15 @@ unsafe fn sifive_push_softmax_elf_arg(
         return false;
     }
     if let Some((size, flags)) = binding {
-        let (addr, flags) = if let Some(phys) = super::memory::sifive_shared_ddr_physical_addr(value)
-        {
-            (
-                phys,
-                flags | sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_DEVICE_PHYS,
-            )
-        } else {
-            (value, flags)
-        };
+        let (addr, flags) =
+            if let Some(phys) = super::memory::sifive_shared_ddr_physical_addr(value) {
+                (
+                    phys,
+                    flags | sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_DEVICE_PHYS,
+                )
+            } else {
+                (value, flags)
+            };
         let binding = sifive_runtime_sys::SifiveKernelBufferBinding {
             arg_index: index,
             flags,
@@ -14791,13 +15310,19 @@ unsafe fn launch_pytorch_softmax_warp_forward_elf(
         0,
         sifive_runtime_sys::SIFIVE_KERNEL_ARG_KIND_POINTER,
         dst as u64,
-        Some((bytes, sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT)),
+        Some((
+            bytes,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+        )),
     ) || !sifive_push_softmax_elf_arg(
         kernel,
         1,
         sifive_runtime_sys::SIFIVE_KERNEL_ARG_KIND_POINTER,
         src as u64,
-        Some((bytes, sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT)),
+        Some((
+            bytes,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
+        )),
     ) || !sifive_push_softmax_elf_arg(
         kernel,
         2,
@@ -18391,7 +18916,9 @@ unsafe fn try_offload_named_sifive_kernel(
             return Some(result);
         }
     }
-    if name_lower.contains("mul_mat_vec_q") && sifive_env_truthy("HETGPU_SIFIVE_MMVQ_NAMED_FAIL_OPEN") {
+    if name_lower.contains("mul_mat_vec_q")
+        && sifive_env_truthy("HETGPU_SIFIVE_MMVQ_NAMED_FAIL_OPEN")
+    {
         return sifive_named_assume_success("MMVQ named fail-open requested", kernel_name);
     }
     if name_lower.contains("softmax_warp_forward") {
@@ -18547,7 +19074,10 @@ unsafe fn try_offload_named_sifive_kernel(
                         );
                     },
                 );
-                return sifive_named_assume_success("RMSNorm args could not be parsed", kernel_name);
+                return sifive_named_assume_success(
+                    "RMSNorm args could not be parsed",
+                    kernel_name,
+                );
             }
         };
         if hidden == 0 {
@@ -18612,7 +19142,10 @@ unsafe fn try_offload_named_sifive_kernel(
                     );
                 },
             );
-            return sifive_named_assume_success("RMSNorm allocation range check failed", kernel_name);
+            return sifive_named_assume_success(
+                "RMSNorm allocation range check failed",
+                kernel_name,
+            );
         }
         let rmsnorm_min_hidden =
             sifive_parse_env_u64_default("HETGPU_SIFIVE_RMSNORM_OFFLOAD_MIN_HIDDEN", 1024);

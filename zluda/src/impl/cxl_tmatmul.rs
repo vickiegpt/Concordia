@@ -155,6 +155,20 @@ pub(crate) enum MatrixStageMode {
 }
 
 #[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IoStageMode {
+    Host,
+    CudaDax,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputStageDtype {
+    F16,
+    F32,
+}
+
+#[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CudaDaxSource {
     DevicePtr(usize),
@@ -265,6 +279,48 @@ pub(crate) fn matrix_stage_mode() -> Result<MatrixStageMode, CxlTmatmulError> {
 #[cfg(unix)]
 pub(crate) fn matrix_stage_cuda_dax_enabled() -> bool {
     matches!(matrix_stage_mode(), Ok(MatrixStageMode::CudaDax))
+}
+
+#[cfg(unix)]
+pub(crate) fn parse_io_stage_mode(value: Option<&str>) -> Result<IoStageMode, CxlTmatmulError> {
+    match value.unwrap_or("host").trim().to_ascii_lowercase().as_str() {
+        "" | "host" | "cpu" | "mmap" | "dax" => Ok(IoStageMode::Host),
+        "cuda_dax" | "cuda-dax" | "nvgpu_dax" | "nvgpu-dax" => Ok(IoStageMode::CudaDax),
+        other => Err(CxlTmatmulError::Io(format!(
+            "invalid HETGPU_TMATMUL_IO_STAGE={other:?}, expected host or cuda_dax"
+        ))),
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn io_stage_mode() -> Result<IoStageMode, CxlTmatmulError> {
+    parse_io_stage_mode(
+        std::env::var("HETGPU_TMATMUL_IO_STAGE")
+            .or_else(|_| std::env::var("HETGPU_CXL_TMATMUL_IO_STAGE"))
+            .ok()
+            .as_deref(),
+    )
+}
+
+#[cfg(unix)]
+fn parse_output_stage_dtype(value: Option<&str>) -> Result<OutputStageDtype, CxlTmatmulError> {
+    match value.unwrap_or("f16").trim().to_ascii_lowercase().as_str() {
+        "" | "f16" | "half" | "fp16" => Ok(OutputStageDtype::F16),
+        "f32" | "float" | "fp32" => Ok(OutputStageDtype::F32),
+        other => Err(CxlTmatmulError::Io(format!(
+            "invalid HETGPU_TMATMUL_OUTPUT_DTYPE={other:?}, expected f16 or f32"
+        ))),
+    }
+}
+
+#[cfg(unix)]
+fn output_stage_dtype() -> Result<OutputStageDtype, CxlTmatmulError> {
+    parse_output_stage_dtype(
+        std::env::var("HETGPU_TMATMUL_OUTPUT_DTYPE")
+            .or_else(|_| std::env::var("HETGPU_CXL_TMATMUL_OUTPUT_DTYPE"))
+            .ok()
+            .as_deref(),
+    )
 }
 
 #[cfg(unix)]
@@ -539,16 +595,37 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
     let vector_len = vector_bytes(dim)?;
     let matrix_offset = matrix_dpa_offset()?;
     let matrix_stage_mode = matrix_stage_mode()?;
+    let io_stage_mode = io_stage_mode()?;
     validate_fixed_layout_at_offsets(matrix_offset, matrix_len, vector_len, program.len())?;
-    match matrix_stage_mode {
-        MatrixStageMode::Host => {
-            validate_allocations(dim, input_alloc, output_alloc, matrix_alloc)?
+    match (matrix_stage_mode, io_stage_mode) {
+        (MatrixStageMode::Host, IoStageMode::Host) => {
+            validate_allocations(dim, input_alloc, output_alloc, matrix_alloc)?;
         }
-        MatrixStageMode::CudaDax => {
+        (MatrixStageMode::CudaDax, IoStageMode::Host) => {
             require_allocation("input", input_alloc, vector_len)?;
             require_allocation("output", output_alloc, vector_len)?;
             if matrix_alloc != usize::MAX {
                 require_allocation("matrix", matrix_alloc, matrix_len)?;
+            }
+        }
+        (MatrixStageMode::Host, IoStageMode::CudaDax) => {
+            require_allocation("matrix", matrix_alloc, matrix_len)?;
+            if input_alloc != usize::MAX {
+                require_allocation("input", input_alloc, vector_len)?;
+            }
+            if output_alloc != usize::MAX {
+                require_allocation("output", output_alloc, vector_len)?;
+            }
+        }
+        (MatrixStageMode::CudaDax, IoStageMode::CudaDax) => {
+            if matrix_alloc != usize::MAX {
+                require_allocation("matrix", matrix_alloc, matrix_len)?;
+            }
+            if input_alloc != usize::MAX {
+                require_allocation("input", input_alloc, vector_len)?;
+            }
+            if output_alloc != usize::MAX {
+                require_allocation("output", output_alloc, vector_len)?;
             }
         }
     }
@@ -563,6 +640,20 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
             matrix_offset,
         )?),
     };
+
+    if io_stage_mode == IoStageMode::CudaDax {
+        return submit_prepared_hardware_matmul_cuda_io(
+            &device,
+            &program,
+            matrix_stage,
+            input_ptr as usize,
+            output_ptr as usize,
+            vector_len,
+            timeout_ms,
+            info.dim_d,
+        );
+    }
+
     let input = std::slice::from_raw_parts(input_ptr, vector_len);
     let output = std::slice::from_raw_parts_mut(output_ptr, vector_len);
 
@@ -941,10 +1032,88 @@ fn submit_prepared_hardware_matmul(
         staging.stage_bytes(TMATMUL_DPA_PROGRAM, program)?;
     }
 
+    let status =
+        run_staged_hardware_matmul(device, &mut staging, program.len(), timeout_ms, dim_d)?;
+    staging.read_bytes(TMATMUL_DPA_OUTPUT, output)?;
+    Ok(status)
+}
+
+#[cfg(unix)]
+fn submit_prepared_hardware_matmul_cuda_io(
+    device: &File,
+    program: &[u8],
+    matrix: MatrixStage<'_>,
+    input_device_ptr: usize,
+    output_device_ptr: usize,
+    vector_len: usize,
+    timeout_ms: u32,
+    dim_d: u32,
+) -> Result<CxlTmatmulRunStatus, CxlTmatmulError> {
+    let matrix_offset = matrix.cxl_offset();
+    let output_dtype = output_stage_dtype()?;
+    let used_len = [
+        range_end(matrix_offset, matrix.len())?,
+        range_end(TMATMUL_DPA_INPUT, vector_len)?,
+        range_end(TMATMUL_DPA_OUTPUT, vector_len)?,
+        range_end(TMATMUL_DPA_PROGRAM, program.len())?,
+    ]
+    .into_iter()
+    .max()
+    .ok_or(CxlTmatmulError::SizeOverflow)?;
+
+    let mut staging = StagingMap::open_cuda_dax(used_len)?;
+    {
+        match &matrix {
+            MatrixStage::Host(matrix) => {
+                staging.stage_bytes(matrix_offset, matrix)?;
+            }
+            MatrixStage::CudaDax(stage) => {
+                staging.stage_cuda_dax_matrix(stage)?;
+            }
+        }
+        staging.stage_cuda_dax_device_to_offset(
+            input_device_ptr,
+            vector_len,
+            TMATMUL_DPA_INPUT,
+            "input",
+        )?;
+        staging.fill_bytes(TMATMUL_DPA_OUTPUT, 0xa5, vector_len)?;
+        staging.stage_bytes(TMATMUL_DPA_PROGRAM, program)?;
+    }
+
+    let status =
+        run_staged_hardware_matmul(device, &mut staging, program.len(), timeout_ms, dim_d)?;
+    match output_dtype {
+        OutputStageDtype::F16 => {
+            staging.copy_cuda_dax_offset_to_device(
+                output_device_ptr,
+                vector_len,
+                TMATMUL_DPA_OUTPUT,
+                "output",
+            )?;
+        }
+        OutputStageDtype::F32 => {
+            staging.copy_cuda_dax_f16_offset_to_f32_device(
+                output_device_ptr,
+                vector_len,
+                TMATMUL_DPA_OUTPUT,
+                "output f16->f32",
+            )?;
+        }
+    }
+    Ok(status)
+}
+
+#[cfg(unix)]
+fn run_staged_hardware_matmul(
+    device: &File,
+    staging: &mut StagingMap,
+    program_len: usize,
+    timeout_ms: u32,
+    dim_d: u32,
+) -> Result<CxlTmatmulRunStatus, CxlTmatmulError> {
     if cxl_tmatmul_bar_run_enabled() {
-        let status = run_prepared_hardware_matmul_via_bar(program.len(), timeout_ms, dim_d)?;
-        staging.read_bytes(TMATMUL_DPA_OUTPUT, output)?;
-        return Ok(status);
+        return run_prepared_hardware_matmul_via_bar(program_len, timeout_ms, dim_d);
     }
 
     let max_retries = cxl_tmatmul_run_retries();
@@ -985,10 +1154,7 @@ fn submit_prepared_hardware_matmul(
                     "[CXL TMatmul] RUN_CSR_ONLY unavailable or stuck before stall; using BAR launch fallback; status={:?}",
                     status
                 );
-                let status =
-                    run_prepared_hardware_matmul_via_bar(program.len(), timeout_ms, dim_d)?;
-                staging.read_bytes(TMATMUL_DPA_OUTPUT, output)?;
-                return Ok(status);
+                return run_prepared_hardware_matmul_via_bar(program_len, timeout_ms, dim_d);
             }
             return Err(CxlTmatmulError::Device(format!(
                 "CXL_TYPE2_TMATMUL_RUN_CSR_ONLY: {saved_error}; status={status:?}"
@@ -1011,7 +1177,6 @@ fn submit_prepared_hardware_matmul(
             )));
         }
 
-        staging.read_bytes(TMATMUL_DPA_OUTPUT, output)?;
         return Ok(status);
     }
 
@@ -1271,6 +1436,14 @@ impl StagingMap {
     }
 
     fn stage_cuda_dax_matrix(&mut self, stage: &CudaDaxMatrixStage) -> Result<(), CxlTmatmulError> {
+        self.stage_cuda_dax_stage(stage, "matrix")
+    }
+
+    fn stage_cuda_dax_stage(
+        &mut self,
+        stage: &CudaDaxMatrixStage,
+        label: &str,
+    ) -> Result<(), CxlTmatmulError> {
         match self {
             Self::Mmap {
                 map_ptr, map_len, ..
@@ -1284,12 +1457,110 @@ impl StagingMap {
                     });
                 }
                 unsafe {
-                    CudaRuntime::load()?.stage_nvint8_to_dax(stage, *map_ptr, *map_len)?;
+                    CudaRuntime::load()?.copy_device_to_dax(stage, *map_ptr, *map_len, label)?;
                 }
                 Ok(())
             }
             Self::CsrProbe { .. } => Err(CxlTmatmulError::Device(
-                "cuda_dax matrix staging cannot target csr_probe staging".to_string(),
+                "cuda_dax staging cannot target csr_probe staging".to_string(),
+            )),
+        }
+    }
+
+    fn stage_cuda_dax_device_to_offset(
+        &mut self,
+        device_ptr: usize,
+        bytes: usize,
+        cxl_offset: u64,
+        label: &str,
+    ) -> Result<(), CxlTmatmulError> {
+        let stage = cuda_dax_device_stage(device_ptr, bytes, cxl_offset)?;
+        self.stage_cuda_dax_stage(&stage, label)
+    }
+
+    fn copy_cuda_dax_offset_to_device(
+        &mut self,
+        device_ptr: usize,
+        bytes: usize,
+        cxl_offset: u64,
+        label: &str,
+    ) -> Result<(), CxlTmatmulError> {
+        match self {
+            Self::Mmap {
+                map_ptr, map_len, ..
+            } => {
+                let src_end = range_end(cxl_offset, bytes)?;
+                if src_end > *map_len {
+                    return Err(CxlTmatmulError::AllocationTooSmall {
+                        name: "cuda_dax mapped window",
+                        have: *map_len,
+                        need: src_end,
+                    });
+                }
+                unsafe {
+                    CudaRuntime::load()?.copy_dax_to_device(
+                        device_ptr, bytes, cxl_offset, *map_ptr, *map_len, label,
+                    )?;
+                }
+                Ok(())
+            }
+            Self::CsrProbe { .. } => Err(CxlTmatmulError::Device(
+                "cuda_dax output copy cannot target csr_probe staging".to_string(),
+            )),
+        }
+    }
+
+    fn copy_cuda_dax_f16_offset_to_f32_device(
+        &mut self,
+        device_ptr: usize,
+        f16_bytes: usize,
+        cxl_offset: u64,
+        label: &str,
+    ) -> Result<(), CxlTmatmulError> {
+        if (f16_bytes & 1) != 0 {
+            return Err(CxlTmatmulError::Device(format!(
+                "cuda_dax {label} source length must be even: {f16_bytes}"
+            )));
+        }
+        match self {
+            Self::Mmap { ptr, map_len, .. } => {
+                let src_end = range_end(cxl_offset, f16_bytes)?;
+                if src_end > *map_len {
+                    return Err(CxlTmatmulError::AllocationTooSmall {
+                        name: "cuda_dax mapped window",
+                        have: *map_len,
+                        need: src_end,
+                    });
+                }
+                let offset =
+                    usize::try_from(cxl_offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+                let element_count = f16_bytes / 2;
+                let mut output = Vec::with_capacity(element_count);
+                unsafe {
+                    let src = ptr.add(offset);
+                    invalidate_range(src, f16_bytes);
+                    for i in 0..element_count {
+                        let lo = ptr::read(src.add(i * 2));
+                        let hi = ptr::read(src.add(i * 2 + 1));
+                        output.push(cxl_f16_to_f32(u16::from_le_bytes([lo, hi])));
+                    }
+                    let bytes = std::slice::from_raw_parts(
+                        output.as_ptr().cast::<u8>(),
+                        output.len() * std::mem::size_of::<f32>(),
+                    );
+                    CudaRuntime::load()?.copy_host_to_device(device_ptr, bytes, label)?;
+                }
+                eprintln!(
+                    "[CXL TMatmul] cuda_dax converted {} elems={} f16_bytes={} f32_bytes={}",
+                    label,
+                    element_count,
+                    f16_bytes,
+                    output.len() * std::mem::size_of::<f32>()
+                );
+                Ok(())
+            }
+            Self::CsrProbe { .. } => Err(CxlTmatmulError::Device(
+                "cuda_dax output conversion cannot target csr_probe staging".to_string(),
             )),
         }
     }
@@ -1623,11 +1894,12 @@ impl CudaRuntime {
         }
     }
 
-    unsafe fn stage_nvint8_to_dax(
+    unsafe fn copy_device_to_dax(
         &self,
         stage: &CudaDaxMatrixStage,
         dax_host_base: *mut u8,
         map_len: usize,
+        label: &str,
     ) -> Result<(), CxlTmatmulError> {
         self.check_cuda("cudaSetDevice", (self.cuda_set_device)(stage.gpu))?;
         self.check_cuda(
@@ -1702,8 +1974,8 @@ impl CudaRuntime {
                 (self.cuda_stream_synchronize)(stream),
             )?;
             eprintln!(
-                "[CXL TMatmul] cuda_dax staged nvint8 bytes={} gpu={} cxl_offset=0x{:x} dax={} stream=0x{:x}",
-                stage.bytes, stage.gpu, stage.cxl_offset, stage.dax_path, stage.stream
+                "[CXL TMatmul] cuda_dax staged {} bytes={} gpu={} cxl_offset=0x{:x} dax={} stream=0x{:x}",
+                label, stage.bytes, stage.gpu, stage.cxl_offset, stage.dax_path, stage.stream
             );
             Ok(())
         })();
@@ -1715,6 +1987,116 @@ impl CudaRuntime {
         }
         let _ = (self.cuda_host_unregister)(dax_host_base.cast());
         result
+    }
+
+    unsafe fn copy_dax_to_device(
+        &self,
+        device_ptr: usize,
+        bytes: usize,
+        cxl_offset: u64,
+        dax_host_base: *mut u8,
+        map_len: usize,
+        label: &str,
+    ) -> Result<(), CxlTmatmulError> {
+        if device_ptr == 0 {
+            return Err(CxlTmatmulError::Device(format!(
+                "cuda_dax {label} destination pointer is null"
+            )));
+        }
+        let gpu = cuda_dax_gpu()?;
+        let stream = cuda_dax_stream()?;
+        self.check_cuda("cudaSetDevice", (self.cuda_set_device)(gpu))?;
+        self.check_cuda(
+            "cudaHostRegister",
+            (self.cuda_host_register)(dax_host_base.cast(), map_len, CUDA_HOST_REGISTER_MAPPED),
+        )?;
+
+        let result = (|| {
+            let mut cxl_dev_base: *mut libc::c_void = std::ptr::null_mut();
+            self.check_cuda(
+                "cudaHostGetDevicePointer",
+                (self.cuda_host_get_device_pointer)(&mut cxl_dev_base, dax_host_base.cast(), 0),
+            )?;
+            if cxl_dev_base.is_null() {
+                return Err(CxlTmatmulError::Device(
+                    "cudaHostGetDevicePointer returned null for DAX mapping".to_string(),
+                ));
+            }
+
+            let cxl_offset =
+                usize::try_from(cxl_offset).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+            let src = (cxl_dev_base as *const u8)
+                .add(cxl_offset)
+                .cast::<libc::c_void>();
+            let dst = device_ptr as *mut libc::c_void;
+            let stream_ptr = stream as *mut libc::c_void;
+            self.check_cuda(
+                "cudaMemcpyAsync",
+                (self.cuda_memcpy_async)(
+                    dst,
+                    src as *const libc::c_void,
+                    bytes,
+                    CUDA_MEMCPY_DEFAULT,
+                    stream_ptr,
+                ),
+            )?;
+            self.check_cuda(
+                "cudaStreamSynchronize",
+                (self.cuda_stream_synchronize)(stream_ptr),
+            )?;
+            eprintln!(
+                "[CXL TMatmul] cuda_dax copied {} bytes={} gpu={} cxl_offset=0x{:x} stream=0x{:x}",
+                label, bytes, gpu, cxl_offset, stream
+            );
+            Ok(())
+        })();
+
+        let _ = (self.cuda_host_unregister)(dax_host_base.cast());
+        result
+    }
+
+    unsafe fn copy_host_to_device(
+        &self,
+        device_ptr: usize,
+        bytes: &[u8],
+        label: &str,
+    ) -> Result<(), CxlTmatmulError> {
+        if device_ptr == 0 {
+            return Err(CxlTmatmulError::Device(format!(
+                "cuda_dax {label} destination pointer is null"
+            )));
+        }
+        if bytes.is_empty() {
+            return Err(CxlTmatmulError::Device(format!(
+                "cuda_dax {label} host source is empty"
+            )));
+        }
+        let gpu = cuda_dax_gpu()?;
+        let stream = cuda_dax_stream()?;
+        self.check_cuda("cudaSetDevice", (self.cuda_set_device)(gpu))?;
+        let stream_ptr = stream as *mut libc::c_void;
+        self.check_cuda(
+            "cudaMemcpyAsync",
+            (self.cuda_memcpy_async)(
+                device_ptr as *mut libc::c_void,
+                bytes.as_ptr().cast::<libc::c_void>(),
+                bytes.len(),
+                CUDA_MEMCPY_DEFAULT,
+                stream_ptr,
+            ),
+        )?;
+        self.check_cuda(
+            "cudaStreamSynchronize",
+            (self.cuda_stream_synchronize)(stream_ptr),
+        )?;
+        eprintln!(
+            "[CXL TMatmul] cuda_dax copied {} host bytes={} gpu={} stream=0x{:x}",
+            label,
+            bytes.len(),
+            gpu,
+            stream
+        );
+        Ok(())
     }
 }
 
@@ -2052,6 +2434,58 @@ fn cuda_dax_matrix_stage(
         gpu: cuda_dax_gpu()?,
         stream: cuda_dax_stream()?,
     })
+}
+
+#[cfg(unix)]
+fn cuda_dax_device_stage(
+    device_ptr: usize,
+    bytes: usize,
+    cxl_offset: u64,
+) -> Result<CudaDaxMatrixStage, CxlTmatmulError> {
+    if bytes == 0 {
+        return Err(CxlTmatmulError::Device(
+            "cuda_dax device staging requires non-zero bytes".to_string(),
+        ));
+    }
+    if device_ptr == 0 {
+        return Err(CxlTmatmulError::Device(
+            "cuda_dax device staging source pointer is null".to_string(),
+        ));
+    }
+    Ok(CudaDaxMatrixStage {
+        source: CudaDaxSource::DevicePtr(device_ptr),
+        bytes,
+        dax_path: cxl_tmatmul_dax_path(),
+        cxl_offset,
+        gpu: cuda_dax_gpu()?,
+        stream: cuda_dax_stream()?,
+    })
+}
+
+#[cfg(unix)]
+fn cxl_f16_to_f32(bits: u16) -> f32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exp = (bits >> 10) & 0x1f;
+    let mant = (bits & 0x03ff) as u32;
+    let out = if exp == 0 {
+        if mant == 0 {
+            sign
+        } else {
+            let mut exponent = -14i32;
+            let mut significand = mant;
+            while (significand & 0x0400) == 0 {
+                significand <<= 1;
+                exponent -= 1;
+            }
+            significand &= 0x03ff;
+            sign | (((exponent + 127) as u32) << 23) | (significand << 13)
+        }
+    } else if exp == 0x1f {
+        sign | 0x7f80_0000 | (mant << 13)
+    } else {
+        sign | (((exp as u32) + 112) << 23) | (mant << 13)
+    };
+    f32::from_bits(out)
 }
 
 #[cfg(unix)]
@@ -2441,6 +2875,46 @@ mod tests {
             MatrixStageMode::Host
         );
         assert!(parse_matrix_stage_mode(Some("bogus")).is_err());
+    }
+
+    #[test]
+    fn io_stage_mode_parser_accepts_cuda_dax() {
+        assert_eq!(
+            parse_io_stage_mode(Some("cuda_dax")).unwrap(),
+            IoStageMode::CudaDax
+        );
+        assert_eq!(
+            parse_io_stage_mode(Some("host")).unwrap(),
+            IoStageMode::Host
+        );
+        assert_eq!(parse_io_stage_mode(None).unwrap(), IoStageMode::Host);
+        assert!(parse_io_stage_mode(Some("bogus")).is_err());
+    }
+
+    #[test]
+    fn output_stage_dtype_parser_accepts_f32() {
+        assert_eq!(
+            parse_output_stage_dtype(Some("f32")).unwrap(),
+            OutputStageDtype::F32
+        );
+        assert_eq!(
+            parse_output_stage_dtype(Some("half")).unwrap(),
+            OutputStageDtype::F16
+        );
+        assert_eq!(
+            parse_output_stage_dtype(None).unwrap(),
+            OutputStageDtype::F16
+        );
+        assert!(parse_output_stage_dtype(Some("int8")).is_err());
+    }
+
+    #[test]
+    fn cxl_f16_to_f32_converts_common_values() {
+        assert_eq!(cxl_f16_to_f32(0x0000), 0.0);
+        assert_eq!(cxl_f16_to_f32(0x3c00), 1.0);
+        assert_eq!(cxl_f16_to_f32(0xc000), -2.0);
+        assert!(cxl_f16_to_f32(0x7c00).is_infinite());
+        assert!(cxl_f16_to_f32(0x0001) > 0.0);
     }
 
     #[test]

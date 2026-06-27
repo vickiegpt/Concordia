@@ -80,7 +80,7 @@ fn hetgpu_log_cuda_calls_enabled() -> bool {
 }
 
 #[cfg(all(
-    feature = "sifive",
+    any(feature = "sifive", feature = "nvidia"),
     not(feature = "amd"),
     not(feature = "intel"),
     not(feature = "tenstorrent")
@@ -281,7 +281,8 @@ macro_rules! implemented_in_function {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 macro_rules! implemented {
     ($($abi:literal fn $fn_name:ident( $($arg_id:ident : $arg_type:ty),* ) -> $ret_type:ty;)*) => {
@@ -301,7 +302,8 @@ macro_rules! implemented {
     feature = "tmatmul",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent")
+    not(feature = "tenstorrent"),
+    not(feature = "nvidia")
 ))]
 macro_rules! implemented_in_function {
     ($($abi:literal fn $fn_name:ident( $($arg_id:ident : $arg_type:ty),* ) -> $ret_type:ty;)*) => {
@@ -363,8 +365,7 @@ macro_rules! implemented_in_function {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 macro_rules! implemented {
     ($($abi:literal fn $fn_name:ident( $($arg_id:ident : $arg_type:ty),* ) -> $ret_type:ty;)*) => {
@@ -383,8 +384,7 @@ macro_rules! implemented {
     feature = "nvidia",
     not(feature = "amd"),
     not(feature = "intel"),
-    not(feature = "tenstorrent"),
-    not(feature = "tmatmul")
+    not(feature = "tenstorrent")
 ))]
 macro_rules! implemented_in_function {
     ($($abi:literal fn $fn_name:ident( $($arg_id:ident : $arg_type:ty),* ) -> $ret_type:ty;)*) => {
