@@ -142,98 +142,138 @@ cargo build -p ptxas --bin ptxas
 cargo build -p nvidia_sass
 ```
 
-### Caveats: LLVMTarget not built by default
+Linux `libcuda` symlinks after a release build:
 
-```
-error: linking with `cc` failed: exit status: 1
-  |
-  = note:  "cc" "-Wl,--version-script=/tmp/rustctsJxAq/list" "-Wl,--no-undefined-version" "-m64" "/tmp/rustctsJxAq/symbols.o" "<89 object files omitted>" "-Wl,--as-needed" "-Wl,-Bstatic" "/xx/hetGPU/target/debug/deps/{libptx-7bdaff80a2317f98.rlib,libwhich-f30bb1abebdc81fc.rlib,libhome-7e8a5bcbbae9393a.rlib,libeither-64643123df8b89ff.rlib,librustix-af06f22e44d470fe.rlib,liblinux_raw_sys-3594dde066d7bd9d.rlib,libtempfile-95c2d4d89752ec6d.rlib,libgetrandom-b0234ab360848404.rlib,libfastrand-e6b7bf4f5223db08.rlib,libonce_cell-3762ade5b54492ce.rlib,librustix-7214c2022c62c874.rlib,libbitflags-df5e13556f379dca.rlib,liblinux_raw_sys-93ad30317744a679.rlib,libserde_json-96cad77e399e48a3.rlib,libitoa-e93891d541c4924d.rlib,libryu-89b8058e107f9d11.rlib,libregex-cc941c181af0db7a.rlib,libregex_automata-bda824cb2424702e.rlib,libaho_corasick-084dd9c39f7ac0ae.rlib,libmemchr-098566f0fddadd5e.rlib,libregex_syntax-c89bdbd6e66e0c64.rlib,libstrum-b548b1a93b339f7b.rlib,libquick_error-20ff717f463892e5.rlib,libptx_parser-1e5967146d4cc314.rlib,libthiserror-182054611c23cf3e.rlib,libbitflags-fdc24f4688603348.rlib,libwinnow-42c14bebbe4544ba.rlib,librustc_hash-50d45f4cee64a708.rlib,liblogos-b3726b5a3afef72d.rlib,libderive_more-9910237a94e5634b.rlib,libllvm_hetGPU-be4f1e966c7c00b7.rlib,libllvm_sys-dec2a59b25406277.rlib,libserde-50cedc28066d9a15.rlib,librand-7f4d8b7fe7531938.rlib,librand_chacha-376b75692958a1cc.rlib,libppv_lite86-a6f6214d46654bf2.rlib,libzerocopy-e3604abd9a947746.rlib,librand_core-82ab10e7dd7b6353.rlib,libgetrandom-cc67d104b46bae27.rlib,liblibc-83ba1c66a8baec75.rlib,libcfg_if-e3a2a86c3f7f7605.rlib,libbase64-abde09cee03ffba5.rlib,librustc_hash-bb091058ca505f29.rlib,libcuda_types-a88f0ad52e7d6047.rlib,libze_runtime_sys-56ce8c843283f7fa.rlib}.rlib" "<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/lib/{libstd-*,libpanic_unwind-*,libobject-*,libmemchr-*,libaddr2line-*,libgimli-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libminiz_oxide-*,libadler2-*,libunwind-*,libcfg_if-*,liblibc-*,liballoc-*,librustc_std_workspace_core-*,libcore-*,libcompiler_builtins-*}.rlib" "-Wl,-Bdynamic" "-lLLVMBitWriter" "-lLLVMAnalysis" "-lLLVMProfileData" "-lLLVMSymbolize" "-lLLVMDebugInfoBTF" "-lLLVMDebugInfoPDB" "-lLLVMDebugInfoMSF" "-lLLVMDebugInfoCodeView" "-lLLVMDebugInfoDWARF" "-lLLVMObject" "-lLLVMTextAPI" "-lLLVMMCParser" "-lLLVMIRReader" "-lLLVMAsmParser" "-lLLVMMC" "-lLLVMBitReader" "-lLLVMCore" "-lLLVMRemarks" "-lLLVMBitstreamReader" "-lLLVMBinaryFormat" "-lLLVMTargetParser" "-lLLVMSupport" "-lLLVMDemangle" "-lLLVMTarget" "-lstdc++" "-lze_loader" "-lgcc_s" "-lutil" "-lrt" "-lpthread" "-lm" "-ldl" "-lc" "-L" "/tmp/rustctsJxAq/raw-dylibs" "-Wl,--eh-frame-hdr" "-Wl,-z,noexecstack" "-L" "/xx/hetGPU/target/debug/build/ze_runtime_sys-1222225a9a9570c5/out" "-L" "/xx/hetGPU/target/debug/build/lz4-sys-d3a5e3b6c2386e54/out" "-L" "/xx/hetGPU/target/debug/build/llvm_hetGPU-f16113f7bf4ec5f8/out/build/lib" "-L" "/xx/hetGPU/target/debug/build/llvm_hetGPU-f16113f7bf4ec5f8/out/build/lib/../../../../../../../ext/llvm-project/build/lib" "-L" "/xx/hetGPU/target/debug/build/llvm_hetGPU-f16113f7bf4ec5f8/out" "-L" "/xx/hetGPU/target/debug/build/tt_runtime_sys-2582b52c9d1e3544/out" "-L" "/opt/rocm/lib/" "-L" "/opt/rocm/lib/" "-L" "/usr/lib/x86_64-linux-gnu/" "-L" "lib" "-L" "<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/lib" "-o" "/xx/hetGPU/target/debug/deps/libnvcuda.so" "-Wl,--gc-sections" "-shared" "-Wl,-z,relro,-z,now" "-nodefaultlibs"
-  = note: some arguments are omitted. use `--verbose` to show all linker arguments
-  = note: /usr/bin/ld: cannot find -lLLVMTarget
-```
-fix:
-```
-pushd /xx/hetGPU/target/debug/build/llvm_hetGPU-f16113f7bf4ec5f8/out/build/
-ninja LLVMTarget
-popd
-```
-### Linux
-
-If you are building on Linux you must also symlink (or rename) the hetGPU output binaries after hetGPU build finishes:
-```
+```bash
 ln -s libnvcuda.so target/release/libcuda.so
 ln -s libnvcuda.so target/release/libcuda.so.1
 ln -s libnvml.so target/release/libnvidia-ml.so
 ```
 
-## Developer Tools
+## Runtime Usage
 
-hetGPU includes several developer tools for GPU debugging and analysis:
-
-### SASS Inliner (`sass_inliner`)
-
-Convert SASS (NVIDIA GPU assembly) to LLVM IR for analysis and cross-platform compilation:
+Run a CUDA application through the shim:
 
 ```bash
-# Build the tool
-cargo build -p ptx --bin sass_inliner
-
-# Inline SASS from CUBIN file
-sass_inliner kernel.cubin -o output.ll
-
-# Use cuobjdump output
-cuobjdump -sass -lineinfo kernel.cubin | sass_inliner --stdin -o output.ll
-
-# Dump SASS instructions
-sass_inliner kernel.cubin --dump-sass
+LD_LIBRARY_PATH=/path/to/hetGPU/target/release <application> <arguments>
 ```
 
-#### PTX Recovery
-
-Recover PTX source code from SASS using DWARF debug information or semantic reconstruction:
+Enable Concordia checkpoint boundary logging:
 
 ```bash
-# Recover PTX from CUBIN with debug info
-sass_inliner kernel.cubin --recover-ptx --ptx-output recovered.ptx
-
-# Recover PTX from cuobjdump output (semantic reconstruction)
-cuobjdump -sass kernel.cubin | sass_inliner --stdin --recover-ptx
+export HETGPU_CONCORDIA_BOUNDARY=1
+export HETGPU_CONCORDIA_LOGS=1
+export CONCORDIA_AOF_PATH=/tmp/concordia/session.aof
+LD_LIBRARY_PATH=/path/to/hetGPU/target/release <application> <arguments>
 ```
 
-### GPU Record/Replay (`gpu_rr`)
-
-rr-style debugging for GPU kernels with record, replay, and analysis capabilities:
+Enable NCCL boundary hooks:
 
 ```bash
-# Build the tool
-cargo build -p ptx --bin gpu_rr
-
-# Record kernel execution
-gpu_rr record kernel.cubin -o trace.gpur
-
-# Replay with breakpoint
-gpu_rr replay --break 0x100 trace.gpur
-
-# Analyze execution hotspots
-gpu_rr analyze trace.gpur -o report.json
-
-# Recover PTX from SASS
-gpu_rr ptx kernel.cubin -o recovered.ptx
+export HETGPU_CONCORDIA_NCCL_BOUNDARY=1
+export HETGPU_NCCL_LOGS=1
 ```
 
-### Inlining Strategies
+Enable the NVIDIA persistent worker path for simple elementwise kernels:
 
-The SASS inliner supports multiple strategies:
-- `asm` / `inline-asm` - Preserve exact SASS encoding as inline assembly
-- `ptx` / `reconstruct` - Convert to PTX-equivalent LLVM IR
-- `meta` / `metadata` - Metadata only, no IR changes
-- `hybrid` (default) - Balance precision and compatibility
+```bash
+export CONCORDIA_PERSISTENT=1
+export CONCORDIA_PERSISTENT_CAPACITY=1024
+export CONCORDIA_PERSISTENT_BLOCKS=1
+export CONCORDIA_ARCH=sm_80
+export CONCORDIA_NVCC=/usr/local/cuda-12.8/bin/nvcc
+```
 
-## Contributing
+The persistent worker path is currently compiled only for the pure NVIDIA feature configuration.
 
-If you want to develop hetGPU itself, read [CONTRIBUTING.md](CONTRIBUTING.md), it contains instructions how to set up dependencies and run tests
+## SASS Lifter And PTX Recovery
 
+The shared lifter can recover PTX from NVIDIA CUBINs or `cuobjdump -sass` text:
+
+```bash
+cargo run -p ptx --bin sass_inliner -- kernel.cubin --recover-ptx --ptx-output recovered.ptx
+cuobjdump -sass kernel.cubin | cargo run -p ptx --bin sass_inliner -- --stdin --recover-ptx
+```
+
+Useful SASS lifter runtime flags:
+
+```bash
+export HETGPU_SASS_LIFTER_LOG=1
+export HETGPU_SASS_LIFTER_DUMP=/tmp/lifted.ptx
+export HETGPU_SASS_LIFTER_CUBIN_DUMP_DIR=/tmp/hetgpu-cubins
+export HETGPU_SASS_LIFTER_DIAGNOSTIC_LIMIT=32
+```
+
+The module loader first uses embedded PTX when available. When PTX is unavailable and the lifter is requested, it selects a CUBIN payload from ELF/fatbin input, supports zstd/LZ4-compressed fatbin entries, lifts through `ptx::lift_cubin_to_ptx`, and then lets Concordia annotate the recovered PTX with safe points.
+
+## PTX Pass Pipeline
+
+The main PTX-to-LLVM path normalizes and lowers PTX through passes such as:
+
+- `normalize_identifiers`
+- `replace_known_functions`
+- `normalize_predicates2`
+- `resolve_function_pointers`
+- `fix_special_registers`
+- `expand_operands`
+- `insert_post_saturation`
+- `deparamize_functions`
+- `replace_instructions_with_functions_fp_required`
+- `normalize_basic_blocks`
+- `remove_unreachable_basic_blocks`
+- `instruction_mode_to_global_mode`
+- `insert_explicit_load_store`
+- `insert_implicit_conversions2`
+- `replace_instructions_with_functions`
+- `hoist_globals`
+- `emit_llvm`
+
+Target-specific passes and emitters include tmatmul assembly, SIFIVE VCIX, TOSA MLIR, AIE/TOSA, and debug/MLIR integration helpers.
+
+## Open ptxas / NVIDIA SASS Assembler
+
+`nvidia_sass` implements an experimental PTX-to-SASS pipeline:
+
+```text
+PTX subset -> parse -> instruction selection -> register allocation
+           -> control-code scheduling -> encoding validation -> CUBIN builder
+```
+
+The `ptxas` crate exposes that path as a command-line replacement for simple kernels:
+
+```bash
+cargo run -p ptxas -- -o kernel.cubin -arch=sm_120 kernel.ptx
+```
+
+This is not a complete NVIDIA ptxas replacement. It is useful for controlled SM120 assembler experiments and round-trip validation.
+
+## CXL/tmatmul Path
+
+The tmatmul path lowers PTX matrix operations to a ternary-matmul assembly form and can run through emulator, simulator, or CXL Type-2 hardware-oriented paths depending on the environment.
+
+Common flags:
+
+```bash
+export HETGPU_TMATMUL_COCOTB=1
+export HETGPU_TMATMUL_ASM_DIR=/tmp/tmatmul-asm
+export HETGPU_CXL_TMATMUL_STAGING=mmap
+export HETGPU_TMATMUL_MATRIX_STAGE=host
+export HETGPU_TMATMUL_IO_STAGE=host
+export HETGPU_TMATMUL_OUTPUT_DTYPE=f32
+```
+
+The default hardware paths in code are `/dev/cxl_tmatmul3b000` and `/dev/dax0.0`; real hardware runs depend on the host CXL topology and driver state.
+
+## Current Limitations
+
+- This tree intentionally keeps multiple research paths side by side; not every feature combination is meaningful.
+- The Concordia path is staged and compile-safe. It implements checkpoint metadata, AOF logging, safe-point annotation, MPI scoping, NCCL boundary hooks, and an NVIDIA persistent worker, but not the full paper system.
+- SASS lifting is best-effort. Unsupported opcodes are surfaced as diagnostics or comments rather than silently translated.
+- CXL/tmatmul hardware execution requires matching kernel drivers, device nodes, DAX setup, and platform topology.
+- The persistent worker compiles embedded CUDA with `nvcc`; set `CONCORDIA_NVCC` and `CONCORDIA_ARCH` when the default toolchain is not correct.
 
 ## License
 
-This software is dual-licensed under either the Apache 2.0 license or the MIT license. See [LICENSE-APACHE](LICENSE-APACHE) or [LICENSE-MIT](LICENSE-MIT) for details
+The code in this repository is dual-licensed under Apache 2.0 or MIT. See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).
+
+The Concordia paper text that guided the staged runtime port is CC BY 4.0; code in this repository remains governed by the repository license unless a file says otherwise.
