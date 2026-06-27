@@ -48,6 +48,8 @@ pub(super) mod pointer;
 // Checkpoint/resume support for GPU state
 pub mod checkpoint;
 pub(crate) mod concordia_delta;
+pub(crate) mod concordia_instrument;
+pub(crate) mod concordia_runtime;
 #[cfg(all(
     feature = "nvidia",
     not(feature = "amd"),

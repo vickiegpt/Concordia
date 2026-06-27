@@ -112,8 +112,8 @@ fn get_self_library_handle() -> *mut c_void {
 pub(crate) fn get_proc_address(
     symbol: *const c_char,
     pfn: *mut *mut c_void,
-    _cuda_version: c_int,
-    _flags: cuda_types::cuda::cuuint64_t,
+    cuda_version: c_int,
+    flags: cuda_types::cuda::cuuint64_t,
 ) -> Result<(), CUerror> {
     if symbol.is_null() || pfn.is_null() {
         return Err(CUerror::INVALID_VALUE);
@@ -133,6 +133,11 @@ pub(crate) fn get_proc_address(
             addr = dlsym(RTLD_DEFAULT, symbol);
         }
         if addr.is_null() {
+            let result =
+                nvidia_runtime_sys::cuGetProcAddress_raw(symbol, pfn, cuda_version, flags);
+            if result.is_ok() && !(*pfn).is_null() {
+                return Ok(());
+            }
             eprintln!("[hetGPU] cuGetProcAddress: '{}' NOT FOUND", sym_str);
             *pfn = std::ptr::null_mut();
             return Err(CUerror::NOT_FOUND);
@@ -146,8 +151,8 @@ pub(crate) fn get_proc_address(
 pub(crate) fn get_proc_address_v2(
     symbol: *const c_char,
     pfn: *mut *mut c_void,
-    _cuda_version: c_int,
-    _flags: cuda_types::cuda::cuuint64_t,
+    cuda_version: c_int,
+    flags: cuda_types::cuda::cuuint64_t,
     symbol_status: *mut cuda_types::cuda::CUdriverProcAddressQueryResult,
 ) -> Result<(), CUerror> {
     if symbol.is_null() || pfn.is_null() {
@@ -156,6 +161,7 @@ pub(crate) fn get_proc_address_v2(
 
     #[cfg(unix)]
     unsafe {
+        let sym_str = std::ffi::CStr::from_ptr(symbol).to_string_lossy();
         // First try our own library to avoid resolving to system's libcuda.so.1
         let self_handle = get_self_library_handle();
         let mut addr = std::ptr::null_mut();
@@ -171,6 +177,17 @@ pub(crate) fn get_proc_address_v2(
             (*symbol_status).0 = if addr.is_null() { 1 } else { 0 };
         }
         if addr.is_null() {
+            let result = nvidia_runtime_sys::cuGetProcAddress_v2_raw(
+                symbol,
+                pfn,
+                cuda_version,
+                flags,
+                symbol_status,
+            );
+            if result.is_ok() && !(*pfn).is_null() {
+                return Ok(());
+            }
+            eprintln!("[hetGPU] cuGetProcAddress_v2: '{}' NOT FOUND", sym_str);
             return Err(CUerror::NOT_FOUND);
         }
     }

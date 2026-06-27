@@ -73,6 +73,15 @@ type CuEventSynchronizeFn = unsafe extern "C" fn(CUevent) -> CUresult;
 type CuEventElapsedTimeFn = unsafe extern "C" fn(*mut f32, CUevent, CUevent) -> CUresult;
 type CuGetErrorStringFn = unsafe extern "C" fn(CUresult, *mut *const c_char) -> CUresult;
 type CuGetErrorNameFn = unsafe extern "C" fn(CUresult, *mut *const c_char) -> CUresult;
+type CuGetProcAddressFn =
+    unsafe extern "C" fn(*const c_char, *mut *mut c_void, c_int, cuuint64_t) -> CUresult;
+type CuGetProcAddressV2Fn = unsafe extern "C" fn(
+    *const c_char,
+    *mut *mut c_void,
+    c_int,
+    cuuint64_t,
+    *mut CUdriverProcAddressQueryResult,
+) -> CUresult;
 type CuDriverGetVersionFn = unsafe extern "C" fn(*mut c_int) -> CUresult;
 type CuFuncGetAttributeFn =
     unsafe extern "C" fn(*mut c_int, CUfunction_attribute, CUfunction) -> CUresult;
@@ -138,6 +147,8 @@ pub struct NvidiaCudaFunctions {
     pub cuEventElapsedTime: Option<CuEventElapsedTimeFn>,
     pub cuGetErrorString: Option<CuGetErrorStringFn>,
     pub cuGetErrorName: Option<CuGetErrorNameFn>,
+    pub cuGetProcAddress: Option<CuGetProcAddressFn>,
+    pub cuGetProcAddress_v2: Option<CuGetProcAddressV2Fn>,
     pub cuDriverGetVersion: Option<CuDriverGetVersionFn>,
     pub cuFuncGetAttribute: Option<CuFuncGetAttributeFn>,
     pub cuFuncSetAttribute: Option<CuFuncSetAttributeFn>,
@@ -223,6 +234,8 @@ pub fn init() -> Result<(), String> {
                 cuEventElapsedTime: load_fn(lib, "cuEventElapsedTime"),
                 cuGetErrorString: load_fn(lib, "cuGetErrorString"),
                 cuGetErrorName: load_fn(lib, "cuGetErrorName"),
+                cuGetProcAddress: load_fn(lib, "cuGetProcAddress"),
+                cuGetProcAddress_v2: load_fn(lib, "cuGetProcAddress_v2"),
                 cuDriverGetVersion: load_fn(lib, "cuDriverGetVersion"),
                 cuFuncGetAttribute: load_fn(lib, "cuFuncGetAttribute"),
                 cuFuncSetAttribute: load_fn(lib, "cuFuncSetAttribute"),
@@ -318,6 +331,8 @@ impl NvidiaCudaFunctions {
             cuEventElapsedTime: None,
             cuGetErrorString: None,
             cuGetErrorName: None,
+            cuGetProcAddress: None,
+            cuGetProcAddress_v2: None,
             cuDriverGetVersion: None,
             cuFuncGetAttribute: None,
             cuFuncSetAttribute: None,
@@ -346,6 +361,47 @@ pub fn get_cuda_funcs() -> Option<&'static NvidiaCudaFunctions> {
 }
 
 // Wrapper functions that call into the real CUDA library
+
+pub unsafe fn cuGetProcAddress_raw(
+    symbol: *const c_char,
+    pfn: *mut *mut c_void,
+    cuda_version: c_int,
+    flags: cuuint64_t,
+) -> CUresult {
+    let _ = init();
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuGetProcAddress {
+            return f(symbol, pfn, cuda_version, flags);
+        }
+    }
+    Err(CUerror::NOT_FOUND)
+}
+
+pub unsafe fn cuGetProcAddress_v2_raw(
+    symbol: *const c_char,
+    pfn: *mut *mut c_void,
+    cuda_version: c_int,
+    flags: cuuint64_t,
+    symbol_status: *mut CUdriverProcAddressQueryResult,
+) -> CUresult {
+    let _ = init();
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuGetProcAddress_v2 {
+            return f(symbol, pfn, cuda_version, flags, symbol_status);
+        }
+        if let Some(f) = funcs.cuGetProcAddress {
+            let result = f(symbol, pfn, cuda_version, flags);
+            if !symbol_status.is_null() {
+                (*symbol_status).0 = if result.is_ok() { 0 } else { 1 };
+            }
+            return result;
+        }
+    }
+    if !symbol_status.is_null() {
+        (*symbol_status).0 = 1;
+    }
+    Err(CUerror::NOT_FOUND)
+}
 
 pub fn cuInit(flags: c_uint) -> i32 {
     let _ = init();

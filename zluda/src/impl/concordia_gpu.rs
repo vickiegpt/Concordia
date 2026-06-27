@@ -91,6 +91,32 @@ __device__ void do_add_relu(const Task& t) {
     }
 }
 
+__device__ void do_dirty_scan(const Task& t) {
+    const int page_size = 4096;
+    unsigned char* current = (unsigned char*)t.in0;
+    unsigned char* shadow = (unsigned char*)t.in1;
+    unsigned long long* bitmap = (unsigned long long*)t.out0;
+    long long page_count = t.numel;
+
+    for (long long page = threadIdx.x + (long long)blockIdx.x * blockDim.x;
+         page < page_count; page += (long long)blockDim.x * gridDim.x) {
+        long long offset = page * (long long)page_size;
+        bool dirty = false;
+        for (int i = 0; i < page_size; ++i) {
+            unsigned char v = current[offset + i];
+            if (v != shadow[offset + i]) {
+                dirty = true;
+            }
+        }
+        if (dirty) {
+            for (int i = 0; i < page_size; ++i) {
+                shadow[offset + i] = current[offset + i];
+            }
+            atomicOr(&bitmap[page / 64LL], 1ULL << (page % 64LL));
+        }
+    }
+}
+
 __global__ void persistent_worker(
     Task* tasks,
     int capacity,
@@ -132,6 +158,7 @@ __global__ void persistent_worker(
             case 4: do_relu(task); break;
             case 5: do_scale(task); break;
             case 6: do_add_relu(task); break;
+            case 7: do_dirty_scan(task); break;
             default: break;
         }
         __syncthreads();
@@ -467,6 +494,24 @@ pub unsafe extern "C" fn concordia_gpu_enqueue(
     let kernel = &*(handle as *const GpuPersistentKernel);
     kernel
         .enqueue_task(op, numel, in0, in1, out0)
+        .map(|seq| seq as i64)
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn concordia_gpu_scan_dirty_pages(
+    handle: i64,
+    current: u64,
+    shadow: u64,
+    bitmap: u64,
+    page_count: i64,
+) -> i64 {
+    if handle <= 0 || current == 0 || shadow == 0 || bitmap == 0 || page_count < 0 {
+        return -1;
+    }
+    let kernel = &*(handle as *const GpuPersistentKernel);
+    kernel
+        .enqueue_task(7, page_count, current, shadow, bitmap)
         .map(|seq| seq as i64)
         .unwrap_or(-1)
 }

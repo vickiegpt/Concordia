@@ -53,9 +53,21 @@ extern int hetgpu_sifive_nccl_reduce_sum_f32(
     int nranks
 ) __attribute__((weak));
 
+extern int hetgpu_concordia_checkpoint_boundary(const char *boundary) __attribute__((weak));
+
 static int env_enabled(const char *name) {
     const char *env = getenv(name);
     return env && (strcmp(env, "1") == 0 || strcmp(env, "true") == 0 || strcmp(env, "on") == 0);
+}
+
+static void concordia_checkpoint_boundary(const char *boundary) {
+    if (!hetgpu_concordia_checkpoint_boundary) return;
+    if (!env_enabled("HETGPU_CONCORDIA_NCCL_BOUNDARY") &&
+        !env_enabled("HETGPU_CONCORDIA_BOUNDARY") &&
+        !env_enabled("CONCORDIA_CHECKPOINT_ON_BOUNDARY")) {
+        return;
+    }
+    (void)hetgpu_concordia_checkpoint_boundary(boundary);
 }
 
 static int read_env_i32(const char *name, int fallback) {
@@ -408,9 +420,12 @@ ncclResult_t ncclAllReduce(
     if (!sendbuff || !recvbuff || item_size == 0) return ncclInvalidArgument;
     NCCL_LOG("[hetGPU nccl_shim] ncclAllReduce count=%zu datatype=%d bytes=%zu\n",
              count, datatype, count * item_size);
+    concordia_checkpoint_boundary("ncclAllReduce:begin");
 
     if (datatype == 7 && op == 0 && comm && comm->nranks > 1) {
-        return rendezvous_allreduce_f32((const float *)sendbuff, (float *)recvbuff, count, op, comm);
+        ncclResult_t result = rendezvous_allreduce_f32((const float *)sendbuff, (float *)recvbuff, count, op, comm);
+        concordia_checkpoint_boundary("ncclAllReduce:end");
+        return result;
     }
 
     if (datatype == 7 && op == 0 && env_enabled("HETGPU_NCCL_USE_SIFIVE") && hetgpu_sifive_nccl_all_reduce_f32) {
@@ -424,10 +439,13 @@ ncclResult_t ncclAllReduce(
             rank,
             nranks
         );
-        return rc == 0 ? ncclSuccess : ncclSystemError;
+        ncclResult_t result = rc == 0 ? ncclSuccess : ncclSystemError;
+        concordia_checkpoint_boundary("ncclAllReduce:end");
+        return result;
     }
 
     if (sendbuff != recvbuff) memcpy(recvbuff, sendbuff, count * item_size);
+    concordia_checkpoint_boundary("ncclAllReduce:end");
     return ncclSuccess;
 }
 

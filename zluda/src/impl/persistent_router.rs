@@ -10,6 +10,7 @@ pub(crate) enum PersistentOp {
     Relu = 4,
     Scale = 5,
     AddRelu = 6,
+    DirtyScan = 7,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

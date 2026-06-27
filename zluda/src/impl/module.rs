@@ -3369,7 +3369,7 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     // are PTX text with leading newlines/comments before the .version directive.
     let is_ptx = unsafe { nvidia_module_image_is_ptx_text(image) };
 
-    let ptx_source: Option<String> = if is_ptx {
+    let ptx_source: Option<String> = (if is_ptx {
         // It's PTX text, extract the full string
         let c_str = unsafe { std::ffi::CStr::from_ptr(image as *const std::ffi::c_char) };
         match c_str.to_str() {
@@ -3382,7 +3382,10 @@ pub(crate) fn load_data(module: &mut CUmodule, image: *const std::ffi::c_void) -
     } else {
         eprintln!("[NVIDIA Backend] Detected CUBIN/binary module");
         try_lift_nvidia_cubin_image(image)
-    };
+    })
+    .map(|ptx| {
+        crate::r#impl::concordia_instrument::annotate_ptx_with_concordia_safe_points(&ptx)
+    });
 
     // IMPORTANT: Register PTX source BEFORE loading with NVIDIA driver
     // This ensures PTX is available for checkpointing even if module loading fails
