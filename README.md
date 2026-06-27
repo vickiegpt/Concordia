@@ -1,56 +1,146 @@
-[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/SxbqA3z2)
-
 # hetGPU
 
-hetGPU is a drop-in replacement for CUDA on non-NVIDIA GPU. hetGPU allows to run unmodified CUDA applications using non-NVIDIA GPUs with near-native performance.
+hetGPU is a CUDA-compatible runtime and compiler workspace derived from ZLUDA, extended for heterogeneous GPU targets and Concordia-style fault-tolerant execution experiments.
 
-hetGPU is work in progress. Follow development here and say hi on [Discord](https://discord.gg/SxbqA3z2).
+The repository is organized around three linked paths:
 
+- A `libcuda`/`libnvcuda` shim that lets CUDA applications load through the hetGPU runtime.
+- A PTX compiler and recovery pipeline that can translate, instrument, lower, and debug CUDA kernels across several backend targets.
+- A staged Concordia runtime substrate for delta checkpointing, persistent-kernel dispatch, NCCL boundary hooks, and MPI-aware recovery logs.
 
-## Usage
-**Warning**: hetGPU is under heavy development (see news [here](https://zett.asplod.dev/)). Instructions below might not work.
+This is research infrastructure. Some pieces are production-shaped, but backend coverage and hardware paths vary by target.
 
-### Windows
-You should have the most recent ROCm  installed.
-Run your application like this:
+## What Is In This Repository
+
+| Area | Main paths | Purpose |
+| --- | --- | --- |
+| CUDA API shim | `zluda/`, `cuda_base/`, `cuda_types/` | CUDA Driver API compatibility layer, module loading, kernel launch interposition, and backend dispatch. |
+| PTX compiler passes | `ptx/`, `ptx_parser/` | PTX parsing, normalization, LLVM emission, MLIR/TOSA/Tenstorrent/SIFIVE/tmatmul lowering, debug mapping, and state recovery helpers. |
+| SASS lifter | `ptx/src/sass/`, `ptx/src/bin/sass_inliner.rs` | CUBIN parsing, NVIDIA SASS disassembly, SASS-to-PTX lifting, LLVM inlining, DWARF-assisted recovery, diagnostics, and fuzzing. |
+| Open ptxas path | `nvidia_sass/`, `ptxas/` | Experimental PTX-to-SASS-to-CUBIN assembler pipeline for NVIDIA SM120-style targets. |
+| Concordia runtime | `zluda/src/impl/concordia_*.rs`, `zluda/src/impl/persistent_router.rs` | Delta checkpoint records, append-only log replay, PTX safe-point annotation, NVIDIA persistent worker, and opt-in persistent routing. |
+| NCCL/MPI hooks | `zluda/src/nccl_shim.c` | Minimal NCCL-compatible shim with all-reduce rendezvous, MPI env detection, and Concordia checkpoint boundary hooks. |
+| CXL/tmatmul backend | `zluda/src/impl/cxl_tmatmul.rs`, `zluda/src/impl/tmatmul_interpreter.rs`, `ptx/src/pass/ptx_to_tmatmul.rs` | PTX-to-tmatmul lowering, host/CXL staging, simulator and hardware-oriented execution paths. |
+| Backend compiler glue | `comgr/`, `ext/*_comgr-sys`, `ext/*_runtime-sys` | AMD, Intel Level Zero, Tenstorrent, SIFIVE, Cuttlefish, AIE, and NVIDIA support crates. |
+
+## Architecture
+
+```text
+CUDA application / PyTorch / Triton
+        |
+        v
+hetGPU libcuda shim (`zluda`)
+        |
+        +-- PTX text --------------------+
+        |                                |
+        +-- CUBIN/fatbin -> SASS lifter -+-> PTX recovery / annotation
+                                         |
+                                         v
+                               PTX pass pipeline
+                                         |
+          +------------------------------+------------------------------+
+          |                              |                              |
+          v                              v                              v
+   LLVM/COMGR backends             tmatmul/CXL path              NVIDIA pass-through
+   AMD / Intel / SIFIVE / TT       emulator or hardware          optional persistent worker
+
+Concordia hooks sit on the module-load and launch path:
+
+PTX/SASS recovery -> Concordia safe-point labels -> checkpoint registration
+kernel/NCCL boundary -> delta checkpoint -> rank-scoped AOF log
+simple elementwise launch -> optional persistent-kernel route
 ```
-<hetGPU_DIRECTORY>\hetGPU_with.exe -- <APPLICATION> <APPLICATIONS_ARGUMENTS>
+
+## Concordia Integration
+
+The Concordia code in this tree is a compile-safe staged port of the paper design, not a full production fault-tolerant LLM serving stack.
+
+Implemented pieces:
+
+- PTX safe-point discovery and annotation at `.entry`, `bar.sync`, and `ret` sites.
+- Binary-module recovery through the existing Rust SASS-to-PTX lifter path. There is no JEB dependency.
+- Host-testable delta checkpoint state for opaque shadow-diff regions and allocator-bitmap regions.
+- Append-only AOF records with committed-record replay and truncated-suffix tolerance.
+- C-callable region registration and checkpoint APIs:
+  - `hetgpu_concordia_register_host_region`
+  - `hetgpu_concordia_register_bitmap_region`
+  - `hetgpu_concordia_checkpoint_host_region`
+  - `hetgpu_concordia_checkpoint_bitmap_region`
+  - `hetgpu_concordia_checkpoint_boundary`
+- MPI-aware rank, world-size, and local-rank detection from OpenMPI, PMIx, PMI, MVAPICH, Slurm, PyTorch-style, and Concordia-specific environment variables.
+- Rank-scoped AOF path expansion for parallel jobs.
+- NVIDIA-only persistent worker with pinned host-mapped ring buffer and simple ops: add, mul, sub, SiLU, ReLU, scale, fused add+ReLU, and dirty-page scan.
+- NCCL all-reduce boundary hooks that can call Concordia checkpoint boundaries before and after collectives.
+
+Not yet complete:
+
+- Full SASS binary patching with live register capture.
+- Full GPU-resident AOF append from persistent worker tasks.
+- Production NCCL communicator replacement and multi-node failure orchestration.
+- Complete LLM KV-cache allocator integration.
+- Cross-architecture CTX migration from the Concordia paper.
+
+## MPI And Parallel Runs
+
+The Concordia runtime does not require linking against MPI. It reads common MPI environment variables so independent ranks can run the same shim safely.
+
+Rank detection keys include:
+
+- Rank: `CONCORDIA_MPI_RANK`, `HETGPU_CONCORDIA_MPI_RANK`, `OMPI_COMM_WORLD_RANK`, `PMIX_RANK`, `PMI_RANK`, `MV2_COMM_WORLD_RANK`, `SLURM_PROCID`, `RANK`
+- World size: `CONCORDIA_MPI_WORLD_SIZE`, `HETGPU_CONCORDIA_MPI_WORLD_SIZE`, `OMPI_COMM_WORLD_SIZE`, `PMIX_SIZE`, `PMI_SIZE`, `MV2_COMM_WORLD_SIZE`, `SLURM_NTASKS`, `WORLD_SIZE`
+- Local rank: `CONCORDIA_MPI_LOCAL_RANK`, `HETGPU_CONCORDIA_MPI_LOCAL_RANK`, `OMPI_COMM_WORLD_LOCAL_RANK`, `MPI_LOCALRANKID`, `MV2_COMM_WORLD_LOCAL_RANK`, `SLURM_LOCALID`, `PMI_LOCAL_RANK`, `LOCAL_RANK`
+
+If `CONCORDIA_AOF_PATH=/tmp/concordia/session.aof` and the job has multiple ranks, rank 3 of 16 writes:
+
+```text
+/tmp/concordia/session.rank0003-of-0016.aof
 ```
 
-### Linux
-
-Run your application like this:
-```
-LD_LIBRARY_PATH=<hetGPU_DIRECTORY> <APPLICATION> <APPLICATIONS_ARGUMENTS>
-```
-
-### MacOS
-
-Not supported
-
-## Building
-**Warning**: hetGPU is under heavy development (see news [here](https://vosen.github.io/hetGPU/blog/hetGPUs-third-life/)). Instructions below might not work.
-
-_Note_: This repo has submodules. Make sure to recurse submodules when cloning this repo, e.g.: `git clone --recursive https://github.com/vosen/hetGPU.git`
-
-Dependency: 
+Template tokens are also supported:
 
 ```bash
-# oneapi
-wget -qO - https://repositories.intel.com/graphics/intel-graphics.key | sudo apt-key add -
-apt-add-repository 'deb [arch=amd64] https://repositories.intel.com/graphics/ubuntu focal main'
-apt install level-zero level-zero-dev
-
-# cuda
-apt install nvidia-cuda-toolkit
+export CONCORDIA_AOF_PATH=/tmp/concordia/r{rank}-w{world}-l{local_rank}.aof
 ```
 
-You should have a relatively recent version of Rust installed, then you just do:
+The persistent worker device defaults to MPI local rank unless overridden:
 
+```bash
+export CONCORDIA_PERSISTENT_DEVICE=0
 ```
+
+## Build
+
+Clone with submodules:
+
+```bash
+git clone --recursive <repo-url>
+cd hetGPU
+```
+
+General Rust build:
+
+```bash
 cargo build --release
 ```
-in the main directory of the project.  
+
+Focused checks used for the current staged Concordia port:
+
+```bash
+cargo test -p zluda --features intel --no-default-features concordia_ -- --nocapture --test-threads=1
+cargo test -p zluda --features intel --no-default-features persistent_router -- --nocapture --test-threads=1
+cargo check -p zluda --features nvidia --no-default-features
+cargo check -p zluda --features nvidia,tmatmul --no-default-features
+```
+
+Build the developer tools:
+
+```bash
+cargo build -p ptx --bin sass_inliner
+cargo build -p ptx --bin gpu_rr
+cargo build -p ptx --bin ptx_to_tmatmul_hw
+cargo build -p ptxas --bin ptxas
+cargo build -p nvidia_sass
+```
 
 ### Caveats: LLVMTarget not built by default
 
