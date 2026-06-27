@@ -1,3 +1,4 @@
+use crate::r#impl::nvidia_runtime_sys;
 use cuda_types::cuda::*;
 use std::ffi::CString;
 use std::os::raw::c_void;

@@ -1,4 +1,4 @@
-use crate::r#impl::concordia_delta::{AofDiskLog, DeltaCheckpointState};
+use crate::r#impl::concordia_delta::{apply_records_to_region, AofDiskLog, DeltaCheckpointState};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::PathBuf;
@@ -280,11 +280,29 @@ fn env_enabled(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn restore_region_from_aof_path(
+    path: impl AsRef<std::path::Path>,
+    region_id: u64,
+    target: &mut [u8],
+) -> Result<usize, String> {
+    let path = path.as_ref();
+    let records = AofDiskLog::read_committed(path)
+        .map_err(|err| format!("read Concordia AOF {}: {err}", path.display()))?;
+    apply_records_to_region(region_id, target, &records)
+}
+
 unsafe fn slice_from_raw<'a>(data: *const u8, len: usize) -> Option<&'a [u8]> {
     if data.is_null() && len != 0 {
         return None;
     }
     Some(std::slice::from_raw_parts(data, len))
+}
+
+unsafe fn slice_from_raw_mut<'a>(data: *mut u8, len: usize) -> Option<&'a mut [u8]> {
+    if data.is_null() && len != 0 {
+        return None;
+    }
+    Some(std::slice::from_raw_parts_mut(data, len))
 }
 
 unsafe fn cstr_from_raw<'a>(ptr: *const c_char, fallback: &'a str) -> String {
@@ -380,6 +398,31 @@ pub unsafe extern "C" fn hetgpu_concordia_checkpoint_boundary(boundary: *const c
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_concordia_restore_region_from_aof(
+    path: *const c_char,
+    region_id: u64,
+    data: *mut u8,
+    len: usize,
+) -> i64 {
+    if path.is_null() {
+        return -1;
+    }
+    let Some(target) = slice_from_raw_mut(data, len) else {
+        return -1;
+    };
+    let path = CStr::from_ptr(path).to_string_lossy().into_owned();
+    match restore_region_from_aof_path(PathBuf::from(path), region_id, target) {
+        Ok(applied) => i64::try_from(applied).unwrap_or(-3),
+        Err(err) => {
+            if runtime_logs_enabled() {
+                eprintln!("[hetGPU Concordia] AOF restore failed: {err}");
+            }
+            -2
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,5 +499,30 @@ mod tests {
         );
 
         assert_eq!(path, PathBuf::from("/tmp/concordia/r5-w32-l2.aof"));
+    }
+
+    #[test]
+    fn runtime_restores_region_from_committed_aof() {
+        let path = std::env::temp_dir().join(format!(
+            "hetgpu_concordia_restore_{}.aof",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut log = AofDiskLog::create(&path).unwrap();
+        log.append_record(&crate::r#impl::concordia_delta::AofRecord {
+            epoch: 1,
+            region_id: 11,
+            offset: 4096,
+            payload: vec![4, 3, 2, 1],
+        })
+        .unwrap();
+        drop(log);
+
+        let mut replacement = vec![0u8; 8192];
+        let applied = restore_region_from_aof_path(&path, 11, &mut replacement).unwrap();
+
+        assert_eq!(applied, 1);
+        assert_eq!(replacement[4096..4100], [4, 3, 2, 1]);
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -260,7 +260,8 @@ impl AofLog {
 
 const AOF_MAGIC: &[u8; 4] = b"CONC";
 const AOF_COMMIT: &[u8; 4] = b"CMIT";
-const AOF_HEADER_LEN: usize = 36;
+const AOF_HEADER_LEN: usize = 44;
+const AOF_CHECKSUM_OFFSET: usize = 36;
 
 pub(crate) struct AofDiskLog {
     path: PathBuf,
@@ -324,6 +325,16 @@ impl AofDiskLog {
         self.file.write_all(&record.region_id.to_le_bytes())?;
         self.file.write_all(&offset.to_le_bytes())?;
         self.file.write_all(&payload_len.to_le_bytes())?;
+        self.file.write_all(
+            &aof_checksum(
+                record.epoch,
+                record.region_id,
+                offset,
+                payload_len,
+                &record.payload,
+            )
+            .to_le_bytes(),
+        )?;
         self.file.write_all(&record.payload)?;
         self.file.write_all(AOF_COMMIT)?;
         self.file.flush()
@@ -348,6 +359,7 @@ impl AofDiskLog {
             let region_id = read_le_u64(&header[12..20]);
             let offset_u64 = read_le_u64(&header[20..28]);
             let payload_len_u64 = read_le_u64(&header[28..36]);
+            let checksum = read_le_u64(&header[AOF_CHECKSUM_OFFSET..AOF_CHECKSUM_OFFSET + 8]);
             let offset = match usize::try_from(offset_u64) {
                 Ok(offset) => offset,
                 Err(_) => break,
@@ -358,6 +370,9 @@ impl AofDiskLog {
             };
             let mut payload = vec![0u8; payload_len];
             if file.read_exact(&mut payload).is_err() {
+                break;
+            }
+            if aof_checksum(epoch, region_id, offset_u64, payload_len_u64, &payload) != checksum {
                 break;
             }
             let mut commit = [0u8; 4];
@@ -374,6 +389,59 @@ impl AofDiskLog {
 
         Ok(records)
     }
+}
+
+pub(crate) fn apply_records_to_region(
+    region_id: u64,
+    target: &mut [u8],
+    records: &[AofRecord],
+) -> Result<usize, String> {
+    let mut applied = 0usize;
+    for record in records
+        .iter()
+        .filter(|record| record.region_id == region_id)
+    {
+        let end = record
+            .offset
+            .checked_add(record.payload.len())
+            .ok_or_else(|| {
+                format!(
+                    "AOF replay offset overflow for region {} at offset {} payload {}",
+                    record.region_id,
+                    record.offset,
+                    record.payload.len()
+                )
+            })?;
+        if end > target.len() {
+            return Err(format!(
+                "AOF replay record for region {} writes {}..{} beyond target length {}",
+                record.region_id,
+                record.offset,
+                end,
+                target.len()
+            ));
+        }
+        target[record.offset..end].copy_from_slice(&record.payload);
+        applied += 1;
+    }
+    Ok(applied)
+}
+
+fn aof_checksum(epoch: u64, region_id: u64, offset: u64, payload_len: u64, payload: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    hash = fnv1a64(hash, &epoch.to_le_bytes());
+    hash = fnv1a64(hash, &region_id.to_le_bytes());
+    hash = fnv1a64(hash, &offset.to_le_bytes());
+    hash = fnv1a64(hash, &payload_len.to_le_bytes());
+    fnv1a64(hash, payload)
+}
+
+fn fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 fn read_le_u64(bytes: &[u8]) -> u64 {
@@ -462,5 +530,75 @@ mod tests {
         assert_eq!(records[0].offset, 4096);
         assert_eq!(records[0].payload, vec![1, 2, 3, 4]);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn disk_aof_replay_ignores_checksum_mismatch_suffix() {
+        let path = std::env::temp_dir().join(format!(
+            "hetgpu_concordia_aof_checksum_{}.bin",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut log = AofDiskLog::create(&path).unwrap();
+        log.append_record(&AofRecord {
+            epoch: 1,
+            region_id: 7,
+            offset: 0,
+            payload: vec![1, 2, 3, 4],
+        })
+        .unwrap();
+        log.append_record(&AofRecord {
+            epoch: 2,
+            region_id: 7,
+            offset: 4096,
+            payload: vec![5, 6, 7, 8],
+        })
+        .unwrap();
+        drop(log);
+
+        let mut bytes = std::fs::read(&path).unwrap();
+        let first_record_len = AOF_HEADER_LEN + 4 + AOF_COMMIT.len();
+        let checksum_byte = first_record_len + AOF_CHECKSUM_OFFSET;
+        bytes[checksum_byte] ^= 0x55;
+        std::fs::write(&path, bytes).unwrap();
+
+        let records = AofDiskLog::read_committed(&path).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].epoch, 1);
+        assert_eq!(records[0].payload, vec![1, 2, 3, 4]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn replay_records_restore_replacement_region() {
+        let records = vec![
+            AofRecord {
+                epoch: 1,
+                region_id: 42,
+                offset: 4096,
+                payload: vec![1, 2, 3, 4],
+            },
+            AofRecord {
+                epoch: 2,
+                region_id: 42,
+                offset: 8192,
+                payload: vec![5, 6, 7, 8],
+            },
+            AofRecord {
+                epoch: 3,
+                region_id: 99,
+                offset: 0,
+                payload: vec![9, 9, 9, 9],
+            },
+        ];
+        let mut replacement = vec![0u8; 3 * 4096];
+
+        let applied = apply_records_to_region(42, &mut replacement, &records).unwrap();
+
+        assert_eq!(applied, 2);
+        assert_eq!(replacement[4096..4100], [1, 2, 3, 4]);
+        assert_eq!(replacement[8192..8196], [5, 6, 7, 8]);
+        assert_eq!(replacement[0..4], [0, 0, 0, 0]);
     }
 }

@@ -1,0 +1,12 @@
+[package]
+name = "concordia_delta_checkpoint_bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+cuda-core = { git = "https://github.com/NVlabs/cuda-oxide.git", rev = "b0774f664f8ee0db3cb813b324525d6ca09812b8", package = "cuda-core" }
+cuda-device = { git = "https://github.com/NVlabs/cuda-oxide.git", rev = "b0774f664f8ee0db3cb813b324525d6ca09812b8", package = "cuda-device" }
+cuda-host = { git = "https://github.com/NVlabs/cuda-oxide.git", rev = "b0774f664f8ee0db3cb813b324525d6ca09812b8", package = "cuda-host" }

@@ -142,14 +142,28 @@ pub(crate) fn get_proc_address(
             addr = dlsym(self_handle, symbol);
         }
         if addr.is_null() {
-            let result =
-                nvidia_runtime_sys::cuGetProcAddress_raw(symbol, pfn, cuda_version, flags);
-            if result.is_ok() && !(*pfn).is_null() {
-                return Ok(());
+            #[cfg(feature = "nvidia")]
+            {
+                let result = crate::r#impl::nvidia_runtime_sys::cuGetProcAddress_raw(
+                    symbol,
+                    pfn,
+                    cuda_version,
+                    flags,
+                );
+                if result.is_ok() && !(*pfn).is_null() {
+                    return Ok(());
+                }
+                if !prefer_self {
+                    *pfn = std::ptr::null_mut();
+                    return Err(CUerror::NOT_FOUND);
+                }
             }
-            if !prefer_self {
-                *pfn = std::ptr::null_mut();
-                return Err(CUerror::NOT_FOUND);
+            #[cfg(not(feature = "nvidia"))]
+            {
+                if !prefer_self {
+                    *pfn = std::ptr::null_mut();
+                    return Err(CUerror::NOT_FOUND);
+                }
             }
         }
         if addr.is_null() && !self_handle.is_null() {
@@ -191,25 +205,38 @@ pub(crate) fn get_proc_address_v2(
             addr = dlsym(self_handle, symbol);
         }
         if addr.is_null() {
-            let result = nvidia_runtime_sys::cuGetProcAddress_v2_raw(
-                symbol,
-                pfn,
-                cuda_version,
-                flags,
-                symbol_status,
-            );
-            if result.is_ok() && !(*pfn).is_null() {
-                return Ok(());
+            #[cfg(feature = "nvidia")]
+            {
+                let result = crate::r#impl::nvidia_runtime_sys::cuGetProcAddress_v2_raw(
+                    symbol,
+                    pfn,
+                    cuda_version,
+                    flags,
+                    symbol_status,
+                );
+                if result.is_ok() && !(*pfn).is_null() {
+                    return Ok(());
+                }
+                if !prefer_self {
+                    *pfn = std::ptr::null_mut();
+                    if !symbol_status.is_null() {
+                        (*symbol_status).0 = 1;
+                    }
+                    if result.is_err() {
+                        eprintln!("[hetGPU] cuGetProcAddress_v2: '{}' NOT FOUND", sym_str);
+                    }
+                    return Ok(());
+                }
             }
-            if !prefer_self {
-                *pfn = std::ptr::null_mut();
-                if !symbol_status.is_null() {
-                    (*symbol_status).0 = 1;
+            #[cfg(not(feature = "nvidia"))]
+            {
+                if !prefer_self {
+                    *pfn = std::ptr::null_mut();
+                    if !symbol_status.is_null() {
+                        (*symbol_status).0 = 1;
+                    }
+                    return Ok(());
                 }
-                if result.is_err() {
-                    eprintln!("[hetGPU] cuGetProcAddress_v2: '{}' NOT FOUND", sym_str);
-                }
-                return Ok(());
             }
         }
         if addr.is_null() && !self_handle.is_null() {
@@ -244,9 +271,15 @@ pub(crate) fn get_export_table(
         if !pp_export_table.is_null() {
             *pp_export_table = std::ptr::null();
         }
-        let result = nvidia_runtime_sys::cuGetExportTable_raw(pp_export_table, p_export_table_id);
-        if result.is_ok() && !pp_export_table.is_null() && !(*pp_export_table).is_null() {
-            return Ok(());
+        #[cfg(feature = "nvidia")]
+        {
+            let result = crate::r#impl::nvidia_runtime_sys::cuGetExportTable_raw(
+                pp_export_table,
+                p_export_table_id,
+            );
+            if result.is_ok() && !pp_export_table.is_null() && !(*pp_export_table).is_null() {
+                return Ok(());
+            }
         }
     }
     eprintln!("[hetGPU] cuGetExportTable: NOT FOUND");
