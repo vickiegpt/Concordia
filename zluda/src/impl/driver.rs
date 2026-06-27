@@ -26,6 +26,19 @@ use super::LiveCheck;
 #[cfg(unix)]
 use libc::{dlsym, RTLD_DEFAULT};
 
+fn prefer_self_proc_address(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "cuLaunchKernel"
+            | "cuLaunchKernelEx"
+            | "cuModuleLoadData"
+            | "cuModuleLoadDataEx"
+            | "cuModuleGetFunction"
+            | "cuModuleUnload"
+            | "cuFuncGetAttribute"
+    )
+}
+
 #[cfg(all(
     feature = "sifive",
     not(feature = "amd"),
@@ -122,15 +135,11 @@ pub(crate) fn get_proc_address(
     #[cfg(unix)]
     unsafe {
         let sym_str = std::ffi::CStr::from_ptr(symbol).to_string_lossy();
-        // First try our own library to avoid resolving to system's libcuda.so.1
+        let prefer_self = prefer_self_proc_address(&sym_str);
         let self_handle = get_self_library_handle();
         let mut addr = std::ptr::null_mut();
-        if !self_handle.is_null() {
+        if prefer_self && !self_handle.is_null() {
             addr = dlsym(self_handle, symbol);
-        }
-        if addr.is_null() {
-            // Fallback to global search
-            addr = dlsym(RTLD_DEFAULT, symbol);
         }
         if addr.is_null() {
             let result =
@@ -138,6 +147,19 @@ pub(crate) fn get_proc_address(
             if result.is_ok() && !(*pfn).is_null() {
                 return Ok(());
             }
+            if !prefer_self {
+                *pfn = std::ptr::null_mut();
+                return Err(CUerror::NOT_FOUND);
+            }
+        }
+        if addr.is_null() && !self_handle.is_null() {
+            addr = dlsym(self_handle, symbol);
+        }
+        if addr.is_null() {
+            // Fallback to global search.
+            addr = dlsym(RTLD_DEFAULT, symbol);
+        }
+        if addr.is_null() {
             eprintln!("[hetGPU] cuGetProcAddress: '{}' NOT FOUND", sym_str);
             *pfn = std::ptr::null_mut();
             return Err(CUerror::NOT_FOUND);
@@ -162,19 +184,11 @@ pub(crate) fn get_proc_address_v2(
     #[cfg(unix)]
     unsafe {
         let sym_str = std::ffi::CStr::from_ptr(symbol).to_string_lossy();
-        // First try our own library to avoid resolving to system's libcuda.so.1
+        let prefer_self = prefer_self_proc_address(&sym_str);
         let self_handle = get_self_library_handle();
         let mut addr = std::ptr::null_mut();
-        if !self_handle.is_null() {
+        if prefer_self && !self_handle.is_null() {
             addr = dlsym(self_handle, symbol);
-        }
-        if addr.is_null() {
-            // Fallback to global search
-            addr = dlsym(RTLD_DEFAULT, symbol);
-        }
-        *pfn = addr as *mut c_void;
-        if !symbol_status.is_null() {
-            (*symbol_status).0 = if addr.is_null() { 1 } else { 0 };
         }
         if addr.is_null() {
             let result = nvidia_runtime_sys::cuGetProcAddress_v2_raw(
@@ -187,8 +201,35 @@ pub(crate) fn get_proc_address_v2(
             if result.is_ok() && !(*pfn).is_null() {
                 return Ok(());
             }
+            if !prefer_self {
+                *pfn = std::ptr::null_mut();
+                if !symbol_status.is_null() {
+                    (*symbol_status).0 = 1;
+                }
+                if result.is_err() {
+                    eprintln!("[hetGPU] cuGetProcAddress_v2: '{}' NOT FOUND", sym_str);
+                }
+                return Ok(());
+            }
+        }
+        if addr.is_null() && !self_handle.is_null() {
+            addr = dlsym(self_handle, symbol);
+        }
+        if addr.is_null() {
+            // Fallback to global search.
+            addr = dlsym(RTLD_DEFAULT, symbol);
+        }
+        *pfn = addr as *mut c_void;
+        if !symbol_status.is_null() {
+            (*symbol_status).0 = if addr.is_null() { 1 } else { 0 };
+        }
+        if addr.is_null() {
+            *pfn = std::ptr::null_mut();
+            if !symbol_status.is_null() {
+                (*symbol_status).0 = 1;
+            }
             eprintln!("[hetGPU] cuGetProcAddress_v2: '{}' NOT FOUND", sym_str);
-            return Err(CUerror::NOT_FOUND);
+            return Ok(());
         }
     }
 
@@ -197,13 +238,18 @@ pub(crate) fn get_proc_address_v2(
 
 pub(crate) fn get_export_table(
     pp_export_table: *mut *const c_void,
-    _p_export_table_id: *const CUuuid,
+    p_export_table_id: *const CUuuid,
 ) -> Result<(), CUerror> {
     unsafe {
         if !pp_export_table.is_null() {
             *pp_export_table = std::ptr::null();
         }
+        let result = nvidia_runtime_sys::cuGetExportTable_raw(pp_export_table, p_export_table_id);
+        if result.is_ok() && !pp_export_table.is_null() && !(*pp_export_table).is_null() {
+            return Ok(());
+        }
     }
+    eprintln!("[hetGPU] cuGetExportTable: NOT FOUND");
     Err(CUerror::NOT_FOUND)
 }
 

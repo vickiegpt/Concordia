@@ -82,6 +82,7 @@ type CuGetProcAddressV2Fn = unsafe extern "C" fn(
     cuuint64_t,
     *mut CUdriverProcAddressQueryResult,
 ) -> CUresult;
+type CuGetExportTableFn = unsafe extern "C" fn(*mut *const c_void, *const CUuuid) -> CUresult;
 type CuDriverGetVersionFn = unsafe extern "C" fn(*mut c_int) -> CUresult;
 type CuFuncGetAttributeFn =
     unsafe extern "C" fn(*mut c_int, CUfunction_attribute, CUfunction) -> CUresult;
@@ -149,6 +150,7 @@ pub struct NvidiaCudaFunctions {
     pub cuGetErrorName: Option<CuGetErrorNameFn>,
     pub cuGetProcAddress: Option<CuGetProcAddressFn>,
     pub cuGetProcAddress_v2: Option<CuGetProcAddressV2Fn>,
+    pub cuGetExportTable: Option<CuGetExportTableFn>,
     pub cuDriverGetVersion: Option<CuDriverGetVersionFn>,
     pub cuFuncGetAttribute: Option<CuFuncGetAttributeFn>,
     pub cuFuncSetAttribute: Option<CuFuncSetAttributeFn>,
@@ -236,6 +238,7 @@ pub fn init() -> Result<(), String> {
                 cuGetErrorName: load_fn(lib, "cuGetErrorName"),
                 cuGetProcAddress: load_fn(lib, "cuGetProcAddress"),
                 cuGetProcAddress_v2: load_fn(lib, "cuGetProcAddress_v2"),
+                cuGetExportTable: load_fn(lib, "cuGetExportTable"),
                 cuDriverGetVersion: load_fn(lib, "cuDriverGetVersion"),
                 cuFuncGetAttribute: load_fn(lib, "cuFuncGetAttribute"),
                 cuFuncSetAttribute: load_fn(lib, "cuFuncSetAttribute"),
@@ -333,6 +336,7 @@ impl NvidiaCudaFunctions {
             cuGetErrorName: None,
             cuGetProcAddress: None,
             cuGetProcAddress_v2: None,
+            cuGetExportTable: None,
             cuDriverGetVersion: None,
             cuFuncGetAttribute: None,
             cuFuncSetAttribute: None,
@@ -399,6 +403,19 @@ pub unsafe fn cuGetProcAddress_v2_raw(
     }
     if !symbol_status.is_null() {
         (*symbol_status).0 = 1;
+    }
+    Err(CUerror::NOT_FOUND)
+}
+
+pub unsafe fn cuGetExportTable_raw(
+    pp_export_table: *mut *const c_void,
+    p_export_table_id: *const CUuuid,
+) -> CUresult {
+    let _ = init();
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuGetExportTable {
+            return f(pp_export_table, p_export_table_id);
+        }
     }
     Err(CUerror::NOT_FOUND)
 }

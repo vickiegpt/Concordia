@@ -17,6 +17,7 @@ pub(crate) struct ConcordiaRuntime {
     state: DeltaCheckpointState,
     aof: Option<AofDiskLog>,
     boundary_count: u64,
+    mpi_info: MpiInfo,
 }
 
 impl ConcordiaRuntime {
@@ -25,6 +26,7 @@ impl ConcordiaRuntime {
             state: DeltaCheckpointState::new(page_size),
             aof: None,
             boundary_count: 0,
+            mpi_info: mpi_info_from_env(),
         }
     }
 
@@ -67,7 +69,7 @@ impl ConcordiaRuntime {
             region_id: delta.region_id,
             dirty_pages,
             dirty_bytes,
-            boundary: boundary.to_string(),
+            boundary: mpi_scoped_boundary(boundary, self.mpi_info),
         })
     }
 
@@ -92,7 +94,7 @@ impl ConcordiaRuntime {
             region_id: delta.region_id,
             dirty_pages,
             dirty_bytes,
-            boundary: boundary.to_string(),
+            boundary: mpi_scoped_boundary(boundary, self.mpi_info),
         })
     }
 
@@ -100,8 +102,9 @@ impl ConcordiaRuntime {
         self.boundary_count = self.boundary_count.saturating_add(1);
         if runtime_logs_enabled() {
             eprintln!(
-                "[hetGPU Concordia] checkpoint boundary #{}: {boundary}",
-                self.boundary_count
+                "[hetGPU Concordia] checkpoint boundary #{}: {}",
+                self.boundary_count,
+                mpi_scoped_boundary(boundary, self.mpi_info)
             );
         }
     }
@@ -115,10 +118,146 @@ fn global_runtime() -> &'static Mutex<ConcordiaRuntime> {
         if let Ok(path) = std::env::var("CONCORDIA_AOF_PATH")
             .or_else(|_| std::env::var("HETGPU_CONCORDIA_AOF_PATH"))
         {
-            runtime.aof = AofDiskLog::open_append(PathBuf::from(path)).ok();
+            runtime.aof = AofDiskLog::open_append(mpi_scoped_aof_path(PathBuf::from(path))).ok();
         }
         Mutex::new(runtime)
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MpiInfo {
+    pub rank: u32,
+    pub world_size: u32,
+    pub local_rank: u32,
+}
+
+impl MpiInfo {
+    pub(crate) fn is_parallel(self) -> bool {
+        self.world_size > 1
+    }
+}
+
+const MPI_RANK_KEYS: &[&str] = &[
+    "CONCORDIA_MPI_RANK",
+    "HETGPU_CONCORDIA_MPI_RANK",
+    "OMPI_COMM_WORLD_RANK",
+    "PMIX_RANK",
+    "PMI_RANK",
+    "MV2_COMM_WORLD_RANK",
+    "SLURM_PROCID",
+    "RANK",
+];
+
+const MPI_WORLD_KEYS: &[&str] = &[
+    "CONCORDIA_MPI_WORLD_SIZE",
+    "HETGPU_CONCORDIA_MPI_WORLD_SIZE",
+    "OMPI_COMM_WORLD_SIZE",
+    "PMIX_SIZE",
+    "PMI_SIZE",
+    "MV2_COMM_WORLD_SIZE",
+    "SLURM_NTASKS",
+    "WORLD_SIZE",
+];
+
+const MPI_LOCAL_RANK_KEYS: &[&str] = &[
+    "CONCORDIA_MPI_LOCAL_RANK",
+    "HETGPU_CONCORDIA_MPI_LOCAL_RANK",
+    "OMPI_COMM_WORLD_LOCAL_RANK",
+    "MPI_LOCALRANKID",
+    "MV2_COMM_WORLD_LOCAL_RANK",
+    "SLURM_LOCALID",
+    "PMI_LOCAL_RANK",
+    "LOCAL_RANK",
+];
+
+pub(crate) fn mpi_info_from_env() -> MpiInfo {
+    let pairs: Vec<(String, String)> = MPI_RANK_KEYS
+        .iter()
+        .chain(MPI_WORLD_KEYS.iter())
+        .chain(MPI_LOCAL_RANK_KEYS.iter())
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| ((*key).to_string(), value))
+        })
+        .collect();
+    let refs: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    mpi_info_from_pairs(&refs)
+}
+
+pub(crate) fn mpi_info_from_pairs(pairs: &[(&str, &str)]) -> MpiInfo {
+    let rank = read_u32_from_pairs(pairs, MPI_RANK_KEYS, 0);
+    let world_size = read_u32_from_pairs(pairs, MPI_WORLD_KEYS, 1).max(1);
+    let local_rank = read_u32_from_pairs(pairs, MPI_LOCAL_RANK_KEYS, rank);
+    MpiInfo {
+        rank,
+        world_size,
+        local_rank,
+    }
+}
+
+fn read_u32_from_pairs(pairs: &[(&str, &str)], keys: &[&str], fallback: u32) -> u32 {
+    keys.iter()
+        .find_map(|key| {
+            pairs
+                .iter()
+                .find(|(candidate, _)| candidate == key)
+                .and_then(|(_, value)| value.trim().parse::<i64>().ok())
+                .and_then(|value| u32::try_from(value).ok())
+        })
+        .unwrap_or(fallback)
+}
+
+pub(crate) fn mpi_scoped_aof_path(path: PathBuf) -> PathBuf {
+    mpi_scoped_aof_path_for_info(path, mpi_info_from_env())
+}
+
+pub(crate) fn mpi_scoped_aof_path_for_info(path: PathBuf, info: MpiInfo) -> PathBuf {
+    if !info.is_parallel() {
+        return path;
+    }
+
+    let text = path.to_string_lossy();
+    if text.contains("{rank}") || text.contains("{world}") || text.contains("{local_rank}") {
+        return PathBuf::from(
+            text.replace("{rank}", &info.rank.to_string())
+                .replace("{world}", &info.world_size.to_string())
+                .replace("{local_rank}", &info.local_rank.to_string()),
+        );
+    }
+
+    let ranked_suffix = format!("rank{:04}-of-{:04}", info.rank, info.world_size);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("concordia.aof");
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(file_name);
+    let ranked_name = match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if !extension.is_empty() => format!("{stem}.{ranked_suffix}.{extension}"),
+        _ => format!("{file_name}.{ranked_suffix}"),
+    };
+
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(ranked_name),
+        _ => PathBuf::from(ranked_name),
+    }
+}
+
+fn mpi_scoped_boundary(boundary: &str, info: MpiInfo) -> String {
+    if info.is_parallel() {
+        format!(
+            "rank={}/{} local_rank={} {}",
+            info.rank, info.world_size, info.local_rank, boundary
+        )
+    } else {
+        boundary.to_string()
+    }
 }
 
 fn runtime_enabled() -> bool {
@@ -273,5 +412,49 @@ mod tests {
         assert_eq!(records[0].offset, 4096);
         assert_eq!(records[0].payload[..4], [9, 8, 7, 6]);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn mpi_info_detects_common_rank_environment() {
+        let info = mpi_info_from_pairs(&[
+            ("OMPI_COMM_WORLD_RANK", "2"),
+            ("OMPI_COMM_WORLD_SIZE", "8"),
+            ("OMPI_COMM_WORLD_LOCAL_RANK", "1"),
+        ]);
+
+        assert_eq!(info.rank, 2);
+        assert_eq!(info.world_size, 8);
+        assert_eq!(info.local_rank, 1);
+        assert!(info.is_parallel());
+    }
+
+    #[test]
+    fn mpi_aof_path_is_rank_scoped_without_template_tokens() {
+        let info = MpiInfo {
+            rank: 3,
+            world_size: 16,
+            local_rank: 1,
+        };
+        let path = mpi_scoped_aof_path_for_info(PathBuf::from("/tmp/concordia/session.aof"), info);
+
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/concordia/session.rank0003-of-0016.aof")
+        );
+    }
+
+    #[test]
+    fn mpi_aof_path_expands_explicit_template_tokens() {
+        let info = MpiInfo {
+            rank: 5,
+            world_size: 32,
+            local_rank: 2,
+        };
+        let path = mpi_scoped_aof_path_for_info(
+            PathBuf::from("/tmp/concordia/r{rank}-w{world}-l{local_rank}.aof"),
+            info,
+        );
+
+        assert_eq!(path, PathBuf::from("/tmp/concordia/r5-w32-l2.aof"));
     }
 }

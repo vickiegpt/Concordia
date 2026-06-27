@@ -79,6 +79,41 @@ static int read_env_i32(const char *name, int fallback) {
     return (int)v;
 }
 
+static int read_env_i32_any(const char **names, size_t count, int fallback) {
+    for (size_t i = 0; i < count; ++i) {
+        const char *env = getenv(names[i]);
+        if (!env || !*env) continue;
+        char *end = NULL;
+        long v = strtol(env, &end, 10);
+        if (end && *end == '\0') return (int)v;
+    }
+    return fallback;
+}
+
+static const char *read_env_any(const char **names, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        const char *env = getenv(names[i]);
+        if (env && *env) return env;
+    }
+    return NULL;
+}
+
+static void sanitize_path_token(const char *input, char *output, size_t output_len) {
+    if (!output || output_len == 0) return;
+    if (!input || !*input) input = "default";
+    size_t j = 0;
+    for (size_t i = 0; input[i] && j + 1 < output_len; ++i) {
+        char c = input[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.') {
+            output[j++] = c;
+        } else {
+            output[j++] = '_';
+        }
+    }
+    output[j] = '\0';
+}
+
 static size_t dtype_size(int datatype) {
     switch (datatype) {
         case 0: return 1;  /* int8/char */
@@ -138,8 +173,24 @@ static ncclResult_t make_comm(ncclComm_t *comm, int nranks, int rank, int device
 
 ncclResult_t ncclCommInitRank(ncclComm_t *comm, int nranks, ncclUniqueId commId, int rank) {
     (void)commId;
-    if (nranks <= 0) nranks = read_env_i32("WORLD_SIZE", 1);
-    if (rank < 0) rank = read_env_i32("RANK", 0);
+    static const char *world_keys[] = {
+        "WORLD_SIZE",
+        "OMPI_COMM_WORLD_SIZE",
+        "PMIX_SIZE",
+        "PMI_SIZE",
+        "MV2_COMM_WORLD_SIZE",
+        "SLURM_NTASKS"
+    };
+    static const char *rank_keys[] = {
+        "RANK",
+        "OMPI_COMM_WORLD_RANK",
+        "PMIX_RANK",
+        "PMI_RANK",
+        "MV2_COMM_WORLD_RANK",
+        "SLURM_PROCID"
+    };
+    if (nranks <= 0) nranks = read_env_i32_any(world_keys, sizeof(world_keys) / sizeof(world_keys[0]), 1);
+    if (rank < 0) rank = read_env_i32_any(rank_keys, sizeof(rank_keys) / sizeof(rank_keys[0]), 0);
     NCCL_LOG("[hetGPU nccl_shim] ncclCommInitRank nranks=%d rank=%d\n", nranks, rank);
     return make_comm(comm, nranks, rank, rank);
 }
@@ -267,16 +318,26 @@ static ncclResult_t rendezvous_allreduce_f32(
     if (!comm || op != 0) return ncclInvalidArgument;
 
     int timeout_ms = read_env_i32("HETGPU_NCCL_TIMEOUT_MS", 60000);
+    static const char *job_keys[] = {
+        "HETGPU_NCCL_COMM_ID",
+        "MASTER_PORT",
+        "OMPI_COMM_WORLD_JOBID",
+        "PMIX_NAMESPACE",
+        "PMI_JOBID",
+        "SLURM_JOB_ID"
+    };
     const char *job = getenv("HETGPU_NCCL_COMM_ID");
-    if (!job || !*job) job = getenv("MASTER_PORT");
+    if (!job || !*job) job = read_env_any(job_keys, sizeof(job_keys) / sizeof(job_keys[0]));
     if (!job || !*job) job = "default";
+    char job_token[128];
+    sanitize_path_token(job, job_token, sizeof(job_token));
 
     char root[256];
     char call_dir[320];
     char rank_path[384];
     char result_path[384];
     char abort_path[384];
-    snprintf(root, sizeof(root), "/dev/shm/hetgpu_nccl_%s", job);
+    snprintf(root, sizeof(root), "/dev/shm/hetgpu_nccl_%s", job_token);
     snprintf(call_dir, sizeof(call_dir), "%s/%llu", root, (unsigned long long)comm->sequence++);
     snprintf(rank_path, sizeof(rank_path), "%s/rank_%d.bin", call_dir, comm->rank);
     snprintf(result_path, sizeof(result_path), "%s/result.bin", call_dir);

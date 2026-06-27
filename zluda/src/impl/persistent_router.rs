@@ -33,6 +33,67 @@ pub(crate) fn is_persistent_enabled() -> bool {
     })
 }
 
+pub(crate) fn persistent_device_id() -> i32 {
+    let pairs: Vec<(String, String)> = PERSISTENT_DEVICE_KEYS
+        .iter()
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| ((*key).to_string(), value))
+        })
+        .collect();
+    let refs: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    persistent_device_id_from_pairs(&refs)
+}
+
+pub(crate) fn persistent_device_id_from_pairs(pairs: &[(&str, &str)]) -> i32 {
+    read_i32_from_pairs(pairs, &["CONCORDIA_PERSISTENT_DEVICE"], None)
+        .or_else(|| read_i32_from_pairs(pairs, MPI_LOCAL_RANK_KEYS, None))
+        .unwrap_or(0)
+        .max(0)
+}
+
+const PERSISTENT_DEVICE_KEYS: &[&str] = &[
+    "CONCORDIA_PERSISTENT_DEVICE",
+    "CONCORDIA_MPI_LOCAL_RANK",
+    "HETGPU_CONCORDIA_MPI_LOCAL_RANK",
+    "OMPI_COMM_WORLD_LOCAL_RANK",
+    "MPI_LOCALRANKID",
+    "MV2_COMM_WORLD_LOCAL_RANK",
+    "SLURM_LOCALID",
+    "PMI_LOCAL_RANK",
+    "LOCAL_RANK",
+];
+
+const MPI_LOCAL_RANK_KEYS: &[&str] = &[
+    "CONCORDIA_MPI_LOCAL_RANK",
+    "HETGPU_CONCORDIA_MPI_LOCAL_RANK",
+    "OMPI_COMM_WORLD_LOCAL_RANK",
+    "MPI_LOCALRANKID",
+    "MV2_COMM_WORLD_LOCAL_RANK",
+    "SLURM_LOCALID",
+    "PMI_LOCAL_RANK",
+    "LOCAL_RANK",
+];
+
+fn read_i32_from_pairs(
+    pairs: &[(&str, &str)],
+    keys: &[&str],
+    fallback: Option<i32>,
+) -> Option<i32> {
+    keys.iter()
+        .find_map(|key| {
+            pairs
+                .iter()
+                .find(|(candidate, _)| candidate == key)
+                .and_then(|(_, value)| value.trim().parse::<i32>().ok())
+        })
+        .or(fallback)
+}
+
 pub(crate) fn classify(
     kernel_name: &str,
     grid_dims: (u32, u32, u32),
@@ -85,7 +146,7 @@ pub(crate) fn classify(
     not(feature = "tmatmul")
 ))]
 mod nvidia_router {
-    use super::{classify, is_persistent_enabled, PersistentOp, Routing};
+    use super::{classify, is_persistent_enabled, persistent_device_id, PersistentOp, Routing};
     use std::os::raw::c_void;
     use std::sync::{Mutex, OnceLock};
 
@@ -102,7 +163,8 @@ mod nvidia_router {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(1024);
-            let kernel_handle = crate::r#impl::concordia_gpu::concordia_gpu_init(0, capacity);
+            let kernel_handle =
+                crate::r#impl::concordia_gpu::concordia_gpu_init(persistent_device_id(), capacity);
             (kernel_handle >= 0).then_some(Self { kernel_handle })
         }
 
@@ -236,5 +298,20 @@ mod tests {
         assert!(is_persistent_enabled_for_value(Some("1")));
         assert!(is_persistent_enabled_for_value(Some("true")));
         assert!(!is_persistent_enabled_for_value(Some("0")));
+    }
+
+    #[test]
+    fn persistent_device_defaults_to_mpi_local_rank() {
+        assert_eq!(
+            persistent_device_id_from_pairs(&[("OMPI_COMM_WORLD_LOCAL_RANK", "3")]),
+            3
+        );
+        assert_eq!(
+            persistent_device_id_from_pairs(&[
+                ("CONCORDIA_PERSISTENT_DEVICE", "7"),
+                ("OMPI_COMM_WORLD_LOCAL_RANK", "3"),
+            ]),
+            7
+        );
     }
 }
