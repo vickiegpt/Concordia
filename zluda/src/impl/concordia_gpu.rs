@@ -118,6 +118,17 @@ __device__ void do_dirty_scan(const Task& t) {
     }
 }
 
+__device__ void do_copy_bytes(const Task& t) {
+    unsigned char* src = (unsigned char*)t.in0;
+    unsigned char* dst = (unsigned char*)t.out0;
+    long long byte_count = t.numel;
+
+    for (long long i = threadIdx.x + (long long)blockIdx.x * blockDim.x;
+         i < byte_count; i += (long long)blockDim.x * gridDim.x) {
+        dst[i] = src[i];
+    }
+}
+
 __global__ void persistent_worker(
     Task* tasks,
     int capacity,
@@ -160,6 +171,8 @@ __global__ void persistent_worker(
             case 5: do_scale(task); break;
             case 6: do_add_relu(task); break;
             case 7: do_dirty_scan(task); break;
+            case 8: do_copy_bytes(task); break;
+            case 9: do_copy_bytes(task); break;
             default: break;
         }
         __syncthreads();
@@ -513,6 +526,40 @@ pub unsafe extern "C" fn concordia_gpu_scan_dirty_pages(
     let kernel = &*(handle as *const GpuPersistentKernel);
     kernel
         .enqueue_task(7, page_count, current, shadow, bitmap)
+        .map(|seq| seq as i64)
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn concordia_gpu_stage_aof_bytes(
+    handle: i64,
+    source: u64,
+    staging: u64,
+    byte_count: i64,
+) -> i64 {
+    if handle <= 0 || source == 0 || staging == 0 || byte_count < 0 {
+        return -1;
+    }
+    let kernel = &*(handle as *const GpuPersistentKernel);
+    kernel
+        .enqueue_task(8, byte_count, source, 0, staging)
+        .map(|seq| seq as i64)
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn concordia_gpu_restore_bytes(
+    handle: i64,
+    staging: u64,
+    target: u64,
+    byte_count: i64,
+) -> i64 {
+    if handle <= 0 || staging == 0 || target == 0 || byte_count < 0 {
+        return -1;
+    }
+    let kernel = &*(handle as *const GpuPersistentKernel);
+    kernel
+        .enqueue_task(9, byte_count, staging, 0, target)
         .map(|seq| seq as i64)
         .unwrap_or(-1)
 }

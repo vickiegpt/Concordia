@@ -58,6 +58,7 @@ pub(crate) mod concordia_runtime;
     not(feature = "tenstorrent")
 ))]
 pub(crate) mod concordia_gpu;
+pub(crate) mod nccl_recovery;
 pub(crate) mod persistent_router;
 
 // Record/replay support for heterogeneous GPU debugging

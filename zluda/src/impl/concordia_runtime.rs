@@ -1,4 +1,4 @@
-use crate::r#impl::concordia_delta::{AofDiskLog, DeltaCheckpointState, apply_records_to_region};
+use crate::r#impl::concordia_delta::{apply_records_to_region, AofDiskLog, DeltaCheckpointState};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::PathBuf;
@@ -10,6 +10,14 @@ pub(crate) struct CheckpointSummary {
     pub region_id: u64,
     pub dirty_pages: usize,
     pub dirty_bytes: usize,
+    pub boundary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RestoreSummary {
+    pub region_id: u64,
+    pub applied_records: usize,
+    pub restored_bytes: usize,
     pub boundary: String,
 }
 
@@ -107,6 +115,31 @@ impl ConcordiaRuntime {
                 mpi_scoped_boundary(boundary, self.mpi_info)
             );
         }
+    }
+
+    pub(crate) fn restore_host_region_from_aof_path(
+        &mut self,
+        path: impl AsRef<std::path::Path>,
+        region_id: u64,
+        target: &mut [u8],
+        boundary: &str,
+    ) -> Result<RestoreSummary, String> {
+        let path = path.as_ref();
+        let records = AofDiskLog::read_committed(path)
+            .map_err(|err| format!("read Concordia AOF {}: {err}", path.display()))?;
+        let restored_bytes = records
+            .iter()
+            .filter(|record| record.region_id == region_id)
+            .map(|record| record.payload.len())
+            .sum();
+        let applied_records = apply_records_to_region(region_id, target, &records)?;
+        self.state.refresh_opaque_shadow(region_id, target)?;
+        Ok(RestoreSummary {
+            region_id,
+            applied_records,
+            restored_bytes,
+            boundary: mpi_scoped_boundary(boundary, self.mpi_info),
+        })
     }
 }
 
@@ -523,6 +556,44 @@ mod tests {
 
         assert_eq!(applied, 1);
         assert_eq!(replacement[4096..4100], [4, 3, 2, 1]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn runtime_restore_task_refreshes_registered_shadow() {
+        let path = std::env::temp_dir().join(format!(
+            "hetgpu_concordia_restore_task_{}.aof",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut runtime = ConcordiaRuntime::new(4096);
+        let mut replacement = vec![0u8; 8192];
+        let region_id = runtime.register_opaque_host_region(0x9000, &replacement);
+
+        let mut log = AofDiskLog::create(&path).unwrap();
+        log.append_record(&crate::r#impl::concordia_delta::AofRecord {
+            epoch: 1,
+            region_id,
+            offset: 4096,
+            payload: vec![8, 6, 7, 5],
+        })
+        .unwrap();
+        drop(log);
+
+        let restored = runtime
+            .restore_host_region_from_aof_path(&path, region_id, &mut replacement, "restore")
+            .unwrap();
+
+        assert_eq!(restored.applied_records, 1);
+        assert_eq!(restored.region_id, region_id);
+        assert_eq!(restored.boundary, "restore");
+        assert_eq!(replacement[4096..4100], [8, 6, 7, 5]);
+
+        let clean = runtime
+            .checkpoint_host_region(region_id, &replacement, "post-restore")
+            .unwrap();
+        assert_eq!(clean.dirty_pages, 0);
+
         let _ = std::fs::remove_file(&path);
     }
 }

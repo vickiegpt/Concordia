@@ -2311,8 +2311,9 @@ unsafe impl Send for SifiveSharedDdrArena {}
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-static SIFIVE_SHARED_DDR_ARENA: std::sync::LazyLock<std::sync::Mutex<Option<SifiveSharedDdrArena>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+static SIFIVE_SHARED_DDR_ARENA: std::sync::LazyLock<
+    std::sync::Mutex<Option<SifiveSharedDdrArena>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 #[cfg(all(
     feature = "sifive",
@@ -2404,7 +2405,9 @@ fn sifive_shared_ddr_bytes() -> Option<usize> {
         .or_else(|| {
             sifive_read_u64("/sys/module/hetgpu_sifive_mbox_ddr_coh/parameters/shared_ddr_size")
         })
-        .or_else(|| sifive_read_u64("/sys/module/hetgpu_sifive_mbox_ddr/parameters/shared_ddr_size"))
+        .or_else(|| {
+            sifive_read_u64("/sys/module/hetgpu_sifive_mbox_ddr/parameters/shared_ddr_size")
+        })
         .or_else(|| {
             std::env::var("HETGPU_SIFIVE_SHARED_DDR_BYTES")
                 .ok()
@@ -2532,7 +2535,8 @@ fn sifive_align_up(value: usize, align: usize) -> Option<usize> {
     not(feature = "tenstorrent")
 ))]
 fn sifive_shared_ddr_kernel_reserve(bytes: usize) -> usize {
-    if let Some(reserve) = sifive_parse_env_usize("HETGPU_SIFIVE_SHARED_DEVICE_MEM_KERNEL_RESERVE") {
+    if let Some(reserve) = sifive_parse_env_usize("HETGPU_SIFIVE_SHARED_DEVICE_MEM_KERNEL_RESERVE")
+    {
         return reserve.min(bytes);
     }
     let slot_count = sifive_parse_env_usize("HETGPU_SIFIVE_KERNEL_TOTAL_SLOTS")
@@ -2557,7 +2561,9 @@ fn sifive_alloc_shared_ddr(bytesize: usize) -> Result<(u64, SifiveAlloc), CUerro
     use std::os::fd::AsRawFd;
 
     sifive_alloc_trace(b"[sifive_alloc] shared entry");
-    let mut guard = SIFIVE_SHARED_DDR_ARENA.lock().map_err(|_| CUerror::UNKNOWN)?;
+    let mut guard = SIFIVE_SHARED_DDR_ARENA
+        .lock()
+        .map_err(|_| CUerror::UNKNOWN)?;
     sifive_alloc_trace(b"[sifive_alloc] shared lock");
     if guard.is_none() {
         sifive_alloc_trace(b"[sifive_alloc] shared init");
@@ -2730,8 +2736,10 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
         return Err(CUerror::INVALID_VALUE);
     }
 
-    let real_driver_alloc =
-        std::env::var("HETGPU_SIFIVE_REAL_DEVICE_MEM").ok().as_deref() == Some("1");
+    let real_driver_alloc = std::env::var("HETGPU_SIFIVE_REAL_DEVICE_MEM")
+        .ok()
+        .as_deref()
+        == Some("1");
     let shared_device_mem = std::env::var("HETGPU_SIFIVE_SHARED_DEVICE_MEM")
         .ok()
         .as_deref()
@@ -2758,7 +2766,10 @@ pub(crate) fn alloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult {
                 )
             }
             Err(e) => {
-                eprintln!("[SIFIVE Backend] cuMemAlloc real device memory failed: {}", e);
+                eprintln!(
+                    "[SIFIVE Backend] cuMemAlloc real device memory failed: {}",
+                    e
+                );
                 return Err(CUerror::OUT_OF_MEMORY);
             }
         }

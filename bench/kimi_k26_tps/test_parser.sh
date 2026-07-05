@@ -59,4 +59,19 @@ python3 "${root}/parse_kimi_tps.py" \
 
 grep -q '^baseline,missing_timing,0,0,2222,0,/opt/bitnet/llama-cli,/models/kimi.gguf,NVIDIA RTX PRO 6000 Blackwell,deadbeef,0,no_generation_timing$' "${tmp}/missing.csv"
 
+python3 "${root}/parse_kimi_tps.py" \
+  --case failed \
+  --stdout "${root}/fixtures/kimi.stdout" \
+  --stderr "${root}/fixtures/no_timings.stderr" \
+  --exit-code 42 \
+  --total-ms 333 \
+  --runner /opt/bitnet/llama-cli \
+  --model /models/kimi.gguf \
+  --gpu "NVIDIA RTX PRO 6000 Blackwell" \
+  --commit deadbeef \
+  --csv "${tmp}/failed.csv" \
+  --jsonl "${tmp}/failed.jsonl"
+
+grep -q '^failed,run_failed,0,0,333,0,/opt/bitnet/llama-cli,/models/kimi.gguf,NVIDIA RTX PRO 6000 Blackwell,deadbeef,0,runner_exit_42$' "${tmp}/failed.csv"
+
 echo "parser tests passed"

@@ -1,0 +1,97 @@
+[
+  {
+    "id": "gpu-delta-checkpoint",
+    "title": "GPU-side delta checkpointing",
+    "status": "implemented",
+    "paper_claim": "Dirty-page discovery for mutable LLM state runs on the GPU and appends committed deltas to an AOF-style log.",
+    "repo_reality": "The repo implements host-testable delta records, committed AOF replay, and an NVIDIA persistent-worker dirty-page scan used by Kimi Concordia.",
+    "evidence": [
+      {"path": "zluda/src/impl/concordia_delta.rs", "kind": "code"},
+      {"path": "zluda/src/impl/concordia_gpu.rs", "kind": "code"},
+      {"path": "zluda/src/impl/kimi_concordia.rs", "kind": "code"},
+      {"path": "bench/concordia_delta_checkpoint/src/main.rs", "kind": "benchmark"}
+    ],
+    "blockers": []
+  },
+  {
+    "id": "persistent-kernel-dispatch",
+    "title": "NVIDIA persistent worker dispatch",
+    "status": "partial",
+    "paper_claim": "A device-resident persistent kernel handles compute, checkpoint, append-log, and recovery tasks.",
+    "repo_reality": "The persistent worker handles simple elementwise ops, dirty-page scans, AOF payload staging into host-mapped memory, and restore copies from host-mapped staging. The generic runtime can replay AOF records into a registered host region and refresh its checkpoint shadow, but durable AOF disk/file commit still routes through host-side code.",
+    "evidence": [
+      {"path": "zluda/src/impl/concordia_gpu.rs", "kind": "code"},
+      {"path": "zluda/src/impl/persistent_router.rs", "kind": "code"},
+      {"path": "zluda/src/impl/kimi_concordia.rs", "kind": "code"},
+      {"path": "zluda/src/impl/concordia_runtime.rs", "kind": "code"},
+      {"path": "zluda/src/impl/concordia_delta.rs", "kind": "code"}
+    ],
+    "blockers": [
+      "Durable AOF disk/file commit is still host-side after the worker stages payload bytes.",
+      "Generic GPU-side restore orchestration is still NVIDIA/Kimi-specific rather than a backend-neutral runtime task."
+    ]
+  },
+  {
+    "id": "kimi-kv-manifest",
+    "title": "Kimi KV/cache checkpoint manifest",
+    "status": "partial",
+    "paper_claim": "LLM KV/cache regions are registered with layout metadata so restore can replay the right deltas without relying on allocation order.",
+    "repo_reality": "Kimi Concordia records region manifests, marks kernel-pointer regions as KV/cache, exposes an allocator metadata ABI for block-table and dirty-bitmap pointers, persists those hints in the manifest, snapshots block-table entries when available, uses registered dirty bitmaps in the NVIDIA Kimi checkpoint path, and translates restore offsets through old/new block-table snapshots.",
+    "evidence": [
+      {"path": "zluda/src/impl/kimi_concordia.rs", "kind": "code"},
+      {"path": "bench/kimi_k26_tps/run_kimi_k26_tps.sh", "kind": "benchmark"}
+    ],
+    "blockers": [
+      "BitNet/Kimi runners still need to call the allocator metadata ABI with real allocator pointers.",
+      "Logical-to-physical restore translation requires old and current block-table snapshots; without those snapshots the restore path intentionally falls back to physical AOF offsets."
+    ]
+  },
+  {
+    "id": "nccl-recovery",
+    "title": "NCCL boundary checkpoint and recovery",
+    "status": "partial",
+    "paper_claim": "Concordia detects communicator failure, isolates a failed GPU, restores deltas, and reintegrates a replacement without full NCCL restart.",
+    "repo_reality": "The NCCL shim exposes boundary hooks, MPI-aware AOF scoping, and a tested Concordia replacement-ring planner/state machine through a weak C ABI hook. Production communicator replacement and live failure orchestration are not implemented.",
+    "evidence": [
+      {"path": "zluda/src/nccl_shim.c", "kind": "code"},
+      {"path": "zluda/src/impl/nccl_recovery.rs", "kind": "code"},
+      {"path": "zluda/src/impl/concordia_runtime.rs", "kind": "code"}
+    ],
+    "blockers": [
+      "The NCCL shim logs/query-plans replacement rings but does not yet rewrite active rendezvous membership.",
+      "No live two-GPU failure/rejoin benchmark artifact."
+    ]
+  },
+  {
+    "id": "sass-live-register-patching",
+    "title": "SASS binary patching with live register capture",
+    "status": "partial",
+    "paper_claim": "Binary-only kernels can be SASS-patched with safe-point trampolines and live register capture.",
+    "repo_reality": "The repo has a Rust SASS-to-PTX lifter, diagnostics, PTX safe-point annotation, and a tested SASS live-register state-buffer layout ABI. It still does not patch binary SASS control flow or capture live registers on device.",
+    "evidence": [
+      {"path": "ptx/src/sass", "kind": "code"},
+      {"path": "zluda/src/impl/module.rs", "kind": "code"},
+      {"path": "zluda/src/impl/concordia_instrument.rs", "kind": "code"}
+    ],
+    "blockers": [
+      "No trampoline patcher for NVIDIA SASS control flow.",
+      "No device-side live-register capture stub wired to patched safe points."
+    ]
+  },
+  {
+    "id": "cross-architecture-ctx",
+    "title": "Cross-architecture CTX migration",
+    "status": "partial",
+    "paper_claim": "Instrumented state can lower through CTX and resume across NVIDIA, AMD, Intel, and Tenstorrent targets.",
+    "repo_reality": "The repo contains heterogeneous compiler paths, recovery helpers, PTX/SASS safe-point metadata, and a tested CTX resume-record ABI for NVIDIA PTX, AMD ROCm, Intel SPIR-V, and Tenstorrent TOSA targets. It does not yet lower live state into target-specific resume kernels or run a cross-architecture migration benchmark.",
+    "evidence": [
+      {"path": "ptx", "kind": "code"},
+      {"path": "zluda/src/impl/checkpoint.rs", "kind": "code"},
+      {"path": "zluda/src/impl/concordia_instrument.rs", "kind": "code"}
+    ],
+    "blockers": [
+      "No target-specific CTX lowering and resume-kernel implementation.",
+      "No cross-architecture live migration benchmark."
+    ]
+  }
+]

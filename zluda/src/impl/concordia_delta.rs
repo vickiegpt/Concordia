@@ -184,6 +184,36 @@ impl DeltaCheckpointState {
             dirty_pages,
         })
     }
+
+    pub(crate) fn refresh_opaque_shadow(
+        &mut self,
+        region_id: u64,
+        current: &[u8],
+    ) -> Result<(), String> {
+        let region = self
+            .regions
+            .iter_mut()
+            .find(|region| region.id == region_id)
+            .ok_or_else(|| format!("unknown Concordia checkpoint region {region_id}"))?;
+        if region.kind != RegionKind::OpaqueShadow {
+            return Err(format!(
+                "region {region_id} is not an opaque shadow checkpoint region"
+            ));
+        }
+        if region.len != current.len() {
+            return Err(format!(
+                "region {region_id} size changed from {} to {} bytes",
+                region.len,
+                current.len()
+            ));
+        }
+        let shadow = region
+            .shadow
+            .as_mut()
+            .ok_or_else(|| format!("region {region_id} has no shadow buffer"))?;
+        shadow.copy_from_slice(current);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

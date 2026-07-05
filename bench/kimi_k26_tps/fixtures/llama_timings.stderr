@@ -1,0 +1,6 @@
+llama_perf_context_print:        load time =     101.23 ms
+llama_perf_context_print: prompt eval time =     234.56 ms /    32 tokens (    7.33 ms per token,   136.42 tokens per second)
+llama_perf_context_print:        eval time =     789.01 ms /    64 runs   (   12.33 ms per token,    81.12 tokens per second)
+llama_perf_context_print:       total time =    1245.67 ms /    96 tokens
+[hetGPU Kimi Concordia] base snapshot region=1 ptr=0x1234 pages=8
+[hetGPU Kimi Concordia] checkpointed 1 region(s) after paged_kv_cache_update

@@ -1,0 +1,8 @@
+# persistent_kernel_overhead_ablation
+# device=fixture sm_count=188 worker_tpb=128
+worker_blocks,theoretical_sm_pct,copy_ms,copy_gbs,copy_overhead_pct,compute_ms,compute_gops,compute_overhead_pct,worker_active_threads,worker_counter_xor
+0,0.000,1.000000,536.871,0.000,2.000000,17.180,0.000,0,0
+1,0.532,1.006000,533.670,0.600,2.012000,17.077,0.600,128,123456
+2,1.064,1.014000,529.459,1.400,2.032000,16.909,1.600,256,223456
+4,2.128,1.031000,520.727,3.100,2.086000,16.472,4.300,512,423456
+8,4.255,1.073000,500.345,7.300,2.178000,15.776,8.900,1024,823456

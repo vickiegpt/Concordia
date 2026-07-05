@@ -1,4 +1,4 @@
-use super::{FromCuda, ZludaObject, driver};
+use super::{driver, FromCuda, ZludaObject};
 use cuda_types::cuda::*;
 use rustc_hash::FxHashSet;
 use std::ffi::c_uint;
@@ -160,7 +160,11 @@ impl Context {
 
     pub(crate) fn is_destroyed(&self) -> bool {
         let mutable = self.mutable.lock().unwrap();
-        if mutable.ref_count == 0 { false } else { true }
+        if mutable.ref_count == 0 {
+            false
+        } else {
+            true
+        }
     }
 }
 

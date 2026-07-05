@@ -7,6 +7,14 @@ bench/concordia_delta_checkpoint/*.ptx
 .idea/
 *.md
 *.py
+!bench/concordia_claim_audit/*.md
+!bench/concordia_claim_audit/*.py
+!bench/concordia_eval_claims/*.md
+!bench/concordia_eval_claims/*.py
+!bench/concordia_persistent_overhead/*.md
+!bench/concordia_persistent_overhead/*.py
+!bench/kimi_k26_tps/*.md
+!bench/kimi_k26_tps/*.py
 *.pyc
 ze_runner*
 *sb

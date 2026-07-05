@@ -8185,6 +8185,54 @@ fn nvidia_env_usize(name: &str) -> Option<usize> {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+fn nvidia_kernel_param_u64_snapshot(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    num_params: usize,
+) -> Vec<u64> {
+    if kernel_params.is_null() {
+        return Vec::new();
+    }
+
+    let mut params = Vec::with_capacity(num_params);
+    unsafe {
+        for index in 0..num_params {
+            let slot = *kernel_params.add(index);
+            if slot.is_null() || (slot as usize) < 0x1000 {
+                params.push(0);
+            } else {
+                params.push((slot as *const u64).read_unaligned());
+            }
+        }
+    }
+    params
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_kimi_concordia_param_snapshot(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Vec<u64> {
+    let name = kernel_name.to_ascii_lowercase();
+    if !super::kimi_concordia::is_kimi_stateful_kernel_name(kernel_name)
+        && !name.contains("lora")
+        && !name.contains("adapter")
+    {
+        return Vec::new();
+    }
+    nvidia_kernel_param_u64_snapshot(kernel_params, 8)
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NvidiaCxlMatmulLayout {
     name: &'static str,
@@ -8462,6 +8510,8 @@ pub(crate) fn launch_kernel(
     extra: *mut *mut ::core::ffi::c_void,
 ) -> CUresult {
     nvidia_log_bitnet_route_for_native_launch(&f.function_name);
+    let concordia_ptrs = nvidia_kimi_concordia_param_snapshot(&f.function_name, kernel_params);
+    super::kimi_concordia::prepare_kernel_launch(&f.function_name, &concordia_ptrs);
 
     if super::persistent_router::try_route(
         &f.function_name,
@@ -8493,7 +8543,7 @@ pub(crate) fn launch_kernel(
         );
         return Err(CUerror::UNKNOWN);
     }
-    super::kimi_concordia::observe_kernel_launch(&f.function_name, h_stream);
+    super::kimi_concordia::observe_kernel_launch(&f.function_name, h_stream, &concordia_ptrs);
     Ok(())
 }
 
@@ -8510,6 +8560,8 @@ pub(crate) fn launch_kernel_ex(
     extra: *mut *mut ::core::ffi::c_void,
 ) -> CUresult {
     nvidia_log_bitnet_route_for_native_launch(&f.function_name);
+    let concordia_ptrs = nvidia_kimi_concordia_param_snapshot(&f.function_name, kernel_params);
+    super::kimi_concordia::prepare_kernel_launch(&f.function_name, &concordia_ptrs);
 
     // cuLaunchKernelEx wraps cuLaunchKernel with additional config
     let result = nvidia_runtime_sys::cuLaunchKernel(
@@ -8532,7 +8584,7 @@ pub(crate) fn launch_kernel_ex(
         );
         return Err(CUerror::UNKNOWN);
     }
-    super::kimi_concordia::observe_kernel_launch(&f.function_name, config.hStream);
+    super::kimi_concordia::observe_kernel_launch(&f.function_name, config.hStream, &concordia_ptrs);
     Ok(())
 }
 

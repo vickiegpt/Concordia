@@ -1,0 +1,119 @@
+[
+  {
+    "id": "pk-dispatch-latency",
+    "title": "Persistent executor dispatch latency",
+    "source": "Table pk-dispatch",
+    "source_regex": "Persistent kernel dispatch latency and throughput",
+    "expected": "80-570 us across Add/Mul/SiLU sizes; 80-81 us for N<=256",
+    "unit": "us",
+    "commands": ["claim_audit", "needs_one_gpu"]
+  },
+  {
+    "id": "pk-ops-fusion",
+    "title": "All operators and fused Add+ReLU",
+    "source": "Table pk-ops",
+    "source_regex": "Fused Add\\+ReLU",
+    "expected": "Fused Add+ReLU is 87 us at N=4096, matching plain Add",
+    "unit": "us",
+    "commands": ["claim_audit", "needs_one_gpu"]
+  },
+  {
+    "id": "native-pytorch-dispatch",
+    "title": "Native PyTorch launch reference",
+    "source": "Table native-pytorch",
+    "source_regex": "Native PyTorch dispatch latency",
+    "expected": "6-7 us synchronized dispatch, 2 us batch dispatch",
+    "unit": "us",
+    "commands": ["needs_one_gpu"]
+  },
+  {
+    "id": "delta-checkpoint-speedup",
+    "title": "GPU-side vs CPU-side delta checkpoint",
+    "source": "Table ckpt-compare",
+    "source_regex": "85--219\\$\\\\times\\$ speedup",
+    "expected": "85-219x speedup for 16-256 MB regions with one dirty 4 KiB page",
+    "unit": "speedup",
+    "commands": ["delta_static", "delta_real"]
+  },
+  {
+    "id": "delta-dirty-scaling",
+    "title": "GPU-side checkpoint scaling with dirty pages",
+    "source": "Table ckpt-scaling",
+    "source_regex": "GPU-side checkpoint time remains nearly constant",
+    "expected": "0.56-0.60 ms GPU delta for 1-32 dirty pages in 256 MB region",
+    "unit": "ms",
+    "commands": ["delta_static", "delta_real"]
+  },
+  {
+    "id": "trigger-overhead",
+    "title": "Checkpoint trigger overhead",
+    "source": "Table trigger-overhead",
+    "source_regex": "Persistent kernel ring buffer",
+    "expected": "Persistent ring buffer <0.1 us, 76x faster than sync cudaLaunchKernel",
+    "unit": "us",
+    "commands": ["delta_static", "needs_one_gpu"]
+  },
+  {
+    "id": "qwen-inference-tps",
+    "title": "Qwen3-0.6B inference with checkpointing",
+    "source": "Figure qwen",
+    "source_regex": "108\\.2~tok/s",
+    "expected": "108.2 tok/s average, 18.9 ms checkpoint overhead, 5120 first dirty pages",
+    "unit": "tok/s",
+    "commands": ["kimi_parser", "kimi_tps"]
+  },
+  {
+    "id": "two-gpu-nccl-boundary",
+    "title": "Two-GPU NCCL checkpoint boundary",
+    "source": "NCCL subsection",
+    "source_regex": "8\\{,\\}192:1",
+    "expected": "4.5 ms AllReduce, 11 ms checkpoint, one dirty 4 KiB page per token per layer",
+    "unit": "ms",
+    "commands": ["claim_audit", "needs_two_gpus"]
+  },
+  {
+    "id": "lora-sft-delta",
+    "title": "LoRA SFT delta checkpointing",
+    "source": "Table sft-ckpt",
+    "source_regex": "299\\$\\\\times\\$ speedup",
+    "expected": "4296 dirty adapter pages, 57:1 data reduction, 1.4 ms GPU delta",
+    "unit": "pages",
+    "commands": ["claim_audit", "needs_one_gpu"]
+  },
+  {
+    "id": "sm-overhead",
+    "title": "Persistent worker SM overhead",
+    "source": "Table sm-overhead",
+    "source_regex": "0\\.53\\\\%",
+    "expected": "1 block out of 188 SMs = 0.53% overhead",
+    "unit": "percent",
+    "commands": ["claim_audit", "needs_one_gpu"]
+  },
+  {
+    "id": "fault-recovery-timeline",
+    "title": "Fault recovery timeline",
+    "source": "Figure recovery",
+    "source_regex": "1\\.5~seconds",
+    "expected": "10 ms detection, 300 ms isolation, 800 ms restore, 400 ms reintegration",
+    "unit": "seconds",
+    "commands": ["claim_audit", "needs_two_gpus"]
+  },
+  {
+    "id": "cross-arch-migration",
+    "title": "Optional cross-architecture migration",
+    "source": "Figure combined",
+    "source_regex": "2\\.2~s total downtime",
+    "expected": "Within 10% native on supported targets; 2.2 s H100->AMD->BlackHole migration downtime",
+    "unit": "seconds",
+    "commands": ["sass_dry_run", "needs_cross_arch_devices"]
+  },
+  {
+    "id": "realworld-llm-throughput",
+    "title": "Real-world LLM throughput",
+    "source": "Figure realworld",
+    "source_regex": "[Rr]eal-world LLM inference throughput",
+    "expected": "SWE-Bench workload token throughput figure generated from real model runs",
+    "unit": "tokens/s",
+    "commands": ["kimi_parser", "kimi_tps"]
+  }
+]

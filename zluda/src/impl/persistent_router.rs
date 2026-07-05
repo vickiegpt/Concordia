@@ -11,6 +11,8 @@ pub(crate) enum PersistentOp {
     Scale = 5,
     AddRelu = 6,
     DirtyScan = 7,
+    AofAppend = 8,
+    RestoreCopy = 9,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,5 +315,24 @@ mod tests {
             ]),
             7
         );
+    }
+
+    #[test]
+    fn checkpoint_worker_ops_have_stable_task_ids() {
+        assert_eq!(PersistentOp::DirtyScan as i32, 7);
+        assert_eq!(PersistentOp::AofAppend as i32, 8);
+        assert_eq!(PersistentOp::RestoreCopy as i32, 9);
+    }
+
+    #[test]
+    fn user_kernel_classifier_does_not_route_aof_worker_names() {
+        assert!(matches!(
+            classify("concordia_aof_append_task", (1, 1, 1), (128, 1, 1), 3),
+            Routing::Passthrough
+        ));
+        assert!(matches!(
+            classify("concordia_restore_copy_task", (1, 1, 1), (128, 1, 1), 3),
+            Routing::Passthrough
+        ));
     }
 }
