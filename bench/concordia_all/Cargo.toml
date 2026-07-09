@@ -1,0 +1,12 @@
+[package]
+name = "concordia_all"
+version = "0.1.0"
+edition = "2021"
+license = "CC-BY-4.0"
+
+[lib]
+path = "src/lib.rs"
+
+[[bench]]
+name = "concordia_all"
+harness = false

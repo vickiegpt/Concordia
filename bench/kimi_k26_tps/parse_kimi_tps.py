@@ -21,12 +21,9 @@ CSV_FIELDS = [
     "message",
 ]
 
-EVAL_RE = re.compile(
+GENERATION_LINE_RE = re.compile(
     r"""
-    (?:
-      ^|\n
-    )
-    [^\n]*(?:eval|generation)[^\n]*?
+    (?:\beval\s+time\b|\bgeneration\b)[^\n]*?
     =
     \s*(?P<eval_ms>[0-9]+(?:\.[0-9]+)?)\s*ms
     \s*/\s*
@@ -119,7 +116,12 @@ def read_text(path):
 
 def parse_timings(text):
     eval_match = None
-    for match in EVAL_RE.finditer(text):
+    for line in text.splitlines():
+        if "prompt eval time" in line.lower():
+            continue
+        match = GENERATION_LINE_RE.search(line)
+        if not match:
+            continue
         eval_match = match
 
     total_match = None

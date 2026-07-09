@@ -31,6 +31,7 @@ members = [
     "ptxas",
     "ext/aie_comgr-sys",
     "ext/aie_runtime-sys",
+    "bench/concordia_all",
 ]
 
 default-members = ["zluda", "zluda_ml", "zluda_inject", "zluda_redirect"]

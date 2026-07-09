@@ -1,0 +1,32 @@
+[run]
+out_dir = "/tmp/concordia-all"
+static_only = true
+continue_on_fail = true
+cuda_arch = "sm_120"
+timeout_seconds = 600
+
+[experiments]
+oob = true
+claim_audit = true
+eval_claims = true
+delta_static = true
+delta_live = false
+persistent_static = true
+persistent_live = false
+kimi_tps = true
+mpi_nccl_recovery = false
+
+[paths]
+paper_tex = "69b5f215f5c67f0702bd8f65/05_eval.tex"
+eval_claims = "bench/concordia_eval_claims/claims.json"
+kimi_runner = "/home/victoryang00/DX100/benchmarks/llama.cpp/build/bin/llama-cli"
+kimi_model_dir = "/root/models/kimi-k2.6-iq1_s/moonshotai_Kimi-K2.6-IQ1_S"
+
+[mpi]
+enabled = false
+launcher = "mpirun"
+nodes = ["127.0.0.1"]
+ranks_per_node = 1
+np = 2
+hostfile = ""
+extra_args = ["--allow-run-as-root"]

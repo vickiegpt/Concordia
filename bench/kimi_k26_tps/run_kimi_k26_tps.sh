@@ -4,8 +4,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
-runner="${BITNET_LLAMA_CLI:-/root/hetGPU/BitNet-work/build/bin/llama-cli}"
-model_dir="${MODEL_DIR:-/root/hetGPU/models/bartowski/moonshotai_Kimi-K2.6-GGUF/moonshotai_Kimi-K2.6-IQ1_M}"
+default_runner="/root/hetGPU/BitNet-work/build/bin/llama-cli"
+for candidate in \
+    "/home/victoryang00/DX100/benchmarks/llama.cpp/build/bin/llama-cli" \
+    "/home/victoryang00/hetGPU_new/CXLMemSim/workloads/llama.cpp/main" \
+    "/home/victoryang00/hetGPU_new/CXLMemSim/workloads/llama.cpp/llama-cli" \
+    "/root/hetGPU/BitNet-work/build/bin/llama-cli"; do
+    if [[ -x "${candidate}" ]]; then
+        default_runner="${candidate}"
+        break
+    fi
+done
+runner="${BITNET_LLAMA_CLI:-${default_runner}}"
+
+default_model_dir="/root/hetGPU/models/bartowski/moonshotai_Kimi-K2.6-GGUF/moonshotai_Kimi-K2.6-IQ1_M"
+for candidate in \
+    "/root/models/kimi-k2.6-iq1_s/moonshotai_Kimi-K2.6-IQ1_S" \
+    "/root/hetGPU/models/bartowski/moonshotai_Kimi-K2.6-GGUF/moonshotai_Kimi-K2.6-IQ1_M"; do
+    if [[ -f "${candidate}/$(basename "${candidate}")-00001-of-00006.gguf" ]]; then
+        default_model_dir="${candidate}"
+        break
+    fi
+done
+model_dir="${MODEL_DIR:-${default_model_dir}}"
 model_prefix="${MODEL_PREFIX:-$(basename "${model_dir}")}"
 model="${MODEL:-${model_dir}/${model_prefix}-00001-of-00006.gguf}"
 work_dir="${KIMI_TPS_WORKDIR:-$(mktemp -d /tmp/kimi-k26-tps.XXXXXX)}"
@@ -14,6 +35,7 @@ csv="${KIMI_TPS_CSV:-${work_dir}/kimi_k26_tps.csv}"
 jsonl="${KIMI_TPS_JSONL:-${work_dir}/kimi_k26_tps.jsonl}"
 prompt="${KIMI_TPS_PROMPT:-Say that you have started in one short sentence.}"
 require_run="${KIMI_TPS_REQUIRE_RUN:-0}"
+run_timeout="${KIMI_TPS_TIMEOUT:-0}"
 
 mkdir -p "${work_dir}/logs" "${work_dir}/aof"
 
@@ -129,15 +151,27 @@ run_case() {
     set +e
     case "${case_name}" in
         baseline)
-            env_for_case baseline "${aof}" \
-                "${REPO_ROOT}/tools/run_kimi_k26_iq1m_bitnet.sh" "${prompt}" \
-                >"${stdout_log}" 2>"${stderr_log}"
+            if [[ "${run_timeout}" != "0" ]]; then
+                env_for_case baseline "${aof}" \
+                    timeout "${run_timeout}s" "${REPO_ROOT}/tools/run_kimi_k26_iq1m_bitnet.sh" "${prompt}" \
+                    >"${stdout_log}" 2>"${stderr_log}"
+            else
+                env_for_case baseline "${aof}" \
+                    "${REPO_ROOT}/tools/run_kimi_k26_iq1m_bitnet.sh" "${prompt}" \
+                    >"${stdout_log}" 2>"${stderr_log}"
+            fi
             exit_code="$?"
             ;;
         concordia)
-            env_for_case concordia "${aof}" \
-                "${REPO_ROOT}/tools/run_kimi_k26_iq1m_bitnet.sh" "${prompt}" \
-                >"${stdout_log}" 2>"${stderr_log}"
+            if [[ "${run_timeout}" != "0" ]]; then
+                env_for_case concordia "${aof}" \
+                    timeout "${run_timeout}s" "${REPO_ROOT}/tools/run_kimi_k26_iq1m_bitnet.sh" "${prompt}" \
+                    >"${stdout_log}" 2>"${stderr_log}"
+            else
+                env_for_case concordia "${aof}" \
+                    "${REPO_ROOT}/tools/run_kimi_k26_iq1m_bitnet.sh" "${prompt}" \
+                    >"${stdout_log}" 2>"${stderr_log}"
+            fi
             exit_code="$?"
             ;;
         *)
@@ -150,6 +184,11 @@ run_case() {
     end_ms="$(date +%s%3N)"
     total_ms="$((end_ms - start_ms))"
 
+    status_args=()
+    if [[ "${exit_code}" == "124" ]]; then
+        status_args=(--status timeout)
+    fi
+
     python3 "${SCRIPT_DIR}/parse_kimi_tps.py" \
         --case "${case_name}" \
         --stdout "${stdout_log}" \
@@ -161,6 +200,7 @@ run_case() {
         --model "${model}" \
         --gpu "${gpu}" \
         --commit "${commit}" \
+        "${status_args[@]}" \
         --csv "${csv}" \
         --jsonl "${jsonl}" >/dev/null
 
