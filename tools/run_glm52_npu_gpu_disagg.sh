@@ -9,7 +9,8 @@ MODEL="${MODEL:-/mnt/probe_nvme0n1p4/models/GLM-5.2-UD-IQ1_S/GLM-5.2-UD-IQ1_S-00
 PROMPT="${PROMPT:-你好，请用一句话介绍你自己。}"
 GLM_TOKENS="${GLM_TOKENS:-2}"
 GLM_CTX="${GLM_CTX:-64}"
-GLM_GPU_LAYERS="${GLM_GPU_LAYERS:-1}"
+GLM_GPU_LAYERS="${GLM_GPU_LAYERS:-4}"
+GLM_KV_OFFLOAD="${GLM_KV_OFFLOAD:-1}"
 GLM_TIMEOUT_S="${GLM_TIMEOUT_S:-240}"
 SAMPLE_INTERVAL_S="${SAMPLE_INTERVAL_S:-0.2}"
 
@@ -108,6 +109,10 @@ fi
 set +e
 (
     cd "$LLAMA_ROOT" || exit 2
+    GLM_KV_ARGS=()
+    if [[ "$GLM_KV_OFFLOAD" == "0" ]]; then
+        GLM_KV_ARGS+=(--no-kv-offload)
+    fi
     export LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/lib/riscv64-linux-gnu:${LLAMA_ROOT}/build-lanxin-nvidia/bin${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
     unset LD_PRELOAD
     export HETGPU_PACC_IQ1S_HOOK="${HETGPU_PACC_IQ1S_HOOK:-0}"
@@ -121,7 +126,7 @@ set +e
         -m "$MODEL" \
         --gpu-layers "$GLM_GPU_LAYERS" --cpu-moe -c "$GLM_CTX" -n "$GLM_TOKENS" \
         -p "$PROMPT" \
-        --no-warmup -st --no-display-prompt --split-mode layer --simple-io --no-kv-offload
+        --no-warmup -st --no-display-prompt --split-mode layer --simple-io "${GLM_KV_ARGS[@]}"
 ) > "${LOG_DIR}/llama.out" 2> "${LOG_DIR}/llama.err"
 LLAMA_RC="$?"
 echo "$LLAMA_RC" > "${LOG_DIR}/llama.rc"
@@ -141,7 +146,7 @@ wait "$SAMPLER_PID" 2>/dev/null || true
     echo "llama_rc=${LLAMA_RC}"
     echo "pacc_rc=${PACC_RC}"
     echo "model=${MODEL}"
-    echo "glm_tokens=${GLM_TOKENS} glm_ctx=${GLM_CTX} glm_gpu_layers=${GLM_GPU_LAYERS}"
+    echo "glm_tokens=${GLM_TOKENS} glm_ctx=${GLM_CTX} glm_gpu_layers=${GLM_GPU_LAYERS} glm_kv_offload=${GLM_KV_OFFLOAD}"
     echo "pacc_shape=${PACC_GEMM_M}x${PACC_GEMM_N}x${PACC_GEMM_K} iters=${PACC_GEMM_ITERS} devices=${PACC_DEVICES}"
     echo ""
     echo "llama_timing:"
