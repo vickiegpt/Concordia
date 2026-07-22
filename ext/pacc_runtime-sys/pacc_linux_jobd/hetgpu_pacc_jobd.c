@@ -1352,7 +1352,14 @@ static bool jobd_xsfmm_assume_usable_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
-    return true;
+    /*
+     * XSFMM is an external coprocessor instruction.  A missing or mismatched
+     * bitstream stalls the issuing hart instead of raising an illegal
+     * instruction, so optimistic probing can prevent the job completion from
+     * ever being published.  Keep the hardware path opt-in until a startup
+     * smoke test has positively identified a working implementation.
+     */
+    return false;
 }
 
 static void jobd_apply_xsfmm_layout_env(void) {
@@ -4262,9 +4269,11 @@ static void run_xsfmm_smoke_if_requested(void) {
         g_xsfmm_bf16_checked = true;
         g_xsfmm_bf16_usable = jobd_xsfmm_assume_usable_enabled();
         jobd_apply_xsfmm_layout_env();
-        if (verbose) {
-            log_msg("xsfmm startup smoke skipped usable=%d b_transposed=%d c_transposed=%d",
+        if (verbose || requested) {
+            log_msg("xsfmm startup smoke skipped usable=%d assume_usable=%d "
+                    "b_transposed=%d c_transposed=%d",
                     g_xsfmm_bf16_usable ? 1 : 0,
+                    jobd_xsfmm_assume_usable_enabled() ? 1 : 0,
                     g_xsfmm_b_transposed_pack ? 1 : 0,
                     g_xsfmm_c_transposed_pack ? 1 : 0);
         }
