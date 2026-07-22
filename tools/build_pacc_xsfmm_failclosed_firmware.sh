@@ -18,7 +18,7 @@ mkdir -p "${BUILD_DIR}"
     --gcc-toolchain=/usr \
     -O3 -Wall -Wextra \
     -fno-asynchronous-unwind-tables -fno-unwind-tables \
-    -march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvfwmaccqqq \
+    -march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b \
     -mabi=lp64d -static \
     -o "${JOBD}" \
     "${PACC_SYS}/pacc_linux_jobd/hetgpu_pacc_jobd.c" \

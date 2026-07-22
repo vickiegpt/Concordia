@@ -7,6 +7,7 @@
 #include <math.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <dlfcn.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -21,6 +22,7 @@
 #include <sys/mount.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -38,8 +40,7 @@
 #endif
 
 #if defined(__riscv) && defined(__riscv_vector) && \
-    defined(__riscv_xsfvfwmaccqqq) && defined(__riscv_zvfbfmin) && \
-    defined(HETGPU_PACC_HAVE_SIFIVE_VECTOR)
+    defined(HETGPU_PACC_HAVE_XSFMM32A16F) && defined(__riscv_zvfbfmin)
 #define HETGPU_PACC_HAVE_XSFMM_BF16 1
 #endif
 
@@ -117,6 +118,15 @@ static bool g_xsfmm_bf16_checked = false;
 static bool g_xsfmm_bf16_usable = false;
 static bool g_xsfmm_b_transposed_pack = false;
 static bool g_xsfmm_c_transposed_pack = false;
+static bool g_xsfmm_context_ready = false;
+static int g_xsfmm_context_error = 0;
+
+extern int xsfmm_native_bf16(const uint16_t *a_km,
+                             const uint16_t *b_kn,
+                             float *c_mn,
+                             size_t m,
+                             size_t n,
+                             size_t k);
 
 #define PACC_IOC_MAGIC 'p'
 #define PACC_IOC_ZLUDA_IRQ _IO(PACC_IOC_MAGIC, 5)
@@ -1336,7 +1346,7 @@ static bool jobd_xsfmm_gemm_requested(void) {
 }
 
 static uint64_t jobd_xsfmm_gemm_max_n(void) {
-    return parse_env_u64_default("HETGPU_PACC_JOBD_XSFMM_MAX_N", 1ULL);
+    return parse_env_u64_default("HETGPU_PACC_JOBD_XSFMM_MAX_N", 32ULL);
 }
 
 static bool jobd_bf16_skinny_copy_enabled(void) {
@@ -1344,21 +1354,6 @@ static bool jobd_bf16_skinny_copy_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
-    return false;
-}
-
-static bool jobd_xsfmm_assume_usable_enabled(void) {
-    const char *value = getenv("HETGPU_PACC_JOBD_XSFMM_ASSUME_USABLE");
-    if (value && *value) {
-        return env_flag_true(value);
-    }
-    /*
-     * XSFMM is an external coprocessor instruction.  A missing or mismatched
-     * bitstream stalls the issuing hart instead of raising an illegal
-     * instruction, so optimistic probing can prevent the job completion from
-     * ever being published.  Keep the hardware path opt-in until a startup
-     * smoke test has positively identified a working implementation.
-     */
     return false;
 }
 
@@ -1376,8 +1371,8 @@ static void jobd_apply_xsfmm_layout_env(void) {
 
 static bool jobd_xsfmm_gemm_enabled(void) {
 #if defined(HETGPU_PACC_HAVE_XSFMM_BF16)
-    return jobd_xsfmm_gemm_requested() && g_xsfmm_bf16_checked &&
-           (g_xsfmm_bf16_usable || jobd_xsfmm_assume_usable_enabled());
+    return jobd_xsfmm_gemm_requested() && g_xsfmm_context_ready &&
+           g_xsfmm_bf16_checked && g_xsfmm_bf16_usable;
 #else
     return false;
 #endif
@@ -1404,6 +1399,57 @@ static void log_msg(const char *fmt, ...) {
     va_start(ap, fmt);
     emit_msg(fmt, ap);
     va_end(ap);
+}
+
+static int jobd_enable_xsfmm_context(void) {
+#if defined(HETGPU_PACC_HAVE_XSFMM_BF16)
+    cpu_set_t set;
+    int cpu = sched_getcpu();
+    int fd;
+
+    if (cpu < 0) {
+        int saved_errno = errno;
+        log_msg("xsfmm hardware-only init failed: sched_getcpu: %s", strerror(errno));
+        return -saved_errno;
+    }
+    CPU_ZERO(&set);
+    CPU_SET((unsigned int)cpu, &set);
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) {
+        int saved_errno = errno;
+        log_msg("xsfmm hardware-only init failed: pin cpu%d: %s", cpu, strerror(errno));
+        return -saved_errno;
+    }
+
+    fd = open("/dev/xsfmm_ctx", O_RDONLY | O_CLOEXEC);
+    if (fd < 0 && errno == ENOENT) {
+        int module_fd = open("/home/root/xsfmm_ctx.ko", O_RDONLY | O_CLOEXEC);
+        if (module_fd < 0) {
+            int saved_errno = errno;
+            log_msg("xsfmm hardware-only init failed: open module: %s", strerror(errno));
+            return -saved_errno;
+        }
+        if (syscall(SYS_finit_module, module_fd, "", 0) != 0 && errno != EEXIST) {
+            int saved_errno = errno;
+            close(module_fd);
+            log_msg("xsfmm hardware-only init failed: finit_module: %s", strerror(saved_errno));
+            return -saved_errno;
+        }
+        close(module_fd);
+        fd = open("/dev/xsfmm_ctx", O_RDONLY | O_CLOEXEC);
+    }
+    if (fd < 0) {
+        int saved_errno = errno;
+        log_msg("xsfmm hardware-only init failed: open /dev/xsfmm_ctx: %s", strerror(errno));
+        return -saved_errno;
+    }
+    close(fd);
+    g_xsfmm_context_ready = true;
+    log_msg("xsfmm hardware-only context enabled on cpu%d", cpu);
+    return 0;
+#else
+    log_msg("xsfmm hardware-only init failed: binary lacks Xsfmm32a16f support");
+    return -1;
+#endif
 }
 
 static void trace_msg(const char *fmt, ...) {
@@ -4112,6 +4158,7 @@ static uint16_t f32_to_bf16(float x) {
 }
 
 __attribute__((noinline))
+#if defined(HETGPU_PACC_HAVE_XSFVFWMACCQQQ)
 static int xsfmm_smoke_bf16_kernel(uint16_t *a_bf16,
                                    uint16_t *b_bf16,
                                    float *c_f32) {
@@ -4132,6 +4179,16 @@ static int xsfmm_smoke_bf16_kernel(uint16_t *a_bf16,
     return 95;
 #endif
 }
+#else
+static int xsfmm_smoke_bf16_kernel(uint16_t *a_bf16,
+                                   uint16_t *b_bf16,
+                                   float *c_f32) {
+    (void)a_bf16;
+    (void)b_bf16;
+    (void)c_f32;
+    return 77;
+}
+#endif
 
 static void xsfmm_pack_b_tile_4x4(const uint16_t *b_rowmajor,
                                   uint16_t *b_packed,
@@ -4267,13 +4324,13 @@ static void run_xsfmm_smoke_if_requested(void) {
     bool verbose = jobd_xsfmm_smoke_enabled();
     if ((!requested && !verbose) || !jobd_startup_xsfmm_smoke_enabled()) {
         g_xsfmm_bf16_checked = true;
-        g_xsfmm_bf16_usable = jobd_xsfmm_assume_usable_enabled();
+        g_xsfmm_bf16_usable = g_xsfmm_context_ready;
         jobd_apply_xsfmm_layout_env();
         if (verbose || requested) {
-            log_msg("xsfmm startup smoke skipped usable=%d assume_usable=%d "
+            log_msg("xsfmm startup smoke skipped usable=%d context_ready=%d "
                     "b_transposed=%d c_transposed=%d",
                     g_xsfmm_bf16_usable ? 1 : 0,
-                    jobd_xsfmm_assume_usable_enabled() ? 1 : 0,
+                    g_xsfmm_context_ready ? 1 : 0,
                     g_xsfmm_b_transposed_pack ? 1 : 0,
                     g_xsfmm_c_transposed_pack ? 1 : 0);
         }
@@ -4286,7 +4343,7 @@ static void run_xsfmm_smoke_if_requested(void) {
 
 #if !defined(HETGPU_PACC_HAVE_XSFMM_BF16)
     if (verbose || requested) {
-        log_msg("xsfmm unavailable in this jobd image; using BF16 staged GEMM");
+        log_msg("xsfmm unavailable in this jobd image; BF16 GEMM is fail-closed");
     }
     return;
 #else
@@ -4333,7 +4390,7 @@ static void run_xsfmm_smoke_if_requested(void) {
                             g_xsfmm_c_transposed_pack ? 1 : 0);
                 }
             } else if (WIFSIGNALED(status)) {
-                log_msg("xsfmm smoke signal=%d; using BF16 staged GEMM",
+                log_msg("xsfmm smoke signal=%d; BF16 GEMM is fail-closed",
                         WTERMSIG(status));
             }
             return;
@@ -4346,7 +4403,7 @@ static void run_xsfmm_smoke_if_requested(void) {
             kill(pid, SIGKILL);
             (void)waitpid(pid, &status, 0);
             log_msg("xsfmm smoke timed out after %" PRIu64
-                    " ms; using BF16 staged GEMM", timeout_ms);
+                    " ms; BF16 GEMM is fail-closed", timeout_ms);
             return;
         }
         sleep_us(1000);
@@ -4638,39 +4695,31 @@ static bool gemm_xsfmm_bf16_4x4_accumulate(const struct GemmJob *job,
 
     for (uint64_t kk = 0; kk < 4; kk++) {
         for (uint64_t row = 0; row < 4; row++) {
-            atile[row * 4 + kk] =
+            atile[kk * 4 + row] =
                 ((const uint16_t *)a)[(row0 + row) * (uint64_t)job->lda + (k0 + kk)];
         }
     }
     for (uint64_t kk = 0; kk < 4; kk++) {
         for (uint64_t col = 0; col < 4; col++) {
-            uint64_t dst = g_xsfmm_b_transposed_pack
-                ? col * 4 + kk
-                : kk * 4 + col;
+            uint64_t dst = kk * 4 + col;
             btile[dst] =
                 ((const uint16_t *)b)[(k0 + kk) * (uint64_t)job->ldb + (col0 + col)];
         }
     }
     for (uint64_t row = 0; row < 4; row++) {
         for (uint64_t col = 0; col < 4; col++) {
-            ctile[xsfmm_c_idx_4x4((uint32_t)row, (uint32_t)col,
-                                  g_xsfmm_c_transposed_pack)] =
-                acc[row * acc_stride + col];
+            ctile[row * 4 + col] = 0.0f;
         }
     }
 
-    size_t vl = __riscv_vsetvl_e32m2(16);
-    vfloat32m2_t vacc = __riscv_vle32_v_f32m2(ctile, vl);
-    vbfloat16m1_t va = __riscv_vle16_v_bf16m1((const __bf16 *)atile, vl);
-    vbfloat16m1_t vb = __riscv_vle16_v_bf16m1((const __bf16 *)btile, vl);
-    vacc = __riscv_sf_vfwmacc_4x4x4_f32m2(vacc, va, vb, vl);
-    __riscv_vse32_v_f32m2(ctile, vacc, vl);
+    if (xsfmm_native_bf16(atile, btile, ctile, 4, 4, 4) != 0) {
+        return false;
+    }
 
     for (uint64_t row = 0; row < 4; row++) {
         for (uint64_t col = 0; col < 4; col++) {
             acc[row * acc_stride + col] =
-                ctile[xsfmm_c_idx_4x4((uint32_t)row, (uint32_t)col,
-                                      g_xsfmm_c_transposed_pack)];
+                ctile[row * 4 + col];
         }
     }
     return true;
@@ -4972,54 +5021,77 @@ static int run_gemm_matrix_threads(const struct GemmJob *job, const void *a,
     return 0;
 }
 
-static bool gemm_bf16_skinny_copy_path(const struct GemmJob *job) {
-    return job && gemm_job_is_compact_rowmajor(job) &&
-           job->atype == PACC_DTYPE_BF16 &&
-           job->btype == PACC_DTYPE_BF16 &&
-           job->ctype == PACC_DTYPE_BF16 &&
-           job->n > 0 && job->n <= 4;
-}
+static int run_gemm_xsfmm_hardware_only(const struct GemmJob *job,
+                                        const void *a,
+                                        const void *b,
+                                        void *c,
+                                        float alpha,
+                                        float beta) {
+#if defined(HETGPU_PACC_HAVE_XSFMM_BF16)
+    uint16_t *a_pack = NULL;
+    uint16_t *b_pack = NULL;
+    float *c_tile = NULL;
+    int status = 0;
 
-static int run_gemm_bf16_skinny_copy(int fd,
-                                     const struct GemmJob *job,
-                                     const void *a,
-                                     const void *b,
-                                     void *c,
-                                     float alpha,
-                                     float beta,
-                                     uint64_t seq) {
-    const uint16_t *ab = (const uint16_t *)a;
-    const uint16_t *bb = (const uint16_t *)b;
-    uint16_t *cb = (uint16_t *)c;
-
-    if (!gemm_bf16_skinny_copy_path(job) || !ab || !bb || !cb) {
-        return -1;
+    if (!job || !a || !b || !c || job->atype != PACC_DTYPE_BF16 ||
+        job->btype != PACC_DTYPE_BF16 || job->transa || job->transb ||
+        !gemm_job_is_compact_rowmajor(job) || job->m > PACC_XSFMM16_TILE_M ||
+        job->n > PACC_XSFMM16_TILE_N || job->n > jobd_xsfmm_gemm_max_n() ||
+        (job->k & 1u) != 0 ||
+        (job->ctype != PACC_DTYPE_F32 && job->ctype != PACC_DTYPE_F16 &&
+         job->ctype != PACC_DTYPE_BF16)) {
+        return 0xffff1f20;
     }
 
-    mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x51230001u);
-    for (uint64_t row = 0; row < job->m; row++) {
-        if ((row & 0x3fu) == 0) {
-            mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq,
-                                   0x51230000u | (uint32_t)(row & 0xffffu));
+    a_pack = (uint16_t *)malloc((size_t)(job->k * job->m) * sizeof(*a_pack));
+    b_pack = (uint16_t *)malloc((size_t)(job->k * job->n) * sizeof(*b_pack));
+    c_tile = (float *)malloc((size_t)(job->m * job->n) * sizeof(*c_tile));
+    if (!a_pack || !b_pack || !c_tile) {
+        status = 0xffff1f21;
+        goto out;
+    }
+
+    for (uint64_t kk = 0; kk < job->k; kk++) {
+        for (uint64_t row = 0; row < job->m; row++) {
+            a_pack[kk * job->m + row] =
+                ((const uint16_t *)a)[row * (uint64_t)job->lda + kk];
         }
         for (uint64_t col = 0; col < job->n; col++) {
-            float acc = 0.0f;
-            for (uint64_t kk = 0; kk < job->k; kk++) {
-                float av = bf16_to_f32(ab[row * (uint64_t)job->lda + kk]);
-                float bv = bf16_to_f32(bb[kk * (uint64_t)job->ldb + col]);
-                acc += av * bv;
-            }
-            size_t c_idx = (size_t)(row * (uint64_t)job->ldc + col);
-            if (beta != 0.0f) {
-                acc = alpha * acc + beta * bf16_to_f32(cb[c_idx]);
-            } else {
-                acc = alpha * acc;
-            }
-            cb[c_idx] = f32_to_bf16(acc);
+            b_pack[kk * job->n + col] =
+                ((const uint16_t *)b)[kk * (uint64_t)job->ldb + col];
         }
     }
-    mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5123ffffu);
-    return 0;
+    memset(c_tile, 0, (size_t)(job->m * job->n) * sizeof(*c_tile));
+    if (xsfmm_native_bf16(a_pack, b_pack, c_tile,
+                          (size_t)job->m, (size_t)job->n,
+                          (size_t)job->k) != 0) {
+        status = 0xffff1f22;
+        goto out;
+    }
+
+    for (uint64_t row = 0; row < job->m; row++) {
+        for (uint64_t col = 0; col < job->n; col++) {
+            size_t index = (size_t)(row * (uint64_t)job->ldc + col);
+            float old = beta != 0.0f ? load_typed(c, index, job->ctype) : 0.0f;
+            store_typed(c, index, job->ctype,
+                        alpha * c_tile[row * job->n + col] + beta * old);
+        }
+    }
+
+out:
+    free(a_pack);
+    free(b_pack);
+    free(c_tile);
+    return status;
+#else
+    (void)job;
+    (void)a;
+    (void)b;
+    (void)c;
+    (void)alpha;
+    (void)beta;
+    return 0xffff1f01;
+#endif
 }
 
 static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
@@ -5032,6 +5104,14 @@ static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
     size_t c_dtype_size = dtype_size(job->ctype);
     if (!a_dtype_size || !b_dtype_size || !c_dtype_size) {
         return 0xffff1002;
+    }
+    if (job->atype == PACC_DTYPE_BF16 && job->btype == PACC_DTYPE_BF16 &&
+        !jobd_xsfmm_gemm_enabled()) {
+        uint32_t status = 0xffff1f00u | ((uint32_t)g_xsfmm_context_error & 0xffu);
+        mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, status);
+        log_msg("BF16 GEMM rejected: Xsfmm hardware context error=%d",
+                g_xsfmm_context_error);
+        return (int)status;
     }
 
     struct GemmJob norm = *job;
@@ -5116,16 +5196,12 @@ static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
             const void *b = b_copy + b_batch_stride * batch * b_dtype_size;
             void *c = c_copy + c_batch_stride * batch * c_dtype_size;
             mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5123);
-            if (jobd_bf16_skinny_copy_enabled() &&
-                gemm_bf16_skinny_copy_path(job)) {
-                if (run_gemm_bf16_skinny_copy(fd, job, a, b, c, alpha, beta, seq) != 0) {
-                    status = 0xffff1004;
-                    break;
-                }
+            if (job->atype == PACC_DTYPE_BF16 && job->btype == PACC_DTYPE_BF16) {
+                status = run_gemm_xsfmm_hardware_only(job, a, b, c, alpha, beta);
             } else if (run_gemm_matrix_threads(job, a, b, c, alpha, beta) != 0) {
                 status = 0xffff1004;
-                break;
             }
+            if (status != 0) break;
         }
         mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5124);
         if (status == 0) {
@@ -5222,9 +5298,15 @@ static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
         const void *b = b0 + b_batch_stride * batch * b_dtype_size;
         void *c = c0 + c_batch_stride * batch * c_dtype_size;
         mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5123);
-        if (run_gemm_matrix_threads(job, a, b, c, alpha, beta) != 0) {
+        int batch_status = 0;
+        if (job->atype == PACC_DTYPE_BF16 && job->btype == PACC_DTYPE_BF16) {
+            batch_status = run_gemm_xsfmm_hardware_only(job, a, b, c, alpha, beta);
+        } else if (run_gemm_matrix_threads(job, a, b, c, alpha, beta) != 0) {
+            batch_status = 0xffff1004;
+        }
+        if (batch_status != 0) {
             unmap_phys(&malpha); unmap_phys(&mbeta); unmap_phys(&ma); unmap_phys(&mb); unmap_phys(&mc);
-            return 0xffff1004;
+            return batch_status;
         }
     }
     mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5124);
@@ -7774,7 +7856,7 @@ static bool mmvf_xsfmm_bf16_rows4(const struct MmvfNativeCtx *ctx,
                                   const void *y_base,
                                   float *dst_base,
                                   uint32_t row_base) {
-#if defined(HETGPU_PACC_HAVE_XSFMM_BF16)
+#if defined(HETGPU_PACC_HAVE_XSFVFWMACCQQQ)
     if (!ctx || ctx->x_type != PACC_MMVF_BF16 ||
         ctx->y_type != PACC_MMVF_BF16 ||
         ctx->ncols_dst != 1 || ctx->stride_row <= 0 ||
@@ -7844,7 +7926,7 @@ static bool mmvf_xsfmm_q8_0_bf16_rows4(const struct MmvfNativeCtx *ctx,
                                        const void *y_base,
                                        float *dst_base,
                                        uint32_t row_base) {
-#if defined(HETGPU_PACC_HAVE_XSFMM_BF16)
+#if defined(HETGPU_PACC_HAVE_XSFVFWMACCQQQ)
     if (!ctx || ctx->x_type != PACC_MMVF_Q8_0 ||
         ctx->y_type != PACC_MMVF_BF16 ||
         ctx->ncols_dst != 1 || ctx->stride_row <= 0 ||
@@ -14525,6 +14607,18 @@ int main(int argc, char **argv) {
     g_page_size = sysconf(_SC_PAGESIZE);
     if (g_page_size <= 0) g_page_size = 4096;
     early_devmem_diag_marker(devmem, 0x6d100000u, 1);
+    if (jobd_xsfmm_gemm_requested()) {
+        int xsfmm_init = jobd_enable_xsfmm_context();
+        if (xsfmm_init != 0) {
+            g_xsfmm_context_error = -xsfmm_init;
+            early_devmem_diag_marker(devmem,
+                                     0x6d10d000u | ((uint32_t)(-xsfmm_init) & 0xffu),
+                                     2);
+            log_msg("continuing in hardware-only fail-closed mode");
+        } else {
+            early_devmem_diag_marker(devmem, 0x6d10a000u, 2);
+        }
+    }
 
     int mbox_fd = open(mbox_path, O_RDWR | O_SYNC | O_CLOEXEC);
     if (mbox_fd < 0) {

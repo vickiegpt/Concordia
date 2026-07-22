@@ -26,6 +26,8 @@ jobd_bytes = jobd.read_bytes()
 conf_bytes = b""
 if jobs_conf:
     conf_bytes = jobs_conf.read_bytes()
+ctx_module_path = os.environ.get("PACC_JOBD_XSFMM_CTX_MODULE", "").strip()
+ctx_module_bytes = Path(ctx_module_path).read_bytes() if ctx_module_path else b""
 
 MAGIC = b"070701"
 
@@ -77,6 +79,59 @@ def patch_payload(entries, label: str, name: str, payload: bytes, pad: int = 0, 
     image[start:start + size] = payload + bytes([pad]) * (size - len(payload))
     print(f"patched {label}:{name}: {len(payload)} bytes into {size}-byte slot")
     return True
+
+def rebuild_newc_with_module(entries, base: int, total_size: int,
+                             module_name: str, module_payload: bytes,
+                             donor_name: str):
+    if donor_name not in entries:
+        raise SystemExit(f"inner module donor missing: {donor_name}")
+
+    def update_field(header: bytearray, index: int, value: int):
+        start = 6 + index * 8
+        header[start:start + 8] = f"{value:08x}".encode()
+
+    rebuilt = bytearray()
+    trailer_header = None
+    for name, entry in entries.items():
+        if name == donor_name:
+            continue
+        header = bytearray(image[entry["hdr"]:entry["hdr"] + 110])
+        if name == "TRAILER!!!":
+            trailer_header = header
+            continue
+        name_bytes = name.encode() + b"\0"
+        payload = bytes(image[entry["data"]:entry["data"] + entry["size"]])
+        update_field(header, 6, len(payload))
+        update_field(header, 11, len(name_bytes))
+        rebuilt += header + name_bytes
+        rebuilt += b"\0" * (align4(len(rebuilt)) - len(rebuilt))
+        rebuilt += payload
+        rebuilt += b"\0" * (align4(len(rebuilt)) - len(rebuilt))
+
+    donor = entries[donor_name]
+    header = bytearray(image[donor["hdr"]:donor["hdr"] + 110])
+    name_bytes = module_name.encode() + b"\0"
+    update_field(header, 1, 0o100644)
+    update_field(header, 6, len(module_payload))
+    update_field(header, 11, len(name_bytes))
+    rebuilt += header + name_bytes
+    rebuilt += b"\0" * (align4(len(rebuilt)) - len(rebuilt))
+    rebuilt += module_payload
+    rebuilt += b"\0" * (align4(len(rebuilt)) - len(rebuilt))
+
+    if trailer_header is None:
+        trailer_header = bytearray(b"070701" + b"00000000" * 13)
+    trailer_name = b"TRAILER!!!\0"
+    update_field(trailer_header, 6, 0)
+    update_field(trailer_header, 11, len(trailer_name))
+    rebuilt += trailer_header + trailer_name
+    rebuilt += b"\0" * (align4(len(rebuilt)) - len(rebuilt))
+    if len(rebuilt) > total_size:
+        raise SystemExit(f"rebuilt inner cpio {len(rebuilt)} exceeds slot {total_size}")
+    rebuilt += b"\0" * (total_size - len(rebuilt))
+    image[base:base + total_size] = rebuilt
+    print(f"rebuilt inner cpio: module={module_name} bytes={len(module_payload)} "
+          f"removed={donor_name} total={total_size}")
 
 jobd_threads = os.environ.get("PACC_JOBD_KERNEL_THREADS", "4").strip() or "4"
 jobd_trace = os.environ.get("PACC_JOBD_TRACE", "0").strip() or "0"
@@ -241,6 +296,10 @@ if inner_name in outer:
     patched += patch_payload(inner_entries, "inner", "home/root/pacc_skl_test", jobd_bytes, 0)
     patched += patch_payload(inner_entries, "inner", "etc/init.d/rcS", rcs, ord("\n"))
     patched += patch_payload(inner_entries, "inner", "etc/skel/.bashrc", conf_bytes or default_conf, ord("\n"))
+    if ctx_module_bytes:
+        rebuild_newc_with_module(inner_entries, inner["data"], inner["size"],
+                                 "home/root/xsfmm_ctx.ko", ctx_module_bytes,
+                                 "usr/lib/ossl-modules/legacy.so")
 
 if patched == 0:
     raise SystemExit("no payloads patched")
