@@ -1,0 +1,83 @@
+{
+  "schema": "hetgpu.xsfmm-xm-requirements/v1",
+  "target": {
+    "soc": "SiFive FU900",
+    "pacc_instances": 4,
+    "harts_per_pacc": 4,
+    "pacc_mmio_bases": [
+      "0x38100000",
+      "0x38500000",
+      "0x39100000",
+      "0x39500000"
+    ],
+    "vlen_bits": 1024,
+    "te_for_tew32": 32
+  },
+  "specification": {
+    "name": "Xsfmm Family of Attached Matrix Extensions",
+    "version": "0.6.6",
+    "date": "2026-01-08",
+    "url": "https://sifive.cdn.prismic.io/sifive/aitG-KlQnVZVEO9g_xsfmm-matrix-spec-v0p6p6.pdf",
+    "reference_sha256": "c74853a1cc799cc053d46b5f936f7938eb14d0c4f200b9f4a88b54e418d5427e"
+  },
+  "required_extensions": [
+    "xsfmmbase",
+    "xsfmm32a16f",
+    "zve32f",
+    "zvfbfmin"
+  ],
+  "context": {
+    "mstatus_ms_bits": "30:29",
+    "initial_value": 1,
+    "dirty_value": 3
+  },
+  "bf16_configuration": {
+    "sew": 16,
+    "twiden": 2,
+    "altfmt": 1,
+    "accumulator": "fp32"
+  },
+  "required_instruction_words": {
+    "sf.vsettnt t0,a4,e16alt,w2": "0x508772d7",
+    "sf.vsettm t0,a3": "0x8416f2d7",
+    "sf.vsettk t1,t0": "0x8422f357",
+    "sf.vtzero.t mt0": "0x43e06057",
+    "sf.vsettn t1,t0": "0x8402f357",
+    "sf.mm.f.f mt0,v8,v16": "0xf2881077",
+    "sf.vste32 t0,(a2)": "0x52567027"
+  },
+  "required_delivery_fields": [
+    "schema",
+    "image.path",
+    "image.bytes",
+    "image.sha256",
+    "hardware.build_id",
+    "hardware.soc",
+    "hardware.rtl_release",
+    "hardware.xm_release",
+    "hardware.xsfmm_version",
+    "hardware.pacc_instances",
+    "hardware.harts_per_pacc",
+    "hardware.vlen_bits",
+    "hardware.te_for_tew32",
+    "hardware.extensions",
+    "build.tool",
+    "build.tool_version",
+    "build.top",
+    "build.source_revision",
+    "activation.load_command",
+    "activation.build_id_readback_command",
+    "activation.rollback_image",
+    "activation.rollback_command",
+    "activation.requires_host_reboot"
+  ],
+  "acceptance": {
+    "minimal_shape": [4, 4, 4],
+    "tile_shape": [32, 32, 32],
+    "required_pacc_devices": [0, 1, 2, 3],
+    "max_mismatches": 0,
+    "must_complete": true,
+    "must_preserve_host_boot_id": true,
+    "host_fallback_allowed": false
+  }
+}

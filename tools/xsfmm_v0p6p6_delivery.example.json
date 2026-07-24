@@ -1,0 +1,38 @@
+{
+  "schema": "hetgpu.xsfmm-xm-delivery/v1",
+  "image": {
+    "path": "/absolute/path/to/fu900_pacc4_xm_xsfmm_v0p6p6.image",
+    "bytes": 0,
+    "sha256": "replace-with-64-lowercase-hex-digits"
+  },
+  "hardware": {
+    "build_id": "replace-with-immutable-hardware-build-id",
+    "soc": "SiFive FU900",
+    "rtl_release": "replace-with-fu900-rtl-release",
+    "xm_release": "replace-with-xm-release",
+    "xsfmm_version": "0.6.6",
+    "pacc_instances": 4,
+    "harts_per_pacc": 4,
+    "vlen_bits": 1024,
+    "te_for_tew32": 32,
+    "extensions": [
+      "xsfmmbase",
+      "xsfmm32a16f",
+      "zve32f",
+      "zvfbfmin"
+    ]
+  },
+  "build": {
+    "tool": "replace-with-synthesis-or-emulation-tool",
+    "tool_version": "replace-with-tool-version",
+    "top": "replace-with-fu900-top-and-configuration",
+    "source_revision": "replace-with-source-revision-or-manifest-sha256"
+  },
+  "activation": {
+    "load_command": "replace-with-exact-image-load-command",
+    "build_id_readback_command": "replace-with-exact-active-build-id-command",
+    "rollback_image": "/absolute/path/to/known-good-rollback.image",
+    "rollback_command": "replace-with-exact-rollback-command",
+    "requires_host_reboot": false
+  }
+}
