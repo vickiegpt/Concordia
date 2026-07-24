@@ -18,10 +18,29 @@ FIRMWARE="${BUILD_DIR}/lx500_pacc_jobd_xsfmm32_hardware_only.bin"
 mkdir -p "${MODULE_BUILD}"
 install -m 0644 "${JOBD_SRC}/xsfmm_ctx/Makefile" "${MODULE_BUILD}/Makefile"
 install -m 0644 "${JOBD_SRC}/xsfmm_ctx/xsfmm_ctx.c" "${MODULE_BUILD}/xsfmm_ctx.c"
+install -m 0644 "${JOBD_SRC}/xsfmm_ctx/xsfmm_pacc_kconfig.h" \
+    "${MODULE_BUILD}/xsfmm_pacc_kconfig.h"
 make -C "${KERNEL_SRC}" M="${MODULE_BUILD}" LOCALVERSION=+ \
+    KCFLAGS="-include ${MODULE_BUILD}/xsfmm_pacc_kconfig.h" \
     LD=/usr/bin/ld.bfd clean modules
 cp "${MODULE_BUILD}/xsfmm_ctx.ko" "${MODULE_BUILD}/xsfmm_ctx_stripped.ko"
 riscv64-linux-gnu-strip --strip-debug "${MODULE_BUILD}/xsfmm_ctx_stripped.ko"
+MODULE_LAYOUT_SIZE="$(
+    riscv64-linux-gnu-readelf -S --wide "${MODULE_BUILD}/xsfmm_ctx_stripped.ko" |
+        awk '$2 == ".gnu.linkonce.this_module" { print $6; exit }'
+)"
+MODULE_EXIT_OFFSET="$(
+    riscv64-linux-gnu-readelf -r "${MODULE_BUILD}/xsfmm_ctx_stripped.ko" |
+        awk '/cleanup_module/ && $1 != "000000000000" { print $1; exit }'
+)"
+MODULE_UNDEFINED="$(riscv64-linux-gnu-nm -u "${MODULE_BUILD}/xsfmm_ctx_stripped.ko")"
+if [[ "${MODULE_LAYOUT_SIZE}" != "0004c0" ||
+      "${MODULE_EXIT_OFFSET}" != "000000000478" ||
+      -n "${MODULE_UNDEFINED}" ]]; then
+    echo "PACC module ABI mismatch: size=${MODULE_LAYOUT_SIZE:-missing} " \
+         "exit=${MODULE_EXIT_OFFSET:-missing} undefined=${MODULE_UNDEFINED:-none}" >&2
+    exit 1
+fi
 
 "${CC}" -target riscv64-linux-gnu -menable-experimental-extensions \
     --gcc-toolchain=/usr -O3 -march="${MARCH}" -mabi=lp64d \

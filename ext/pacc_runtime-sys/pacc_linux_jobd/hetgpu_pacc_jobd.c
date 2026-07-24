@@ -1405,7 +1405,7 @@ static int jobd_enable_xsfmm_context(void) {
 #if defined(HETGPU_PACC_HAVE_XSFMM_BF16)
     cpu_set_t set;
     int cpu = sched_getcpu();
-    int fd;
+    int module_fd;
 
     if (cpu < 0) {
         int saved_errno = errno;
@@ -1420,31 +1420,28 @@ static int jobd_enable_xsfmm_context(void) {
         return -saved_errno;
     }
 
-    fd = open("/dev/xsfmm_ctx", O_RDONLY | O_CLOEXEC);
-    if (fd < 0 && errno == ENOENT) {
-        int module_fd = open("/home/root/xsfmm_ctx.ko", O_RDONLY | O_CLOEXEC);
-        if (module_fd < 0) {
-            int saved_errno = errno;
-            log_msg("xsfmm hardware-only init failed: open module: %s", strerror(errno));
-            return -saved_errno;
-        }
-        if (syscall(SYS_finit_module, module_fd, "", 0) != 0 && errno != EEXIST) {
-            int saved_errno = errno;
-            close(module_fd);
-            log_msg("xsfmm hardware-only init failed: finit_module: %s", strerror(saved_errno));
-            return -saved_errno;
-        }
-        close(module_fd);
-        fd = open("/dev/xsfmm_ctx", O_RDONLY | O_CLOEXEC);
+    module_fd = open("/home/root/xsfmm_ctx.ko", O_RDONLY | O_CLOEXEC);
+    if (module_fd < 0) {
+        log_msg("xsfmm hardware-only init failed: open module: %s", strerror(errno));
+        return -0x41;
     }
-    if (fd < 0) {
+    if (syscall(SYS_finit_module, module_fd, "", 0) != 0) {
         int saved_errno = errno;
-        log_msg("xsfmm hardware-only init failed: open /dev/xsfmm_ctx: %s", strerror(errno));
-        return -saved_errno;
+        close(module_fd);
+        log_msg("xsfmm hardware-only init failed: finit_module: %s",
+                strerror(saved_errno));
+        if (saved_errno == EEXIST) {
+            return -0x46;
+        }
+        return -0x42;
     }
-    close(fd);
+    close(module_fd);
+    if (sched_getcpu() != cpu) {
+        log_msg("xsfmm hardware-only init failed: migrated away from cpu%d", cpu);
+        return -0x43;
+    }
     g_xsfmm_context_ready = true;
-    log_msg("xsfmm hardware-only context enabled on cpu%d", cpu);
+    log_msg("xsfmm hardware-only context enabled by module init on cpu%d", cpu);
     return 0;
 #else
     log_msg("xsfmm hardware-only init failed: binary lacks Xsfmm32a16f support");

@@ -80,11 +80,11 @@ def patch_payload(entries, label: str, name: str, payload: bytes, pad: int = 0, 
     print(f"patched {label}:{name}: {len(payload)} bytes into {size}-byte slot")
     return True
 
-def rebuild_newc_with_module(entries, base: int, total_size: int,
+def rebuild_newc_with_module(entries, base: int, total_size: int, label: str,
                              module_name: str, module_payload: bytes,
                              donor_name: str):
     if donor_name not in entries:
-        raise SystemExit(f"inner module donor missing: {donor_name}")
+        raise SystemExit(f"{label} module donor missing: {donor_name}")
 
     def update_field(header: bytearray, index: int, value: int):
         start = 6 + index * 8
@@ -127,10 +127,10 @@ def rebuild_newc_with_module(entries, base: int, total_size: int,
     rebuilt += trailer_header + trailer_name
     rebuilt += b"\0" * (align4(len(rebuilt)) - len(rebuilt))
     if len(rebuilt) > total_size:
-        raise SystemExit(f"rebuilt inner cpio {len(rebuilt)} exceeds slot {total_size}")
+        raise SystemExit(f"rebuilt {label} cpio {len(rebuilt)} exceeds slot {total_size}")
     rebuilt += b"\0" * (total_size - len(rebuilt))
     image[base:base + total_size] = rebuilt
-    print(f"rebuilt inner cpio: module={module_name} bytes={len(module_payload)} "
+    print(f"rebuilt {label} cpio: module={module_name} bytes={len(module_payload)} "
           f"removed={donor_name} total={total_size}")
 
 jobd_threads = os.environ.get("PACC_JOBD_KERNEL_THREADS", "4").strip() or "4"
@@ -298,8 +298,16 @@ if inner_name in outer:
     patched += patch_payload(inner_entries, "inner", "etc/skel/.bashrc", conf_bytes or default_conf, ord("\n"))
     if ctx_module_bytes:
         rebuild_newc_with_module(inner_entries, inner["data"], inner["size"],
+                                 "inner",
                                  "home/root/xsfmm_ctx.ko", ctx_module_bytes,
                                  "usr/lib/ossl-modules/legacy.so")
+
+if ctx_module_bytes:
+    outer_base = next(iter(outer.values()))["hdr"]
+    outer_size = outer["TRAILER!!!"]["end"] - outer_base
+    rebuild_newc_with_module(outer, outer_base, outer_size, "outer",
+                             "home/root/xsfmm_ctx.ko", ctx_module_bytes,
+                             "usr/lib/ossl-modules/legacy.so")
 
 if patched == 0:
     raise SystemExit("no payloads patched")
