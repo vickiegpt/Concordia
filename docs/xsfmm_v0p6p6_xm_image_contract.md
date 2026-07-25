@@ -125,11 +125,38 @@ without completion:
 
 `/tmp/lanxin_disagg_eval/xsfmm_mscheck6_20260724_065318`
 
+The fail-closed four-PACC runner was revalidated on 2026-07-25 with the
+hardware-only firmware SHA-256
+`2d2645cab94f6e492f6922923d403f0f63d2fa1fecc9ff7aa97791de4371cb15`.
+PACC0 reached the jobd ready record, but its first 4x4x4 BF16 request returned
+no completion within five seconds:
+
+`/tmp/lanxin_disagg_eval/xsfmm_runner_recovery_20260725_020856`
+
+The runner reported `acceptance=failed`, counted zero Xsfmm throughput, cleared
+the shared-DDR control window, and restored
+`lx500_pacc_jobd_hostbase_idmarker.bin`. All four stable beacons subsequently
+reported phase `0x7002`. The main-host boot ID remained
+`9508c6db-ddf6-4e8d-8162-bd2e32a03660`.
+
+The canonical Xsfmm+CUDA peak entry point reproduced the same failure on all
+four PACC instances concurrently. Every probe exited with submit timeout status
+9, the aggregate Xsfmm throughput remained zero, and the model stage was
+blocked with exit status 20:
+
+`/tmp/lanxin_disagg_eval/xsfmm_cuda_peak_gate_20260725_022230`
+
 This means the current DTB and the active hardware implementation are not a
 passing Xsfmm delivery. The board has no Linux-visible FPGA manager, JTAG/XVC
 device, vendor RTL tree, synthesis tool, or hardware image loader. A matching
 hardware artifact must therefore come from the FU900 hardware owner/build
 environment; it cannot be reconstructed from the PACC Linux firmware.
+
+`tools/run_xsfmm_cuda_peak.sh` enforces the 4x4x4 and 32x32x32 four-PACC gates
+before starting a model runner. It accepts an end-to-end TPS result only when
+the model runner reports at least one real Xsfmm offload, positive generated
+tokens, and zero mismatches. Standalone PACC TOPS and CUDA token throughput are
+never added together.
 
 ## No-Reboot Rule
 

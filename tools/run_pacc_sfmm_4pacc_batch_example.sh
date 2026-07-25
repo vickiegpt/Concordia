@@ -6,7 +6,8 @@ cd "$ROOT"
 
 DEVICES="${PACC_SFMM_DEVICES:-0,1,2,3}"
 RECOVER_MASK="${PACC_SFMM_RECOVER_MASK:-0xf}"
-RECOVER_FIRMWARE="${PACC_SFMM_RECOVER_FIRMWARE:-lanxin/lx500_pacc_jobd_hostbase_idmarker.bin}"
+RECOVER_FIRMWARE="${PACC_SFMM_RECOVER_FIRMWARE:-lanxin/lx500_pacc_jobd_xsfmm32_hardware_only.bin}"
+STABLE_FIRMWARE="${PACC_SFMM_STABLE_FIRMWARE:-lanxin/lx500_pacc_jobd_hostbase_idmarker.bin}"
 RECOVER_SETTLE_S="${PACC_SFMM_RECOVER_SETTLE_S:-15}"
 BOOT_PACC="${PACC_SFMM_BOOT:-1}"
 
@@ -25,25 +26,14 @@ LOG_DIR="${PACC_SFMM_LOG_DIR:-${LOG_ROOT}/sfmm_4pacc_batch_${STAMP}}"
 
 mkdir -p "$LOG_DIR"
 
-if [[ ! -x "$PROBE" ]]; then
-    echo "missing probe: $PROBE" >&2
-    exit 2
-fi
-if [[ ! -r "$SUBMIT_SHIM" ]]; then
-    echo "missing submit shim: $SUBMIT_SHIM" >&2
-    exit 2
-fi
-if [[ ! -r "${ZLUDA_BUILD_DIR}/libnvcuda.so" || ! -r "${ZLUDA_BUILD_DIR}/libhetgpu_cuda_shim.so" ]]; then
-    echo "missing ZLUDA/PACC user-space libs under $ZLUDA_BUILD_DIR" >&2
-    exit 2
-fi
+HOST_BOOT_ID_BEFORE="$(cat /proc/sys/kernel/random/boot_id)"
+BOOT_ATTEMPTED=0
 
-if [[ "$BOOT_PACC" != "0" ]]; then
-    if [[ "${PACC_SFMM_CLEAR_CONTROL:-1}" != "0" ]]; then
-        clear_dev="${PACC_SFMM_CLEAR_DDR_DEVICE:-/dev/hetgpu_pacc_mbox_ddr_coh0}"
-        clear_off="${PACC_SFMM_CONTROL_BASE_OFF:-0x100000}"
-        clear_bytes="${PACC_SFMM_CONTROL_BYTES:-0x8000}"
-        if ! python3 - "$clear_dev" "$clear_off" "$clear_bytes" <<'PY'
+clear_control_window() {
+    local path="${PACC_SFMM_CLEAR_DDR_DEVICE:-/dev/hetgpu_pacc_mbox_ddr_coh0}"
+    local off="${PACC_SFMM_CONTROL_BASE_OFF:-0x100000}"
+    local bytes="${PACC_SFMM_CONTROL_BYTES:-0x8000}"
+    python3 - "$path" "$off" "$bytes" <<'PY'
 import os
 import sys
 
@@ -59,14 +49,65 @@ if written != size:
     raise SystemExit(f"short control clear: {written}/{size}")
 print(f"cleared shared-DDR control path={path} off=0x{off:x} bytes=0x{size:x}")
 PY
-        then
+}
+
+cleanup() {
+    local rc=$?
+    trap - EXIT
+    if [[ "$rc" != "0" && "$BOOT_ATTEMPTED" == "1" &&
+          "${PACC_SFMM_RESTORE_ON_FAILURE:-1}" != "0" ]]; then
+        echo "restoring stable PACC firmware mask=${RECOVER_MASK} firmware=${STABLE_FIRMWARE}" >&2
+        clear_control_window || true
+        HETGPU_PACC_RECOVER_FIRMWARE="$STABLE_FIRMWARE" \
+        HETGPU_PACC_RECOVER_PATCH_PACC_ID_ENV="${PACC_SFMM_PATCH_PACC_ID_ENV:-1}" \
+        HETGPU_PACC_RECOVER_PRE_RESET_MASK="$RECOVER_MASK" \
+        HETGPU_PACC_RECOVER_PRE_RESET_SETTLE_S="${PACC_SFMM_PRE_RESET_SETTLE_S:-1}" \
+        HETGPU_PACC_RECOVER_SETTLE_S="$RECOVER_SETTLE_S" \
+            ext/pacc_runtime-sys/tools/pacc_recover_no_reboot.sh "$RECOVER_MASK" || true
+    fi
+    local host_boot_id_after
+    host_boot_id_after="$(cat /proc/sys/kernel/random/boot_id)"
+    {
+        echo "host_boot_id_before=${HOST_BOOT_ID_BEFORE}"
+        echo "host_boot_id_after=${host_boot_id_after}"
+    } | tee "${LOG_DIR}/host_boot_id.txt"
+    if [[ "$host_boot_id_after" != "$HOST_BOOT_ID_BEFORE" ]]; then
+        echo "main-host boot ID changed during PACC-only run" >&2
+        rc=99
+    fi
+    exit "$rc"
+}
+trap cleanup EXIT
+
+if [[ ! -x "$PROBE" ]]; then
+    echo "missing probe: $PROBE" >&2
+    exit 2
+fi
+if [[ ! -r "$SUBMIT_SHIM" ]]; then
+    submit_src="${ROOT}/tmp/mbox_readfix/pacc_sfmm_submit_shim.c"
+    if [[ ! -r "$submit_src" ]]; then
+        echo "missing submit shim source: $submit_src" >&2
+        exit 2
+    fi
+    "${CC:-cc}" -O3 -fPIC -shared -Wall -Wextra \
+        -o "$SUBMIT_SHIM" "$submit_src" -ldl -pthread
+fi
+if [[ ! -r "${ZLUDA_BUILD_DIR}/libnvcuda.so" || ! -r "${ZLUDA_BUILD_DIR}/libhetgpu_cuda_shim.so" ]]; then
+    echo "missing ZLUDA/PACC user-space libs under $ZLUDA_BUILD_DIR" >&2
+    exit 2
+fi
+
+if [[ "$BOOT_PACC" != "0" ]]; then
+    if [[ "${PACC_SFMM_CLEAR_CONTROL:-1}" != "0" ]]; then
+        if ! clear_control_window; then
             echo "warning: failed to clear shared-DDR control window before boot" >&2
         fi
     fi
     echo "booting PACC mask=${RECOVER_MASK} firmware=${RECOVER_FIRMWARE}"
+    BOOT_ATTEMPTED=1
     HETGPU_PACC_RECOVER_FIRMWARE="$RECOVER_FIRMWARE" \
     HETGPU_PACC_RECOVER_PATCH_PACC_ID_ENV="${PACC_SFMM_PATCH_PACC_ID_ENV:-1}" \
-    HETGPU_PACC_RECOVER_PRE_RESET_MASK="${PACC_SFMM_PRE_RESET_MASK:-0xf}" \
+    HETGPU_PACC_RECOVER_PRE_RESET_MASK="${PACC_SFMM_PRE_RESET_MASK:-$RECOVER_MASK}" \
     HETGPU_PACC_RECOVER_PRE_RESET_SETTLE_S="${PACC_SFMM_PRE_RESET_SETTLE_S:-1}" \
     HETGPU_PACC_RECOVER_SETTLE_S="$RECOVER_SETTLE_S" \
         ext/pacc_runtime-sys/tools/pacc_recover_no_reboot.sh "$RECOVER_MASK"
@@ -197,7 +238,7 @@ done
 end_ns="$(date +%s%N)"
 
 wall_s="$(awk -v start="$start_ns" -v end="$end_ns" 'BEGIN { printf "%.9f", (end - start) / 1000000000.0 }')"
-python3 - "$LOG_DIR" "$wall_s" <<'PY'
+if ! python3 - "$LOG_DIR" "$wall_s" "$DEVICES" <<'PY'
 import glob
 import os
 import re
@@ -205,16 +246,23 @@ import sys
 
 log_dir = sys.argv[1]
 wall_s = float(sys.argv[2])
+expected_devices = {
+    f"pacc{int(value, 0)}"
+    for value in sys.argv[3].replace(",", " ").split()
+    if value
+}
 line_re = re.compile(
     r"pacc_gemm_bf16_probe m=(\d+) n=(\d+) k=(\d+) .*?iters=(\d+) "
     r"gemm_s_avg=([0-9.eE+-]+).*?mismatches=(\d+)"
 )
 
 rows = []
+seen_devices = set()
 for path in sorted(glob.glob(os.path.join(log_dir, "pacc*.log"))):
     text = open(path, "r", errors="replace").read()
     m = line_re.search(text)
     dev = os.path.splitext(os.path.basename(path))[0]
+    seen_devices.add(dev)
     if not m:
         rows.append((dev, None, None, None, None, None, None, "no-result"))
         continue
@@ -245,6 +293,18 @@ wall_tops = sum_ops_total / wall_s / 1.0e12 if wall_s > 0 else 0.0
 print(f"  aggregate_kernel_window={sum_tops:.6f} TOPS-equivalent")
 print(f"  aggregate_end_to_end_wall={wall_tops:.6f} TOPS-equivalent wall_s={wall_s:.6f}")
 print(f"  logs={log_dir}")
+valid = (
+    seen_devices == expected_devices and
+    len(rows) == len(expected_devices) and
+    all(row[1] is not None and row[7] == "mismatches=0" for row in rows)
+)
+if not valid:
+    print("  acceptance=failed")
+    raise SystemExit(1)
+print("  acceptance=passed")
 PY
+then
+    rc=1
+fi
 
 exit "$rc"
