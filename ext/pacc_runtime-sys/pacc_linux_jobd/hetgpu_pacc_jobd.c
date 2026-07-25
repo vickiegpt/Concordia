@@ -120,6 +120,24 @@ static bool g_xsfmm_b_transposed_pack = false;
 static bool g_xsfmm_c_transposed_pack = false;
 static bool g_xsfmm_context_ready = false;
 static int g_xsfmm_context_error = 0;
+static int g_xsfmm_run_fd = -1;
+
+#define HETGPU_XSFMM_REQUEST_MAGIC UINT64_C(0x5853464d4d524551)
+
+struct XsfmmRequest {
+    uint64_t magic;
+    uint64_t a;
+    uint64_t b;
+    uint64_t c;
+    uint64_t m;
+    uint64_t n;
+    uint64_t k;
+    uint64_t repeats;
+    uint64_t cycles;
+    uint64_t completed_repeats;
+    int32_t status;
+    uint32_t reserved;
+};
 
 extern int xsfmm_native_bf16(const uint16_t *a_km,
                              const uint16_t *b_kn,
@@ -1349,6 +1367,16 @@ static uint64_t jobd_xsfmm_gemm_max_n(void) {
     return parse_env_u64_default("HETGPU_PACC_JOBD_XSFMM_MAX_N", 32ULL);
 }
 
+static uint64_t jobd_xsfmm_gemm_max_m(void) {
+    return parse_env_u64_default("HETGPU_PACC_JOBD_XSFMM_MAX_M", 32ULL);
+}
+
+static uint64_t jobd_xsfmm_repeats(void) {
+    uint64_t repeats =
+        parse_env_u64_default("HETGPU_PACC_JOBD_XSFMM_REPEATS", 1ULL);
+    return repeats > 4096ULL ? 4096ULL : repeats;
+}
+
 static bool jobd_bf16_skinny_copy_enabled(void) {
     const char *value = getenv("HETGPU_PACC_JOBD_BF16_SKINNY_COPY");
     if (value && *value) {
@@ -1407,6 +1435,9 @@ static int jobd_enable_xsfmm_context(void) {
     int cpu = sched_getcpu();
     int module_fd;
 
+    if (g_xsfmm_context_ready) {
+        return 0;
+    }
     if (cpu < 0) {
         int saved_errno = errno;
         log_msg("xsfmm hardware-only init failed: sched_getcpu: %s", strerror(errno));
@@ -1425,26 +1456,63 @@ static int jobd_enable_xsfmm_context(void) {
         log_msg("xsfmm hardware-only init failed: open module: %s", strerror(errno));
         return -0x41;
     }
-    if (syscall(SYS_finit_module, module_fd, "", 0) != 0) {
+    if (syscall(SYS_finit_module, module_fd, "", 0) != 0 && errno != EEXIST) {
         int saved_errno = errno;
         close(module_fd);
         log_msg("xsfmm hardware-only init failed: finit_module: %s",
                 strerror(saved_errno));
-        if (saved_errno == EEXIST) {
-            return -0x46;
-        }
         return -0x42;
     }
     close(module_fd);
-    if (sched_getcpu() != cpu) {
-        log_msg("xsfmm hardware-only init failed: migrated away from cpu%d", cpu);
-        return -0x43;
+    g_xsfmm_run_fd =
+        open("/sys/module/xsfmm_ctx/parameters/run", O_WRONLY | O_CLOEXEC);
+    if (g_xsfmm_run_fd < 0) {
+        log_msg("xsfmm hardware-only init failed: open run control: %s",
+                strerror(errno));
+        return -0x45;
     }
     g_xsfmm_context_ready = true;
-    log_msg("xsfmm hardware-only context enabled by module init on cpu%d", cpu);
     return 0;
 #else
     log_msg("xsfmm hardware-only init failed: binary lacks Xsfmm32a16f support");
+    return -1;
+#endif
+}
+
+static int jobd_run_xsfmm_request(struct XsfmmRequest *request) {
+#if defined(HETGPU_PACC_HAVE_XSFMM_BF16)
+    char address[32];
+    int address_len;
+
+    if (!request || !g_xsfmm_context_ready || g_xsfmm_run_fd < 0) {
+        return -0x45;
+    }
+    address_len = snprintf(address, sizeof(address), "0x%" PRIxPTR,
+                           (uintptr_t)request);
+    if (address_len <= 0 || (size_t)address_len >= sizeof(address)) {
+        return -0x48;
+    }
+    if (lseek(g_xsfmm_run_fd, 0, SEEK_SET) < 0) {
+        return -0x49;
+    }
+    request->status = -1;
+    request->cycles = 0;
+    request->completed_repeats = 0;
+    __sync_synchronize();
+    if (write(g_xsfmm_run_fd, address, (size_t)address_len) != address_len) {
+        return -0x4a;
+    }
+    __sync_synchronize();
+    if (request->status != 0 ||
+        request->completed_repeats != request->repeats) {
+        return -0x4b;
+    }
+    if (request->repeats > 1) {
+        log_msg("xsfmm batch repeats=%" PRIu64 " cycles=%" PRIu64,
+                request->completed_repeats, request->cycles);
+    }
+    return 0;
+#else
     return -1;
 #endif
 }
@@ -5032,7 +5100,8 @@ static int run_gemm_xsfmm_hardware_only(const struct GemmJob *job,
 
     if (!job || !a || !b || !c || job->atype != PACC_DTYPE_BF16 ||
         job->btype != PACC_DTYPE_BF16 || job->transa || job->transb ||
-        !gemm_job_is_compact_rowmajor(job) || job->m > PACC_XSFMM16_TILE_M ||
+        !gemm_job_is_compact_rowmajor(job) ||
+        job->m > jobd_xsfmm_gemm_max_m() ||
         job->n > PACC_XSFMM16_TILE_N || job->n > jobd_xsfmm_gemm_max_n() ||
         (job->k & 1u) != 0 ||
         (job->ctype != PACC_DTYPE_F32 && job->ctype != PACC_DTYPE_F16 &&
@@ -5040,7 +5109,8 @@ static int run_gemm_xsfmm_hardware_only(const struct GemmJob *job,
         return 0xffff1f20;
     }
 
-    a_pack = (uint16_t *)malloc((size_t)(job->k * job->m) * sizeof(*a_pack));
+    a_pack = (uint16_t *)malloc(
+        (size_t)(job->k * job->m) * sizeof(*a_pack));
     b_pack = (uint16_t *)malloc((size_t)(job->k * job->n) * sizeof(*b_pack));
     c_tile = (float *)malloc((size_t)(job->m * job->n) * sizeof(*c_tile));
     if (!a_pack || !b_pack || !c_tile) {
@@ -5059,10 +5129,19 @@ static int run_gemm_xsfmm_hardware_only(const struct GemmJob *job,
         }
     }
     memset(c_tile, 0, (size_t)(job->m * job->n) * sizeof(*c_tile));
-    if (xsfmm_native_bf16(a_pack, b_pack, c_tile,
-                          (size_t)job->m, (size_t)job->n,
-                          (size_t)job->k) != 0) {
-        status = 0xffff1f22;
+    struct XsfmmRequest request = {
+        .magic = HETGPU_XSFMM_REQUEST_MAGIC,
+        .a = (uintptr_t)a_pack,
+        .b = (uintptr_t)b_pack,
+        .c = (uintptr_t)c_tile,
+        .m = job->m,
+        .n = job->n,
+        .k = job->k,
+        .repeats = jobd_xsfmm_repeats(),
+        .status = -1,
+    };
+    if (jobd_run_xsfmm_request(&request) != 0) {
+        status = 0xffff1f23;
         goto out;
     }
 

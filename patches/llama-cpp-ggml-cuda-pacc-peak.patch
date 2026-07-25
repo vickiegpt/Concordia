@@ -2,30 +2,17 @@
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -1,0 +2 @@
 +#include "ggml-cpu.h"
-@@ -85,0 +87 @@
-+#include <cstring>
-@@ -2542,0 +2545,345 @@
-+
-+// ---- hetGPU PACC quantized offload hook (IQ1_S native + others via F32) ---
-+#include <mutex>
+@@ -2546,0 +2548,2 @@
 +#include <atomic>
 +#include <cerrno>
-+#include <cstdlib>
-+#include <cstring>
-+#include <fcntl.h>
+@@ -2549,0 +2553 @@
 +#include <thread>
-+#include <unistd.h>
-+#include <unordered_map>
+@@ -2551,0 +2556 @@
 +#include <vector>
-+extern "C" int hetgpu_pacc_submit_gemm(int, int, int, int, int, const void *,
-+    const void *, int, int, long long, const void *, int, int, long long,
-+    const void *, void *, int, int, long long, int, int);
-+static bool ggml_pacc_iq1s_enabled() {
-+    static int v = -1;
+@@ -2557 +2562 @@
+-    if (v < 0) { const char * e = getenv("HETGPU_PACC_IQ1S_HOOK"); v = (e && e[0] == '0') ? 0 : 1;
 +    if (v < 0) { const char * e = getenv("HETGPU_PACC_IQ1S_HOOK"); v = (e && e[0] == '1' && e[1] == '\0') ? 1 : 0;
-+        fprintf(stderr, "[pacc-iq1s] hook enabled=%d (env=%s)\n", v, e?e:"(unset)"); }
-+    return v == 1;
-+}
+@@ -2560,0 +2566,83 @@
 +
 +// Keep unsupported fake-CUDA quantized kernels out of the mixed path while
 +// reusing llama.cpp's optimized host quantized dot products. This is enabled
@@ -96,11 +83,27 @@
 +    }
 +    return true;
 +}
-+// Route src0 (weights) GEMM to PACC, keeping any quantized op away from the MMQ
-+// kernel (which aborts on the fake PACC device). IQ1_S -> native atype=7;
-+// other quantized/F16 -> dequant to F32 (host) + atype=4 transa=1. src0 is ggml
-+// [k,m] row-major (row i contiguous), src1 [k,n] col-major, dst [m,n] col-major.
-+static bool ggml_cuda_pacc_iq1s_mul_mat(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
++static uint16_t ggml_pacc_f32_to_bf16(float value) {
++    uint32_t bits;
++    memcpy(&bits, &value, sizeof(bits));
++    bits += 0x7fffU + ((bits >> 16) & 1U);
++    return (uint16_t) (bits >> 16);
++}
++static float ggml_pacc_bf16_to_f32(uint16_t value) {
++    uint32_t bits = (uint32_t) value << 16;
++    float result;
++    memcpy(&result, &bits, sizeof(result));
++    return result;
++}
++
+@@ -2562,3 +2650,3 @@
+-// kernel (which aborts on the fake PACC device). IQ1_S -> native atype=7;
+-// other quantized/F16 -> dequant to F32 (host) + atype=4 transa=1. src0 is ggml
+-// [k,m] row-major (row i contiguous), src1 [k,n] col-major, dst [m,n] col-major.
++// kernel (which aborts on the fake PACC device). The explicit Xsfmm mode
++// dequantizes selected weights once, stores BF16 in shared DDR, and submits
++// compact row-major BF16 tiles accepted by the hardware-only jobd path.
+@@ -2565,0 +2654,13 @@
 +    const char * candidate_trace = getenv("HETGPU_PACC_IQ1S_CANDIDATE_TRACE");
 +    if (candidate_trace && candidate_trace[0] != '0') {
 +        static long long ntraces = 0;
@@ -114,19 +117,20 @@
 +                    ggml_is_contiguous(src0) ? 1 : 0, ggml_is_contiguous(src1) ? 1 : 0, ggml_is_contiguous(dst) ? 1 : 0);
 +        }
 +    }
-+    if (src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) return false;
-+    const bool is_iq1s = (src0->type == GGML_TYPE_IQ1_S);
-+    const bool is_quant = ggml_is_quantized(src0->type);
-+    if (!is_quant && src0->type != GGML_TYPE_F16) return false;   // F32/BF16: leave to ggml (mmvf)
+@@ -2568,0 +2670,6 @@
++    const char * xsfmm_env = getenv("HETGPU_PACC_IQ1S_XSFMM_BF16");
++    const bool xsfmm_bf16 = !is_iq1s && xsfmm_env &&
++                            xsfmm_env[0] == '1' && xsfmm_env[1] == '\0';
++    const char * split3_env = getenv("HETGPU_PACC_IQ1S_XSFMM_SPLIT3");
++    const bool xsfmm_split3 = xsfmm_bf16 && split3_env &&
++                              split3_env[0] == '1' && split3_env[1] == '\0';
+@@ -2569,0 +2677,4 @@
 +    const char * q8_native = getenv("HETGPU_PACC_Q8_0_NATIVE_MMVF");
 +    if (src0->type == GGML_TYPE_Q8_0 && q8_native && q8_native[0] == '1') return false;
 +    const char * iq1s_only = getenv("HETGPU_PACC_IQ1S_ONLY");
 +    if (!is_iq1s && (!iq1s_only || iq1s_only[0] != '0')) return false;
-+    if (!ggml_is_contiguous(src0) || !ggml_is_contiguous(src1) || !ggml_is_contiguous(dst)) return false;
-+    const long long k = src0->ne[0], m = src0->ne[1], n = src1->ne[1];
-+    if (src1->ne[0] != k || dst->ne[0] != m || dst->ne[1] != n) return false;
-+    if (src0->ne[2] != 1 || src0->ne[3] != 1 || src1->ne[2] != 1 || src1->ne[3] != 1) return false;
-+    if (is_iq1s && (k % 256 != 0)) return false;
+@@ -2574,0 +2686,16 @@
++    if (xsfmm_bf16 && ((k & 1) != 0 || n > 32)) return false;
 +    // Allow deployment scripts to keep only the PACC shapes that outperform the
 +    // CUDA fallback. Unset or zero values leave the corresponding field open.
 +    const char * filter_type_env = getenv("HETGPU_PACC_IQ1S_FILTER_TYPE");
@@ -142,39 +146,41 @@
 +        return cpu_fallback && cpu_fallback[0] == '1' &&
 +               ggml_cuda_pacc_cpu_mul_mat(src0, src1, dst);
 +    }
-+    static std::mutex mtx;
-+    static int fd = -1;
-+    static unsigned long long base = 0, uoff = 0;
-+    static std::unordered_map<const void *, unsigned long long> wcache;  // src0->data -> staged weight off
-+    static unsigned long long weight_start = 0;
-+    static unsigned long long wnext = 0;
-+    static unsigned long long scratch = 0;
+@@ -2582,2 +2709,8 @@
+-    static char * hbuf = nullptr; static size_t hcap = 0;       // staging scratch (B, or dequanted A)
+-    static char * qbuf = nullptr; static size_t qcap = 0;       // raw quantized A (DtoH)
 +    static char * hbuf = nullptr; static size_t hcap = 0;       // full dequantized/native A
 +    static char * qbuf = nullptr; static size_t qcap = 0;       // raw A, then packed A tile
++    static char * abuf = nullptr; static size_t acap = 0;       // BF16 staged A
++    static char * alobuf = nullptr; static size_t alocap = 0;   // BF16 residual A
 +    static char * bbuf = nullptr; static size_t bcap = 0;       // full column-major B
 +    static char * tbuf = nullptr; static size_t tcap = 0;       // packed B tile or returned C tile
 +    static char * obuf = nullptr; static size_t ocap = 0;       // assembled column-major C
-+    static long long ncalls = 0;
-+    std::lock_guard<std::mutex> lk(mtx);
-+    if (fd < 0) {
-+        const char * be = getenv("HETGPU_PACC_SHARED_DDR_BASE"); base = be ? strtoull(be,0,0) : 0x20110600000ULL;
-+        const char * ue = getenv("HETGPU_PACC_SHARED_DDR_USER_OFF"); uoff = ue ? strtoull(ue,0,0) : 0x100000ULL;
-+        const char * ws = getenv("HETGPU_PACC_IQ1S_WEIGHT_OFF"); weight_start = ws ? strtoull(ws,0,0) : 0x1000000ULL;
-+        const char * ss = getenv("HETGPU_PACC_IQ1S_SCRATCH_OFF"); scratch = ss ? strtoull(ss,0,0) : 0x80000000ULL;
-+        if (scratch <= weight_start) scratch = weight_start + 0x10000000ULL;
-+        wnext = weight_start;
-+        const char * cd = getenv("HETGPU_PACC_IQ1S_COH_DEV"); if (!cd) cd = "/dev/hetgpu_pacc_mbox_ddr_coh0";
-+        fd = open(cd, O_RDWR | O_SYNC);
-+        if (fd < 0) { fprintf(stderr, "[pacc-iq1s] open %s failed\n", cd); return false; }
++    static const void * hbuf_source = nullptr;
+@@ -2597 +2730,2 @@
+-    // A staged bytes + submit params depend on native-IQ1_S vs dequant-F32.
++    // A staged bytes + submit params depend on native-IQ1_S, dequant-F32, or
++    // compact BF16 for the hardware Xsfmm path.
+@@ -2600 +2734,6 @@
+-    else         { a_atype = 4; a_transa = 1; a_lda = k;          a_bytes = (size_t)m*k*4; }
++    else if (xsfmm_bf16) {
++        a_atype = 5; a_transa = 0; a_lda = k; a_bytes = (size_t) m*k*sizeof(uint16_t);
++    } else {
++        a_atype = 4; a_transa = 1; a_lda = k; a_bytes = (size_t) m*k*sizeof(float);
 +    }
-+    // A staged bytes + submit params depend on native-IQ1_S vs dequant-F32.
-+    int a_atype; int a_transa; long long a_lda; size_t a_bytes;
-+    if (is_iq1s) { a_atype = 7; a_transa = 0; a_lda = (k/256)*50; a_bytes = (size_t)m*a_lda; }
-+    else         { a_atype = 4; a_transa = 1; a_lda = k;          a_bytes = (size_t)m*k*4; }
-+    const size_t b_bytes = (size_t)k*n*4, c_bytes = (size_t)m*n*4;
++    const long long pacc_n = xsfmm_bf16 ? 32 : n;
+@@ -2602,2 +2741,41 @@
+-    size_t need = a_bytes > b_bytes ? a_bytes : b_bytes; if (c_bytes > need) need = c_bytes;
+-    if (need > hcap) { free(hbuf); hbuf = (char*)malloc(need); hcap = need; if (!hbuf){hcap=0;return false;} }
++    const size_t staged_b_bytes = (size_t) k*pacc_n*
++        (xsfmm_bf16 ? sizeof(uint16_t) : sizeof(float))*
++        (xsfmm_split3 ? 2 : 1);
++    const size_t staged_a_bytes = a_bytes*(xsfmm_split3 ? 2 : 1);
++    const size_t h_bytes = is_iq1s ? a_bytes : (size_t) m*k*sizeof(float);
 +    const char * tile_env = getenv("HETGPU_PACC_IQ1S_MAX_TILE_M");
 +    long long max_tile_m = tile_env ? strtoll(tile_env, nullptr, 0) : 2048;
 +    if (max_tile_m <= 0 || max_tile_m > m) max_tile_m = m;
++    if (xsfmm_bf16 && max_tile_m > 32) max_tile_m = 32;
 +    const char * tile_k_env = getenv("HETGPU_PACC_IQ1S_MAX_TILE_K");
 +    long long max_tile_k = tile_k_env ? strtoll(tile_k_env, nullptr, 0) : 6144;
 +    if (max_tile_k <= 0 || max_tile_k > k) max_tile_k = k;
@@ -183,59 +189,73 @@
 +    const bool k_tiled = max_tile_k < k;
 +    const char * max_weight_env = getenv("HETGPU_PACC_IQ1S_MAX_WEIGHT_BYTES");
 +    const size_t max_weight_bytes = max_weight_env ? strtoull(max_weight_env, nullptr, 0) : (512ULL << 20);
-+    if (max_weight_bytes != 0 && a_bytes > max_weight_bytes) {
++    if (max_weight_bytes != 0 && staged_a_bytes > max_weight_bytes) {
 +        static long long nskips = 0;
 +        if (nskips++ < 8) {
 +            fprintf(stderr,
 +                    "[pacc-iq1s] skip oversized weight type=%d m=%lld n=%lld k=%lld bytes=0x%zx limit=0x%zx\n",
-+                    src0->type, m, n, k, a_bytes, max_weight_bytes);
++                    src0->type, m, n, k, staged_a_bytes, max_weight_bytes);
 +        }
 +        return false;
 +    }
-+    if (a_bytes > hcap) { free(hbuf); hbuf = (char*)malloc(a_bytes); hcap = a_bytes; if (!hbuf){hcap=0;return false;} }
++    if (h_bytes > hcap) { free(hbuf); hbuf = (char*)malloc(h_bytes); hcap = h_bytes; if (!hbuf){hcap=0;return false;} }
++    if (xsfmm_bf16 && a_bytes > acap) {
++        free(abuf); abuf = (char *) malloc(a_bytes); acap = a_bytes;
++        if (!abuf) { acap = 0; return false; }
++    }
++    if (xsfmm_split3 && a_bytes > alocap) {
++        free(alobuf); alobuf = (char *) malloc(a_bytes); alocap = a_bytes;
++        if (!alobuf) { alocap = 0; return false; }
++    }
 +    if (b_bytes > bcap) { free(bbuf); bbuf = (char*)malloc(b_bytes); bcap = b_bytes; if (!bbuf){bcap=0;return false;} }
-+    const size_t max_tile_b_bytes = (size_t) max_tile_k * n * sizeof(float);
-+    const size_t max_tile_c_bytes = (size_t) max_tile_m * n * sizeof(float);
++    const size_t max_tile_b_bytes = (size_t) max_tile_k * pacc_n * sizeof(float);
++    const size_t max_tile_c_bytes = (size_t) max_tile_m * pacc_n * sizeof(float);
 +    const size_t tile_need = max_tile_b_bytes > max_tile_c_bytes ? max_tile_b_bytes : max_tile_c_bytes;
 +    if (tile_need > tcap) { free(tbuf); tbuf = (char*)malloc(tile_need); tcap = tile_need; if (!tbuf){tcap=0;return false;} }
 +    if (c_bytes > ocap) { free(obuf); obuf = (char*)malloc(c_bytes); ocap = c_bytes; if (!obuf){ocap=0;return false;} }
-+    unsigned long long off_a; bool staged = false;
-+    auto it = wcache.find(src0->data);
-+    if (it == wcache.end()) {
-+        off_a = wnext; wnext = (wnext + a_bytes + 63) & ~63ULL;
-+        if (wnext >= scratch) {
-+            const char * reset = getenv("HETGPU_PACC_IQ1S_CACHE_RESET");
+@@ -2607 +2785 @@
+-        off_a = wnext; wnext = (wnext + a_bytes + 63) & ~63ULL;
++        off_a = wnext; wnext = (wnext + staged_a_bytes + 63) & ~63ULL;
+@@ -2610,2 +2788,2 @@
+-            if (reset && reset[0] == 0) {
+-                fprintf(stderr, "[pacc-iq1s] weight cache overflow off=0x%llx bytes=0x%zx scratch=0x%llx\n", off_a, a_bytes, scratch);
 +            if (reset && reset[0] == '0') {
-+                fprintf(stderr, "[pacc-iq1s] weight cache overflow off=0x%llx bytes=0x%zx scratch=0x%llx\n", off_a, a_bytes, scratch);
-+                return false;
-+            }
-+            fprintf(stderr, "[pacc-iq1s] weight cache reset off=0x%llx bytes=0x%zx scratch=0x%llx\n", off_a, a_bytes, scratch);
-+            wcache.clear();
-+            off_a = weight_start;
-+            wnext = (weight_start + a_bytes + 63) & ~63ULL;
-+            if (wnext >= scratch) {
-+                fprintf(stderr, "[pacc-iq1s] single weight too large bytes=0x%zx scratch=0x%llx\n", a_bytes, scratch);
-+                return false;
++                fprintf(stderr, "[pacc-iq1s] weight cache overflow off=0x%llx bytes=0x%zx scratch=0x%llx\n", off_a, staged_a_bytes, scratch);
+@@ -2614 +2792 @@
+-            fprintf(stderr, "[pacc-iq1s] weight cache reset off=0x%llx bytes=0x%zx scratch=0x%llx\n", off_a, a_bytes, scratch);
++            fprintf(stderr, "[pacc-iq1s] weight cache reset off=0x%llx bytes=0x%zx scratch=0x%llx\n", off_a, staged_a_bytes, scratch);
+@@ -2617 +2795 @@
+-            wnext = (weight_start + a_bytes + 63) & ~63ULL;
++            wnext = (weight_start + staged_a_bytes + 63) & ~63ULL;
+@@ -2619 +2797 @@
+-                fprintf(stderr, "[pacc-iq1s] single weight too large bytes=0x%zx scratch=0x%llx\n", a_bytes, scratch);
++                fprintf(stderr, "[pacc-iq1s] single weight too large bytes=0x%zx scratch=0x%llx\n", staged_a_bytes, scratch);
+@@ -2631,0 +2810,67 @@
++            hbuf_source = src0->data;
++            if (xsfmm_bf16) {
++                const float * src = (const float *) hbuf;
++                uint16_t * packed = (uint16_t *) abuf;
++                uint16_t * residual = (uint16_t *) alobuf;
++                for (size_t i = 0; i < (size_t) m*k; ++i) {
++                    packed[i] = ggml_pacc_f32_to_bf16(src[i]);
++                    if (xsfmm_split3) {
++                        residual[i] = ggml_pacc_f32_to_bf16(
++                            src[i] - ggml_pacc_bf16_to_f32(packed[i]));
++                    }
++                }
 +            }
 +        }
-+        if (is_iq1s) {
-+            if (cudaMemcpy(hbuf, src0->data, a_bytes, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
-+        } else {
-+            const size_t qb = ggml_nbytes(src0);
-+            if (qb > qcap) { free(qbuf); qbuf = (char*)malloc(qb); qcap = qb; if (!qbuf){qcap=0;return false;} }
-+            if (cudaMemcpy(qbuf, src0->data, qb, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
-+            const auto * tr = ggml_get_type_traits(src0->type);
-+            if (!tr || !tr->to_float) { fprintf(stderr, "[pacc-iq1s] no to_float for type %d\n", src0->type); return false; }
-+            tr->to_float(qbuf, (float*)hbuf, (int64_t)m*k);   // row-major W[m][k] -> F32
-+        }
++        const char * staged_a = xsfmm_bf16 ? abuf : hbuf;
 +        if (k_tiled) {
 +            unsigned long long packed_off = off_a;
-+            const size_t full_a_row_bytes = is_iq1s ? (size_t) a_lda : (size_t) k * sizeof(float);
++            const size_t full_a_row_bytes = is_iq1s ? (size_t) a_lda :
++                (size_t) k * (xsfmm_bf16 ? sizeof(uint16_t) : sizeof(float));
 +            for (long long kk = 0; kk < k; kk += max_tile_k) {
 +                const long long tile_k = (k - kk) < max_tile_k ? (k - kk) : max_tile_k;
 +                if (is_iq1s && (tile_k % 256 != 0)) return false;
-+                const size_t src_k_off = is_iq1s ? (size_t) (kk / 256) * 50 : (size_t) kk * sizeof(float);
-+                const size_t tile_a_row_bytes = is_iq1s ? (size_t) (tile_k / 256) * 50 : (size_t) tile_k * sizeof(float);
++                const size_t elem_bytes = xsfmm_bf16 ? sizeof(uint16_t) : sizeof(float);
++                const size_t src_k_off = is_iq1s ? (size_t) (kk / 256) * 50 : (size_t) kk * elem_bytes;
++                const size_t tile_a_row_bytes = is_iq1s ? (size_t) (tile_k / 256) * 50 : (size_t) tile_k * elem_bytes;
 +                const size_t packed_bytes = (size_t) m * tile_a_row_bytes;
 +                if (packed_bytes > qcap) {
 +                    free(qbuf); qbuf = (char *) malloc(packed_bytes); qcap = packed_bytes;
@@ -243,35 +263,93 @@
 +                }
 +                for (long long row = 0; row < m; ++row) {
 +                    memcpy(qbuf + (size_t) row * tile_a_row_bytes,
-+                           hbuf + (size_t) row * full_a_row_bytes + src_k_off,
++                           staged_a + (size_t) row * full_a_row_bytes + src_k_off,
 +                           tile_a_row_bytes);
 +                }
 +                if (pwrite(fd, qbuf, packed_bytes, (off_t)(uoff + packed_off)) != (ssize_t)packed_bytes) return false;
 +                packed_off += packed_bytes;
 +            }
 +            if (packed_off != off_a + a_bytes) return false;
-+        } else if (pwrite(fd, hbuf, a_bytes, (off_t)(uoff+off_a)) != (ssize_t)a_bytes) {
++            if (xsfmm_split3) {
++                packed_off = off_a + a_bytes;
++                for (long long kk = 0; kk < k; kk += max_tile_k) {
++                    const long long tile_k = (k - kk) < max_tile_k ? (k - kk) : max_tile_k;
++                    const size_t src_k_off = (size_t) kk * sizeof(uint16_t);
++                    const size_t tile_a_row_bytes = (size_t) tile_k * sizeof(uint16_t);
++                    const size_t packed_bytes = (size_t) m * tile_a_row_bytes;
++                    if (packed_bytes > qcap) {
++                        free(qbuf); qbuf = (char *) malloc(packed_bytes); qcap = packed_bytes;
++                        if (!qbuf) { qcap = 0; return false; }
++                    }
++                    for (long long row = 0; row < m; ++row) {
++                        memcpy(qbuf + (size_t) row * tile_a_row_bytes,
++                               alobuf + (size_t) row*k*sizeof(uint16_t) + src_k_off,
++                               tile_a_row_bytes);
++                    }
++                    if (pwrite(fd, qbuf, packed_bytes, (off_t)(uoff + packed_off)) !=
++                        (ssize_t) packed_bytes) return false;
++                    packed_off += packed_bytes;
++                }
++                if (packed_off != off_a + staged_a_bytes) return false;
++            }
++        } else if (pwrite(fd, staged_a, a_bytes, (off_t)(uoff+off_a)) != (ssize_t)a_bytes) {
 +            return false;
-+        }
-+        wcache[src0->data] = off_a; staged = true;
-+    } else off_a = it->second;
-+    struct timespec _t0,_t1; clock_gettime(CLOCK_MONOTONIC,&_t0);
-+    const unsigned long long off_b = scratch;
-+    const unsigned long long off_c = (off_b + b_bytes + 63) & ~63ULL;
++        } else if (xsfmm_split3 &&
++                   pwrite(fd, alobuf, a_bytes, (off_t)(uoff + off_a + a_bytes)) !=
++                       (ssize_t) a_bytes) {
++            return false;
+@@ -2633 +2877,0 @@
+-        if (pwrite(fd, hbuf, a_bytes, (off_t)(uoff+off_a)) != (ssize_t)a_bytes) return false;
+@@ -2638,10 +2882,187 @@
+-    const unsigned long long off_c = (off_b + b_bytes + 63) & ~63ULL;
+-    if (cudaMemcpy(hbuf, src1->data, b_bytes, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+-    if (pwrite(fd, hbuf, b_bytes, (off_t)(uoff+off_b)) != (ssize_t)b_bytes) return false;
+-    int rc = hetgpu_pacc_submit_gemm(a_transa, 0, (int)m, (int)n, (int)k, nullptr,
+-        (const void*)(base+off_a), a_atype, (int)a_lda, 0,
+-        (const void*)(base+off_b), 4, (int)k, 0,
+-        nullptr, (void*)(base+off_c), 4, (int)m, 0, 1, 4);
+-    if (rc != 0) { fprintf(stderr, "[pacc-iq1s] submit rc=%d type=%d m=%lld n=%lld k=%lld\n", rc, src0->type, m, n, k); return false; }
+-    if (pread(fd, hbuf, c_bytes, (off_t)(uoff+off_c)) != (ssize_t)c_bytes) return false;
+-    if (cudaMemcpy(dst->data, hbuf, c_bytes, cudaMemcpyHostToDevice) != cudaSuccess) return false;
++    const unsigned long long off_c = (off_b + staged_b_bytes + 63) & ~63ULL;
 +    if (cudaMemcpy(bbuf, src1->data, b_bytes, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
-+    if (!k_tiled && pwrite(fd, bbuf, b_bytes, (off_t)(uoff+off_b)) != (ssize_t)b_bytes) return false;
-+    const size_t full_a_row_bytes = is_iq1s ? (size_t) a_lda : (size_t) k * sizeof(float);
++    if (!xsfmm_bf16 && !k_tiled &&
++        pwrite(fd, bbuf, b_bytes, (off_t)(uoff+off_b)) != (ssize_t)b_bytes) return false;
++    const size_t full_a_row_bytes = is_iq1s ? (size_t) a_lda :
++        (size_t) k * (xsfmm_bf16 ? sizeof(uint16_t) : sizeof(float));
 +    memset(obuf, 0, c_bytes);
 +    int tiles = 0;
 +    unsigned long long packed_a_prefix = 0;
 +    for (long long kk = 0; kk < k; kk += max_tile_k) {
 +        const int tile_k = (int) ((k - kk) < max_tile_k ? (k - kk) : max_tile_k);
 +        if (is_iq1s && (tile_k % 256 != 0)) return false;
-+        const size_t a_k_off = is_iq1s ? (size_t) (kk / 256) * 50 : (size_t) kk * sizeof(float);
-+        const size_t tile_a_row_bytes = is_iq1s ? (size_t) (tile_k / 256) * 50 : (size_t) tile_k * sizeof(float);
++        const size_t elem_bytes = xsfmm_bf16 ? sizeof(uint16_t) : sizeof(float);
++        const size_t a_k_off = is_iq1s ? (size_t) (kk / 256) * 50 : (size_t) kk * elem_bytes;
++        const size_t tile_a_row_bytes = is_iq1s ? (size_t) (tile_k / 256) * 50 : (size_t) tile_k * elem_bytes;
 +        const int tile_a_lda = k_tiled ? (is_iq1s ? (int) tile_a_row_bytes : tile_k) : (int) a_lda;
-+        const int tile_b_ldb = k_tiled ? tile_k : (int) k;
-+        if (k_tiled) {
++        const int tile_b_ldb = xsfmm_bf16 ? (int) pacc_n : (k_tiled ? tile_k : (int) k);
++        size_t tile_b_bytes = 0;
++        if (xsfmm_bf16) {
++            tile_b_bytes = (size_t) tile_k*pacc_n*sizeof(uint16_t);
++            uint16_t * packed_b = (uint16_t *) tbuf;
++            uint16_t * residual_b = packed_b + (size_t) tile_k*pacc_n;
++            memset(packed_b, 0, tile_b_bytes*(xsfmm_split3 ? 2 : 1));
++            for (int krow = 0; krow < tile_k; ++krow) {
++                for (long long col = 0; col < n; ++col) {
++                    const float value = ((const float *) bbuf)[(size_t) col*k + kk + krow];
++                    const size_t index = (size_t) krow*pacc_n + col;
++                    packed_b[index] = ggml_pacc_f32_to_bf16(value);
++                    if (xsfmm_split3) {
++                        residual_b[index] = ggml_pacc_f32_to_bf16(
++                            value - ggml_pacc_bf16_to_f32(packed_b[index]));
++                    }
++                }
++            }
++            if (pwrite(fd, tbuf, tile_b_bytes, (off_t)(uoff + off_b)) != (ssize_t)tile_b_bytes) return false;
++            if (xsfmm_split3 &&
++                pwrite(fd, tbuf + tile_b_bytes, tile_b_bytes,
++                       (off_t)(uoff + off_b + tile_b_bytes)) != (ssize_t) tile_b_bytes) return false;
++        } else if (k_tiled) {
 +            const size_t tile_b_bytes = (size_t) tile_k * n * sizeof(float);
 +            for (long long col = 0; col < n; ++col) {
 +                memcpy(tbuf + (size_t) col * tile_k * sizeof(float),
@@ -285,85 +363,146 @@
 +        const long long row_tasks = (m + max_tile_m - 1) / max_tile_m;
 +        if (worker_count <= 0) worker_count = 1;
 +        if (worker_count > row_tasks) worker_count = row_tasks;
-+        std::atomic<long long> next_row(0);
-+        std::atomic<int> failed(0);
-+        std::vector<std::thread> workers;
-+        workers.reserve((size_t) worker_count);
-+        for (long long worker = 0; worker < worker_count; ++worker) {
-+            workers.emplace_back([&, kk, tile_k, tile_a_lda, tile_b_ldb, a_k_off,
-+                                  tile_a_row_bytes, packed_a_prefix]() {
-+                while (failed.load(std::memory_order_relaxed) == 0) {
-+                    const long long row = next_row.fetch_add(max_tile_m, std::memory_order_relaxed);
++        const int term_count = xsfmm_split3 ? 3 : 1;
++        for (int term = 0; term < term_count; ++term) {
++            std::atomic<int> failed(0);
++            const unsigned long long term_a_base =
++                off_a + (term == 2 ? a_bytes : 0);
++            const unsigned long long term_b_base =
++                off_b + (term == 1 ? tile_b_bytes : 0);
++            for (long long wave_row = 0; wave_row < m;
++                 wave_row += max_tile_m*worker_count) {
++                std::vector<std::thread> workers;
++                workers.reserve((size_t) worker_count);
++                for (long long worker = 0; worker < worker_count; ++worker) {
++                    const long long row = wave_row + worker*max_tile_m;
 +                    if (row >= m) break;
-+                    const int tile_m = (int) ((m - row) < max_tile_m ? (m - row) : max_tile_m);
-+                    const unsigned long long tile_a = k_tiled
-+                        ? off_a + packed_a_prefix + (unsigned long long) row * tile_a_row_bytes
-+                        : off_a + (unsigned long long) row * full_a_row_bytes + a_k_off;
-+                    const unsigned long long tile_b = k_tiled ? off_b : off_b + (unsigned long long) kk * sizeof(float);
-+                    const unsigned long long tile_c = off_c
-+                        + (unsigned long long) (row / max_tile_m) * max_tile_c_bytes;
-+                    int rc = hetgpu_pacc_submit_gemm(a_transa, 0, tile_m, (int)n, tile_k, nullptr,
-+                        (const void*)(base+tile_a), a_atype, tile_a_lda, 0,
-+                        (const void*)(base+tile_b), 4, tile_b_ldb, 0,
-+                        nullptr, (void*)(base+tile_c), 4, tile_m, 0, 1, 4);
-+                    if (rc != 0) {
-+                        fprintf(stderr,
-+                                "[pacc-iq1s] submit rc=%d type=%d m=%lld tile_row=%lld tile_m=%d n=%lld k=%lld tile_k_off=%lld tile_k=%d\n",
-+                                rc, src0->type, m, row, tile_m, n, k, kk, tile_k);
-+                        failed.store(1, std::memory_order_relaxed);
-+                        break;
++                    workers.emplace_back([&, kk, tile_k, tile_a_lda, tile_b_ldb, a_k_off,
++                                          tile_a_row_bytes, packed_a_prefix, row,
++                                          term_a_base, term_b_base, term]() {
++                        const int tile_m = (int) ((m - row) < max_tile_m ? (m - row) : max_tile_m);
++                        const unsigned long long tile_a = k_tiled
++                            ? term_a_base + packed_a_prefix + (unsigned long long) row * tile_a_row_bytes
++                            : term_a_base + (unsigned long long) row * full_a_row_bytes + a_k_off;
++                        const unsigned long long tile_b = xsfmm_bf16 || k_tiled
++                            ? term_b_base : term_b_base + (unsigned long long) kk * sizeof(float);
++                        const unsigned long long tile_c = off_c
++                            + (unsigned long long) (row / max_tile_m) * max_tile_c_bytes;
++                        int rc = hetgpu_pacc_submit_gemm(a_transa, 0, tile_m, (int)pacc_n, tile_k, nullptr,
++                            (const void*)(base+tile_a), a_atype, tile_a_lda, 0,
++                            (const void*)(base+tile_b), xsfmm_bf16 ? 5 : 4, tile_b_ldb, 0,
++                            nullptr, (void*)(base+tile_c), 4, xsfmm_bf16 ? (int)pacc_n : tile_m, 0, 1, 4);
++                        if (rc != 0) {
++                            fprintf(stderr,
++                                    "[pacc-iq1s] submit rc=%d type=%d m=%lld tile_row=%lld tile_m=%d n=%lld k=%lld tile_k_off=%lld tile_k=%d term=%d\n",
++                                    rc, src0->type, m, row, tile_m, n, k, kk, tile_k, term);
++                            failed.store(1, std::memory_order_relaxed);
++                        }
++                    });
++                }
++                for (std::thread & worker : workers) worker.join();
++                if (failed.load(std::memory_order_relaxed) != 0) return false;
++            }
++            for (long long row = 0; row < m; row += max_tile_m) {
++                const int tile_m = (int) ((m - row) < max_tile_m ? (m - row) : max_tile_m);
++                const size_t tile_c_bytes = (size_t) tile_m * pacc_n * sizeof(float);
++                const unsigned long long tile_c = off_c
++                    + (unsigned long long) (row / max_tile_m) * max_tile_c_bytes;
++                const ssize_t got = pread(fd, tbuf, tile_c_bytes, (off_t)(uoff + tile_c));
++                if (got != (ssize_t) tile_c_bytes) {
++                    fprintf(stderr,
++                            "[pacc-iq1s] output read failed type=%d row=%lld got=%zd expected=%zu errno=%d\n",
++                            src0->type, row, got, tile_c_bytes, errno);
++                    return false;
++                }
++                for (long long col = 0; col < n; ++col) {
++                    float * dst_col = (float *) obuf + (size_t) col * m + row;
++                    const float * tile = (const float *) tbuf;
++                    for (int r = 0; r < tile_m; ++r) {
++                        dst_col[r] += xsfmm_bf16
++                            ? tile[(size_t) r*pacc_n + col]
++                            : tile[(size_t) col*tile_m + r];
 +                    }
 +                }
-+            });
-+        }
-+        for (std::thread & worker : workers) worker.join();
-+        if (failed.load(std::memory_order_relaxed) != 0) return false;
-+        for (long long row = 0; row < m; row += max_tile_m) {
-+            const int tile_m = (int) ((m - row) < max_tile_m ? (m - row) : max_tile_m);
-+            const size_t tile_c_bytes = (size_t) tile_m * n * sizeof(float);
-+            const unsigned long long tile_c = off_c
-+                + (unsigned long long) (row / max_tile_m) * max_tile_c_bytes;
-+            const ssize_t got = pread(fd, tbuf, tile_c_bytes, (off_t)(uoff + tile_c));
-+            if (got != (ssize_t) tile_c_bytes) {
-+                fprintf(stderr,
-+                        "[pacc-iq1s] output read failed type=%d row=%lld got=%zd expected=%zu errno=%d\n",
-+                        src0->type, row, got, tile_c_bytes, errno);
-+                return false;
++                ++tiles;
 +            }
-+            for (long long col = 0; col < n; ++col) {
-+                float * dst_col = (float *) obuf + (size_t) col * m + row;
-+                const float * src_col = (const float *) tbuf + (size_t) col * tile_m;
-+                for (int r = 0; r < tile_m; ++r) dst_col[r] += src_col[r];
-+            }
-+            ++tiles;
 +        }
 +        if (k_tiled) packed_a_prefix += (unsigned long long) m * tile_a_row_bytes;
 +    }
 +    if (k_tiled && packed_a_prefix != a_bytes) return false;
++    const char * validate_env = getenv("HETGPU_PACC_IQ1S_VALIDATE_BF16");
++    if (xsfmm_bf16 && hbuf_source == src0->data && validate_env &&
++        validate_env[0] == '1' && validate_env[1] == '\0') {
++        const uint16_t * a_bf16 = (const uint16_t *) abuf;
++        const float * b_f32 = (const float *) bbuf;
++        const float * got = (const float *) obuf;
++        double sum_sq = 0.0;
++        double single_vs_f32_sum_sq = 0.0;
++        double split3_vs_f32_sum_sq = 0.0;
++        float max_abs = 0.0f;
++        float max_rel = 0.0f;
++        float single_vs_f32_max_abs = 0.0f;
++        float split3_vs_f32_max_abs = 0.0f;
++        size_t mismatches = 0;
++        for (long long col = 0; col < n; ++col) {
++            for (long long row = 0; row < m; ++row) {
++                float ref = 0.0f;
++                float ref_f32 = 0.0f;
++                float ref_split3 = 0.0f;
++                for (long long ki = 0; ki < k; ++ki) {
++                    const float a = ((const float *) hbuf)[(size_t) row*k + ki];
++                    const float b = b_f32[(size_t) col*k + ki];
++                    const float ahi = ggml_pacc_bf16_to_f32(
++                        a_bf16[(size_t) row*k + ki]);
++                    const float bhi = ggml_pacc_bf16_to_f32(
++                        ggml_pacc_f32_to_bf16(b));
++                    const float alo = ggml_pacc_bf16_to_f32(
++                        ggml_pacc_f32_to_bf16(a - ahi));
++                    const float blo = ggml_pacc_bf16_to_f32(
++                        ggml_pacc_f32_to_bf16(b - bhi));
++                    ref += ahi*bhi;
++                    ref_f32 += a*b;
++                    ref_split3 += ahi*bhi + ahi*blo + alo*bhi;
++                }
++                const float value = got[(size_t) col*m + row];
++                const float hw_ref = xsfmm_split3 ? ref_split3 : ref;
++                const float abs_err = fabsf(value - hw_ref);
++                const float rel_err = abs_err / fmaxf(fabsf(hw_ref), 1.0e-6f);
++                const float single_vs_f32_abs = fabsf(ref - ref_f32);
++                const float split3_vs_f32_abs = fabsf(ref_split3 - ref_f32);
++                max_abs = fmaxf(max_abs, abs_err);
++                max_rel = fmaxf(max_rel, rel_err);
++                single_vs_f32_max_abs = fmaxf(single_vs_f32_max_abs, single_vs_f32_abs);
++                split3_vs_f32_max_abs = fmaxf(split3_vs_f32_max_abs, split3_vs_f32_abs);
++                sum_sq += (double) abs_err * abs_err;
++                single_vs_f32_sum_sq +=
++                    (double) single_vs_f32_abs * single_vs_f32_abs;
++                split3_vs_f32_sum_sq +=
++                    (double) split3_vs_f32_abs * split3_vs_f32_abs;
++                if (abs_err > 0.02f + 0.02f*fabsf(hw_ref)) ++mismatches;
++            }
++        }
++        const size_t output_count = (size_t) m*(size_t) n;
++        const double rmse = sqrt(sum_sq / (double) output_count);
++        const double single_vs_f32_rmse =
++            sqrt(single_vs_f32_sum_sq / (double) output_count);
++        const double split3_vs_f32_rmse =
++            sqrt(split3_vs_f32_sum_sq / (double) output_count);
++        fprintf(stderr,
++                "[pacc-iq1s-validate] m=%lld n=%lld k=%lld hw_max_abs=%g hw_max_rel=%g hw_rmse=%g "
++                "single_vs_f32_max_abs=%g single_vs_f32_rmse=%g "
++                "split3_vs_f32_max_abs=%g split3_vs_f32_rmse=%g mismatches=%zu/%zu\n",
++                m, n, k, max_abs, max_rel, rmse,
++                single_vs_f32_max_abs, single_vs_f32_rmse,
++                split3_vs_f32_max_abs, split3_vs_f32_rmse,
++                mismatches, output_count);
++    }
 +    if (cudaMemcpy(dst->data, obuf, c_bytes, cudaMemcpyHostToDevice) != cudaSuccess) return false;
-+    clock_gettime(CLOCK_MONOTONIC,&_t1);
-+    double _ms=(_t1.tv_sec-_t0.tv_sec)*1e3+(_t1.tv_nsec-_t0.tv_nsec)/1e6;
-+    ++ncalls;
-+    fprintf(stderr, "[pacc-iq1s] call#%lld type=%d m=%lld n=%lld k=%lld tiles=%d %s %.2fms\n",
-+            ncalls, src0->type, m, n, k, tiles, staged?"STAGE":"hit", _ms);
-+    return true;
-+}
-+// ---- end hetGPU PACC IQ1_S offload hook ---------------------------------
-+
-@@ -2543,0 +2891 @@
-+    if (ggml_pacc_iq1s_enabled() && !ggml_backend_buft_is_cuda_split(src0->buffer->buft) && ggml_cuda_pacc_iq1s_mul_mat(src0, src1, dst)) { return; }
-@@ -2664,0 +3013,5 @@
-+    const char * hetgpu_gemm_only_env = std::getenv("HETGPU_CUDA_GEMM_ONLY");
-+    const bool hetgpu_gemm_only =
-+        hetgpu_gemm_only_env != nullptr && hetgpu_gemm_only_env[0] != '\0' &&
-+        !(hetgpu_gemm_only_env[0] == '0' && hetgpu_gemm_only_env[1] == '\0');
-+    const bool pacc_iq1s_moe = ggml_pacc_iq1s_enabled() && ggml_is_quantized(src0->type);
-@@ -2684 +3037 @@
--                if (ne2 <= mmvq_mmid_max && !pacc_skip_mmvq_moe) {
-+                if (ne2 <= mmvq_mmid_max && !pacc_skip_mmvq_moe && !pacc_iq1s_moe) {
-@@ -2696 +3049 @@
--        if (ggml_cuda_should_use_mmq(src0->type, cc, ne12, /*n_experts=*/ne02)) {
-+        if (!hetgpu_gemm_only && !pacc_iq1s_moe && ggml_cuda_should_use_mmq(src0->type, cc, ne12, /*n_experts=*/ne02)) {
-@@ -2706 +3059 @@
--        if (!hetgpu_skip_ids_mmf_for_bf16 &&
-+        if (!hetgpu_skip_ids_mmf_for_bf16 && !pacc_iq1s_moe &&
+@@ -2651,2 +3072,5 @@
+-    fprintf(stderr, "[pacc-iq1s] call#%lld type=%d m=%lld n=%lld k=%lld %s %.2fms\n",
+-            ncalls, src0->type, m, n, k, staged?"STAGE":"hit", _ms);
++    fprintf(stderr, "[pacc-iq1s] call#%lld type=%d m=%lld n=%lld pacc_n=%lld k=%lld tiles=%d mode=%s %s %.2fms\n",
++            ncalls, src0->type, m, n, pacc_n, k, tiles,
++            xsfmm_split3 ? "xsfmm-bf16-split3" :
++                (xsfmm_bf16 ? "xsfmm-bf16" : "legacy"),
++            staged?"STAGE":"hit", _ms);

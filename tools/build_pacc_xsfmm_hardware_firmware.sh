@@ -8,7 +8,12 @@ CC="${PACC_XSFMM_CC:-clang-20}"
 BUILD_DIR="${PACC_XSFMM_BUILD_DIR:-/mnt/probe_nvme0n1p4/models/.lanxin-build/xsfmm-hardware}"
 KERNEL_SRC="${PACC_XSFMM_KERNEL_SRC:-/mnt/probe_nvme0n1p4/linux-6.7.9-liveprep}"
 SOURCE_FIRMWARE="${PACC_XSFMM_SOURCE_FIRMWARE:-/lib/firmware/lanxin/lx500_pacc_jobd_hostbase_idmarker.bin}"
-INSTALL_FIRMWARE="${PACC_XSFMM_INSTALL_FIRMWARE:-/lib/firmware/lanxin/lx500_pacc_jobd_xsfmm32_hardware_only.bin}"
+INSTALL_FIRMWARE="${PACC_XSFMM_INSTALL_FIRMWARE:-/lib/firmware/lanxin/lx500_pacc_jobd_xsfmm_kernel_exec.bin}"
+MS_STATE="${PACC_XSFMM_MS_STATE:-1}"
+PROBE_STOP_STAGE="${PACC_XSFMM_PROBE_STOP_STAGE:-0}"
+XSFMM_GEMM_ENABLE="${PACC_XSFMM_GEMM_ENABLE:-1}"
+CTX_PROBE_MODE="${PACC_XSFMM_CTX_PROBE_MODE:-0}"
+XSFMM_REPEATS="${PACC_XSFMM_REPEATS:-1}"
 MARCH="rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b"
 MODULE_BUILD="${BUILD_DIR}/xsfmm_ctx"
 NATIVE_OBJ="${BUILD_DIR}/xsfmm_native_bf16.o"
@@ -21,7 +26,7 @@ install -m 0644 "${JOBD_SRC}/xsfmm_ctx/xsfmm_ctx.c" "${MODULE_BUILD}/xsfmm_ctx.c
 install -m 0644 "${JOBD_SRC}/xsfmm_ctx/xsfmm_pacc_kconfig.h" \
     "${MODULE_BUILD}/xsfmm_pacc_kconfig.h"
 make -C "${KERNEL_SRC}" M="${MODULE_BUILD}" LOCALVERSION=+ \
-    KCFLAGS="-include ${MODULE_BUILD}/xsfmm_pacc_kconfig.h" \
+    KCFLAGS="-include ${MODULE_BUILD}/xsfmm_pacc_kconfig.h -DHETGPU_XSFMM_MS_STATE=${MS_STATE} -DHETGPU_XSFMM_CTX_PROBE_MODE=${CTX_PROBE_MODE}" \
     LD=/usr/bin/ld.bfd clean modules
 cp "${MODULE_BUILD}/xsfmm_ctx.ko" "${MODULE_BUILD}/xsfmm_ctx_stripped.ko"
 riscv64-linux-gnu-strip --strip-debug "${MODULE_BUILD}/xsfmm_ctx_stripped.ko"
@@ -44,6 +49,7 @@ fi
 
 "${CC}" -target riscv64-linux-gnu -menable-experimental-extensions \
     --gcc-toolchain=/usr -O3 -march="${MARCH}" -mabi=lp64d \
+    -DHETGPU_PACC_XSFMM_PROBE_STOP_STAGE="${PROBE_STOP_STAGE}" \
     -c "${JOBD_SRC}/xsfmm_native_bf16.c" -o "${NATIVE_OBJ}"
 
 "${CC}" -target riscv64-linux-gnu -menable-experimental-extensions \
@@ -57,7 +63,11 @@ fi
 PACC_JOBD_XSFMM_CTX_MODULE="${MODULE_BUILD}/xsfmm_ctx_stripped.ko" \
 PACC_JOBD_PACC_ID=0 \
 PACC_JOBD_BEACON=1 \
+PACC_JOBD_PROGRESS_STATUS=1 \
+PACC_JOBD_XSFMM_GEMM="${XSFMM_GEMM_ENABLE}" \
+PACC_JOBD_XSFMM_REPEATS="${XSFMM_REPEATS}" \
 PACC_JOBD_SHARED_DDR_BASE=0x20110600000 \
+PACC_JOBD_SHARED_DDR_PACC_BASE=0x20110600000 \
 PACC_JOBD_XSFMM_MAX_N=32 \
     "${PACC_SYS}/patch_lx500_pacc_inplace_jobd.sh" \
     "${SOURCE_FIRMWARE}" "${JOBD}" "${FIRMWARE}"
@@ -65,8 +75,11 @@ PACC_JOBD_XSFMM_MAX_N=32 \
 file "${JOBD}"
 modinfo "${MODULE_BUILD}/xsfmm_ctx_stripped.ko" | grep -E 'description|vermagic'
 sha256sum "${JOBD}" "${MODULE_BUILD}/xsfmm_ctx_stripped.ko" "${FIRMWARE}"
+echo "xsfmm configuration: ms_state=${MS_STATE} stop_stage=${PROBE_STOP_STAGE} gemm_enable=${XSFMM_GEMM_ENABLE} ctx_probe_mode=${CTX_PROBE_MODE} repeats=${XSFMM_REPEATS}"
 
 if [[ "${PACC_XSFMM_INSTALL:-0}" == "1" ]]; then
     sudo install -m 0644 "${FIRMWARE}" "${INSTALL_FIRMWARE}"
+    printf 'repeats=%s\n' "${XSFMM_REPEATS}" |
+        sudo tee "${INSTALL_FIRMWARE}.meta" >/dev/null
     echo "installed ${INSTALL_FIRMWARE}"
 fi

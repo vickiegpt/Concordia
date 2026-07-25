@@ -6,7 +6,7 @@ cd "$ROOT"
 
 DEVICES="${PACC_SFMM_DEVICES:-0,1,2,3}"
 RECOVER_MASK="${PACC_SFMM_RECOVER_MASK:-0xf}"
-RECOVER_FIRMWARE="${PACC_SFMM_RECOVER_FIRMWARE:-lanxin/lx500_pacc_jobd_xsfmm32_hardware_only.bin}"
+RECOVER_FIRMWARE="${PACC_SFMM_RECOVER_FIRMWARE:-lanxin/lx500_pacc_jobd_xsfmm_kernel_exec.bin}"
 STABLE_FIRMWARE="${PACC_SFMM_STABLE_FIRMWARE:-lanxin/lx500_pacc_jobd_hostbase_idmarker.bin}"
 RECOVER_SETTLE_S="${PACC_SFMM_RECOVER_SETTLE_S:-15}"
 BOOT_PACC="${PACC_SFMM_BOOT:-1}"
@@ -16,6 +16,15 @@ N="${PACC_GEMM_N:-16}"
 K="${PACC_GEMM_K:-2048}"
 ITERS="${PACC_GEMM_ITERS:-1}"
 WARMUP="${PACC_GEMM_WARMUP:-0}"
+XSFMM_REPEATS="${PACC_SFMM_XSFMM_REPEATS:-}"
+if [[ -z "$XSFMM_REPEATS" &&
+      -r "/lib/firmware/${RECOVER_FIRMWARE}.meta" ]]; then
+    XSFMM_REPEATS="$(
+        awk -F= '$1 == "repeats" { print $2; exit }' \
+            "/lib/firmware/${RECOVER_FIRMWARE}.meta"
+    )"
+fi
+XSFMM_REPEATS="${XSFMM_REPEATS:-1}"
 
 ZLUDA_BUILD_DIR="${ZLUDA_BUILD_DIR:-/mnt/usb/hetgpu_build_target/releasefix/release}"
 SUBMIT_SHIM="${PACC_SFMM_SUBMIT_SHIM_SO:-/tmp/libpacc_sfmm_submit_shim.so}"
@@ -132,12 +141,9 @@ try:
         ready = set()
         for dev in list(pending):
             slot = base + dev * 0x2000
-            comp = os.pread(fd, 32, slot + 0x1f20)
             beacon = os.pread(fd, 32, slot + 0x1f40)
-            cmagic, cver, _cjob, cstatus, _caux, _cseq = struct.unpack("<QIIIIQ", comp)
             bmagic, bver, _bjob, bphase, _bdetail, _bseq = struct.unpack("<QIIIIQ", beacon)
-            if ((cmagic == 0x4847505550414343 and cver == 1 and cstatus == 0x6bc00000) or
-                    (bmagic == 0x4847505542434e31 and bver == 1 and bphase == 0x7002)):
+            if bmagic == 0x4847505542434e31 and bver == 1 and bphase == 0x7002:
                 ready.add(dev)
         pending -= ready
         if pending:
@@ -191,7 +197,7 @@ if [[ "${#DEVICE_ARRAY[@]}" -lt 1 ]]; then
 fi
 
 echo "log_dir=${LOG_DIR}"
-echo "shape m=${M} n=${N} k=${K} warmup=${WARMUP} iters=${ITERS} devices=${DEVICES}"
+echo "shape m=${M} n=${N} k=${K} warmup=${WARMUP} iters=${ITERS} devices=${DEVICES} xsfmm_repeats=${XSFMM_REPEATS}"
 echo "ld_preload=${SUBMIT_SHIM} ${ZLUDA_BUILD_DIR}/libnvcuda.so ${ZLUDA_BUILD_DIR}/libhetgpu_cuda_shim.so"
 
 pids=()
@@ -217,7 +223,8 @@ for dev in "${DEVICE_ARRAY[@]}"; do
         export PACC_GEMM_K="$K"
         export PACC_GEMM_ITERS="$ITERS"
         export PACC_GEMM_WARMUP="$WARMUP"
-        exec "$PROBE"
+        exec timeout --signal=TERM --kill-after=5 \
+            "${PACC_SFMM_PROBE_TIMEOUT_S:-240}" "$PROBE"
     ) >"$log" 2>&1 &
     pids+=("$!")
     devs+=("$dev")
@@ -238,7 +245,7 @@ done
 end_ns="$(date +%s%N)"
 
 wall_s="$(awk -v start="$start_ns" -v end="$end_ns" 'BEGIN { printf "%.9f", (end - start) / 1000000000.0 }')"
-if ! python3 - "$LOG_DIR" "$wall_s" "$DEVICES" <<'PY'
+if ! python3 - "$LOG_DIR" "$wall_s" "$DEVICES" "$XSFMM_REPEATS" <<'PY'
 import glob
 import os
 import re
@@ -251,6 +258,9 @@ expected_devices = {
     for value in sys.argv[3].replace(",", " ").split()
     if value
 }
+repeats = int(sys.argv[4], 0)
+if repeats < 1 or repeats > 4096:
+    raise SystemExit(f"invalid Xsfmm repeat count: {repeats}")
 line_re = re.compile(
     r"pacc_gemm_bf16_probe m=(\d+) n=(\d+) k=(\d+) .*?iters=(\d+) "
     r"gemm_s_avg=([0-9.eE+-]+).*?mismatches=(\d+)"
@@ -270,7 +280,7 @@ for path in sorted(glob.glob(os.path.join(log_dir, "pacc*.log"))):
     mm, nn, kk, iters = map(int, (mm, nn, kk, iters))
     avg_s = float(avg_s)
     mismatches = int(mismatches)
-    ops = 2.0 * mm * nn * kk
+    ops = 2.0 * mm * nn * kk * repeats
     tops = ops / avg_s / 1.0e12 if avg_s > 0 else 0.0
     rows.append((dev, mm, nn, kk, iters, avg_s, tops, f"mismatches={mismatches}"))
 
@@ -283,10 +293,11 @@ for dev, mm, nn, kk, iters, avg_s, tops, status in rows:
         print(f"  {dev}: {status}")
         continue
     sum_tops += tops
-    sum_ops_total += 2.0 * mm * nn * kk * iters
+    sum_ops_total += 2.0 * mm * nn * kk * iters * repeats
     print(
         f"  {dev}: {mm}x{nn}x{kk} avg={avg_s*1e3:.3f} ms "
-        f"throughput={tops:.6f} TOPS-equivalent {status}"
+        f"batched_request_throughput={tops:.6f} TOPS-equivalent "
+        f"xsfmm_repeats={repeats} {status}"
     )
 
 wall_tops = sum_ops_total / wall_s / 1.0e12 if wall_s > 0 else 0.0
