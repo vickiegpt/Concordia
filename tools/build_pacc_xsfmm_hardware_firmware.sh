@@ -14,6 +14,7 @@ PROBE_STOP_STAGE="${PACC_XSFMM_PROBE_STOP_STAGE:-0}"
 XSFMM_GEMM_ENABLE="${PACC_XSFMM_GEMM_ENABLE:-1}"
 CTX_PROBE_MODE="${PACC_XSFMM_CTX_PROBE_MODE:-0}"
 XSFMM_REPEATS="${PACC_XSFMM_REPEATS:-1}"
+GEMM_COPY_IO="${PACC_XSFMM_GEMM_COPY_IO:-1}"
 MARCH="rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b"
 MODULE_BUILD="${BUILD_DIR}/xsfmm_ctx"
 NATIVE_OBJ="${BUILD_DIR}/xsfmm_native_bf16.o"
@@ -69,6 +70,7 @@ PACC_JOBD_BEACON=1 \
 PACC_JOBD_PROGRESS_STATUS=1 \
 PACC_JOBD_XSFMM_GEMM="${XSFMM_GEMM_ENABLE}" \
 PACC_JOBD_XSFMM_REPEATS="${XSFMM_REPEATS}" \
+PACC_JOBD_GEMM_COPY_IO="${GEMM_COPY_IO}" \
 PACC_JOBD_SHARED_DDR_BASE=0x20110600000 \
 PACC_JOBD_SHARED_DDR_PACC_BASE=0x20110600000 \
 PACC_JOBD_XSFMM_MAX_N=32 \
@@ -78,7 +80,7 @@ PACC_JOBD_XSFMM_MAX_N=32 \
 file "${JOBD}"
 modinfo "${MODULE_BUILD}/xsfmm_ctx_stripped.ko" | grep -E 'description|vermagic'
 sha256sum "${JOBD}" "${MODULE_BUILD}/xsfmm_ctx_stripped.ko" "${FIRMWARE}"
-echo "xsfmm configuration: ms_state=${MS_STATE} stop_stage=${PROBE_STOP_STAGE} gemm_enable=${XSFMM_GEMM_ENABLE} ctx_probe_mode=${CTX_PROBE_MODE} repeats=${XSFMM_REPEATS} status_mmap_fallback=0 telemetry=1 completion_fast_path=${PACC_XSFMM_COMPLETION_FAST_PATH:-1} completion_settle_ns=${PACC_XSFMM_COMPLETION_SETTLE_NS:-0}"
+echo "xsfmm configuration: ms_state=${MS_STATE} stop_stage=${PROBE_STOP_STAGE} gemm_enable=${XSFMM_GEMM_ENABLE} ctx_probe_mode=${CTX_PROBE_MODE} repeats=${XSFMM_REPEATS} gemm_copy_io=${GEMM_COPY_IO} status_mmap_fallback=0 telemetry=1 completion_fast_path=${PACC_XSFMM_COMPLETION_FAST_PATH:-1} completion_settle_ns=${PACC_XSFMM_COMPLETION_SETTLE_NS:-0}"
 
 if [[ "${PACC_XSFMM_INSTALL:-0}" == "1" ]]; then
     sudo install -m 0644 "${FIRMWARE}" "${INSTALL_FIRMWARE}"

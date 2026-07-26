@@ -176,6 +176,7 @@ jobd_xsfmm_gemm = os.environ.get("PACC_JOBD_XSFMM_GEMM", os.environ.get("HETGPU_
 jobd_xsfmm_max_n = os.environ.get("PACC_JOBD_XSFMM_MAX_N", os.environ.get("HETGPU_PACC_JOBD_XSFMM_MAX_N", "")).strip()
 jobd_xsfmm_max_m = os.environ.get("PACC_JOBD_XSFMM_MAX_M", os.environ.get("HETGPU_PACC_JOBD_XSFMM_MAX_M", "")).strip()
 jobd_xsfmm_repeats = os.environ.get("PACC_JOBD_XSFMM_REPEATS", os.environ.get("HETGPU_PACC_JOBD_XSFMM_REPEATS", "")).strip()
+jobd_gemm_copy_io = os.environ.get("PACC_JOBD_GEMM_COPY_IO", os.environ.get("HETGPU_PACC_JOBD_GEMM_COPY_IO", "")).strip()
 jobd_gemm_strict_visible = os.environ.get("PACC_JOBD_GEMM_STRICT_VISIBLE", os.environ.get("HETGPU_PACC_JOBD_GEMM_STRICT_VISIBLE", "")).strip()
 jobd_status_mmap_fallback = os.environ.get("PACC_JOBD_STATUS_MMAP_FALLBACK", os.environ.get("HETGPU_PACC_JOBD_STATUS_MMAP_FALLBACK", "")).strip()
 jobd_arg_slot_scan = os.environ.get("PACC_JOBD_ARG_SLOT_SCAN", os.environ.get("HETGPU_PACC_JOBD_ARG_SLOT_SCAN", "")).strip()
@@ -264,6 +265,8 @@ if jobd_xsfmm_max_m:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_XSFMM_MAX_M={jobd_xsfmm_max_m}")
 if jobd_xsfmm_repeats:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_XSFMM_REPEATS={jobd_xsfmm_repeats}")
+if jobd_gemm_copy_io:
+    rcs_lines.append(f"export PACC_GCI={jobd_gemm_copy_io}")
 if jobd_gemm_strict_visible:
     rcs_lines.append(f"export HETGPU_PACC_JOBD_GEMM_STRICT_VISIBLE={jobd_gemm_strict_visible}")
 if jobd_status_mmap_fallback:

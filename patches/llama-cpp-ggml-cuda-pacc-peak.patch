@@ -12,7 +12,11 @@
 @@ -2557 +2562 @@
 -    if (v < 0) { const char * e = getenv("HETGPU_PACC_IQ1S_HOOK"); v = (e && e[0] == '0') ? 0 : 1;
 +    if (v < 0) { const char * e = getenv("HETGPU_PACC_IQ1S_HOOK"); v = (e && e[0] == '1' && e[1] == '\0') ? 1 : 0;
-@@ -2560,0 +2566,83 @@
+@@ -2561,4 +2566,87 @@
+-// Route src0 (weights) GEMM to PACC, keeping any quantized op away from the MMQ
+-// kernel (which aborts on the fake PACC device). IQ1_S -> native atype=7;
+-// other quantized/F16 -> dequant to F32 (host) + atype=4 transa=1. src0 is ggml
+-// [k,m] row-major (row i contiguous), src1 [k,n] col-major, dst [m,n] col-major.
 +
 +// Keep unsupported fake-CUDA quantized kernels out of the mixed path while
 +// reusing llama.cpp's optimized host quantized dot products. This is enabled
@@ -96,10 +100,7 @@
 +    return result;
 +}
 +
-@@ -2562,3 +2650,3 @@
--// kernel (which aborts on the fake PACC device). IQ1_S -> native atype=7;
--// other quantized/F16 -> dequant to F32 (host) + atype=4 transa=1. src0 is ggml
--// [k,m] row-major (row i contiguous), src1 [k,n] col-major, dst [m,n] col-major.
++// Route src0 (weights) GEMM to PACC, keeping any quantized op away from the MMQ
 +// kernel (which aborts on the fake PACC device). The explicit Xsfmm mode
 +// dequantizes selected weights once, stores BF16 in shared DDR, and submits
 +// compact row-major BF16 tiles accepted by the hardware-only jobd path.
@@ -230,7 +231,7 @@
 @@ -2619 +2797 @@
 -                fprintf(stderr, "[pacc-iq1s] single weight too large bytes=0x%zx scratch=0x%llx\n", a_bytes, scratch);
 +                fprintf(stderr, "[pacc-iq1s] single weight too large bytes=0x%zx scratch=0x%llx\n", staged_a_bytes, scratch);
-@@ -2631,0 +2810,67 @@
+@@ -2631,0 +2810,13 @@
 +            hbuf_source = src0->data;
 +            if (xsfmm_bf16) {
 +                const float * src = (const float *) hbuf;
@@ -244,7 +245,8 @@
 +                    }
 +                }
 +            }
-+        }
+@@ -2633 +2824,54 @@
+-        if (pwrite(fd, hbuf, a_bytes, (off_t)(uoff+off_a)) != (ssize_t)a_bytes) return false;
 +        const char * staged_a = xsfmm_bf16 ? abuf : hbuf;
 +        if (k_tiled) {
 +            unsigned long long packed_off = off_a;
@@ -298,9 +300,8 @@
 +                   pwrite(fd, alobuf, a_bytes, (off_t)(uoff + off_a + a_bytes)) !=
 +                       (ssize_t) a_bytes) {
 +            return false;
-@@ -2633 +2877,0 @@
--        if (pwrite(fd, hbuf, a_bytes, (off_t)(uoff+off_a)) != (ssize_t)a_bytes) return false;
-@@ -2638,10 +2882,187 @@
++        }
+@@ -2638,10 +2882,223 @@
 -    const unsigned long long off_c = (off_b + b_bytes + 63) & ~63ULL;
 -    if (cudaMemcpy(hbuf, src1->data, b_bytes, cudaMemcpyDeviceToHost) != cudaSuccess) return false;
 -    if (pwrite(fd, hbuf, b_bytes, (off_t)(uoff+off_b)) != (ssize_t)b_bytes) return false;
@@ -319,6 +320,11 @@
 +        (size_t) k * (xsfmm_bf16 ? sizeof(uint16_t) : sizeof(float));
 +    memset(obuf, 0, c_bytes);
 +    int tiles = 0;
++    int submits = 0;
++    const uintptr_t source_id = (uintptr_t) src0->data;
++    const uint32_t cache_tag =
++        (uint32_t) (((source_id >> 4) ^ (source_id >> 32)) & 0x007fffffU);
++    const int pacc_compute_type = (int) (4U | (cache_tag << 8));
 +    unsigned long long packed_a_prefix = 0;
 +    for (long long kk = 0; kk < k; kk += max_tile_k) {
 +        const int tile_k = (int) ((k - kk) < max_tile_k ? (k - kk) : max_tile_k);
@@ -363,6 +369,10 @@
 +        const long long row_tasks = (m + max_tile_m - 1) / max_tile_m;
 +        if (worker_count <= 0) worker_count = 1;
 +        if (worker_count > row_tasks) worker_count = row_tasks;
++        const char * batch_env = getenv("HETGPU_PACC_IQ1S_CONTIGUOUS_BATCH");
++        const bool continuous_batch = xsfmm_bf16 &&
++            (!batch_env || batch_env[0] != '0') &&
++            (m % max_tile_m) == 0 && row_tasks > worker_count;
 +        const int term_count = xsfmm_split3 ? 3 : 1;
 +        for (int term = 0; term < term_count; ++term) {
 +            std::atomic<int> failed(0);
@@ -370,38 +380,65 @@
 +                off_a + (term == 2 ? a_bytes : 0);
 +            const unsigned long long term_b_base =
 +                off_b + (term == 1 ? tile_b_bytes : 0);
-+            for (long long wave_row = 0; wave_row < m;
-+                 wave_row += max_tile_m*worker_count) {
++            auto submit_rows = [&, kk, tile_k, tile_a_lda, tile_b_ldb, a_k_off,
++                                tile_a_row_bytes, packed_a_prefix, term_a_base,
++                                term_b_base, term](long long row,
++                                                  int batch_count,
++                                                  long long batch_row_stride) {
++                const int tile_m = (int) ((m - row) < max_tile_m ? (m - row) : max_tile_m);
++                const unsigned long long tile_a = k_tiled
++                    ? term_a_base + packed_a_prefix + (unsigned long long) row * tile_a_row_bytes
++                    : term_a_base + (unsigned long long) row * full_a_row_bytes + a_k_off;
++                const unsigned long long tile_b = xsfmm_bf16 || k_tiled
++                    ? term_b_base : term_b_base + (unsigned long long) kk * sizeof(float);
++                const unsigned long long tile_c = off_c
++                    + (unsigned long long) (row / max_tile_m) * max_tile_c_bytes;
++                const long long stride_a = batch_count > 1
++                    ? batch_row_stride * tile_a_lda : 0;
++                const long long stride_b = batch_count > 1 ? -1 : 0;
++                const long long stride_c = batch_count > 1
++                    ? batch_row_stride * pacc_n : 0;
++                int rc = hetgpu_pacc_submit_gemm(a_transa, 0, tile_m, (int)pacc_n, tile_k, nullptr,
++                    (const void*)(base+tile_a), a_atype, tile_a_lda, stride_a,
++                    (const void*)(base+tile_b), xsfmm_bf16 ? 5 : 4, tile_b_ldb, stride_b,
++                    nullptr, (void*)(base+tile_c), 4, xsfmm_bf16 ? (int)pacc_n : tile_m,
++                    stride_c, batch_count, pacc_compute_type);
++                if (rc != 0) {
++                    fprintf(stderr,
++                            "[pacc-iq1s] submit rc=%d type=%d m=%lld tile_row=%lld tile_m=%d batches=%d n=%lld k=%lld tile_k_off=%lld tile_k=%d term=%d\n",
++                            rc, src0->type, m, row, tile_m, batch_count, n, k, kk, tile_k, term);
++                    failed.store(1, std::memory_order_relaxed);
++                }
++            };
++            if (continuous_batch) {
 +                std::vector<std::thread> workers;
 +                workers.reserve((size_t) worker_count);
 +                for (long long worker = 0; worker < worker_count; ++worker) {
-+                    const long long row = wave_row + worker*max_tile_m;
-+                    if (row >= m) break;
-+                    workers.emplace_back([&, kk, tile_k, tile_a_lda, tile_b_ldb, a_k_off,
-+                                          tile_a_row_bytes, packed_a_prefix, row,
-+                                          term_a_base, term_b_base, term]() {
-+                        const int tile_m = (int) ((m - row) < max_tile_m ? (m - row) : max_tile_m);
-+                        const unsigned long long tile_a = k_tiled
-+                            ? term_a_base + packed_a_prefix + (unsigned long long) row * tile_a_row_bytes
-+                            : term_a_base + (unsigned long long) row * full_a_row_bytes + a_k_off;
-+                        const unsigned long long tile_b = xsfmm_bf16 || k_tiled
-+                            ? term_b_base : term_b_base + (unsigned long long) kk * sizeof(float);
-+                        const unsigned long long tile_c = off_c
-+                            + (unsigned long long) (row / max_tile_m) * max_tile_c_bytes;
-+                        int rc = hetgpu_pacc_submit_gemm(a_transa, 0, tile_m, (int)pacc_n, tile_k, nullptr,
-+                            (const void*)(base+tile_a), a_atype, tile_a_lda, 0,
-+                            (const void*)(base+tile_b), xsfmm_bf16 ? 5 : 4, tile_b_ldb, 0,
-+                            nullptr, (void*)(base+tile_c), 4, xsfmm_bf16 ? (int)pacc_n : tile_m, 0, 1, 4);
-+                        if (rc != 0) {
-+                            fprintf(stderr,
-+                                    "[pacc-iq1s] submit rc=%d type=%d m=%lld tile_row=%lld tile_m=%d n=%lld k=%lld tile_k_off=%lld tile_k=%d term=%d\n",
-+                                    rc, src0->type, m, row, tile_m, n, k, kk, tile_k, term);
-+                            failed.store(1, std::memory_order_relaxed);
-+                        }
-+                    });
++                    const long long base_tasks = row_tasks / worker_count;
++                    const long long extra_tasks = row_tasks % worker_count;
++                    const long long task_count = base_tasks + (worker < extra_tasks ? 1 : 0);
++                    const long long task_begin =
++                        worker * base_tasks + (worker < extra_tasks ? worker : extra_tasks);
++                    const long long row = task_begin * max_tile_m;
++                    workers.emplace_back(submit_rows, row, (int) task_count, max_tile_m);
 +                }
 +                for (std::thread & worker : workers) worker.join();
++                submits += (int) workers.size();
 +                if (failed.load(std::memory_order_relaxed) != 0) return false;
++            } else {
++                for (long long wave_row = 0; wave_row < m;
++                     wave_row += max_tile_m*worker_count) {
++                    std::vector<std::thread> workers;
++                    workers.reserve((size_t) worker_count);
++                    for (long long worker = 0; worker < worker_count; ++worker) {
++                        const long long row = wave_row + worker*max_tile_m;
++                        if (row >= m) break;
++                        workers.emplace_back(submit_rows, row, 1, 0);
++                    }
++                    for (std::thread & worker : workers) worker.join();
++                    submits += (int) workers.size();
++                    if (failed.load(std::memory_order_relaxed) != 0) return false;
++                }
 +            }
 +            for (long long row = 0; row < m; row += max_tile_m) {
 +                const int tile_m = (int) ((m - row) < max_tile_m ? (m - row) : max_tile_m);
@@ -498,11 +535,11 @@
 +                mismatches, output_count);
 +    }
 +    if (cudaMemcpy(dst->data, obuf, c_bytes, cudaMemcpyHostToDevice) != cudaSuccess) return false;
-@@ -2651,2 +3072,5 @@
+@@ -2651,2 +3108,5 @@
 -    fprintf(stderr, "[pacc-iq1s] call#%lld type=%d m=%lld n=%lld k=%lld %s %.2fms\n",
 -            ncalls, src0->type, m, n, k, staged?"STAGE":"hit", _ms);
-+    fprintf(stderr, "[pacc-iq1s] call#%lld type=%d m=%lld n=%lld pacc_n=%lld k=%lld tiles=%d mode=%s %s %.2fms\n",
-+            ncalls, src0->type, m, n, pacc_n, k, tiles,
++    fprintf(stderr, "[pacc-iq1s] call#%lld type=%d m=%lld n=%lld pacc_n=%lld k=%lld tiles=%d submits=%d mode=%s %s %.2fms\n",
++            ncalls, src0->type, m, n, pacc_n, k, tiles, submits,
 +            xsfmm_split3 ? "xsfmm-bf16-split3" :
 +                (xsfmm_bf16 ? "xsfmm-bf16" : "legacy"),
 +            staged?"STAGE":"hit", _ms);

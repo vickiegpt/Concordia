@@ -9,6 +9,7 @@
 #define XSFMM_REQUEST_MAGIC 0x5853464d4d524551ULL
 #define XSFMM_MAX_M 32ULL
 #define XSFMM_MAX_REPEATS 4096ULL
+#define XSFMM_MAX_BATCHES 64ULL
 
 #ifndef HETGPU_XSFMM_MS_STATE
 #define HETGPU_XSFMM_MS_STATE 1
@@ -33,6 +34,10 @@ struct xsfmm_request {
 	u64 completed_repeats;
 	s32 status;
 	u32 reserved;
+	u64 batch_count;
+	u64 a_batch_stride;
+	u64 b_batch_stride;
+	u64 c_batch_stride;
 };
 
 __asm__(
@@ -123,6 +128,10 @@ static int xsfmm_run_set(const char *value, const struct kernel_param *kp)
 	u64 cycle_start;
 	u64 cycle_end;
 	u64 completed = 0;
+	u64 batch_count;
+	u64 a_batch_stride;
+	u64 b_batch_stride;
+	u64 c_batch_stride;
 	int status;
 
 	(void)kp;
@@ -135,23 +144,40 @@ static int xsfmm_run_set(const char *value, const struct kernel_param *kp)
 		SR_SUM | SR_FS_DIRTY | SR_VS_DIRTY | SR_MS_VALUE;
 	csr_write(CSR_STATUS, execution_status);
 	request = (struct xsfmm_request *)address;
+	batch_count = request->batch_count ? request->batch_count : 1;
+	a_batch_stride = request->a_batch_stride ?
+		request->a_batch_stride : request->m * request->k;
+	b_batch_stride = request->b_batch_stride;
+	c_batch_stride = request->c_batch_stride ?
+		request->c_batch_stride : request->m * request->n;
 	if (request->magic != XSFMM_REQUEST_MAGIC ||
 	    !request->a || !request->b || !request->c ||
 	    !request->m || request->m > XSFMM_MAX_M ||
 	    !request->n || request->n > 32 ||
 	    !request->k || (request->k & 1) ||
-	    !request->repeats || request->repeats > XSFMM_MAX_REPEATS) {
+	    !request->repeats || request->repeats > XSFMM_MAX_REPEATS ||
+	    !batch_count || batch_count > XSFMM_MAX_BATCHES ||
+	    (batch_count > 1 && (!a_batch_stride || !c_batch_stride))) {
 		status = -EINVAL;
 	} else {
 		asm volatile("rdcycle %0" : "=r"(cycle_start));
 		do {
-			status = xsfmm_kernel_bf16(
-				(const u16 *)(unsigned long)request->a,
-				(const u16 *)(unsigned long)request->b,
-				(void *)(unsigned long)request->c,
-				(size_t)request->m,
-				(size_t)request->n,
-				(size_t)request->k);
+			u64 batch;
+
+			for (batch = 0; batch < batch_count; batch++) {
+				status = xsfmm_kernel_bf16(
+					(const u16 *)(unsigned long)request->a +
+						batch * a_batch_stride,
+					(const u16 *)(unsigned long)request->b +
+						batch * b_batch_stride,
+					(float *)(unsigned long)request->c +
+						batch * c_batch_stride,
+					(size_t)request->m,
+					(size_t)request->n,
+					(size_t)request->k);
+				if (status)
+					break;
+			}
 			if (status)
 				break;
 			completed++;

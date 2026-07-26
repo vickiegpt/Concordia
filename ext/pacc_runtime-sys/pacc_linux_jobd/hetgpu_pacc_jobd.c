@@ -152,6 +152,10 @@ struct XsfmmRequest {
     uint64_t completed_repeats;
     int32_t status;
     uint32_t reserved;
+    uint64_t batch_count;
+    uint64_t a_batch_stride;
+    uint64_t b_batch_stride;
+    uint64_t c_batch_stride;
 };
 
 struct GemmTiming {
@@ -739,6 +743,9 @@ static bool jobd_gemm_tiled_enabled(void) {
 
 static bool jobd_gemm_copy_io_enabled(void) {
     const char *value = getenv("HETGPU_PACC_JOBD_GEMM_COPY_IO");
+    if (!value || !*value) {
+        value = getenv("PACC_GCI");
+    }
     if (value && *value) {
         return env_flag_true(value);
     }
@@ -5145,49 +5152,165 @@ static int run_gemm_matrix_threads(const struct GemmJob *job, const void *a,
     return 0;
 }
 
+#define XSFMM_PACKED_A_CACHE_ENTRIES 64U
+
+struct XsfmmPackedACacheEntry {
+    bool valid;
+    uint64_t a_addr;
+    uint64_t m;
+    uint64_t k;
+    uint64_t batch_count;
+    uint64_t a_batch_stride;
+    int64_t lda;
+    uint32_t compute_type;
+    uint64_t age;
+    uint16_t *data;
+    size_t bytes;
+};
+
+static struct XsfmmPackedACacheEntry
+    g_xsfmm_packed_a_cache[XSFMM_PACKED_A_CACHE_ENTRIES];
+static uint64_t g_xsfmm_packed_a_cache_age;
+
+static uint16_t *xsfmm_packed_a_cache_lookup(
+    const struct GemmJob *job,
+    uint64_t batch_count,
+    uint64_t a_batch_stride) {
+    if (!job) return NULL;
+    /*
+     * The upper compute_type bits carry a host-provided immutable-A
+     * generation tag.  Untagged GEMMs may reuse an address with new data.
+     */
+    if ((job->compute_type >> 8) == 0) return NULL;
+    for (size_t i = 0; i < XSFMM_PACKED_A_CACHE_ENTRIES; i++) {
+        struct XsfmmPackedACacheEntry *entry = &g_xsfmm_packed_a_cache[i];
+        if (entry->valid &&
+            entry->a_addr == job->a_addr &&
+            entry->m == job->m &&
+            entry->k == job->k &&
+            entry->batch_count == batch_count &&
+            entry->a_batch_stride == a_batch_stride &&
+            entry->lda == job->lda &&
+            entry->compute_type == job->compute_type) {
+            entry->age = ++g_xsfmm_packed_a_cache_age;
+            return entry->data;
+        }
+    }
+    return NULL;
+}
+
+static uint16_t *xsfmm_packed_a_cache_insert(
+    const struct GemmJob *job,
+    uint64_t batch_count,
+    uint64_t a_batch_stride,
+    uint16_t *data,
+    size_t bytes) {
+    struct XsfmmPackedACacheEntry *victim = NULL;
+
+    if (!job || !data || !bytes) return NULL;
+    for (size_t i = 0; i < XSFMM_PACKED_A_CACHE_ENTRIES; i++) {
+        struct XsfmmPackedACacheEntry *entry = &g_xsfmm_packed_a_cache[i];
+        if (!entry->valid) {
+            victim = entry;
+            break;
+        }
+        if (!victim || entry->age < victim->age) {
+            victim = entry;
+        }
+    }
+    if (!victim) return NULL;
+    free(victim->data);
+    *victim = (struct XsfmmPackedACacheEntry) {
+        .valid = true,
+        .a_addr = job->a_addr,
+        .m = job->m,
+        .k = job->k,
+        .batch_count = batch_count,
+        .a_batch_stride = a_batch_stride,
+        .lda = job->lda,
+        .compute_type = job->compute_type,
+        .age = ++g_xsfmm_packed_a_cache_age,
+        .data = data,
+        .bytes = bytes,
+    };
+    return victim->data;
+}
+
 static int run_gemm_xsfmm_hardware_only(const struct GemmJob *job,
                                         const void *a,
                                         const void *b,
                                         void *c,
                                         float alpha,
-                                        float beta) {
+                                        float beta,
+                                        uint64_t batch_count,
+                                        uint64_t a_batch_stride,
+                                        uint64_t b_batch_stride,
+                                        uint64_t c_batch_stride) {
 #if defined(HETGPU_PACC_HAVE_XSFMM_BF16)
     uint16_t *a_pack = NULL;
-    uint16_t *b_pack = NULL;
+    const uint16_t *b_pack = (const uint16_t *)b;
     float *c_tile = NULL;
+    uint64_t packed_a_stride;
+    uint64_t packed_b_stride;
+    uint64_t packed_c_stride;
+    bool a_pack_owned = false;
     int status = 0;
 
-    if (!job || !a || !b || !c || job->atype != PACC_DTYPE_BF16 ||
+    if (!job || !b || !c || job->atype != PACC_DTYPE_BF16 ||
         job->btype != PACC_DTYPE_BF16 || job->transa || job->transb ||
         !gemm_job_is_compact_rowmajor(job) ||
         job->m > jobd_xsfmm_gemm_max_m() ||
         job->n > PACC_XSFMM16_TILE_N || job->n > jobd_xsfmm_gemm_max_n() ||
         (job->k & 1u) != 0 ||
         (job->ctype != PACC_DTYPE_F32 && job->ctype != PACC_DTYPE_F16 &&
-         job->ctype != PACC_DTYPE_BF16)) {
+         job->ctype != PACC_DTYPE_BF16) ||
+        !batch_count || batch_count > 64) {
         return 0xffff1f20;
     }
 
-    a_pack = (uint16_t *)malloc(
-        (size_t)(job->k * job->m) * sizeof(*a_pack));
-    b_pack = (uint16_t *)malloc((size_t)(job->k * job->n) * sizeof(*b_pack));
-    c_tile = (float *)malloc((size_t)(job->m * job->n) * sizeof(*c_tile));
-    if (!a_pack || !b_pack || !c_tile) {
+    packed_a_stride = job->k * job->m;
+    packed_b_stride = b_batch_stride;
+    packed_c_stride = job->m * job->n;
+    a_pack = xsfmm_packed_a_cache_lookup(
+        job, batch_count, a_batch_stride);
+    if (!a_pack) {
+        if (!a) {
+            return 0xffff1f24;
+        }
+        a_pack = (uint16_t *)malloc(
+            (size_t)(packed_a_stride * batch_count) * sizeof(*a_pack));
+        a_pack_owned = true;
+    }
+    c_tile = (float *)malloc(
+        (size_t)(packed_c_stride * batch_count) * sizeof(*c_tile));
+    if (!a_pack || !c_tile) {
         status = 0xffff1f21;
         goto out;
     }
 
-    for (uint64_t kk = 0; kk < job->k; kk++) {
-        for (uint64_t row = 0; row < job->m; row++) {
-            a_pack[kk * job->m + row] =
-                ((const uint16_t *)a)[row * (uint64_t)job->lda + kk];
+    if (a_pack_owned) {
+        for (uint64_t batch = 0; batch < batch_count; batch++) {
+            const uint16_t *batch_a =
+                (const uint16_t *)a + batch * a_batch_stride;
+            uint16_t *packed_a = a_pack + batch * packed_a_stride;
+
+            for (uint64_t kk = 0; kk < job->k; kk++) {
+                for (uint64_t row = 0; row < job->m; row++) {
+                    packed_a[kk * job->m + row] =
+                        batch_a[row * (uint64_t)job->lda + kk];
+                }
+            }
         }
-        for (uint64_t col = 0; col < job->n; col++) {
-            b_pack[kk * job->n + col] =
-                ((const uint16_t *)b)[kk * (uint64_t)job->ldb + col];
+        uint16_t *cached = xsfmm_packed_a_cache_insert(
+            job, batch_count, a_batch_stride, a_pack,
+            (size_t)(packed_a_stride * batch_count) * sizeof(*a_pack));
+        if (cached) {
+            a_pack = cached;
+            a_pack_owned = false;
         }
     }
-    memset(c_tile, 0, (size_t)(job->m * job->n) * sizeof(*c_tile));
+    memset(c_tile, 0,
+           (size_t)(packed_c_stride * batch_count) * sizeof(*c_tile));
     struct XsfmmRequest request = {
         .magic = HETGPU_XSFMM_REQUEST_MAGIC,
         .a = (uintptr_t)a_pack,
@@ -5198,26 +5321,39 @@ static int run_gemm_xsfmm_hardware_only(const struct GemmJob *job,
         .k = job->k,
         .repeats = jobd_xsfmm_repeats(),
         .status = -1,
+        .batch_count = batch_count,
+        .a_batch_stride = packed_a_stride,
+        .b_batch_stride = b_batch_stride == 0 ? 0 : packed_b_stride,
+        .c_batch_stride = packed_c_stride,
     };
+    uint64_t xsfmm_start_ns = monotonic_ns();
     if (jobd_run_xsfmm_request(&request) != 0) {
         status = 0xffff1f23;
         goto out;
     }
-    g_last_gemm_timing.xsfmm_cycles += request.cycles;
+    uint64_t xsfmm_elapsed_ns = monotonic_ns() - xsfmm_start_ns;
+    g_last_gemm_timing.xsfmm_cycles +=
+        request.cycles ? request.cycles : xsfmm_elapsed_ns;
     g_last_gemm_timing.xsfmm_repeats += request.completed_repeats;
 
-    for (uint64_t row = 0; row < job->m; row++) {
-        for (uint64_t col = 0; col < job->n; col++) {
-            size_t index = (size_t)(row * (uint64_t)job->ldc + col);
-            float old = beta != 0.0f ? load_typed(c, index, job->ctype) : 0.0f;
-            store_typed(c, index, job->ctype,
-                        alpha * c_tile[row * job->n + col] + beta * old);
+    for (uint64_t batch = 0; batch < batch_count; batch++) {
+        void *batch_c = (uint8_t *)c +
+            batch * c_batch_stride * dtype_size(job->ctype);
+        const float *packed_c = c_tile + batch * packed_c_stride;
+
+        for (uint64_t row = 0; row < job->m; row++) {
+            for (uint64_t col = 0; col < job->n; col++) {
+                size_t index = (size_t)(row * (uint64_t)job->ldc + col);
+                float old = beta != 0.0f ?
+                    load_typed(batch_c, index, job->ctype) : 0.0f;
+                store_typed(batch_c, index, job->ctype,
+                            alpha * packed_c[row * job->n + col] + beta * old);
+            }
         }
     }
 
 out:
-    free(a_pack);
-    free(b_pack);
+    if (a_pack_owned) free(a_pack);
     free(c_tile);
     return status;
 #else
@@ -5227,6 +5363,10 @@ out:
     (void)c;
     (void)alpha;
     (void)beta;
+    (void)batch_count;
+    (void)a_batch_stride;
+    (void)b_batch_stride;
+    (void)c_batch_stride;
     return 0xffff1f01;
 #endif
 }
@@ -5272,9 +5412,16 @@ static int run_gemm_impl(int fd, const struct GemmJob *job, uint64_t seq) {
     size_t c_matrix_elems = compact_rowmajor
         ? (size_t)(job->m * (uint64_t)job->ldc)
         : gemm_span(job->m, job->n, job->ldc);
-    uint64_t a_batch_stride = job->stride_a > 0 ? (uint64_t)job->stride_a : (uint64_t)a_matrix_elems;
-    uint64_t b_batch_stride = job->stride_b > 0 ? (uint64_t)job->stride_b : (uint64_t)b_matrix_elems;
-    uint64_t c_batch_stride = job->stride_c > 0 ? (uint64_t)job->stride_c : (uint64_t)c_matrix_elems;
+    /*
+     * A negative stride means broadcast one matrix across the batch.  Zero
+     * retains the cuBLAS-compatible packed-matrix default.
+     */
+    uint64_t a_batch_stride = job->stride_a < 0 ? 0 :
+        (job->stride_a > 0 ? (uint64_t)job->stride_a : (uint64_t)a_matrix_elems);
+    uint64_t b_batch_stride = job->stride_b < 0 ? 0 :
+        (job->stride_b > 0 ? (uint64_t)job->stride_b : (uint64_t)b_matrix_elems);
+    uint64_t c_batch_stride = job->stride_c < 0 ? 0 :
+        (job->stride_c > 0 ? (uint64_t)job->stride_c : (uint64_t)c_matrix_elems);
     size_t a_elems = (size_t)(a_batch_stride * (batch_count - 1) + a_matrix_elems);
     size_t b_elems = (size_t)(b_batch_stride * (batch_count - 1) + b_matrix_elems);
     size_t c_elems = (size_t)(c_batch_stride * (batch_count - 1) + c_matrix_elems);
@@ -5293,7 +5440,13 @@ static int run_gemm_impl(int fd, const struct GemmJob *job, uint64_t seq) {
         float beta = 0.0f;
         int status = 0;
 
-        if (read_phys_copy(fd, job->a_addr, a_bytes, &a_copy) != 0 ||
+        bool xsfmm_bf16 =
+            job->atype == PACC_DTYPE_BF16 && job->btype == PACC_DTYPE_BF16;
+        bool xsfmm_a_cached = xsfmm_bf16 &&
+            xsfmm_packed_a_cache_lookup(
+                job, batch_count, a_batch_stride) != NULL;
+        if ((!xsfmm_a_cached &&
+             read_phys_copy(fd, job->a_addr, a_bytes, &a_copy) != 0) ||
             read_phys_copy(fd, job->b_addr, b_bytes, &b_copy) != 0) {
             free(a_copy);
             free(b_copy);
@@ -5328,17 +5481,21 @@ static int run_gemm_impl(int fd, const struct GemmJob *job, uint64_t seq) {
         }
 
         mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5122);
-        for (uint64_t batch = 0; batch < batch_count; batch++) {
-            const void *a = a_copy + a_batch_stride * batch * a_dtype_size;
-            const void *b = b_copy + b_batch_stride * batch * b_dtype_size;
-            void *c = c_copy + c_batch_stride * batch * c_dtype_size;
-            mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5123);
-            if (job->atype == PACC_DTYPE_BF16 && job->btype == PACC_DTYPE_BF16) {
-                status = run_gemm_xsfmm_hardware_only(job, a, b, c, alpha, beta);
-            } else if (run_gemm_matrix_threads(job, a, b, c, alpha, beta) != 0) {
-                status = 0xffff1004;
+        mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5123);
+        if (job->atype == PACC_DTYPE_BF16 && job->btype == PACC_DTYPE_BF16) {
+            status = run_gemm_xsfmm_hardware_only(
+                job, a_copy, b_copy, c_copy, alpha, beta, batch_count,
+                a_batch_stride, b_batch_stride, c_batch_stride);
+        } else {
+            for (uint64_t batch = 0; batch < batch_count; batch++) {
+                const void *a = a_copy + a_batch_stride * batch * a_dtype_size;
+                const void *b = b_copy + b_batch_stride * batch * b_dtype_size;
+                void *c = c_copy + c_batch_stride * batch * c_dtype_size;
+                if (run_gemm_matrix_threads(job, a, b, c, alpha, beta) != 0) {
+                    status = 0xffff1004;
+                    break;
+                }
             }
-            if (status != 0) break;
         }
         mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5124);
         if (status == 0) {
@@ -5430,20 +5587,24 @@ static int run_gemm_impl(int fd, const struct GemmJob *job, uint64_t seq) {
     const char *a0 = (const char *)ma.ptr;
     const char *b0 = (const char *)mb.ptr;
     char *c0 = (char *)mc.ptr;
-    for (uint64_t batch = 0; batch < batch_count; batch++) {
-        const void *a = a0 + a_batch_stride * batch * a_dtype_size;
-        const void *b = b0 + b_batch_stride * batch * b_dtype_size;
-        void *c = c0 + c_batch_stride * batch * c_dtype_size;
-        mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5123);
-        int batch_status = 0;
-        if (job->atype == PACC_DTYPE_BF16 && job->btype == PACC_DTYPE_BF16) {
-            batch_status = run_gemm_xsfmm_hardware_only(job, a, b, c, alpha, beta);
-        } else if (run_gemm_matrix_threads(job, a, b, c, alpha, beta) != 0) {
-            batch_status = 0xffff1004;
-        }
+    mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5123);
+    if (job->atype == PACC_DTYPE_BF16 && job->btype == PACC_DTYPE_BF16) {
+        int batch_status = run_gemm_xsfmm_hardware_only(
+            job, a0, b0, c0, alpha, beta, batch_count,
+            a_batch_stride, b_batch_stride, c_batch_stride);
         if (batch_status != 0) {
             unmap_phys(&malpha); unmap_phys(&mbeta); unmap_phys(&ma); unmap_phys(&mb); unmap_phys(&mc);
             return batch_status;
+        }
+    } else {
+        for (uint64_t batch = 0; batch < batch_count; batch++) {
+            const void *a = a0 + a_batch_stride * batch * a_dtype_size;
+            const void *b = b0 + b_batch_stride * batch * b_dtype_size;
+            void *c = c0 + c_batch_stride * batch * c_dtype_size;
+            if (run_gemm_matrix_threads(job, a, b, c, alpha, beta) != 0) {
+                unmap_phys(&malpha); unmap_phys(&mbeta); unmap_phys(&ma); unmap_phys(&mb); unmap_phys(&mc);
+                return 0xffff1004;
+            }
         }
     }
     mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5124);
