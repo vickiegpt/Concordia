@@ -71,6 +71,10 @@ static int shared_ddr_memremap_mode;
 module_param(shared_ddr_memremap_mode, int, 0444);
 MODULE_PARM_DESC(shared_ddr_memremap_mode,
 		 "Fixed shared DDR memremap mode: 0=auto, 1=WC, 2=WT, 3=WB, 4=windowed-WC");
+static bool shared_ddr_reserve_system_ram;
+module_param(shared_ddr_reserve_system_ram, bool, 0444);
+MODULE_PARM_DESC(shared_ddr_reserve_system_ram,
+		 "Remove a fixed shared DDR System RAM range from the buddy allocator while loaded");
 static bool local_doorbell_bit = true;
 module_param(local_doorbell_bit, bool, 0444);
 MODULE_PARM_DESC(local_doorbell_bit,
@@ -95,6 +99,9 @@ static void *g_shared_ddr_mem;
 static bool g_shared_ddr_allocated;
 static bool g_shared_ddr_iomem;
 static bool g_shared_ddr_windowed;
+static bool g_shared_ddr_reserved;
+static unsigned long g_shared_ddr_start_pfn;
+static unsigned long g_shared_ddr_nr_pages;
 
 static bool pos_in_range(u64 pos, u64 base, u64 size)
 {
@@ -129,6 +136,61 @@ static void shared_ddr_sync_for_cpu(u64 ddr_off, size_t len)
 static gfp_t shared_ddr_gfp_flags(void)
 {
 	return GFP_KERNEL | __GFP_ZERO;
+}
+
+static int shared_ddr_reserve_fixed_range(void)
+{
+	phys_addr_t end;
+	unsigned long end_pfn;
+	int ret;
+
+	if (!shared_ddr_reserve_system_ram)
+		return 0;
+	if (!shared_ddr_base_override || !shared_ddr_size)
+		return -EINVAL;
+	if (!IS_ALIGNED(shared_ddr_base_override, PAGE_SIZE) ||
+	    !IS_ALIGNED(shared_ddr_size, PAGE_SIZE))
+		return -EINVAL;
+	end = (phys_addr_t)shared_ddr_base_override + shared_ddr_size;
+	if (end <= (phys_addr_t)shared_ddr_base_override)
+		return -EOVERFLOW;
+
+	g_shared_ddr_start_pfn =
+		PHYS_PFN((phys_addr_t)shared_ddr_base_override);
+	end_pfn = PHYS_PFN(end);
+	g_shared_ddr_nr_pages = end_pfn - g_shared_ddr_start_pfn;
+
+	ret = alloc_contig_range(g_shared_ddr_start_pfn, end_pfn,
+				 MIGRATE_MOVABLE, GFP_KERNEL | __GFP_NOWARN);
+	if (ret == -EBUSY) {
+		pr_info("hetgpu_pacc_mbox: shared DDR is not MIGRATE_MOVABLE, trying MIGRATE_CMA\n");
+		ret = alloc_contig_range(g_shared_ddr_start_pfn, end_pfn,
+					 MIGRATE_CMA,
+					 GFP_KERNEL | __GFP_NOWARN);
+	}
+	if (ret) {
+		pr_err("hetgpu_pacc_mbox: failed to reserve shared DDR System RAM 0x%llx+0x%lx: %d\n",
+		       (unsigned long long)shared_ddr_base_override,
+		       shared_ddr_size, ret);
+		g_shared_ddr_start_pfn = 0;
+		g_shared_ddr_nr_pages = 0;
+		return ret;
+	}
+
+	g_shared_ddr_reserved = true;
+	pr_info("hetgpu_pacc_mbox: reserved shared DDR System RAM PFNs 0x%lx-0x%lx\n",
+		g_shared_ddr_start_pfn, end_pfn - 1);
+	return 0;
+}
+
+static void shared_ddr_release_fixed_range(void)
+{
+	if (!g_shared_ddr_reserved)
+		return;
+	free_contig_range(g_shared_ddr_start_pfn, g_shared_ddr_nr_pages);
+	g_shared_ddr_reserved = false;
+	g_shared_ddr_start_pfn = 0;
+	g_shared_ddr_nr_pages = 0;
 }
 
 static void *shared_ddr_memremap_fixed(phys_addr_t base, unsigned long size)
@@ -689,6 +751,12 @@ static int __init hetgpu_pacc_mbox_init(void)
 #endif
 	if (shared_ddr_size) {
 		if (shared_ddr_base_override) {
+			ret = shared_ddr_reserve_fixed_range();
+			if (ret)
+				goto err_unmap_all;
+		}
+
+		if (shared_ddr_base_override) {
 			g_shared_ddr_dma = (dma_addr_t)shared_ddr_base_override;
 			if (shared_ddr_windowed_mode()) {
 				g_shared_ddr_windowed = true;
@@ -796,6 +864,7 @@ err_unmap_all:
 		platform_device_unregister(g_pdev);
 		g_pdev = NULL;
 	}
+	shared_ddr_release_fixed_range();
 #if !HETGPU_PACC_MBOX_SHARED_DDR_ONLY
 		for (i = 0; i < PACC_COUNT; i++) {
 			if (g_mbox_db[i])
@@ -827,6 +896,7 @@ static void __exit hetgpu_pacc_mbox_exit(void)
 		platform_device_unregister(g_pdev);
 		g_pdev = NULL;
 	}
+	shared_ddr_release_fixed_range();
 	for (i = 0; i < PACC_COUNT; i++)
 		device_destroy(g_class, MKDEV(MAJOR(g_dev), MINOR(g_dev) + i));
 	class_destroy(g_class);

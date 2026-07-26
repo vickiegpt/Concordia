@@ -40,6 +40,22 @@ trap cleanup EXIT
 for dev in /dev/hetgpu_pacc_mbox_ddr_coh{0..3} /dev/hetgpu_pacc_mbox_live{0..3}; do
     [[ -e "$dev" ]] || { echo "missing PACC device: $dev" >&2; exit 2; }
 done
+RESERVE_PARAM=/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_reserve_system_ram
+BASE_PARAM=/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_base_override
+SIZE_PARAM=/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_size
+[[ -r "$RESERVE_PARAM" && "$(<"$RESERVE_PARAM")" == "Y" ]] || {
+    echo "unsafe PACC shared DDR: System RAM range is not reserved" >&2
+    echo "run: sudo $ROOT/tools/load_pacc_shared_ddr_reserved.sh" >&2
+    exit 2
+}
+(( $(<"$BASE_PARAM") == 0x20110600000 )) || {
+    echo "unexpected PACC shared DDR base: $(<"$BASE_PARAM")" >&2
+    exit 2
+}
+(( $(<"$SIZE_PARAM") >= 0x100000000 )) || {
+    echo "PACC shared DDR reservation is smaller than 4 GiB: $(<"$SIZE_PARAM")" >&2
+    exit 2
+}
 [[ -x "$LLAMA_BIN" ]] || { echo "missing llama-cli: $LLAMA_BIN" >&2; exit 2; }
 [[ -r "$MODEL" ]] || { echo "missing model: $MODEL" >&2; exit 2; }
 for shard in "${MODEL%-00001-of-00006.gguf}"-0000{1..6}-of-00006.gguf; do
