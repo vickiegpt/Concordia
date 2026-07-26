@@ -87,6 +87,9 @@
 #define HETGPU_PACC_COMPLETION_OFF 0x1f20ULL
 #define HETGPU_PACC_COMPLETION_MIRROR_DEFAULT_OFF 0x120e0ULL
 #define HETGPU_PACC_BEACON_OFF 0x1f40ULL
+#define HETGPU_PACC_COMPLETION_TELEMETRY_OFF 0x1f80ULL
+#define HETGPU_PACC_COMPLETION_TELEMETRY_MAGIC 0x48475055544c4d31ULL
+#define HETGPU_PACC_COMPLETION_TELEMETRY_VERSION 1U
 #define HETGPU_PACC_DIAG_RING_SLOT 8U
 #define HETGPU_PACC_DIAG_RING_OFF 0x0000ULL
 #define HETGPU_PACC_DIAG_RING_RECORDS 192U
@@ -103,6 +106,18 @@
 #define PACC_GEMM_THREADS 32U
 #define PACC_XSFMM16_TILE_M 32U
 #define PACC_XSFMM16_TILE_N 32U
+
+#ifndef HETGPU_PACC_COMPLETION_TELEMETRY
+#define HETGPU_PACC_COMPLETION_TELEMETRY 0
+#endif
+
+#ifndef HETGPU_PACC_COMPLETION_SETTLE_NS
+#define HETGPU_PACC_COMPLETION_SETTLE_NS 0ULL
+#endif
+
+#ifndef HETGPU_PACC_COMPLETION_FAST_PATH
+#define HETGPU_PACC_COMPLETION_FAST_PATH 0
+#endif
 #define PACC_XSFMM16_TILE_K 4U
 #define PACC_RVV_F32_TILE_M 32U
 #define PACC_RVV_F32_TILE_N 32U
@@ -138,6 +153,16 @@ struct XsfmmRequest {
     int32_t status;
     uint32_t reserved;
 };
+
+struct GemmTiming {
+    uint64_t seq;
+    uint64_t compute_start_ns;
+    uint64_t compute_end_ns;
+    uint64_t xsfmm_cycles;
+    uint64_t xsfmm_repeats;
+};
+
+static struct GemmTiming g_last_gemm_timing;
 
 extern int xsfmm_native_bf16(const uint16_t *a_km,
                              const uint16_t *b_kn,
@@ -220,6 +245,26 @@ struct JobdDiagEvent {
     uint32_t aux;
     uint64_t seq;
 };
+
+struct CompletionTelemetry {
+    uint64_t magic;
+    uint32_t version;
+    uint32_t record_bytes;
+    uint32_t job_id;
+    uint32_t status;
+    uint32_t flags;
+    uint32_t reserved;
+    uint64_t seq;
+    uint64_t compute_start_ns;
+    uint64_t compute_end_ns;
+    uint64_t publish_start_ns;
+    uint64_t publish_end_ns;
+    uint64_t xsfmm_cycles;
+    uint64_t xsfmm_repeats;
+};
+
+_Static_assert(sizeof(struct CompletionTelemetry) == 88,
+               "completion telemetry ABI must remain 88 bytes");
 
 struct RmsNormDebugRecord {
     uint64_t magic;
@@ -538,6 +583,8 @@ static uint64_t g_preloaded_completion_seq;
 static uint32_t g_preloaded_completion_status;
 
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
+static void mirror_job_completion(int fd, uint32_t job_id, uint64_t seq,
+                                  uint32_t status);
 static bool mirror_boot_marker_all_slots_mbox_mmap(int fd, uint32_t status);
 static bool mirror_host_status_mbox_mmap(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static void mirror_diag_event(int fd, uint32_t job_id, uint64_t seq, uint32_t status, uint32_t aux);
@@ -810,7 +857,11 @@ static bool jobd_status_mmap_fallback_enabled(void) {
     if (value && *value) {
         return env_flag_true(value);
     }
+#if HETGPU_PACC_COMPLETION_TELEMETRY
+    return false;
+#else
     return true;
+#endif
 }
 
 static bool jobd_mbox_status_mmap_enabled(void) {
@@ -1656,6 +1707,14 @@ static uint64_t monotonic_us(void) {
         return 0;
     }
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
+static uint64_t monotonic_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
 static bool parse_u64_checked(const char *s, uint64_t *out) {
@@ -5144,6 +5203,8 @@ static int run_gemm_xsfmm_hardware_only(const struct GemmJob *job,
         status = 0xffff1f23;
         goto out;
     }
+    g_last_gemm_timing.xsfmm_cycles += request.cycles;
+    g_last_gemm_timing.xsfmm_repeats += request.completed_repeats;
 
     for (uint64_t row = 0; row < job->m; row++) {
         for (uint64_t col = 0; col < job->n; col++) {
@@ -5170,7 +5231,7 @@ out:
 #endif
 }
 
-static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
+static int run_gemm_impl(int fd, const struct GemmJob *job, uint64_t seq) {
     mirror_progress_status(fd, HETGPU_PACC_JOB_GEMM, seq, 0x5120);
     if (!job->m || !job->n || !job->k || !job->a_addr || !job->b_addr || !job->c_addr) {
         return 0xffff1001;
@@ -5394,6 +5455,17 @@ static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
                                 "gemm-output-mmap");
     unmap_phys(&malpha); unmap_phys(&mbeta); unmap_phys(&ma); unmap_phys(&mb); unmap_phys(&mc);
     return 0;
+}
+
+static int run_gemm(int fd, const struct GemmJob *job, uint64_t seq) {
+    int status;
+
+    memset(&g_last_gemm_timing, 0, sizeof(g_last_gemm_timing));
+    g_last_gemm_timing.seq = seq;
+    g_last_gemm_timing.compute_start_ns = monotonic_ns();
+    status = run_gemm_impl(fd, job, seq);
+    g_last_gemm_timing.compute_end_ns = monotonic_ns();
+    return status;
 }
 
 static int run_softmax(int fd, const struct SoftmaxJob *job, uint64_t seq) {
@@ -13140,7 +13212,7 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
                                  "preloaded-before-completion");
     }
     mirror_aligned_completion_record(fd, job_id, seq, (uint32_t)status);
-    mirror_host_status(fd, job_id, seq, (uint32_t)status);
+    mirror_job_completion(fd, job_id, seq, (uint32_t)status);
     submit_mbox_payload_sync(g_mbox_fd, job_id, seq, (uint32_t)status,
                              "preloaded-completion");
     if (!jobd_require_completion_visible_enabled() ||
@@ -13325,7 +13397,7 @@ static enum DispatchPollResult maybe_dispatch_gemm_arg_slot_direct(int fd,
     status = run_gemm(fd, &job, header.seq);
     mirror_progress_status(fd, job_id, header.seq, 0x5303);
     mirror_aligned_completion_record(fd, job_id, header.seq, (uint32_t)status);
-    mirror_host_status(fd, job_id, header.seq, (uint32_t)status);
+    mirror_job_completion(fd, job_id, header.seq, (uint32_t)status);
     submit_mbox_payload_sync(g_mbox_fd, job_id, header.seq, (uint32_t)status,
                              "arg-slot-direct-completion");
     mark_preloaded_job_seen(job_id, header.seq);
@@ -13394,7 +13466,7 @@ static enum DispatchPollResult maybe_dispatch_arg_slot_job(
                                  (uint32_t)status, "arg-slot-before-completion");
     }
     mirror_aligned_completion_record(fd, header.job_id, header.seq, (uint32_t)status);
-    mirror_host_status(fd, header.job_id, header.seq, (uint32_t)status);
+    mirror_job_completion(fd, header.job_id, header.seq, (uint32_t)status);
     submit_mbox_payload_sync(g_mbox_fd, header.job_id, header.seq, (uint32_t)status,
                              "arg-slot-completion");
     if (!jobd_require_completion_visible_enabled() ||
@@ -13935,6 +14007,23 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
     bool dual_pwrite_ok = false;
     bool primary_pwrite_ok = false;
 
+#if HETGPU_PACC_COMPLETION_TELEMETRY && HETGPU_PACC_COMPLETION_FAST_PATH
+    bool first_direct =
+        mirror_host_status_control_window_direct(job_id, seq, status);
+    if (HETGPU_PACC_COMPLETION_SETTLE_NS != 0) {
+        uint64_t settle_deadline_ns =
+            monotonic_ns() + HETGPU_PACC_COMPLETION_SETTLE_NS;
+        while (monotonic_ns() < settle_deadline_ns) {
+            __asm__ volatile("" ::: "memory");
+        }
+    }
+    bool second_direct =
+        mirror_host_status_control_window_direct(job_id, seq, status);
+    if (first_direct && second_direct) {
+        return;
+    }
+#endif
+
     if (jobd_mbox_control_enabled()) {
         /*
          * Current PACC Linux does not tolerate /dev/mem pwrite() to the
@@ -14116,6 +14205,70 @@ static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t s
         trace_msg("mirror_host_status: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
                   job_id, job_name(job_id), seq, status);
     }
+}
+
+static void mirror_completion_telemetry(int fd,
+                                        uint32_t job_id,
+                                        uint64_t seq,
+                                        uint32_t status,
+                                        uint64_t publish_start_ns,
+                                        uint64_t publish_end_ns) {
+#if HETGPU_PACC_COMPLETION_TELEMETRY
+    volatile struct CompletionTelemetry *dst;
+    struct CompletionTelemetry record;
+
+    (void)fd;
+    if (job_id != HETGPU_PACC_JOB_GEMM ||
+        !g_control_window ||
+        HETGPU_PACC_COMPLETION_TELEMETRY_OFF > HETGPU_PACC_CONTROL_BYTES ||
+        sizeof(record) > HETGPU_PACC_CONTROL_BYTES -
+                             HETGPU_PACC_COMPLETION_TELEMETRY_OFF) {
+        return;
+    }
+
+    memset(&record, 0, sizeof(record));
+    record.version = HETGPU_PACC_COMPLETION_TELEMETRY_VERSION;
+    record.record_bytes = sizeof(record);
+    record.job_id = job_id;
+    record.status = status;
+    record.flags = 1U;
+    record.seq = seq;
+    record.publish_start_ns = publish_start_ns;
+    record.publish_end_ns = publish_end_ns;
+    if (g_last_gemm_timing.seq == seq) {
+        record.compute_start_ns = g_last_gemm_timing.compute_start_ns;
+        record.compute_end_ns = g_last_gemm_timing.compute_end_ns;
+        record.xsfmm_cycles = g_last_gemm_timing.xsfmm_cycles;
+        record.xsfmm_repeats = g_last_gemm_timing.xsfmm_repeats;
+    }
+
+    dst = (volatile struct CompletionTelemetry *)(
+        g_control_window + HETGPU_PACC_COMPLETION_TELEMETRY_OFF);
+    dst->magic = 0;
+    jobd_io_fence();
+    memcpy((void *)dst, &record, sizeof(record));
+    jobd_io_fence();
+    dst->magic = HETGPU_PACC_COMPLETION_TELEMETRY_MAGIC;
+    jobd_io_fence();
+    jobd_flush_for_device((const void *)dst, sizeof(*dst));
+    jobd_io_fence();
+#else
+    (void)fd;
+    (void)job_id;
+    (void)seq;
+    (void)status;
+    (void)publish_start_ns;
+    (void)publish_end_ns;
+#endif
+}
+
+static void mirror_job_completion(int fd, uint32_t job_id, uint64_t seq,
+                                  uint32_t status) {
+    uint64_t publish_start_ns = monotonic_ns();
+    mirror_host_status(fd, job_id, seq, status);
+    uint64_t publish_end_ns = monotonic_ns();
+    mirror_completion_telemetry(fd, job_id, seq, status,
+                                publish_start_ns, publish_end_ns);
 }
 
 static bool mirror_host_status_mbox_mmap(int fd, uint32_t job_id, uint64_t seq, uint32_t status) {

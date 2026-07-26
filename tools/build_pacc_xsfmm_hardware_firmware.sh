@@ -56,6 +56,9 @@ fi
     --gcc-toolchain=/usr -O3 -Wall -Wextra \
     -fno-asynchronous-unwind-tables -fno-unwind-tables \
     -DHETGPU_PACC_HAVE_XSFMM32A16F=1 \
+    -DHETGPU_PACC_COMPLETION_TELEMETRY=1 \
+    -DHETGPU_PACC_COMPLETION_FAST_PATH="${PACC_XSFMM_COMPLETION_FAST_PATH:-1}" \
+    -DHETGPU_PACC_COMPLETION_SETTLE_NS="${PACC_XSFMM_COMPLETION_SETTLE_NS:-0}" \
     -march="${MARCH}" -mabi=lp64d -static \
     -o "${JOBD}" "${JOBD_SRC}/hetgpu_pacc_jobd.c" "${NATIVE_OBJ}" \
     -pthread -ldl -lm
@@ -75,7 +78,7 @@ PACC_JOBD_XSFMM_MAX_N=32 \
 file "${JOBD}"
 modinfo "${MODULE_BUILD}/xsfmm_ctx_stripped.ko" | grep -E 'description|vermagic'
 sha256sum "${JOBD}" "${MODULE_BUILD}/xsfmm_ctx_stripped.ko" "${FIRMWARE}"
-echo "xsfmm configuration: ms_state=${MS_STATE} stop_stage=${PROBE_STOP_STAGE} gemm_enable=${XSFMM_GEMM_ENABLE} ctx_probe_mode=${CTX_PROBE_MODE} repeats=${XSFMM_REPEATS}"
+echo "xsfmm configuration: ms_state=${MS_STATE} stop_stage=${PROBE_STOP_STAGE} gemm_enable=${XSFMM_GEMM_ENABLE} ctx_probe_mode=${CTX_PROBE_MODE} repeats=${XSFMM_REPEATS} status_mmap_fallback=0 telemetry=1 completion_fast_path=${PACC_XSFMM_COMPLETION_FAST_PATH:-1} completion_settle_ns=${PACC_XSFMM_COMPLETION_SETTLE_NS:-0}"
 
 if [[ "${PACC_XSFMM_INSTALL:-0}" == "1" ]]; then
     sudo install -m 0644 "${FIRMWARE}" "${INSTALL_FIRMWARE}"

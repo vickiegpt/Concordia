@@ -37,6 +37,10 @@ static const uint64_t HETGPU_PACC_ARG_SLOT_BYTES = 0x400ULL;
 static const uint64_t HETGPU_PACC_RUNTIME_TABLE_OFF = 0x1400ULL;
 static const uint64_t HETGPU_PACC_COMPLETION_OFF = 0x1f20ULL;
 static const uint64_t HETGPU_PACC_BEACON_OFF = 0x1f40ULL;
+static const uint64_t HETGPU_PACC_COMPLETION_TELEMETRY_OFF = 0x1f80ULL;
+static const uint64_t HETGPU_PACC_COMPLETION_TELEMETRY_MAGIC =
+    0x48475055544c4d31ULL;
+static const uint32_t HETGPU_PACC_COMPLETION_TELEMETRY_VERSION = 1;
 static const uint64_t HETGPU_PACC_AP2PACC_READBACK_HELPER_OFF = 0x02000000ULL;
 static const uint64_t HETGPU_PACC_PACC2AP_RW_HELPER_OFF = 0x02002000ULL;
 static const uint64_t HETGPU_PACC_TOP_MBOX_RAM_OFF = 0x00010000ULL;
@@ -62,6 +66,26 @@ typedef struct {
     uint32_t status;
     uint64_t seq;
 } HetgpuPaccDoorbell;
+
+typedef struct {
+    uint64_t magic;
+    uint32_t version;
+    uint32_t record_bytes;
+    uint32_t job_id;
+    uint32_t status;
+    uint32_t flags;
+    uint32_t reserved;
+    uint64_t seq;
+    uint64_t compute_start_ns;
+    uint64_t compute_end_ns;
+    uint64_t publish_start_ns;
+    uint64_t publish_end_ns;
+    uint64_t xsfmm_cycles;
+    uint64_t xsfmm_repeats;
+} HetgpuPaccCompletionTelemetry;
+
+_Static_assert(sizeof(HetgpuPaccCompletionTelemetry) == 88,
+               "completion telemetry ABI must remain 88 bytes");
 
 typedef struct {
     uint64_t magic;
@@ -616,6 +640,85 @@ static int completion_matches(const uint8_t st[32], uint64_t seq, uint32_t *stat
            job_id == PACC_JOB_GEMM && got_seq == seq;
 }
 
+static uint64_t elapsed_ns_since(const struct timespec *start) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)(now.tv_sec - start->tv_sec) * 1000000000ULL +
+           (uint64_t)((int64_t)now.tv_nsec - (int64_t)start->tv_nsec);
+}
+
+static int finish_completion(int pacc_id,
+                             int ddr_fd,
+                             uint64_t seq,
+                             uint32_t status,
+                             const char *source,
+                             const struct timespec *wait_start) {
+    const bool required =
+        env_is_1("HETGPU_PACC_COMPLETION_TELEMETRY_REQUIRED");
+    const uint64_t timeout_us = parse_u64_env(
+        "HETGPU_PACC_COMPLETION_TELEMETRY_TIMEOUT_US",
+        required ? 10000ULL : 0ULL);
+    const uint64_t deadline_ns = elapsed_ns_since(wait_start) +
+                                 timeout_us * 1000ULL;
+    HetgpuPaccCompletionTelemetry telemetry;
+    bool matched = false;
+
+    if (trace_enabled() || required) {
+        fprintf(stderr,
+                "PACC SFMM bench: completion_wait_ns=%" PRIu64
+                " source=%s seq=%" PRIu64 "\n",
+                elapsed_ns_since(wait_start), source, seq);
+    }
+    if (ddr_fd >= 0) {
+        do {
+            memset(&telemetry, 0, sizeof(telemetry));
+            if (read_ddr_control(pacc_id, ddr_fd,
+                                 HETGPU_PACC_COMPLETION_TELEMETRY_OFF,
+                                 &telemetry, sizeof(telemetry)) == 0 &&
+                telemetry.magic == HETGPU_PACC_COMPLETION_TELEMETRY_MAGIC &&
+                telemetry.version ==
+                    HETGPU_PACC_COMPLETION_TELEMETRY_VERSION &&
+                telemetry.record_bytes == sizeof(telemetry) &&
+                telemetry.job_id == PACC_JOB_GEMM &&
+                telemetry.seq == seq &&
+                (telemetry.flags & 1U) != 0) {
+                matched = true;
+                break;
+            }
+            if (timeout_us == 0 ||
+                elapsed_ns_since(wait_start) >= deadline_ns) {
+                break;
+            }
+            usleep(10);
+        } while (true);
+    }
+    if (matched) {
+        uint64_t compute_ns =
+            telemetry.compute_end_ns >= telemetry.compute_start_ns
+                ? telemetry.compute_end_ns - telemetry.compute_start_ns
+                : 0;
+        uint64_t publish_ns =
+            telemetry.publish_end_ns >= telemetry.publish_start_ns
+                ? telemetry.publish_end_ns - telemetry.publish_start_ns
+                : 0;
+        fprintf(stderr,
+                "PACC SFMM telemetry: seq=%" PRIu64
+                " status=0x%x compute_ns=%" PRIu64
+                " completion_publish_ns=%" PRIu64
+                " xsfmm_cycles=%" PRIu64
+                " xsfmm_repeats=%" PRIu64 "\n",
+                telemetry.seq, telemetry.status, compute_ns, publish_ns,
+                telemetry.xsfmm_cycles, telemetry.xsfmm_repeats);
+    } else if (required) {
+        fprintf(stderr,
+                "PACC SFMM telemetry: missing seq=%" PRIu64
+                " timeout_us=%" PRIu64 "\n",
+                seq, timeout_us);
+        return -EPROTO;
+    }
+    return status == 0 ? 0 : -EIO;
+}
+
 static int synthesize_completion(int pacc_id, int ctl_fd, int ddr_fd, uint64_t seq, uint32_t status) {
     HetgpuPaccDoorbell done;
     memset(&done, 0, sizeof(done));
@@ -648,7 +751,8 @@ static int wait_completion(
                     if (trace_enabled()) {
                         fprintf(stderr, "PACC SFMM shim: completion source=%zu status=0x%x seq=%" PRIu64 "\n", i, status, seq);
                     }
-                    return status == 0 ? 0 : -EIO;
+                    return finish_completion(pacc_id, ddr_fd, seq, status,
+                                             "control", &start);
                 }
             }
         }
@@ -659,7 +763,8 @@ static int wait_completion(
                 if (trace_enabled()) {
                     fprintf(stderr, "PACC SFMM shim: completion source=shared-ddr-pacc-control status=0x%x seq=%" PRIu64 "\n", status, seq);
                 }
-                return status == 0 ? 0 : -EIO;
+                return finish_completion(pacc_id, ddr_fd, seq, status,
+                                         "shared-ddr-pacc-control", &start);
             }
         }
         memset(st, 0, sizeof(st));
@@ -669,7 +774,8 @@ static int wait_completion(
                 if (trace_enabled()) {
                     fprintf(stderr, "PACC SFMM shim: completion source=shared-ddr-control status=0x%x seq=%" PRIu64 "\n", status, seq);
                 }
-                return status == 0 ? 0 : -EIO;
+                return finish_completion(pacc_id, ddr_fd, seq, status,
+                                         "shared-ddr-control", &start);
             }
         }
         memset(st, 0, sizeof(st));
@@ -687,7 +793,8 @@ static int wait_completion(
                             " status=0x%x seq=%" PRIu64 "\n",
                             status, seq);
                 }
-                return status == 0 ? 0 : -EIO;
+                return finish_completion(pacc_id, ddr_fd, seq, status,
+                                         "shared-ddr-control-alias", &start);
             }
         }
         if (raw_output_completion_enabled() &&
@@ -708,7 +815,8 @@ static int wait_completion(
                                 " mirror_rc=%d completion_rc=%d\n",
                                 raw_result_off, result_len, seq, mirror_rc, done_rc);
                     }
-                    return 0;
+                    return finish_completion(pacc_id, ddr_fd, seq, 0,
+                                             "raw-ddr-output", &start);
                 }
             }
         }
