@@ -9,6 +9,7 @@ const NVINT4_DIM: u32 = 2048;
 const CONVERTER_THREADS: u32 = 256;
 const CONVERTER_PTX: &str = include_str!("nvint4_to_packed_ternary.ptx");
 const CONVERTER_NAME: &str = "nvint4_to_packed_ternary";
+pub(crate) const NVINT4_ENTRY: &str = "tmatmul_nvint4_dense";
 
 static CUDA_STATES: OnceLock<Mutex<HashMap<i32, Nvint4CudaState>>> = OnceLock::new();
 
@@ -27,6 +28,109 @@ pub(crate) struct ConvertedMatrix {
     pub(crate) bytes: usize,
     pub(crate) cuda_device: i32,
     pub(crate) stream: CUstream,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Nvint4Launch {
+    pub(crate) packed_weights: usize,
+    pub(crate) input_q8_8: usize,
+    pub(crate) output_s64: usize,
+    pub(crate) dim: u32,
+    pub(crate) delta: u32,
+    pub(crate) stream: CUstream,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailureDisposition {
+    StrictFailure,
+    GpuFallback,
+}
+
+fn failure_disposition(fallback_enabled: bool) -> FailureDisposition {
+    if fallback_enabled {
+        FailureDisposition::GpuFallback
+    } else {
+        FailureDisposition::StrictFailure
+    }
+}
+
+pub(crate) fn is_nvint4_entry(kernel_name: &str) -> bool {
+    kernel_name == NVINT4_ENTRY
+}
+
+fn validate_launch_shape(grid: (u32, u32, u32), block: (u32, u32, u32)) -> Result<(), String> {
+    if grid != (1, 1, 1) || block != (1, 1, 1) {
+        return Err(format!(
+            "{NVINT4_ENTRY} requires grid=(1,1,1) block=(1,1,1), got grid={grid:?} block={block:?}"
+        ));
+    }
+    Ok(())
+}
+
+unsafe fn read_param<T: Copy>(
+    kernel_params: *mut *mut c_void,
+    index: usize,
+    role: &str,
+) -> Result<T, String> {
+    if kernel_params.is_null() {
+        return Err(format!("{NVINT4_ENTRY} has null kernel_params"));
+    }
+    let slot = *kernel_params.add(index);
+    if slot.is_null() || (slot as usize) < 0x1000 {
+        return Err(format!(
+            "{NVINT4_ENTRY} PARAM_{index} ({role}) has invalid slot 0x{:x}",
+            slot as usize
+        ));
+    }
+    Ok((slot as *const T).read_unaligned())
+}
+
+pub(crate) unsafe fn parse_launch_params(
+    kernel_params: *mut *mut c_void,
+    grid: (u32, u32, u32),
+    block: (u32, u32, u32),
+    stream: CUstream,
+) -> Result<Nvint4Launch, String> {
+    validate_launch_shape(grid, block)?;
+    let launch = Nvint4Launch {
+        packed_weights: read_param(kernel_params, 0, "packed_weights")?,
+        input_q8_8: read_param(kernel_params, 1, "input_q8_8")?,
+        output_s64: read_param(kernel_params, 2, "output_s64")?,
+        dim: read_param(kernel_params, 3, "dim")?,
+        delta: read_param(kernel_params, 4, "delta")?,
+        stream,
+    };
+    if launch.packed_weights < 0x1000 {
+        return Err(format!(
+            "{NVINT4_ENTRY} packed_weights pointer is invalid: 0x{:x}",
+            launch.packed_weights
+        ));
+    }
+    if launch.input_q8_8 < 0x1000 {
+        return Err(format!(
+            "{NVINT4_ENTRY} input_q8_8 pointer is invalid: 0x{:x}",
+            launch.input_q8_8
+        ));
+    }
+    if launch.output_s64 < 0x1000 {
+        return Err(format!(
+            "{NVINT4_ENTRY} output_s64 pointer is invalid: 0x{:x}",
+            launch.output_s64
+        ));
+    }
+    if launch.dim != NVINT4_DIM {
+        return Err(format!(
+            "{NVINT4_ENTRY} requires dim={NVINT4_DIM}, got {}",
+            launch.dim
+        ));
+    }
+    if launch.delta > 7 {
+        return Err(format!(
+            "{NVINT4_ENTRY} delta must be in [0, 7], got {}",
+            launch.delta
+        ));
+    }
+    Ok(launch)
 }
 
 fn sign_extend_nibble(raw: u8) -> i8 {
@@ -261,8 +365,13 @@ pub unsafe extern "C" fn hetgpu_nvint4_convert_for_test(
 #[cfg(test)]
 mod tests {
     use super::{
-        nvint4_extents, pack_ternary_codes, range_fits_allocation, sign_extend_nibble, ternary_code,
+        failure_disposition, is_nvint4_entry, nvint4_extents, pack_ternary_codes,
+        parse_launch_params, range_fits_allocation, sign_extend_nibble, ternary_code,
+        validate_launch_shape, FailureDisposition, NVINT4_ENTRY,
     };
+    use core::ffi::c_void;
+    use cuda_types::cuda::CUstream;
+    use std::ptr;
 
     #[test]
     fn all_nibbles_and_deltas_match_contract() {
@@ -300,5 +409,110 @@ mod tests {
         assert!(!range_fits_allocation(0x1200, 0xe01, 0x1000, 0x1000));
         assert!(!range_fits_allocation(0x0fff, 1, 0x1000, 0x1000));
         assert!(!range_fits_allocation(usize::MAX - 3, 8, 0, usize::MAX));
+    }
+
+    #[test]
+    fn exact_entry_name_is_the_only_match() {
+        assert!(is_nvint4_entry(NVINT4_ENTRY));
+        assert!(!is_nvint4_entry("_Z22tmatmul_nvint4_densev"));
+        assert!(!is_nvint4_entry("tmatmul_nvint4_dense_v2"));
+        assert!(!is_nvint4_entry("mul_mat_q"));
+    }
+
+    #[test]
+    fn exact_entry_requires_one_logical_invocation() {
+        assert!(validate_launch_shape((1, 1, 1), (1, 1, 1)).is_ok());
+        for (grid, block) in [
+            ((2, 1, 1), (1, 1, 1)),
+            ((1, 2, 1), (1, 1, 1)),
+            ((1, 1, 2), (1, 1, 1)),
+            ((1, 1, 1), (2, 1, 1)),
+            ((1, 1, 1), (1, 2, 1)),
+            ((1, 1, 1), (1, 1, 2)),
+        ] {
+            assert!(validate_launch_shape(grid, block).is_err());
+        }
+    }
+
+    #[test]
+    fn parser_reads_three_pointers_dim_and_delta() {
+        let mut weights = 0x1000usize;
+        let mut input = 0x2000usize;
+        let mut output = 0x3000usize;
+        let mut dim = 2048u32;
+        let mut delta = 1u32;
+        let mut params = [
+            (&mut weights as *mut usize).cast::<c_void>(),
+            (&mut input as *mut usize).cast::<c_void>(),
+            (&mut output as *mut usize).cast::<c_void>(),
+            (&mut dim as *mut u32).cast::<c_void>(),
+            (&mut delta as *mut u32).cast::<c_void>(),
+        ];
+
+        let launch = unsafe {
+            parse_launch_params(
+                params.as_mut_ptr(),
+                (1, 1, 1),
+                (1, 1, 1),
+                CUstream(ptr::null_mut()),
+            )
+            .unwrap()
+        };
+        assert_eq!(launch.packed_weights, weights);
+        assert_eq!(launch.input_q8_8, input);
+        assert_eq!(launch.output_s64, output);
+        assert_eq!(launch.dim, 2048);
+        assert_eq!(launch.delta, 1);
+    }
+
+    #[test]
+    fn parser_rejects_null_slots_wrong_dim_and_delta() {
+        let error = unsafe {
+            parse_launch_params(
+                ptr::null_mut(),
+                (1, 1, 1),
+                (1, 1, 1),
+                CUstream(ptr::null_mut()),
+            )
+            .unwrap_err()
+        };
+        assert!(error.contains("null kernel_params"));
+
+        let mut weights = 0x1000usize;
+        let mut input = 0x2000usize;
+        let mut output = 0x3000usize;
+        for (dim_value, delta_value, expected) in [
+            (1024u32, 1u32, "dim=2048"),
+            (2048u32, 8u32, "delta must be in [0, 7]"),
+        ] {
+            let mut dim = dim_value;
+            let mut delta = delta_value;
+            let mut params = [
+                (&mut weights as *mut usize).cast::<c_void>(),
+                (&mut input as *mut usize).cast::<c_void>(),
+                (&mut output as *mut usize).cast::<c_void>(),
+                (&mut dim as *mut u32).cast::<c_void>(),
+                (&mut delta as *mut u32).cast::<c_void>(),
+            ];
+            let error = unsafe {
+                parse_launch_params(
+                    params.as_mut_ptr(),
+                    (1, 1, 1),
+                    (1, 1, 1),
+                    CUstream(ptr::null_mut()),
+                )
+                .unwrap_err()
+            };
+            assert!(error.contains(expected), "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn strict_is_default_and_fallback_requires_explicit_opt_in() {
+        assert_eq!(
+            failure_disposition(false),
+            FailureDisposition::StrictFailure
+        );
+        assert_eq!(failure_disposition(true), FailureDisposition::GpuFallback);
     }
 }
