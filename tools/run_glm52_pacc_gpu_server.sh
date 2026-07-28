@@ -12,6 +12,8 @@ CTX="${CTX:-1024}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 UBATCH_SIZE="${UBATCH_SIZE:-32}"
 GPU_LAYERS="${GPU_LAYERS:-3}"
+THREADS="${THREADS:-32}"
+THREADS_BATCH="${THREADS_BATCH:-${THREADS}}"
 LOG_DIR="${LOG_DIR:-${B}/logs/glm52-pacc-gpu-server-$(date +%Y%m%d-%H%M%S)}"
 PACC_MASK="${PACC_MASK:-0xf}"
 XSFMM_FIRMWARE="${XSFMM_FIRMWARE:-lanxin/lx500_pacc_jobd_xsfmm_kernel_exec.bin}"
@@ -86,6 +88,7 @@ PY
         "$ROOT/ext/pacc_runtime-sys/tools/pacc_recover_no_reboot.sh" "$PACC_MASK"
     python3 - <<'PY'
 import os
+import errno
 import struct
 import time
 
@@ -95,7 +98,12 @@ pending = set(range(4))
 try:
     while pending and time.time() < deadline:
         for dev in list(pending):
-            data = os.pread(fd, 32, 0x100000 + dev * 0x2000 + 0x1f40)
+            try:
+                data = os.pread(fd, 32, 0x100000 + dev * 0x2000 + 0x1f40)
+            except OSError as exc:
+                if exc.errno in (errno.EBUSY, errno.EAGAIN, errno.EINTR):
+                    continue
+                raise
             magic, version, _job, phase, _detail, _seq = struct.unpack("<QIIIIQ", data)
             if magic == 0x4847505542434e31 and version == 1 and phase == 0x7002:
                 pending.remove(dev)
@@ -154,7 +162,7 @@ export HETGPU_PACC_ALLOW_HOST_GEMM_FALLBACK="${HETGPU_PACC_ALLOW_HOST_GEMM_FALLB
 export HETGPU_PACC_GEMM_TRACE="${HETGPU_PACC_GEMM_TRACE:-0}"
 
 echo "starting GLM-5.2 server at http://${HOST}:${PORT}"
-echo "parallel=${PARALLEL} gpu_layers=${GPU_LAYERS} batch=${BATCH_SIZE} ubatch=${UBATCH_SIZE}"
+echo "parallel=${PARALLEL} gpu_layers=${GPU_LAYERS} threads=${THREADS}/${THREADS_BATCH} batch=${BATCH_SIZE} ubatch=${UBATCH_SIZE}"
 echo "logs=${LOG_DIR}"
 
 set +e
@@ -162,6 +170,7 @@ set +e
     -m "$MODEL" --gpu-layers "$GPU_LAYERS" \
     --host "$HOST" --port "$PORT" \
     --ctx-size "$CTX" --parallel "$PARALLEL" \
+    --threads "$THREADS" --threads-batch "$THREADS_BATCH" \
     --cont-batching --batch-size "$BATCH_SIZE" --ubatch-size "$UBATCH_SIZE" \
     --checkpoint-min-step "${CHECKPOINT_MIN_STEP:-16}" \
     --cache-ram "${CACHE_RAM_MIB:-8192}" --kv-unified \
