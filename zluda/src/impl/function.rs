@@ -8247,6 +8247,100 @@ struct NvidiaCxlMatmulLayout {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NvidiaCxlMmvqShape {
+    ncols_x: i32,
+    nrows_x: i32,
+    nrows_y: i32,
+    nrows_dst: i32,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NvidiaCxlMmqShape {
+    ne00: i32,
+    ne01: i32,
+    stride01: i32,
+    ne10: i32,
+    ne11: i32,
+    stride11: i32,
+    ne0: i32,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_cxl_mmvq_contract_error(shape: NvidiaCxlMmvqShape) -> Option<String> {
+    const DIM: i32 = 2048;
+    if shape.ncols_x != DIM
+        || shape.nrows_x != DIM
+        || shape.nrows_y != DIM
+        || shape.nrows_dst != DIM
+    {
+        return Some(format!(
+            "mul_mat_vec_q shape ncols_x={} nrows_x={} nrows_y={} nrows_dst={} does not match the current tmatmul square contract, which requires {DIM} for every dimension",
+            shape.ncols_x, shape.nrows_x, shape.nrows_y, shape.nrows_dst
+        ));
+    }
+
+    Some(
+        "mul_mat_vec_q uses the GGML block-quantized matrix/Q8_1 activation ABI; tmatmul_go_nvint8 requires a dense NVINT8 matrix and a 16-bit activation vector"
+            .to_string(),
+    )
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_cxl_mmq_contract_error(shape: NvidiaCxlMmqShape) -> String {
+    const DIM: i32 = 2048;
+    if shape.ne00 != DIM
+        || shape.ne01 != DIM
+        || shape.ne10 != DIM
+        || shape.ne11 != 1
+        || shape.ne0 != DIM
+    {
+        return format!(
+            "mul_mat_q shape ne00={} ne01={} stride01={} ne10={} ne11={} stride11={} ne0={} does not match the current tmatmul contract, which requires 2048x2048 matrix-vector operations",
+            shape.ne00,
+            shape.ne01,
+            shape.stride01,
+            shape.ne10,
+            shape.ne11,
+            shape.stride11,
+            shape.ne0,
+        );
+    }
+
+    format!(
+        "mul_mat_q shape ne00={} ne01={} stride01={} ne10={} ne11={} stride11={} ne0={} uses the GGML packed quantized matrix/Q8_1 activation ABI; tmatmul_go_nvint8 requires a dense NVINT8 matrix and a 16-bit activation vector",
+        shape.ne00,
+        shape.ne01,
+        shape.stride01,
+        shape.ne10,
+        shape.ne11,
+        shape.stride11,
+        shape.ne0,
+    )
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 fn nvidia_cxl_matmul_layout(name_lower: &str) -> Option<NvidiaCxlMatmulLayout> {
     if name_lower.contains("mul_mat_q_stream_k_fixup") || name_lower.contains("stream_k_fixup") {
         return None;
@@ -8336,6 +8430,69 @@ unsafe fn nvidia_cxl_read_pointer_param(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn nvidia_cxl_read_i32_param(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+    kernel_name: &str,
+) -> Result<i32, String> {
+    if kernel_params.is_null() {
+        return Err(format!("kernel '{kernel_name}' has null kernel_params"));
+    }
+    let slot = *kernel_params.add(index);
+    if slot.is_null() || (slot as usize) < 0x1000 {
+        return Err(format!(
+            "kernel '{kernel_name}' PARAM_{index} has invalid scalar slot {:#x}",
+            slot as usize
+        ));
+    }
+    Ok((slot as *const i32).read_unaligned())
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_cxl_read_mmvq_shape(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    kernel_name: &str,
+) -> Result<NvidiaCxlMmvqShape, String> {
+    Ok(NvidiaCxlMmvqShape {
+        ncols_x: nvidia_cxl_read_i32_param(kernel_params, 3, kernel_name)?,
+        nrows_x: nvidia_cxl_read_i32_param(kernel_params, 4, kernel_name)?,
+        nrows_y: nvidia_cxl_read_i32_param(kernel_params, 5, kernel_name)?,
+        nrows_dst: nvidia_cxl_read_i32_param(kernel_params, 6, kernel_name)?,
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_cxl_read_mmq_shape(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    kernel_name: &str,
+) -> Result<NvidiaCxlMmqShape, String> {
+    Ok(NvidiaCxlMmqShape {
+        ne00: nvidia_cxl_read_i32_param(kernel_params, 4, kernel_name)?,
+        ne01: nvidia_cxl_read_i32_param(kernel_params, 5, kernel_name)?,
+        stride01: nvidia_cxl_read_i32_param(kernel_params, 6, kernel_name)?,
+        ne10: nvidia_cxl_read_i32_param(kernel_params, 7, kernel_name)?,
+        ne11: nvidia_cxl_read_i32_param(kernel_params, 8, kernel_name)?,
+        stride11: nvidia_cxl_read_i32_param(kernel_params, 9, kernel_name)?,
+        ne0: nvidia_cxl_read_i32_param(kernel_params, 10, kernel_name)?,
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
@@ -8408,6 +8565,33 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
         eprintln!("[CXL TMatmul][NVIDIA] {msg}; continuing native");
         return None;
     };
+
+    if layout.name == "mul_mat_vec_q" {
+        let shape = match nvidia_cxl_read_mmvq_shape(kernel_params, kernel_name) {
+            Ok(shape) => shape,
+            Err(err) => return Some(Err(err)),
+        };
+        let msg = nvidia_cxl_mmvq_contract_error(shape)
+            .expect("mul_mat_vec_q is not a dense NVINT8 tmatmul ABI");
+        if decision.strict {
+            return Some(Err(msg));
+        }
+        eprintln!("[CXL TMatmul][NVIDIA] {msg}; continuing native for '{kernel_name}'");
+        return None;
+    }
+
+    if layout.name == "mul_mat_q" {
+        let shape = match nvidia_cxl_read_mmq_shape(kernel_params, kernel_name) {
+            Ok(shape) => shape,
+            Err(err) => return Some(Err(err)),
+        };
+        let msg = nvidia_cxl_mmq_contract_error(shape);
+        if decision.strict {
+            return Some(Err(msg));
+        }
+        eprintln!("[CXL TMatmul][NVIDIA] {msg}; continuing native for '{kernel_name}'");
+        return None;
+    }
 
     let matrix_ptr =
         match nvidia_cxl_read_pointer_param(kernel_params, layout.matrix_param, kernel_name) {
@@ -8596,6 +8780,7 @@ pub(crate) fn launch_kernel_ex(
     not(feature = "tenstorrent")
 ))]
 mod nvidia_bitnet_route_tests {
+    use core::ffi::c_void;
     use std::sync::Mutex;
 
     static NVIDIA_ROUTE_TEST_MUTEX: Mutex<()> = Mutex::new(());
@@ -8696,6 +8881,166 @@ mod nvidia_bitnet_route_tests {
         };
 
         assert!(matches!(result, Some(Err(_))));
+        let logged = std::fs::read_to_string(&route_log).unwrap();
+        assert!(logged.contains(r#""route":"cxl_tmatmul""#));
+        assert!(logged.contains(r#""hardware_matmul_enabled":true"#));
+    }
+
+    #[test]
+    fn nvidia_mmvq_contract_rejects_qwen05b_shape_and_block_quantized_abi() {
+        let shape = super::NvidiaCxlMmvqShape {
+            ncols_x: 896,
+            nrows_x: 896,
+            nrows_y: 896,
+            nrows_dst: 896,
+        };
+
+        let err = super::nvidia_cxl_mmvq_contract_error(shape).unwrap();
+        assert!(err.contains("ncols_x=896"), "unexpected error: {err}");
+        assert!(err.contains("requires 2048"), "unexpected error: {err}");
+
+        let square = super::NvidiaCxlMmvqShape {
+            ncols_x: 2048,
+            nrows_x: 2048,
+            nrows_y: 2048,
+            nrows_dst: 2048,
+        };
+        let err = super::nvidia_cxl_mmvq_contract_error(square).unwrap();
+        assert!(
+            err.contains("GGML block-quantized"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("dense NVINT8"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn nvidia_mmq_contract_rejects_kimi_iq1s_shape_and_block_quantized_abi() {
+        let shape = super::NvidiaCxlMmqShape {
+            ne00: 7168,
+            ne01: 2048,
+            stride01: 1400,
+            ne10: 7168,
+            ne11: 1,
+            stride11: 8064,
+            ne0: 2048,
+        };
+
+        let err = super::nvidia_cxl_mmq_contract_error(shape);
+        assert!(err.contains("ne00=7168"), "unexpected error: {err}");
+        assert!(
+            err.contains("requires 2048x2048"),
+            "unexpected error: {err}"
+        );
+
+        let square = super::NvidiaCxlMmqShape {
+            ne00: 2048,
+            ne01: 2048,
+            stride01: 400,
+            ne10: 2048,
+            ne11: 1,
+            stride11: 2304,
+            ne0: 2048,
+        };
+        let err = super::nvidia_cxl_mmq_contract_error(square);
+        assert!(
+            err.contains("packed quantized matrix/Q8_1 activation ABI"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("dense NVINT8"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn nvidia_named_q4k_candidate_falls_back_before_hardware_staging() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let route_log = dir.path().join("routes.jsonl");
+        let route_log_text = route_log.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", None),
+            ("HETGPU_BITNET_CXL_KERNELS", Some("ggml_type12")),
+            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", Some(&route_log_text)),
+            ("HETGPU_CXL_TMATMUL", Some("1")),
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_MATRIX_STAGE", Some("cuda_dax")),
+            ("HETGPU_TMATMUL_IO_STAGE", Some("cuda_dax")),
+        ]);
+
+        let mut ncols_x = 896i32;
+        let mut nrows_x = 896i32;
+        let mut nrows_y = 896i32;
+        let mut nrows_dst = 896i32;
+        let mut params = [
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            (&mut ncols_x as *mut i32).cast::<c_void>(),
+            (&mut nrows_x as *mut i32).cast::<c_void>(),
+            (&mut nrows_y as *mut i32).cast::<c_void>(),
+            (&mut nrows_dst as *mut i32).cast::<c_void>(),
+        ];
+        let result = unsafe {
+            super::nvidia_try_launch_named_cxl_tmatmul(
+                "_Z13mul_mat_vec_qIL9ggml_type12ELi3EEvPKvS2_Pfiiii",
+                params.as_mut_ptr(),
+            )
+        };
+
+        assert!(result.is_none(), "incompatible GGML ABI must stay on GPU");
+    }
+
+    #[test]
+    fn nvidia_named_iq1s_mmq_falls_back_before_pointer_or_dax_staging() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let route_log = dir.path().join("routes.jsonl");
+        let route_log_text = route_log.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", None),
+            ("HETGPU_BITNET_CXL_KERNELS", Some("mul_mat_q")),
+            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", Some(&route_log_text)),
+            ("HETGPU_CXL_TMATMUL", Some("1")),
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_MATRIX_STAGE", Some("cuda_dax")),
+            ("HETGPU_TMATMUL_IO_STAGE", Some("cuda_dax")),
+        ]);
+
+        let mut ne00 = 7168i32;
+        let mut ne01 = 2048i32;
+        let mut stride01 = 1400i32;
+        let mut ne10 = 7168i32;
+        let mut ne11 = 1i32;
+        let mut stride11 = 8064i32;
+        let mut ne0 = 2048i32;
+        let mut params = [
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            (&mut ne00 as *mut i32).cast::<c_void>(),
+            (&mut ne01 as *mut i32).cast::<c_void>(),
+            (&mut stride01 as *mut i32).cast::<c_void>(),
+            (&mut ne10 as *mut i32).cast::<c_void>(),
+            (&mut ne11 as *mut i32).cast::<c_void>(),
+            (&mut stride11 as *mut i32).cast::<c_void>(),
+            (&mut ne0 as *mut i32).cast::<c_void>(),
+        ];
+        let result = unsafe {
+            super::nvidia_try_launch_named_cxl_tmatmul(
+                "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
+                params.as_mut_ptr(),
+            )
+        };
+
+        assert!(
+            result.is_none(),
+            "incompatible IQ1_S MMQ ABI must stay on GPU"
+        );
         let logged = std::fs::read_to_string(&route_log).unwrap();
         assert!(logged.contains(r#""route":"cxl_tmatmul""#));
         assert!(logged.contains(r#""hardware_matmul_enabled":true"#));

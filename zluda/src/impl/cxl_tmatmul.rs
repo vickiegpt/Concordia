@@ -13,10 +13,13 @@ use std::ptr;
 
 pub(crate) const CXL_TYPE2_TMATMUL_UAPI_VERSION: u32 = 2;
 pub(crate) const TMATMUL_DPA_MATRIX: u64 = 0x0000_0000;
-pub(crate) const TMATMUL_DPA_INPUT: u64 = 0x0010_0000;
-pub(crate) const TMATMUL_DPA_OUTPUT: u64 = 0x0020_0000;
-pub(crate) const TMATMUL_DPA_PROGRAM: u64 = 0x0030_0000;
-pub(crate) const TMATMUL_PROGRAM_BYTES: usize = 96;
+pub(crate) const TMATMUL_DPA_INPUT: u64 = 0x0040_0000;
+pub(crate) const TMATMUL_DPA_OUTPUT: u64 = 0x0050_0000;
+pub(crate) const TMATMUL_DPA_PROGRAM: u64 = 0x0060_0000;
+const TMATMUL_INSTRUCTION_BYTES: usize = 16;
+const TMATMUL_PROGRAM_SLOTS: usize = 8;
+pub(crate) const TMATMUL_PROGRAM_BYTES: usize = TMATMUL_INSTRUCTION_BYTES * TMATMUL_PROGRAM_SLOTS;
+const TMATMUL_PROGRAM_FETCH_BEAT_BYTES: usize = 64;
 const DEFAULT_DEVICE_PATH: &str = "/dev/cxl_tmatmul3b000";
 const DEFAULT_DAX_PATH: &str = "/dev/dax0.0";
 const DEFAULT_TIMEOUT_MS: u32 = 10_000;
@@ -145,6 +148,22 @@ struct CxlType2TmatmulCsrRun {
 enum StagingBackend {
     Mmap,
     CsrProbe,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgramStageBackend {
+    DataWindow,
+    CsrProbe,
+}
+
+#[cfg(unix)]
+fn program_stage_backend(bar_run: bool) -> ProgramStageBackend {
+    if bar_run {
+        ProgramStageBackend::CsrProbe
+    } else {
+        ProgramStageBackend::DataWindow
+    }
 }
 
 #[cfg(unix)]
@@ -441,6 +460,33 @@ pub(crate) fn matrix_bytes(dim: usize) -> Result<usize, CxlTmatmulError> {
         .ok_or(CxlTmatmulError::SizeOverflow)
 }
 
+pub(crate) fn nvint8_matrix_bytes(dim: usize) -> Result<usize, CxlTmatmulError> {
+    dim.checked_mul(dim).ok_or(CxlTmatmulError::SizeOverflow)
+}
+
+fn assembly_uses_nvint8_matrix(assembly: &str) -> bool {
+    assembly.lines().any(|raw_line| {
+        raw_line
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .find(|token| !token.is_empty())
+            .is_some_and(|op| op.eq_ignore_ascii_case("tmatmul_go_nvint8"))
+    })
+}
+
+pub(crate) fn matrix_bytes_for_assembly(
+    dim: usize,
+    assembly: &str,
+) -> Result<usize, CxlTmatmulError> {
+    if assembly_uses_nvint8_matrix(assembly) {
+        nvint8_matrix_bytes(dim)
+    } else {
+        matrix_bytes(dim)
+    }
+}
+
 pub(crate) fn vector_bytes(dim: usize) -> Result<usize, CxlTmatmulError> {
     dim.checked_mul(2).ok_or(CxlTmatmulError::SizeOverflow)
 }
@@ -501,9 +547,50 @@ pub(crate) fn encode_smoke_program() -> Vec<u8> {
         0,
         TMATMUL_DPA_OUTPUT,
     ));
+    program.resize(TMATMUL_PROGRAM_BYTES - TMATMUL_INSTRUCTION_BYTES, 0);
     program.extend_from_slice(&encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0));
     debug_assert_eq!(program.len(), TMATMUL_PROGRAM_BYTES);
     program
+}
+
+fn finalize_replay_safe_program(mut program: Vec<u8>) -> Result<Vec<u8>, CxlTmatmulError> {
+    if program.len() % TMATMUL_INSTRUCTION_BYTES != 0 {
+        return Err(CxlTmatmulError::AssembleFailed(format!(
+            "encoded program length {} is not instruction aligned",
+            program.len()
+        )));
+    }
+    if program.len() > TMATMUL_PROGRAM_BYTES {
+        return Err(CxlTmatmulError::AssembleFailed(format!(
+            "encoded program is {} bytes, maximum replay-safe fetch is {TMATMUL_PROGRAM_BYTES} bytes",
+            program.len()
+        )));
+    }
+
+    let stall = encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0);
+    let Some(terminal_offset) = program.len().checked_sub(TMATMUL_INSTRUCTION_BYTES) else {
+        return Err(CxlTmatmulError::AssembleFailed(
+            "program must end with stall".to_string(),
+        ));
+    };
+    if program[terminal_offset..] != stall {
+        return Err(CxlTmatmulError::AssembleFailed(
+            "program must end with stall".to_string(),
+        ));
+    }
+    if program[..terminal_offset]
+        .chunks_exact(TMATMUL_INSTRUCTION_BYTES)
+        .any(|instruction| instruction == stall)
+    {
+        return Err(CxlTmatmulError::AssembleFailed(
+            "stall may only appear as the terminal semantic instruction".to_string(),
+        ));
+    }
+
+    program.truncate(terminal_offset);
+    program.resize(TMATMUL_PROGRAM_BYTES - TMATMUL_INSTRUCTION_BYTES, 0);
+    program.extend_from_slice(&stall);
+    Ok(program)
 }
 
 pub(crate) fn assemble_tmatmul_program(
@@ -542,7 +629,7 @@ pub(crate) fn assemble_tmatmul_program(
         ));
     }
 
-    Ok(program)
+    finalize_replay_safe_program(program)
 }
 
 #[cfg(unix)]
@@ -591,7 +678,7 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
     }
 
     let dim = usize::try_from(info.dim_d).map_err(|_| CxlTmatmulError::SizeOverflow)?;
-    let matrix_len = matrix_bytes(dim)?;
+    let matrix_len = matrix_bytes_for_assembly(dim, assembly)?;
     let vector_len = vector_bytes(dim)?;
     let matrix_offset = matrix_dpa_offset()?;
     let matrix_stage_mode = matrix_stage_mode()?;
@@ -599,7 +686,9 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
     validate_fixed_layout_at_offsets(matrix_offset, matrix_len, vector_len, program.len())?;
     match (matrix_stage_mode, io_stage_mode) {
         (MatrixStageMode::Host, IoStageMode::Host) => {
-            validate_allocations(dim, input_alloc, output_alloc, matrix_alloc)?;
+            require_allocation("input", input_alloc, vector_len)?;
+            require_allocation("output", output_alloc, vector_len)?;
+            require_allocation("matrix", matrix_alloc, matrix_len)?;
         }
         (MatrixStageMode::CudaDax, IoStageMode::Host) => {
             require_allocation("input", input_alloc, vector_len)?;
@@ -696,6 +785,21 @@ fn encode_instr(
     rms: u8,
     addr: u64,
 ) -> [u8; 16] {
+    encode_instr_with_unused(fu, op, vy, vb, va, ls, tm, rms, addr, 0)
+}
+
+fn encode_instr_with_unused(
+    fu: u8,
+    op: u8,
+    vy: u8,
+    vb: u8,
+    va: u8,
+    ls: u8,
+    tm: u8,
+    rms: u8,
+    addr: u64,
+    unused: u64,
+) -> [u8; 16] {
     let mut word = addr as u128;
     word |= ((rms & 0x7) as u128) << 64;
     word |= ((tm & 0x3) as u128) << 67;
@@ -705,6 +809,7 @@ fn encode_instr(
     word |= ((vy & 0x7) as u128) << 77;
     word |= ((op & 0xf) as u128) << 80;
     word |= ((fu & 0x7) as u128) << 84;
+    word |= (unused as u128) << 87;
     word.to_le_bytes()
 }
 
@@ -749,24 +854,28 @@ fn assemble_tmatmul_instruction(
             Ok(encode_instr(0b010, op_code, vy_vb, vy_vb, va, 0, 0, 0, 0))
         }
         "tmatmul_go" | "tmatmul_go_nvint8" => {
-            if op == "tmatmul_go" {
+            let unused = if op == "tmatmul_go" {
                 require_arg_count(line_no, tokens, 2)?;
+                0
             } else {
                 require_arg_count(line_no, tokens, 3)?;
-                let width = parse_u64_text(tokens[2]).ok_or_else(|| {
+                let delta = parse_u64_text(tokens[2]).ok_or_else(|| {
                     CxlTmatmulError::AssembleFailed(format!(
-                        "line {line_no}: tmatmul_go_nvint8 expects numeric stage width, got '{}'",
+                        "line {line_no}: tmatmul_go_nvint8 expects numeric delta, got '{}'",
                         tokens[2]
                     ))
                 })?;
-                if width != 4 {
+                if delta > u8::MAX as u64 {
                     return Err(CxlTmatmulError::AssembleFailed(format!(
-                        "line {line_no}: tmatmul_go_nvint8 only supports stage width 4, got {width}"
+                        "line {line_no}: tmatmul_go_nvint8 delta must fit in 8 bits, got {delta}"
                     )));
                 }
-            }
+                delta | (0b10 << 8)
+            };
             let addr = resolve_address(line_no, tokens[1], labels)?;
-            Ok(encode_instr(0b011, 0, 0, 0, 0, 0, 0b10, 0, addr))
+            Ok(encode_instr_with_unused(
+                0b011, 0, 0, 0, 0, 0, 0b10, 0, addr, unused,
+            ))
         }
         "tmatmul_import" | "tmatmul_export" => {
             require_arg_count(line_no, tokens, 2)?;
@@ -875,9 +984,40 @@ fn parse_u64_text(text: &str) -> Option<u64> {
     }
 }
 
+fn program_fetch_len(program_bytes: usize) -> Result<usize, CxlTmatmulError> {
+    align_len(program_bytes, TMATMUL_PROGRAM_FETCH_BEAT_BYTES)
+}
+
+fn program_fetch_image(program: &[u8]) -> Result<Vec<u8>, CxlTmatmulError> {
+    if program.len() != TMATMUL_PROGRAM_BYTES {
+        return Err(CxlTmatmulError::Device(format!(
+            "replay-safe instruction image must be {TMATMUL_PROGRAM_BYTES} bytes, got {}",
+            program.len()
+        )));
+    }
+
+    let stall = encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0);
+    let terminal_offset = TMATMUL_PROGRAM_BYTES - TMATMUL_INSTRUCTION_BYTES;
+    if program[terminal_offset..] != stall {
+        return Err(CxlTmatmulError::Device(
+            "replay-safe instruction image must place stall in the final fetch slot".to_string(),
+        ));
+    }
+    if program[..terminal_offset]
+        .chunks_exact(TMATMUL_INSTRUCTION_BYTES)
+        .any(|instruction| instruction == stall)
+    {
+        return Err(CxlTmatmulError::Device(
+            "replay-safe instruction image contains a nonterminal stall".to_string(),
+        ));
+    }
+
+    Ok(program.to_vec())
+}
+
 fn required_dax_len_for_program(program_bytes: usize) -> Result<usize, CxlTmatmulError> {
     (TMATMUL_DPA_PROGRAM as usize)
-        .checked_add(program_bytes)
+        .checked_add(program_fetch_len(program_bytes)?)
         .ok_or(CxlTmatmulError::SizeOverflow)
 }
 
@@ -895,6 +1035,7 @@ fn validate_fixed_layout_at_offsets(
     vector_len: usize,
     program_len: usize,
 ) -> Result<(), CxlTmatmulError> {
+    let program_len = program_fetch_len(program_len)?;
     let matrix_end = range_end(matrix_offset, matrix_len)?;
     let input_end = range_end(TMATMUL_DPA_INPUT, vector_len)?;
     let output_end = range_end(TMATMUL_DPA_OUTPUT, vector_len)?;
@@ -993,11 +1134,12 @@ fn submit_prepared_hardware_matmul(
     dim_d: u32,
 ) -> Result<CxlTmatmulRunStatus, CxlTmatmulError> {
     let matrix_offset = matrix.cxl_offset();
+    let staged_program_len = program_fetch_len(program.len())?;
     let used_len = [
         range_end(matrix_offset, matrix.len())?,
         range_end(TMATMUL_DPA_INPUT, input.len())?,
         range_end(TMATMUL_DPA_OUTPUT, output.len())?,
-        range_end(TMATMUL_DPA_PROGRAM, program.len())?,
+        range_end(TMATMUL_DPA_PROGRAM, staged_program_len)?,
     ]
     .into_iter()
     .max()
@@ -1029,7 +1171,7 @@ fn submit_prepared_hardware_matmul(
         }
         staging.stage_bytes(TMATMUL_DPA_INPUT, input)?;
         staging.fill_bytes(TMATMUL_DPA_OUTPUT, 0xa5, output.len())?;
-        staging.stage_bytes(TMATMUL_DPA_PROGRAM, program)?;
+        stage_program_for_run(&mut staging, program)?;
     }
 
     let status =
@@ -1051,11 +1193,12 @@ fn submit_prepared_hardware_matmul_cuda_io(
 ) -> Result<CxlTmatmulRunStatus, CxlTmatmulError> {
     let matrix_offset = matrix.cxl_offset();
     let output_dtype = output_stage_dtype()?;
+    let staged_program_len = program_fetch_len(program.len())?;
     let used_len = [
         range_end(matrix_offset, matrix.len())?,
         range_end(TMATMUL_DPA_INPUT, vector_len)?,
         range_end(TMATMUL_DPA_OUTPUT, vector_len)?,
-        range_end(TMATMUL_DPA_PROGRAM, program.len())?,
+        range_end(TMATMUL_DPA_PROGRAM, staged_program_len)?,
     ]
     .into_iter()
     .max()
@@ -1078,7 +1221,7 @@ fn submit_prepared_hardware_matmul_cuda_io(
             "input",
         )?;
         staging.fill_bytes(TMATMUL_DPA_OUTPUT, 0xa5, vector_len)?;
-        staging.stage_bytes(TMATMUL_DPA_PROGRAM, program)?;
+        stage_program_for_run(&mut staging, program)?;
     }
 
     let status =
@@ -1102,6 +1245,40 @@ fn submit_prepared_hardware_matmul_cuda_io(
         }
     }
     Ok(status)
+}
+
+#[cfg(unix)]
+fn stage_program_for_run(staging: &mut StagingMap, program: &[u8]) -> Result<(), CxlTmatmulError> {
+    let fetch_image = program_fetch_image(program)?;
+    match program_stage_backend(cxl_tmatmul_bar_run_enabled()) {
+        ProgramStageBackend::DataWindow => staging.stage_bytes(TMATMUL_DPA_PROGRAM, &fetch_image),
+        ProgramStageBackend::CsrProbe => {
+            let required_len = range_end(TMATMUL_DPA_PROGRAM, fetch_image.len())?;
+            let mut csr = StagingMap::open_csr_probe(required_len)?;
+            csr.stage_bytes(TMATMUL_DPA_PROGRAM, &fetch_image)?;
+
+            let mut readback = vec![0u8; fetch_image.len()];
+            csr.read_bytes(TMATMUL_DPA_PROGRAM, &mut readback)?;
+            if readback != fetch_image {
+                let mismatch = fetch_image
+                    .iter()
+                    .zip(readback.iter())
+                    .position(|(expected, actual)| expected != actual)
+                    .unwrap_or(0);
+                return Err(CxlTmatmulError::Device(format!(
+                    "CSR instruction program verification failed at byte {}: expected {:#04x}, read {:#04x}",
+                    mismatch, fetch_image[mismatch], readback[mismatch]
+                )));
+            }
+
+            eprintln!(
+                "[CXL TMatmul] staged and verified instruction program through sibling CSR probe: program_bytes={} fetch_bytes={}",
+                program.len(),
+                fetch_image.len()
+            );
+            Ok(())
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -2772,11 +2949,44 @@ mod tests {
     #[test]
     fn encode_smoke_program_matches_v2_runner() {
         let prog = encode_smoke_program();
+        let stall = encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0);
 
-        assert_eq!(prog.len(), 96);
+        assert_eq!(prog.len(), 128);
         assert_eq!(&prog[0..8], &TMATMUL_DPA_INPUT.to_le_bytes());
         assert_eq!(&prog[32..40], &TMATMUL_DPA_MATRIX.to_le_bytes());
         assert_eq!(&prog[64..72], &TMATMUL_DPA_OUTPUT.to_le_bytes());
+        assert!(prog[80..112].iter().all(|byte| *byte == 0));
+        assert_eq!(&prog[112..128], &stall);
+    }
+
+    #[test]
+    fn program_fetch_image_keeps_complete_replay_safe_image() {
+        let program = encode_smoke_program();
+        let image = program_fetch_image(&program).unwrap();
+
+        assert_eq!(program.len(), TMATMUL_PROGRAM_BYTES);
+        assert_eq!(image.len(), 128);
+        assert_eq!(image, program);
+    }
+
+    #[test]
+    fn program_fetch_image_rejects_nonterminal_stall() {
+        let stall = encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0);
+        let mut program = encode_smoke_program();
+        program[80..96].copy_from_slice(&stall);
+
+        let err = program_fetch_image(&program).unwrap_err();
+
+        assert!(err.to_string().contains("nonterminal stall"));
+    }
+
+    #[test]
+    fn bar_run_selects_csr_program_staging() {
+        assert_eq!(
+            program_stage_backend(false),
+            ProgramStageBackend::DataWindow
+        );
+        assert_eq!(program_stage_backend(true), ProgramStageBackend::CsrProbe);
     }
 
     #[test]
@@ -2814,6 +3024,21 @@ mod tests {
     }
 
     #[test]
+    fn assembler_rejects_program_without_terminal_stall() {
+        let err = assemble_tmatmul_program("rms_clear", &HashMap::new()).unwrap_err();
+
+        assert!(err.to_string().contains("must end with stall"));
+    }
+
+    #[test]
+    fn assembler_rejects_program_larger_than_two_fetch_beats() {
+        let asm = "rms_clear\n".repeat(TMATMUL_PROGRAM_SLOTS) + "stall\n";
+        let err = assemble_tmatmul_program(&asm, &HashMap::new()).unwrap_err();
+
+        assert!(err.to_string().contains("maximum replay-safe fetch"));
+    }
+
+    #[test]
     fn assembler_resolves_param_labels_for_hardware_fallback() {
         let asm = "
             ; BIND PARAM_0 matrix
@@ -2838,7 +3063,7 @@ mod tests {
     }
 
     #[test]
-    fn assembler_accepts_tmatmul_go_nvint8_alias_with_explicit_stage_width() {
+    fn assembler_encodes_tmatmul_go_nvint8_format_and_delta() {
         let matrix_offset = 0x0040_0000;
         let asm = "
             ldv v0,PARAM_1
@@ -2855,8 +3080,31 @@ mod tests {
         ]);
 
         let program = assemble_tmatmul_program(asm, &labels).unwrap();
+        let go = u128::from_le_bytes(program[32..48].try_into().unwrap());
 
         assert_eq!(&program[32..40], &matrix_offset.to_le_bytes());
+        assert_eq!((go >> 87) & 0xff, 4, "NVINT8 delta");
+        assert_eq!((go >> 95) & 0x3, 2, "NVINT8 matrix format");
+    }
+
+    #[test]
+    fn nvint8_matrix_size_and_layout_reserve_dense_int8_weights() {
+        assert_eq!(nvint8_matrix_bytes(2048).unwrap(), 4 * 1024 * 1024);
+        assert_eq!(
+            matrix_bytes_for_assembly(2048, "tmatmul_go 0").unwrap(),
+            1024 * 1024
+        );
+        assert_eq!(
+            matrix_bytes_for_assembly(2048, "tmatmul_go_nvint8 0,4").unwrap(),
+            4 * 1024 * 1024
+        );
+        validate_fixed_layout_at_offsets(
+            TMATMUL_DPA_MATRIX,
+            nvint8_matrix_bytes(2048).unwrap(),
+            vector_bytes(2048).unwrap(),
+            TMATMUL_PROGRAM_BYTES,
+        )
+        .unwrap();
     }
 
     #[cfg(unix)]
@@ -2919,7 +3167,7 @@ mod tests {
 
     #[test]
     fn fixed_layout_allows_nondefault_matrix_offset_when_ranges_do_not_overlap() {
-        validate_fixed_layout_at_offsets(0x0040_0000, 0x1000, 0x1000, TMATMUL_PROGRAM_BYTES)
+        validate_fixed_layout_at_offsets(0x0080_0000, 0x1000, 0x1000, TMATMUL_PROGRAM_BYTES)
             .unwrap();
 
         let err = validate_fixed_layout_at_offsets(
@@ -2937,10 +3185,7 @@ mod tests {
 
     #[test]
     fn layout_requires_program_end() {
-        assert_eq!(
-            required_dax_len(),
-            TMATMUL_DPA_PROGRAM as usize + TMATMUL_PROGRAM_BYTES
-        );
+        assert_eq!(required_dax_len(), TMATMUL_DPA_PROGRAM as usize + 128);
     }
 
     #[cfg(unix)]
@@ -3143,6 +3388,65 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn hardware_nvint8_smoke_runs_when_requested() {
+        if !env_flag("HETGPU_CXL_TMATMUL_HW_NVINT8") {
+            return;
+        }
+
+        let device_path = cxl_tmatmul_device_path();
+        let device = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&device_path)
+            .unwrap_or_else(|e| panic!("open {device_path}: {e}"));
+        let info = get_info(&device).unwrap();
+        assert_eq!(info.version, CXL_TYPE2_TMATMUL_UAPI_VERSION);
+
+        let dim = usize::try_from(info.dim_d).unwrap();
+        let matrix = vec![5u8; nvint8_matrix_bytes(dim).unwrap()];
+        let mut input = vec![0u8; vector_bytes(dim).unwrap()];
+        for value in input.chunks_exact_mut(2) {
+            value.copy_from_slice(&0x0100u16.to_le_bytes());
+        }
+        let mut output = vec![0u8; vector_bytes(dim).unwrap()];
+        let assembly = format!(
+            "ldv v0,{input:#x}\n\
+             tmatmul_import v0\n\
+             tmatmul_go_nvint8 {matrix:#x},4\n\
+             tmatmul_export v1\n\
+             sv v1,{output:#x}\n\
+             stall\n",
+            input = TMATMUL_DPA_INPUT,
+            matrix = TMATMUL_DPA_MATRIX,
+            output = TMATMUL_DPA_OUTPUT,
+        );
+        let program = assemble_tmatmul_program(&assembly, &HashMap::new()).unwrap();
+
+        let started = std::time::Instant::now();
+        let status = submit_prepared_hardware_matmul(
+            &device,
+            &program,
+            MatrixStage::Host(&matrix),
+            &input,
+            &mut output,
+            10_000,
+            info.dim_d,
+        )
+        .unwrap();
+        assert_ne!(status.result_flags & CXL_TYPE2_TMATMUL_RESULT_STALLED, 0);
+        eprintln!(
+            "tmatmul NVINT8 smoke dim={} delta=4 matrix={}B vector={}B elapsed_us={} status={:?} output_prefix={:02x?}",
+            info.dim_d,
+            matrix.len(),
+            input.len(),
+            started.elapsed().as_micros(),
+            status,
+            &output[..output.len().min(16)]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn hardware_csr_probe_stages_and_runs_stall_program_when_requested() {
         if !env_flag("HETGPU_CXL_TMATMUL_HW_STALL_PROBE") {
             return;
@@ -3159,7 +3463,8 @@ mod tests {
         assert_ne!(info.dim_d, 0);
 
         let mut program = vec![0u8; TMATMUL_PROGRAM_BYTES];
-        program[..16].copy_from_slice(&encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0));
+        program[TMATMUL_PROGRAM_BYTES - TMATMUL_INSTRUCTION_BYTES..]
+            .copy_from_slice(&encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0));
 
         let mut staging =
             StagingMap::open_csr_probe((TMATMUL_DPA_PROGRAM as usize) + program.len()).unwrap();
@@ -3187,6 +3492,111 @@ mod tests {
             info.dim_d,
             started.elapsed().as_micros(),
             status
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardware_csr_probe_runs_existing_data_when_requested() {
+        if !env_flag("HETGPU_CXL_TMATMUL_HW_EXISTING_DATA") {
+            return;
+        }
+
+        let device_path = cxl_tmatmul_device_path();
+        let device = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&device_path)
+            .unwrap_or_else(|e| panic!("open {device_path}: {e}"));
+        let info = get_info(&device).unwrap();
+        let program = encode_smoke_program();
+        let mut staging =
+            StagingMap::open_csr_probe((TMATMUL_DPA_PROGRAM as usize) + program.len()).unwrap();
+        staging.stage_bytes(TMATMUL_DPA_PROGRAM, &program).unwrap();
+
+        let mut readback = vec![0u8; program.len()];
+        staging
+            .read_bytes(TMATMUL_DPA_PROGRAM, &mut readback)
+            .unwrap();
+        assert_eq!(readback, program);
+
+        staging.reset_instruction_engine_before_run().unwrap();
+        let started = std::time::Instant::now();
+        let status = staging
+            .run_instance0_program(
+                TMATMUL_DPA_PROGRAM,
+                program.len() as u32,
+                10_000,
+                info.dim_d,
+            )
+            .unwrap();
+        assert_ne!(status.result_flags & CXL_TYPE2_TMATMUL_RESULT_STALLED, 0);
+        eprintln!(
+            "tmatmul existing-data smoke dim={} elapsed_us={} status={:?}",
+            info.dim_d,
+            started.elapsed().as_micros(),
+            status
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardware_csr_probe_runs_existing_nvint8_data_when_requested() {
+        if !env_flag("HETGPU_CXL_TMATMUL_HW_EXISTING_NVINT8") {
+            return;
+        }
+
+        let device_path = cxl_tmatmul_device_path();
+        let device = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&device_path)
+            .unwrap_or_else(|e| panic!("open {device_path}: {e}"));
+        let info = get_info(&device).unwrap();
+        let assembly = format!(
+            "ldv v0,{input:#x}\n\
+             tmatmul_import v0\n\
+             tmatmul_go_nvint8 {matrix:#x},4\n\
+             tmatmul_export v1\n\
+             sv v1,{output:#x}\n\
+             stall\n",
+            input = TMATMUL_DPA_INPUT,
+            matrix = TMATMUL_DPA_MATRIX,
+            output = TMATMUL_DPA_OUTPUT,
+        );
+        let program = assemble_tmatmul_program(&assembly, &HashMap::new()).unwrap();
+        let mut input = vec![0u8; vector_bytes(info.dim_d as usize).unwrap()];
+        for value in input.chunks_exact_mut(2) {
+            value.copy_from_slice(&0x0100u16.to_le_bytes());
+        }
+        let mut staging =
+            StagingMap::open_csr_probe((TMATMUL_DPA_PROGRAM as usize) + program.len()).unwrap();
+        staging.stage_bytes(TMATMUL_DPA_INPUT, &input).unwrap();
+        staging
+            .fill_bytes(TMATMUL_DPA_OUTPUT, 0xa5, input.len())
+            .unwrap();
+        staging.stage_bytes(TMATMUL_DPA_PROGRAM, &program).unwrap();
+
+        let started = std::time::Instant::now();
+        let status = staging
+            .run_instance0_program(
+                TMATMUL_DPA_PROGRAM,
+                program.len() as u32,
+                10_000,
+                info.dim_d,
+            )
+            .unwrap();
+        assert_ne!(status.result_flags & CXL_TYPE2_TMATMUL_RESULT_STALLED, 0);
+        let mut output_prefix = [0u8; 16];
+        staging
+            .read_bytes(TMATMUL_DPA_OUTPUT, &mut output_prefix)
+            .unwrap();
+        eprintln!(
+            "tmatmul existing GPU NVINT8 smoke dim={} delta=4 elapsed_us={} status={:?} output_prefix={:02x?}",
+            info.dim_d,
+            started.elapsed().as_micros(),
+            status,
+            output_prefix
         );
     }
 
