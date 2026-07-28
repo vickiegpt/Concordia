@@ -58,6 +58,13 @@ pub(crate) mod concordia_runtime;
     not(feature = "tenstorrent")
 ))]
 pub(crate) mod concordia_gpu;
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) mod nvint4_tmatmul;
 pub(crate) mod nccl_recovery;
 pub(crate) mod persistent_router;
 
