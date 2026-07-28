@@ -1,0 +1,17 @@
+--- a/ggml/src/ggml-cpu/arch/riscv/quants.c
++++ b/ggml/src/ggml-cpu/arch/riscv/quants.c
+@@ -2170,0 +2171,7 @@
++    const uint64_t shift = 0x0009000600030000;
++    const vuint16m4_t qh_shift =
++        __riscv_vreinterpret_v_u64m4_u16m4(__riscv_vmv_v_x_u64m4(shift, 8));
++    const vuint16m4_t qh_gather_index =
++        __riscv_vsrl_vx_u16m4(__riscv_vid_v_u16m4(32), 2, 32);
++    const vint32m1_t one_scalar = __riscv_vmv_v_x_i32m1(0, 1);
++
+@@ -2192,4 +2198,0 @@
+-        const uint64_t shift = 0x0009000600030000;
+-        vuint16m4_t qh_shift = __riscv_vreinterpret_v_u64m4_u16m4(__riscv_vmv_v_x_u64m4(shift, 8));
+-        vuint16m4_t qh_gather_index = __riscv_vreinterpret_v_i16m4_u16m4(
+-            __riscv_vdiv_vx_i16m4(__riscv_vreinterpret_v_u16m4_i16m4(__riscv_vid_v_u16m4(32)), 4, 32));
+@@ -2206 +2208,0 @@
+-        vint32m1_t one_scalar = __riscv_vmv_v_x_i32m1(0, 1);
