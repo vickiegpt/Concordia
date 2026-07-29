@@ -1,0 +1,19 @@
+--- a/ggml/src/ggml-cpu/arch/riscv/quants.c
++++ b/ggml/src/ggml-cpu/arch/riscv/quants.c
+@@ -3548 +3548 @@
+-    uint32_t aux32[2];
++    uint64_t aux64;
+@@ -3564,2 +3564,2 @@
+-            memcpy(aux32, metadata, 2 * sizeof(uint32_t));
+-            metadata += 2 * sizeof(uint32_t);
++            memcpy(&aux64, metadata, sizeof(aux64));
++            metadata += sizeof(aux64);
+@@ -3577 +3577,2 @@
+-            vuint32m2_t v_aux = __riscv_vle32_v_u32m2(aux32, 2);
++            vuint32m2_t v_aux = __riscv_vreinterpret_v_u64m2_u32m2(
++                __riscv_vmv_v_x_u64m2(aux64, 1));
+@@ -3612,2 +3613,2 @@
+-            const float scale1_f = (float)(2 * (aux32[0] >> 28) + 1);
+-            const float scale2_f = (float)(2 * (aux32[1] >> 28) + 1);
++            const float scale1_f = (float)(2 * ((aux64 >> 28) & 0xf) + 1);
++            const float scale2_f = (float)(2 * (aux64 >> 60) + 1);
