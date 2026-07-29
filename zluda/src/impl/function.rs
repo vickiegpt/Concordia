@@ -8693,6 +8693,20 @@ pub(crate) fn launch_kernel(
     kernel_params: *mut *mut ::core::ffi::c_void,
     extra: *mut *mut ::core::ffi::c_void,
 ) -> CUresult {
+    if let Some(result) = unsafe {
+        super::nvint4_tmatmul::try_launch(
+            &f.function_name,
+            kernel_params,
+            (grid_dim_x, grid_dim_y, grid_dim_z),
+            (block_dim_x, block_dim_y, block_dim_z),
+            h_stream,
+        )
+    } {
+        return result.map_err(|err| {
+            eprintln!("[NVINT4 TMatmul] strict launch failed: {err}");
+            CUerror::UNKNOWN
+        });
+    }
     nvidia_log_bitnet_route_for_native_launch(&f.function_name);
     let concordia_ptrs = nvidia_kimi_concordia_param_snapshot(&f.function_name, kernel_params);
     super::kimi_concordia::prepare_kernel_launch(&f.function_name, &concordia_ptrs);
@@ -8743,6 +8757,20 @@ pub(crate) fn launch_kernel_ex(
     kernel_params: *mut *mut ::core::ffi::c_void,
     extra: *mut *mut ::core::ffi::c_void,
 ) -> CUresult {
+    if let Some(result) = unsafe {
+        super::nvint4_tmatmul::try_launch(
+            &f.function_name,
+            kernel_params,
+            (config.gridDimX, config.gridDimY, config.gridDimZ),
+            (config.blockDimX, config.blockDimY, config.blockDimZ),
+            config.hStream,
+        )
+    } {
+        return result.map_err(|err| {
+            eprintln!("[NVINT4 TMatmul] strict launch failed: {err}");
+            CUerror::UNKNOWN
+        });
+    }
     nvidia_log_bitnet_route_for_native_launch(&f.function_name);
     let concordia_ptrs = nvidia_kimi_concordia_param_snapshot(&f.function_name, kernel_params);
     super::kimi_concordia::prepare_kernel_launch(&f.function_name, &concordia_ptrs);
@@ -9541,6 +9569,29 @@ pub(crate) unsafe fn launch_named_kernel_c(
         Ok(name) => name,
         Err(_) => return 1,
     };
+
+    #[cfg(all(
+        feature = "nvidia",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent"),
+        not(feature = "tmatmul")
+    ))]
+    if let Some(result) = super::nvint4_tmatmul::try_launch(
+        kernel_name,
+        kernel_params,
+        (grid_dim_x, grid_dim_y, grid_dim_z),
+        (block_dim_x, block_dim_y, block_dim_z),
+        cuda_types::cuda::CUstream(stream.cast()),
+    ) {
+        return match result {
+            Ok(()) => 0,
+            Err(err) => {
+                eprintln!("[NVINT4 TMatmul] named launch failed: {err}");
+                999
+            }
+        };
+    }
 
     #[cfg(all(
         feature = "nvidia",

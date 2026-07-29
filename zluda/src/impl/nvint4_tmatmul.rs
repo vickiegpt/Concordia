@@ -3,6 +3,8 @@ use crate::r#impl::nvidia_runtime_sys;
 use cuda_types::cuda::{CUdevice, CUdeviceptr_v2, CUfunction, CUmodule, CUstream};
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::ptr;
 use std::sync::{Mutex, OnceLock};
 
@@ -43,6 +45,18 @@ pub(crate) struct Nvint4Launch {
     pub(crate) stream: CUstream,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Nvint4Execution {
+    status: Nvint4HardwareStatus,
+    cuda_device: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Nvint4RouteConfig {
+    enabled: bool,
+    gpu_fallback: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FailureDisposition {
     StrictFailure,
@@ -55,6 +69,12 @@ fn failure_disposition(fallback_enabled: bool) -> FailureDisposition {
     } else {
         FailureDisposition::StrictFailure
     }
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }
 
 pub(crate) fn is_nvint4_entry(kernel_name: &str) -> bool {
@@ -333,10 +353,10 @@ pub(crate) unsafe fn convert(
     })
 }
 
-pub(crate) unsafe fn execute_hardware(
+unsafe fn execute_hardware(
     launch: Nvint4Launch,
     timeout_ms: u32,
-) -> Result<Nvint4HardwareStatus, String> {
+) -> Result<Nvint4Execution, String> {
     validate_cuda_allocation(launch.input_q8_8, NVINT4_INPUT_BYTES, "input_q8_8")?;
     validate_cuda_allocation(launch.output_s64, NVINT4_OUTPUT_BYTES, "output_s64")?;
     let converted = convert(
@@ -345,7 +365,7 @@ pub(crate) unsafe fn execute_hardware(
         launch.delta,
         launch.stream,
     )?;
-    cxl_tmatmul::submit_nvint4_packed_hardware_from_device_ptrs(
+    let status = cxl_tmatmul::submit_nvint4_packed_hardware_from_device_ptrs(
         converted.device_ptr,
         launch.input_q8_8,
         launch.output_s64,
@@ -356,7 +376,221 @@ pub(crate) unsafe fn execute_hardware(
         },
         timeout_ms,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    Ok(Nvint4Execution {
+        status,
+        cuda_device: converted.cuda_device,
+    })
+}
+
+fn hardware_json(status: &Nvint4HardwareStatus) -> serde_json::Value {
+    serde_json::json!({
+        "instruction_dma_status": status.instruction_dma_status,
+        "stall_status": status.stall_status,
+        "wide_dma_status": status.wide_dma_status,
+        "wide_dma_bytes": NVINT4_OUTPUT_BYTES,
+        "exec_status": status.exec_status,
+        "instruction_count": status.instruction_count,
+        "ls_read_beats": status.ls_read_beats,
+        "tmatmul_read_beats": status.tmatmul_read_beats,
+        "elapsed_us": status.elapsed_us,
+    })
+}
+
+fn route_record(
+    launch: Option<Nvint4Launch>,
+    stream: CUstream,
+    final_status: &str,
+    reason: &str,
+    execution: Option<&Nvint4Execution>,
+    total_us: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "route": "ptx_nvint4_to_dax_tmatmul",
+        "kernel": NVINT4_ENTRY,
+        "final_status": final_status,
+        "reason": reason,
+        "dim": launch.map(|value| value.dim),
+        "delta": launch.map(|value| value.delta),
+        "cuda_device": execution.map(|value| value.cuda_device),
+        "cuda_stream": format!("0x{:x}", stream.0 as usize),
+        "source_bytes": 2_097_152,
+        "packed_bytes": 1_048_576,
+        "input_bytes": NVINT4_INPUT_BYTES,
+        "output_bytes": NVINT4_OUTPUT_BYTES,
+        "dpa": {
+            "matrix": "0x000000",
+            "input": "0x400000",
+            "output": "0x500000",
+            "program": "0x600000",
+        },
+        "timing_us": {
+            "total": total_us,
+            "hardware": execution.map(|value| value.status.elapsed_us),
+        },
+        "hardware": execution.map(|value| hardware_json(&value.status)),
+        "mismatch_count": serde_json::Value::Null,
+    })
+}
+
+unsafe fn try_launch_with<E, L>(
+    config: Nvint4RouteConfig,
+    kernel_name: &str,
+    kernel_params: *mut *mut c_void,
+    grid: (u32, u32, u32),
+    block: (u32, u32, u32),
+    stream: CUstream,
+    executor: E,
+    mut logger: L,
+) -> Option<Result<(), String>>
+where
+    E: FnOnce(Nvint4Launch) -> Result<Nvint4Execution, String>,
+    L: FnMut(&serde_json::Value) -> Result<(), String>,
+{
+    if !is_nvint4_entry(kernel_name) || !config.enabled {
+        return None;
+    }
+
+    let started = std::time::Instant::now();
+    let launch = match parse_launch_params(kernel_params, grid, block, stream) {
+        Ok(launch) => launch,
+        Err(reason) => {
+            let final_status = if config.gpu_fallback {
+                "gpu_fallback"
+            } else {
+                "fail"
+            };
+            let record = route_record(
+                None,
+                stream,
+                final_status,
+                &reason,
+                None,
+                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            );
+            if let Err(log_error) = logger(&record) {
+                eprintln!("[NVINT4 TMatmul] route log failed: {log_error}");
+            }
+            return if config.gpu_fallback {
+                None
+            } else {
+                Some(Err(reason))
+            };
+        }
+    };
+
+    match executor(launch) {
+        Ok(execution) => {
+            let record = route_record(
+                Some(launch),
+                stream,
+                "pass",
+                "hardware execution completed",
+                Some(&execution),
+                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            );
+            match logger(&record) {
+                Ok(()) => Some(Ok(())),
+                Err(error) => Some(Err(format!(
+                    "NVINT4 hardware completed but route log failed: {error}"
+                ))),
+            }
+        }
+        Err(reason) => {
+            let final_status = if config.gpu_fallback {
+                "gpu_fallback"
+            } else {
+                "fail"
+            };
+            let record = route_record(
+                Some(launch),
+                stream,
+                final_status,
+                &reason,
+                None,
+                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            );
+            let log_result = logger(&record);
+            if let Err(log_error) = &log_result {
+                eprintln!("[NVINT4 TMatmul] route log failed: {log_error}");
+            }
+            if config.gpu_fallback {
+                None
+            } else {
+                Some(Err(match log_result {
+                    Ok(()) => reason,
+                    Err(log_error) => format!("{reason}; route log failed: {log_error}"),
+                }))
+            }
+        }
+    }
+}
+
+fn open_route_log() -> Result<Option<File>, String> {
+    let Ok(path) = std::env::var("HETGPU_NVINT4_ROUTE_LOG") else {
+        return Ok(None);
+    };
+    if path.trim().is_empty() {
+        return Ok(None);
+    }
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map(Some)
+        .map_err(|error| format!("open HETGPU_NVINT4_ROUTE_LOG={path:?}: {error}"))
+}
+
+pub(crate) unsafe fn try_launch(
+    kernel_name: &str,
+    kernel_params: *mut *mut c_void,
+    grid: (u32, u32, u32),
+    block: (u32, u32, u32),
+    stream: CUstream,
+) -> Option<Result<(), String>> {
+    let config = Nvint4RouteConfig {
+        enabled: env_truthy("HETGPU_NVINT4_TMATMUL"),
+        gpu_fallback: env_truthy("HETGPU_NVINT4_GPU_FALLBACK"),
+    };
+    if !is_nvint4_entry(kernel_name) || !config.enabled {
+        return None;
+    }
+
+    let mut route_log = match open_route_log() {
+        Ok(file) => file,
+        Err(reason) => {
+            let final_status = if config.gpu_fallback {
+                "gpu_fallback"
+            } else {
+                "fail"
+            };
+            let launch = parse_launch_params(kernel_params, grid, block, stream).ok();
+            let record = route_record(launch, stream, final_status, &reason, None, 0);
+            eprintln!("{record}");
+            return if config.gpu_fallback {
+                None
+            } else {
+                Some(Err(reason))
+            };
+        }
+    };
+    try_launch_with(
+        config,
+        kernel_name,
+        kernel_params,
+        grid,
+        block,
+        stream,
+        |launch| execute_hardware(launch, 0),
+        |record| {
+            eprintln!("{record}");
+            if let Some(file) = route_log.as_mut() {
+                writeln!(file, "{record}").map_err(|error| error.to_string())?;
+                file.flush().map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        },
+    )
 }
 
 #[no_mangle]
@@ -543,5 +777,196 @@ mod tests {
             FailureDisposition::StrictFailure
         );
         assert_eq!(failure_disposition(true), FailureDisposition::GpuFallback);
+    }
+}
+
+#[cfg(test)]
+mod nvidia_nvint4_route_tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    fn fake_execution() -> Nvint4Execution {
+        Nvint4Execution {
+            status: Nvint4HardwareStatus {
+                instruction_dma_status: 2,
+                stall_status: 1,
+                wide_dma_status: 2,
+                exec_status: 0,
+                instruction_count: 4,
+                ls_read_beats: 64,
+                tmatmul_read_beats: 16_384,
+                elapsed_us: 20,
+            },
+            cuda_device: 0,
+        }
+    }
+
+    #[test]
+    fn exact_route_strict_failure_does_not_pass_through() {
+        let mut weights = 0x1000usize;
+        let mut input = 0x2000usize;
+        let mut output = 0x3000usize;
+        let mut dim = 2048u32;
+        let mut delta = 1u32;
+        let mut params = [
+            (&mut weights as *mut usize).cast::<c_void>(),
+            (&mut input as *mut usize).cast::<c_void>(),
+            (&mut output as *mut usize).cast::<c_void>(),
+            (&mut dim as *mut u32).cast::<c_void>(),
+            (&mut delta as *mut u32).cast::<c_void>(),
+        ];
+        let records = RefCell::new(Vec::new());
+
+        let result = unsafe {
+            try_launch_with(
+                Nvint4RouteConfig {
+                    enabled: true,
+                    gpu_fallback: false,
+                },
+                NVINT4_ENTRY,
+                params.as_mut_ptr(),
+                (1, 1, 1),
+                (1, 1, 1),
+                CUstream(ptr::null_mut()),
+                |_| Err("injected hardware failure".to_string()),
+                |record| {
+                    records.borrow_mut().push(record.clone());
+                    Ok(())
+                },
+            )
+        };
+
+        assert!(matches!(result, Some(Err(_))));
+        assert_eq!(records.borrow()[0]["final_status"], "fail");
+        assert_eq!(records.borrow()[0]["reason"], "injected hardware failure");
+    }
+
+    #[test]
+    fn explicit_gpu_fallback_returns_none_and_records_reason() {
+        let mut weights = 0x1000usize;
+        let mut input = 0x2000usize;
+        let mut output = 0x3000usize;
+        let mut dim = 2048u32;
+        let mut delta = 1u32;
+        let mut params = [
+            (&mut weights as *mut usize).cast::<c_void>(),
+            (&mut input as *mut usize).cast::<c_void>(),
+            (&mut output as *mut usize).cast::<c_void>(),
+            (&mut dim as *mut u32).cast::<c_void>(),
+            (&mut delta as *mut u32).cast::<c_void>(),
+        ];
+        let records = RefCell::new(Vec::new());
+
+        let result = unsafe {
+            try_launch_with(
+                Nvint4RouteConfig {
+                    enabled: true,
+                    gpu_fallback: true,
+                },
+                NVINT4_ENTRY,
+                params.as_mut_ptr(),
+                (1, 1, 1),
+                (1, 1, 1),
+                CUstream(ptr::null_mut()),
+                |_| Err("injected hardware failure".to_string()),
+                |record| {
+                    records.borrow_mut().push(record.clone());
+                    Ok(())
+                },
+            )
+        };
+
+        assert!(result.is_none());
+        assert_eq!(records.borrow()[0]["final_status"], "gpu_fallback");
+        assert_eq!(records.borrow()[0]["reason"], "injected hardware failure");
+    }
+
+    #[test]
+    fn successful_exact_route_records_hardware_and_consumes_launch() {
+        let mut weights = 0x1000usize;
+        let mut input = 0x2000usize;
+        let mut output = 0x3000usize;
+        let mut dim = 2048u32;
+        let mut delta = 3u32;
+        let mut params = [
+            (&mut weights as *mut usize).cast::<c_void>(),
+            (&mut input as *mut usize).cast::<c_void>(),
+            (&mut output as *mut usize).cast::<c_void>(),
+            (&mut dim as *mut u32).cast::<c_void>(),
+            (&mut delta as *mut u32).cast::<c_void>(),
+        ];
+        let records = RefCell::new(Vec::new());
+
+        let result = unsafe {
+            try_launch_with(
+                Nvint4RouteConfig {
+                    enabled: true,
+                    gpu_fallback: false,
+                },
+                NVINT4_ENTRY,
+                params.as_mut_ptr(),
+                (1, 1, 1),
+                (1, 1, 1),
+                CUstream(ptr::null_mut()),
+                |_| Ok(fake_execution()),
+                |record| {
+                    records.borrow_mut().push(record.clone());
+                    Ok(())
+                },
+            )
+        };
+
+        assert!(matches!(result, Some(Ok(()))));
+        let records = records.borrow();
+        assert_eq!(records[0]["final_status"], "pass");
+        assert_eq!(records[0]["delta"], 3);
+        assert_eq!(records[0]["hardware"]["wide_dma_status"], 2);
+        assert_eq!(records[0]["hardware"]["wide_dma_bytes"], 16_384);
+    }
+
+    #[test]
+    fn disabled_or_nonexact_route_never_calls_executor() {
+        let called = Cell::new(false);
+        let result = unsafe {
+            try_launch_with(
+                Nvint4RouteConfig {
+                    enabled: true,
+                    gpu_fallback: false,
+                },
+                "tmatmul_nvint4_dense_v2",
+                ptr::null_mut(),
+                (1, 1, 1),
+                (1, 1, 1),
+                CUstream(ptr::null_mut()),
+                |_| {
+                    called.set(true);
+                    Ok(fake_execution())
+                },
+                |_| Ok(()),
+            )
+        };
+        assert!(result.is_none());
+        assert!(!called.get());
+
+        let result = unsafe {
+            try_launch_with(
+                Nvint4RouteConfig {
+                    enabled: false,
+                    gpu_fallback: false,
+                },
+                NVINT4_ENTRY,
+                ptr::null_mut(),
+                (1, 1, 1),
+                (1, 1, 1),
+                CUstream(ptr::null_mut()),
+                |_| {
+                    called.set(true);
+                    Ok(fake_execution())
+                },
+                |_| Ok(()),
+            )
+        };
+        assert!(result.is_none());
+        assert!(!called.get());
     }
 }
