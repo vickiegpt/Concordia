@@ -14,6 +14,7 @@ UBATCH_SIZE="${UBATCH_SIZE:-32}"
 GPU_LAYERS="${GPU_LAYERS:-3}"
 THREADS="${THREADS:-32}"
 THREADS_BATCH="${THREADS_BATCH:-${THREADS}}"
+POLL="${POLL:-100}"
 LOG_DIR="${LOG_DIR:-${B}/logs/glm52-pacc-gpu-server-$(date +%Y%m%d-%H%M%S)}"
 PACC_MASK="${PACC_MASK:-0xf}"
 XSFMM_FIRMWARE="${XSFMM_FIRMWARE:-lanxin/lx500_pacc_jobd_xsfmm_kernel_exec.bin}"
@@ -165,12 +166,18 @@ echo "starting GLM-5.2 server at http://${HOST}:${PORT}"
 echo "parallel=${PARALLEL} gpu_layers=${GPU_LAYERS} threads=${THREADS}/${THREADS_BATCH} batch=${BATCH_SIZE} ubatch=${UBATCH_SIZE}"
 echo "logs=${LOG_DIR}"
 
+cpu_wait_args=()
+if [[ -n "$POLL" ]]; then
+    cpu_wait_args+=(--poll "$POLL")
+fi
+
 set +e
 "$LLAMA_BIN" \
     -m "$MODEL" --gpu-layers "$GPU_LAYERS" \
     --host "$HOST" --port "$PORT" \
     --ctx-size "$CTX" --parallel "$PARALLEL" \
     --threads "$THREADS" --threads-batch "$THREADS_BATCH" \
+    "${cpu_wait_args[@]}" \
     --cont-batching --batch-size "$BATCH_SIZE" --ubatch-size "$UBATCH_SIZE" \
     --checkpoint-min-step "${CHECKPOINT_MIN_STEP:-16}" \
     --cache-ram "${CACHE_RAM_MIB:-8192}" --kv-unified \
