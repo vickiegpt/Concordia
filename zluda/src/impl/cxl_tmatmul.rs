@@ -27,6 +27,9 @@ const DEFAULT_PCI_ADDR: &str = "0000:3b:00.0";
 const DEFAULT_BAR_INDEX: u32 = 0;
 const DEFAULT_CSR_BASE: u32 = 0x1c0000;
 const TMATMUL_CSR_DEV_ID: u32 = 0x544D4D31;
+const CSR_DIM_D: usize = 0x08;
+const CSR_DDR_DATA_WIDTH: usize = 0x0c;
+const CSR_MC_STATUS: usize = 0x18;
 const CSR_PROBE_ADDR: usize = 0x10;
 const CSR_PROBE_WDATA: usize = 0x14;
 const CSR_PROBE_CTRL: usize = 0x18;
@@ -41,8 +44,26 @@ const CSR_INST_INSTR_SRC_HI: usize = CSR_INST_BASE + 0x14;
 const CSR_INST_INSTR_LEN: usize = CSR_INST_BASE + 0x18;
 const CSR_INST_INSTR_START: usize = CSR_INST_BASE + 0x1c;
 const CSR_INST_INSTR_STATUS: usize = CSR_INST_BASE + 0x1c;
+const CSR_INST_INSTR_STATUS_EXPLICIT: usize = CSR_INST_BASE + 0x20;
+const CSR_INST_WIDE_DMA_DST_LO: usize = CSR_INST_BASE + 0x28;
+const CSR_INST_WIDE_DMA_DST_HI: usize = CSR_INST_BASE + 0x2c;
+const CSR_INST_WIDE_DMA_LEN: usize = CSR_INST_BASE + 0x30;
+const CSR_INST_WIDE_DMA_START: usize = CSR_INST_BASE + 0x34;
+const CSR_INST_WIDE_DMA_STATUS: usize = CSR_INST_BASE + 0x38;
 const CSR_INST_DBG_INSTR_CNT: usize = CSR_INST_BASE + 0x40;
+const CSR_INST_DBG_LS_R_BEAT: usize = CSR_INST_BASE + 0x48;
+const CSR_INST_DBG_TM_R_BEAT: usize = CSR_INST_BASE + 0x4c;
+const CSR_INST_EXEC_STATUS: usize = CSR_INST_BASE + 0x60;
+const DMA_IDLE: u32 = 0;
+const DMA_RUNNING: u32 = 1;
+const DMA_DONE: u32 = 2;
+const DMA_ERROR: u32 = 0xff;
 const TMATMUL_DMA_ERROR_STATUS: u32 = 0xff;
+const NVINT4_DIM: u32 = 2048;
+const NVINT4_PACKED_BYTES: usize = 1 << 20;
+const NVINT4_INPUT_BYTES: usize = NVINT4_DIM as usize * 2;
+const NVINT4_OUTPUT_BYTES: usize = NVINT4_DIM as usize * 8;
+const NVINT4_EXPECTED_TM_READ_BEATS: u32 = 16_384;
 const CXL_TYPE2_TMATMUL_RESULT_STALLED: u32 = 1 << 0;
 const CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR: u32 = 1 << 2;
 #[cfg(unix)]
@@ -113,6 +134,33 @@ pub(crate) struct CxlTmatmulRunStatus {
     pub(crate) instr_count: u32,
     pub(crate) dim_d: u32,
     pub(crate) result_flags: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Nvint4HardwareStatus {
+    pub(crate) instruction_dma_status: u32,
+    pub(crate) stall_status: u32,
+    pub(crate) wide_dma_status: u32,
+    pub(crate) exec_status: u32,
+    pub(crate) instruction_count: u32,
+    pub(crate) ls_read_beats: u32,
+    pub(crate) tmatmul_read_beats: u32,
+    pub(crate) elapsed_us: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Nvint4FixedLayout {
+    matrix: (usize, usize),
+    input: (usize, usize),
+    output: (usize, usize),
+    program: (usize, usize),
+    dax_len: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CudaDaxContext {
+    pub(crate) gpu: i32,
+    pub(crate) stream: usize,
 }
 
 #[repr(C)]
@@ -757,6 +805,220 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
     )
 }
 
+#[cfg(unix)]
+pub(crate) unsafe fn submit_nvint4_packed_hardware_from_device_ptrs(
+    packed_matrix_ptr: usize,
+    input_ptr: usize,
+    output_ptr: usize,
+    dim: u32,
+    cuda: CudaDaxContext,
+    timeout_ms: u32,
+) -> Result<Nvint4HardwareStatus, CxlTmatmulError> {
+    if packed_matrix_ptr == 0 || input_ptr == 0 || output_ptr == 0 {
+        return Err(CxlTmatmulError::Device(
+            "NVINT4 packed matrix/input/output pointer is null".to_string(),
+        ));
+    }
+    if dim != NVINT4_DIM {
+        return Err(CxlTmatmulError::Device(format!(
+            "NVINT4 hardware route requires dim={NVINT4_DIM}, got {dim}"
+        )));
+    }
+
+    let layout = nvint4_fixed_layout()?;
+    let program = assemble_tmatmul_program(
+        "
+        ldv v0,0x400000
+        tmatmul_import v0
+        tmatmul_go 0x000000
+        stall
+        ",
+        &HashMap::new(),
+    )?;
+    let program = program_fetch_image(&program)?;
+
+    let device_path = cxl_tmatmul_device_path();
+    let device = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&device_path)
+        .map_err(|e| CxlTmatmulError::Io(format!("open {device_path}: {e}")))?;
+    let info = get_info(&device)?;
+    if info.version != CXL_TYPE2_TMATMUL_UAPI_VERSION {
+        return Err(CxlTmatmulError::Device(format!(
+            "unsupported UAPI version {}, expected {}",
+            info.version, CXL_TYPE2_TMATMUL_UAPI_VERSION
+        )));
+    }
+    if info.dev_id != TMATMUL_CSR_DEV_ID {
+        return Err(CxlTmatmulError::Device(format!(
+            "GET_INFO dev_id=0x{:08x}, expected 0x{TMATMUL_CSR_DEV_ID:08x}",
+            info.dev_id
+        )));
+    }
+    if info.dim_d != dim {
+        return Err(CxlTmatmulError::Device(format!(
+            "GET_INFO dim_d={}, expected {dim}",
+            info.dim_d
+        )));
+    }
+    if info.ddr_data_width != 512 {
+        return Err(CxlTmatmulError::Device(format!(
+            "GET_INFO ddr_data_width={}, expected 512",
+            info.ddr_data_width
+        )));
+    }
+    if !mc_ready(info.mc_status) {
+        return Err(CxlTmatmulError::Device(format!(
+            "memory controller is not ready: mc_status=0x{:08x}",
+            info.mc_status
+        )));
+    }
+
+    let mut staging = StagingMap::open_cuda_dax(layout.dax_len)?;
+    staging.stage_cuda_dax_device_to_offset_on_stream(
+        packed_matrix_ptr,
+        NVINT4_PACKED_BYTES,
+        TMATMUL_DPA_MATRIX,
+        "NVINT4 packed matrix",
+        cuda,
+    )?;
+    staging.stage_cuda_dax_device_to_offset_on_stream(
+        input_ptr,
+        NVINT4_INPUT_BYTES,
+        TMATMUL_DPA_INPUT,
+        "NVINT4 input q8.8",
+        cuda,
+    )?;
+    staging.fill_bytes(TMATMUL_DPA_OUTPUT, 0xa5, NVINT4_OUTPUT_BYTES)?;
+    staging.stage_bytes(TMATMUL_DPA_PROGRAM, &program)?;
+
+    let bar = StagingMap::open_csr_probe(0)?;
+    let bar_dim = bar.csr_mmio_rd32(CSR_DIM_D)?;
+    let bar_width = bar.csr_mmio_rd32(CSR_DDR_DATA_WIDTH)?;
+    let bar_mc = bar.csr_mmio_rd32(CSR_MC_STATUS)?;
+    if bar_dim != dim || bar_width != 512 || !mc_ready(bar_mc) {
+        return Err(CxlTmatmulError::Device(format!(
+            "BAR contract mismatch: dim={bar_dim} width={bar_width} mc_status=0x{bar_mc:08x}"
+        )));
+    }
+    for (name, status) in [
+        (
+            "instruction DMA",
+            bar.csr_mmio_rd32(CSR_INST_INSTR_STATUS_EXPLICIT)?,
+        ),
+        ("wide DMA", bar.csr_mmio_rd32(CSR_INST_WIDE_DMA_STATUS)?),
+    ] {
+        if !dma_status_is_valid(status) {
+            return Err(CxlTmatmulError::Device(format!(
+                "{name} returned invalid status 0x{status:08x}"
+            )));
+        }
+    }
+
+    bar.reset_instruction_engine_before_run()?;
+    let timeout_ms = timeout_ms_or_default(timeout_ms);
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_millis(timeout_ms as u64);
+    while bar.csr_mmio_rd32(CSR_INST_STALL_STATUS)? != 0 {
+        if std::time::Instant::now() >= deadline {
+            return Err(CxlTmatmulError::Device(
+                "NVINT4 stall clear timed out".to_string(),
+            ));
+        }
+        std::hint::spin_loop();
+    }
+
+    let instruction_before = bar.csr_mmio_rd32(CSR_INST_DBG_INSTR_CNT)?;
+    let ls_read_before = bar.csr_mmio_rd32(CSR_INST_DBG_LS_R_BEAT)?;
+    let tmatmul_read_before = bar.csr_mmio_rd32(CSR_INST_DBG_TM_R_BEAT)?;
+    let writes = nvint4_launch_writes(TMATMUL_DPA_OUTPUT, NVINT4_OUTPUT_BYTES)?;
+    for &(offset, value) in &writes[..4] {
+        bar.csr_mmio_wr32(offset, value)?;
+    }
+    loop {
+        let status = bar.csr_mmio_rd32(CSR_INST_WIDE_DMA_STATUS)?;
+        if status == DMA_RUNNING {
+            break;
+        }
+        if status == DMA_ERROR {
+            return Err(CxlTmatmulError::Device(
+                "wide DMA reported ERROR while arming".to_string(),
+            ));
+        }
+        if !dma_status_is_valid(status) {
+            return Err(CxlTmatmulError::Device(format!(
+                "wide DMA returned invalid status 0x{status:08x} while arming"
+            )));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(CxlTmatmulError::Device(format!(
+                "wide DMA arm timed out: status=0x{status:08x}"
+            )));
+        }
+        std::hint::spin_loop();
+    }
+    for &(offset, value) in &writes[4..] {
+        bar.csr_mmio_wr32(offset, value)?;
+    }
+
+    let mut status;
+    loop {
+        let instruction_dma_status = bar.csr_mmio_rd32(CSR_INST_INSTR_STATUS_EXPLICIT)?;
+        let wide_dma_status = bar.csr_mmio_rd32(CSR_INST_WIDE_DMA_STATUS)?;
+        if !dma_status_is_valid(instruction_dma_status) || !dma_status_is_valid(wide_dma_status) {
+            return Err(CxlTmatmulError::Device(format!(
+                "invalid DMA status: instruction=0x{instruction_dma_status:08x} wide=0x{wide_dma_status:08x}"
+            )));
+        }
+        let current_dim = bar.csr_mmio_rd32(CSR_DIM_D)?;
+        if current_dim != dim {
+            return Err(CxlTmatmulError::Device(format!(
+                "NVINT4 DIM_D changed from {dim} to {current_dim}"
+            )));
+        }
+        status = Nvint4HardwareStatus {
+            instruction_dma_status,
+            stall_status: bar.csr_mmio_rd32(CSR_INST_STALL_STATUS)?,
+            wide_dma_status,
+            exec_status: bar.csr_mmio_rd32(CSR_INST_EXEC_STATUS)?,
+            instruction_count: bar
+                .csr_mmio_rd32(CSR_INST_DBG_INSTR_CNT)?
+                .wrapping_sub(instruction_before),
+            ls_read_beats: bar
+                .csr_mmio_rd32(CSR_INST_DBG_LS_R_BEAT)?
+                .wrapping_sub(ls_read_before),
+            tmatmul_read_beats: bar
+                .csr_mmio_rd32(CSR_INST_DBG_TM_R_BEAT)?
+                .wrapping_sub(tmatmul_read_before),
+            elapsed_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        };
+        if let Some(error) = nvint4_completion_error(&status) {
+            return Err(CxlTmatmulError::Device(format!(
+                "NVINT4 hardware execution failed: {error}; status={status:?}"
+            )));
+        }
+        if nvint4_is_complete(&status) {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(CxlTmatmulError::Device(format!(
+                "NVINT4 hardware execution timed out; status={status:?}"
+            )));
+        }
+        std::hint::spin_loop();
+    }
+
+    staging.copy_cuda_dax_offset_to_device_on_stream(
+        output_ptr,
+        NVINT4_OUTPUT_BYTES,
+        TMATMUL_DPA_OUTPUT,
+        "NVINT4 raw s64 output",
+        cuda,
+    )?;
+    Ok(status)
+}
+
 #[cfg(not(unix))]
 pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
     _assembly: &str,
@@ -771,6 +1033,20 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
 ) -> Result<CxlTmatmulRunStatus, CxlTmatmulError> {
     Err(CxlTmatmulError::Device(
         "CXL tmatmul ioctl submit is only implemented on Unix".to_string(),
+    ))
+}
+
+#[cfg(not(unix))]
+pub(crate) unsafe fn submit_nvint4_packed_hardware_from_device_ptrs(
+    _packed_matrix_ptr: usize,
+    _input_ptr: usize,
+    _output_ptr: usize,
+    _dim: u32,
+    _cuda: CudaDaxContext,
+    _timeout_ms: u32,
+) -> Result<Nvint4HardwareStatus, CxlTmatmulError> {
+    Err(CxlTmatmulError::Device(
+        "NVINT4 CXL tmatmul submit is only implemented on Unix".to_string(),
     ))
 }
 
@@ -1019,6 +1295,100 @@ fn required_dax_len_for_program(program_bytes: usize) -> Result<usize, CxlTmatmu
     (TMATMUL_DPA_PROGRAM as usize)
         .checked_add(program_fetch_len(program_bytes)?)
         .ok_or(CxlTmatmulError::SizeOverflow)
+}
+
+fn nvint4_fixed_layout() -> Result<Nvint4FixedLayout, CxlTmatmulError> {
+    let matrix = (
+        usize::try_from(TMATMUL_DPA_MATRIX).map_err(|_| CxlTmatmulError::SizeOverflow)?,
+        range_end(TMATMUL_DPA_MATRIX, NVINT4_PACKED_BYTES)?,
+    );
+    let input = (
+        usize::try_from(TMATMUL_DPA_INPUT).map_err(|_| CxlTmatmulError::SizeOverflow)?,
+        range_end(TMATMUL_DPA_INPUT, NVINT4_INPUT_BYTES)?,
+    );
+    let output = (
+        usize::try_from(TMATMUL_DPA_OUTPUT).map_err(|_| CxlTmatmulError::SizeOverflow)?,
+        range_end(TMATMUL_DPA_OUTPUT, NVINT4_OUTPUT_BYTES)?,
+    );
+    let program = (
+        usize::try_from(TMATMUL_DPA_PROGRAM).map_err(|_| CxlTmatmulError::SizeOverflow)?,
+        range_end(TMATMUL_DPA_PROGRAM, TMATMUL_PROGRAM_BYTES)?,
+    );
+    let ranges = [matrix, input, output, program];
+    for (index, lhs) in ranges.iter().enumerate() {
+        for rhs in ranges.iter().skip(index + 1) {
+            if lhs.0 < rhs.1 && rhs.0 < lhs.1 {
+                return Err(CxlTmatmulError::Device(format!(
+                    "NVINT4 fixed DAX ranges overlap: {lhs:?} and {rhs:?}"
+                )));
+            }
+        }
+    }
+    Ok(Nvint4FixedLayout {
+        matrix,
+        input,
+        output,
+        program,
+        dax_len: program.1,
+    })
+}
+
+fn nvint4_launch_writes(
+    output_dpa: u64,
+    output_bytes: usize,
+) -> Result<Vec<(usize, u32)>, CxlTmatmulError> {
+    let output_bytes = u32::try_from(output_bytes).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+    Ok(vec![
+        (CSR_INST_WIDE_DMA_DST_LO, output_dpa as u32),
+        (CSR_INST_WIDE_DMA_DST_HI, (output_dpa >> 32) as u32),
+        (CSR_INST_WIDE_DMA_LEN, output_bytes),
+        (CSR_INST_WIDE_DMA_START, 1),
+        (CSR_INST_INSTR_SRC_LO, TMATMUL_DPA_PROGRAM as u32),
+        (CSR_INST_INSTR_SRC_HI, (TMATMUL_DPA_PROGRAM >> 32) as u32),
+        (CSR_INST_INSTR_LEN, TMATMUL_PROGRAM_BYTES as u32),
+        (CSR_INST_INSTR_START, 1),
+    ])
+}
+
+fn nvint4_completion_error(status: &Nvint4HardwareStatus) -> Option<String> {
+    if status.instruction_dma_status == DMA_ERROR {
+        return Some("instruction DMA reported ERROR".to_string());
+    }
+    if status.wide_dma_status == DMA_ERROR {
+        return Some("wide DMA reported ERROR".to_string());
+    }
+    if status.exec_status & 1 != 0 {
+        return Some(format!(
+            "unsupported/illegal opcode: exec_status=0x{:08x}",
+            status.exec_status
+        ));
+    }
+    if status.instruction_dma_status == DMA_DONE
+        && status.stall_status != 0
+        && status.wide_dma_status == DMA_DONE
+        && status.tmatmul_read_beats != NVINT4_EXPECTED_TM_READ_BEATS
+    {
+        return Some(format!(
+            "tmatmul read beats {} != {}",
+            status.tmatmul_read_beats, NVINT4_EXPECTED_TM_READ_BEATS
+        ));
+    }
+    None
+}
+
+fn nvint4_is_complete(status: &Nvint4HardwareStatus) -> bool {
+    nvint4_completion_error(status).is_none()
+        && status.instruction_dma_status == DMA_DONE
+        && status.stall_status != 0
+        && status.wide_dma_status == DMA_DONE
+}
+
+fn mc_ready(status: u32) -> bool {
+    status & 0x01 == 0 && status & 0x1e == 0x1e
+}
+
+fn dma_status_is_valid(status: u32) -> bool {
+    matches!(status, DMA_IDLE | DMA_RUNNING | DMA_DONE | DMA_ERROR)
 }
 
 fn validate_fixed_layout(
@@ -1655,6 +2025,18 @@ impl StagingMap {
         self.stage_cuda_dax_stage(&stage, label)
     }
 
+    fn stage_cuda_dax_device_to_offset_on_stream(
+        &mut self,
+        device_ptr: usize,
+        bytes: usize,
+        cxl_offset: u64,
+        label: &str,
+        cuda: CudaDaxContext,
+    ) -> Result<(), CxlTmatmulError> {
+        let stage = cuda_dax_device_stage_on_stream(device_ptr, bytes, cxl_offset, cuda)?;
+        self.stage_cuda_dax_stage(&stage, label)
+    }
+
     fn copy_cuda_dax_offset_to_device(
         &mut self,
         device_ptr: usize,
@@ -1677,6 +2059,39 @@ impl StagingMap {
                 unsafe {
                     CudaRuntime::load()?.copy_dax_to_device(
                         device_ptr, bytes, cxl_offset, *map_ptr, *map_len, label,
+                    )?;
+                }
+                Ok(())
+            }
+            Self::CsrProbe { .. } => Err(CxlTmatmulError::Device(
+                "cuda_dax output copy cannot target csr_probe staging".to_string(),
+            )),
+        }
+    }
+
+    fn copy_cuda_dax_offset_to_device_on_stream(
+        &mut self,
+        device_ptr: usize,
+        bytes: usize,
+        cxl_offset: u64,
+        label: &str,
+        cuda: CudaDaxContext,
+    ) -> Result<(), CxlTmatmulError> {
+        match self {
+            Self::Mmap {
+                map_ptr, map_len, ..
+            } => {
+                let src_end = range_end(cxl_offset, bytes)?;
+                if src_end > *map_len {
+                    return Err(CxlTmatmulError::AllocationTooSmall {
+                        name: "cuda_dax mapped window",
+                        have: *map_len,
+                        need: src_end,
+                    });
+                }
+                unsafe {
+                    CudaRuntime::load()?.copy_dax_to_device_on_stream(
+                        device_ptr, bytes, cxl_offset, *map_ptr, *map_len, label, cuda,
                     )?;
                 }
                 Ok(())
@@ -2175,14 +2590,36 @@ impl CudaRuntime {
         map_len: usize,
         label: &str,
     ) -> Result<(), CxlTmatmulError> {
+        self.copy_dax_to_device_on_stream(
+            device_ptr,
+            bytes,
+            cxl_offset,
+            dax_host_base,
+            map_len,
+            label,
+            CudaDaxContext {
+                gpu: cuda_dax_gpu()?,
+                stream: cuda_dax_stream()?,
+            },
+        )
+    }
+
+    unsafe fn copy_dax_to_device_on_stream(
+        &self,
+        device_ptr: usize,
+        bytes: usize,
+        cxl_offset: u64,
+        dax_host_base: *mut u8,
+        map_len: usize,
+        label: &str,
+        cuda: CudaDaxContext,
+    ) -> Result<(), CxlTmatmulError> {
         if device_ptr == 0 {
             return Err(CxlTmatmulError::Device(format!(
                 "cuda_dax {label} destination pointer is null"
             )));
         }
-        let gpu = cuda_dax_gpu()?;
-        let stream = cuda_dax_stream()?;
-        self.check_cuda("cudaSetDevice", (self.cuda_set_device)(gpu))?;
+        self.check_cuda("cudaSetDevice", (self.cuda_set_device)(cuda.gpu))?;
         self.check_cuda(
             "cudaHostRegister",
             (self.cuda_host_register)(dax_host_base.cast(), map_len, CUDA_HOST_REGISTER_MAPPED),
@@ -2206,7 +2643,7 @@ impl CudaRuntime {
                 .add(cxl_offset)
                 .cast::<libc::c_void>();
             let dst = device_ptr as *mut libc::c_void;
-            let stream_ptr = stream as *mut libc::c_void;
+            let stream_ptr = cuda.stream as *mut libc::c_void;
             self.check_cuda(
                 "cudaMemcpyAsync",
                 (self.cuda_memcpy_async)(
@@ -2223,7 +2660,7 @@ impl CudaRuntime {
             )?;
             eprintln!(
                 "[CXL TMatmul] cuda_dax copied {} bytes={} gpu={} cxl_offset=0x{:x} stream=0x{:x}",
-                label, bytes, gpu, cxl_offset, stream
+                label, bytes, cuda.gpu, cxl_offset, cuda.stream
             );
             Ok(())
         })();
@@ -2619,6 +3056,24 @@ fn cuda_dax_device_stage(
     bytes: usize,
     cxl_offset: u64,
 ) -> Result<CudaDaxMatrixStage, CxlTmatmulError> {
+    cuda_dax_device_stage_on_stream(
+        device_ptr,
+        bytes,
+        cxl_offset,
+        CudaDaxContext {
+            gpu: cuda_dax_gpu()?,
+            stream: cuda_dax_stream()?,
+        },
+    )
+}
+
+#[cfg(unix)]
+fn cuda_dax_device_stage_on_stream(
+    device_ptr: usize,
+    bytes: usize,
+    cxl_offset: u64,
+    cuda: CudaDaxContext,
+) -> Result<CudaDaxMatrixStage, CxlTmatmulError> {
     if bytes == 0 {
         return Err(CxlTmatmulError::Device(
             "cuda_dax device staging requires non-zero bytes".to_string(),
@@ -2634,8 +3089,8 @@ fn cuda_dax_device_stage(
         bytes,
         dax_path: cxl_tmatmul_dax_path(),
         cxl_offset,
-        gpu: cuda_dax_gpu()?,
-        stream: cuda_dax_stream()?,
+        gpu: cuda.gpu,
+        stream: cuda.stream,
     })
 }
 
@@ -2923,6 +3378,145 @@ mod tests {
     ret;
 }
 "#;
+
+    #[test]
+    fn nvint4_wide_dma_fixed_layout_is_exact_and_disjoint() {
+        let layout = nvint4_fixed_layout().unwrap();
+
+        assert_eq!(layout.matrix, (0x0000_0000, 0x0010_0000));
+        assert_eq!(layout.input, (0x0040_0000, 0x0040_1000));
+        assert_eq!(layout.output, (0x0050_0000, 0x0050_4000));
+        assert_eq!(layout.program, (0x0060_0000, 0x0060_0080));
+        assert_eq!(layout.dax_len, 0x0060_0080);
+    }
+
+    #[test]
+    fn nvint4_wide_dma_is_armed_before_instruction_start() {
+        let writes = nvint4_launch_writes(TMATMUL_DPA_OUTPUT, NVINT4_OUTPUT_BYTES).unwrap();
+        assert_eq!(
+            writes,
+            vec![
+                (CSR_INST_WIDE_DMA_DST_LO, 0x0050_0000),
+                (CSR_INST_WIDE_DMA_DST_HI, 0),
+                (CSR_INST_WIDE_DMA_LEN, 16_384),
+                (CSR_INST_WIDE_DMA_START, 1),
+                (CSR_INST_INSTR_SRC_LO, 0x0060_0000),
+                (CSR_INST_INSTR_SRC_HI, 0),
+                (CSR_INST_INSTR_LEN, 128),
+                (CSR_INST_INSTR_START, 1),
+            ]
+        );
+    }
+
+    fn nvint4_complete_status() -> Nvint4HardwareStatus {
+        Nvint4HardwareStatus {
+            instruction_dma_status: DMA_DONE,
+            stall_status: 1,
+            wide_dma_status: DMA_DONE,
+            exec_status: 0,
+            instruction_count: 4,
+            ls_read_beats: 64,
+            tmatmul_read_beats: NVINT4_EXPECTED_TM_READ_BEATS,
+            elapsed_us: 10,
+        }
+    }
+
+    #[test]
+    fn nvint4_wide_dma_completion_requires_every_terminal_state() {
+        let complete = nvint4_complete_status();
+        assert!(nvint4_completion_error(&complete).is_none());
+        assert!(nvint4_is_complete(&complete));
+
+        for mut incomplete in [
+            Nvint4HardwareStatus {
+                instruction_dma_status: DMA_RUNNING,
+                ..complete.clone()
+            },
+            Nvint4HardwareStatus {
+                stall_status: 0,
+                ..complete.clone()
+            },
+            Nvint4HardwareStatus {
+                wide_dma_status: DMA_RUNNING,
+                ..complete.clone()
+            },
+        ] {
+            assert!(nvint4_completion_error(&incomplete).is_none());
+            assert!(!nvint4_is_complete(&incomplete));
+            incomplete.elapsed_us += 1;
+        }
+    }
+
+    #[test]
+    fn nvint4_wide_dma_errors_and_bad_execution_fail() {
+        for (status, expected) in [
+            (
+                Nvint4HardwareStatus {
+                    instruction_dma_status: DMA_ERROR,
+                    ..nvint4_complete_status()
+                },
+                "instruction DMA reported ERROR",
+            ),
+            (
+                Nvint4HardwareStatus {
+                    wide_dma_status: DMA_ERROR,
+                    ..nvint4_complete_status()
+                },
+                "wide DMA reported ERROR",
+            ),
+            (
+                Nvint4HardwareStatus {
+                    exec_status: 1,
+                    ..nvint4_complete_status()
+                },
+                "unsupported/illegal opcode",
+            ),
+        ] {
+            let error = nvint4_completion_error(&status).unwrap();
+            assert!(error.contains(expected), "unexpected error: {error}");
+            assert!(!nvint4_is_complete(&status));
+        }
+    }
+
+    #[test]
+    fn nvint4_wide_dma_requires_exact_tmatmul_read_beats() {
+        for beats in [0, 1, NVINT4_EXPECTED_TM_READ_BEATS - 1, 16_385] {
+            let status = Nvint4HardwareStatus {
+                tmatmul_read_beats: beats,
+                ..nvint4_complete_status()
+            };
+            let error = nvint4_completion_error(&status).unwrap();
+            assert!(
+                error.contains("tmatmul read beats"),
+                "unexpected error: {error}"
+            );
+            assert!(!nvint4_is_complete(&status));
+        }
+    }
+
+    #[test]
+    fn nvint4_wide_dma_requires_ready_memory_controller() {
+        assert!(mc_ready(0x1e));
+        assert!(!mc_ready(0x1f));
+        assert!(!mc_ready(0x00));
+        assert!(!mc_ready(0x02));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nvint4_wide_dma_explicit_cuda_context_is_preserved() {
+        let context = CudaDaxContext {
+            gpu: 3,
+            stream: 0x1234,
+        };
+        let stage =
+            cuda_dax_device_stage_on_stream(0x1000, 4096, TMATMUL_DPA_INPUT, context).unwrap();
+
+        assert_eq!(stage.source, CudaDaxSource::DevicePtr(0x1000));
+        assert_eq!(stage.gpu, 3);
+        assert_eq!(stage.stream, 0x1234);
+        assert_eq!(stage.cxl_offset, TMATMUL_DPA_INPUT);
+    }
 
     #[test]
     fn ptx_jit_requires_runtime_ptx_not_kernel_name() {

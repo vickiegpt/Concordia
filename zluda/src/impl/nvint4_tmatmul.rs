@@ -1,3 +1,4 @@
+use crate::r#impl::cxl_tmatmul::{self, CudaDaxContext, Nvint4HardwareStatus};
 use crate::r#impl::nvidia_runtime_sys;
 use cuda_types::cuda::{CUdevice, CUdeviceptr_v2, CUfunction, CUmodule, CUstream};
 use std::collections::HashMap;
@@ -6,6 +7,8 @@ use std::ptr;
 use std::sync::{Mutex, OnceLock};
 
 const NVINT4_DIM: u32 = 2048;
+const NVINT4_INPUT_BYTES: usize = NVINT4_DIM as usize * 2;
+const NVINT4_OUTPUT_BYTES: usize = NVINT4_DIM as usize * 8;
 const CONVERTER_THREADS: u32 = 256;
 const CONVERTER_PTX: &str = include_str!("nvint4_to_packed_ternary.ptx");
 const CONVERTER_NAME: &str = "nvint4_to_packed_ternary";
@@ -328,6 +331,32 @@ pub(crate) unsafe fn convert(
         cuda_device: device,
         stream,
     })
+}
+
+pub(crate) unsafe fn execute_hardware(
+    launch: Nvint4Launch,
+    timeout_ms: u32,
+) -> Result<Nvint4HardwareStatus, String> {
+    validate_cuda_allocation(launch.input_q8_8, NVINT4_INPUT_BYTES, "input_q8_8")?;
+    validate_cuda_allocation(launch.output_s64, NVINT4_OUTPUT_BYTES, "output_s64")?;
+    let converted = convert(
+        launch.packed_weights,
+        launch.dim,
+        launch.delta,
+        launch.stream,
+    )?;
+    cxl_tmatmul::submit_nvint4_packed_hardware_from_device_ptrs(
+        converted.device_ptr,
+        launch.input_q8_8,
+        launch.output_s64,
+        launch.dim,
+        CudaDaxContext {
+            gpu: converted.cuda_device,
+            stream: launch.stream.0 as usize,
+        },
+        timeout_ms,
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[no_mangle]
