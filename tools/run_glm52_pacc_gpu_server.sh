@@ -12,6 +12,7 @@ CTX="${CTX:-1024}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 UBATCH_SIZE="${UBATCH_SIZE:-32}"
 GPU_LAYERS="${GPU_LAYERS:-3}"
+TENSOR_OVERRIDE="${TENSOR_OVERRIDE:-}"
 THREADS="${THREADS:-32}"
 THREADS_BATCH="${THREADS_BATCH:-${THREADS}}"
 POLL="${POLL:-100}"
@@ -164,6 +165,11 @@ export HETGPU_PACC_GEMM_TRACE="${HETGPU_PACC_GEMM_TRACE:-0}"
 
 echo "starting GLM-5.2 server at http://${HOST}:${PORT}"
 echo "parallel=${PARALLEL} gpu_layers=${GPU_LAYERS} threads=${THREADS}/${THREADS_BATCH} batch=${BATCH_SIZE} ubatch=${UBATCH_SIZE}"
+tensor_override_args=()
+if [[ -n "$TENSOR_OVERRIDE" ]]; then
+    tensor_override_args+=(--override-tensor "$TENSOR_OVERRIDE")
+    echo "tensor_override=${TENSOR_OVERRIDE}"
+fi
 echo "logs=${LOG_DIR}"
 
 cpu_wait_args=()
@@ -174,6 +180,7 @@ fi
 set +e
 "$LLAMA_BIN" \
     -m "$MODEL" --gpu-layers "$GPU_LAYERS" \
+    "${tensor_override_args[@]}" \
     --host "$HOST" --port "$PORT" \
     --ctx-size "$CTX" --parallel "$PARALLEL" \
     --threads "$THREADS" --threads-batch "$THREADS_BATCH" \
