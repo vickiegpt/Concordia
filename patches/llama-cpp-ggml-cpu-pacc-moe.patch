@@ -1,0 +1,521 @@
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -36,0 +37,5 @@
++#if defined(__linux__)
++#include <fcntl.h>
++#include <pthread.h>
++#include <unistd.h>
++#endif
+@@ -1166,0 +1172,6 @@
++    int transa, int transb, int m, int n, int k,
++    const void * alpha, const void * a, int atype, int lda, int64_t stride_a,
++    const void * b, int btype, int ldb, int64_t stride_b,
++    const void * beta, void * c, int ctype, int ldc, int64_t stride_c,
++    int batch_count, int compute_type);
++extern int hetgpu_pacc_submit_gemm(
+@@ -1841,0 +1853,486 @@
++}
++
++#ifdef GGML_USE_PACC_RUNTIME
++#if defined(__linux__)
++struct ggml_cpu_pacc_iq1s_batch_worker {
++    int m;
++    int n;
++    int k;
++    int lda;
++    int ldb;
++    int ldc;
++    int batch_count;
++    int64_t stride_a;
++    int64_t stride_c;
++    int compute_type;
++    uint64_t a_addr;
++    uint64_t b_addr;
++    uint64_t c_addr;
++    int rc;
++};
++
++static void * ggml_cpu_pacc_iq1s_batch_worker_main(void * opaque) {
++    struct ggml_cpu_pacc_iq1s_batch_worker * worker =
++        (struct ggml_cpu_pacc_iq1s_batch_worker *) opaque;
++    worker->rc = hetgpu_pacc_submit_gemm(
++        0, 0, worker->m, worker->n, worker->k,
++        NULL,
++        (const void *) (uintptr_t) worker->a_addr, 5, worker->lda, worker->stride_a,
++        (const void *) (uintptr_t) worker->b_addr, 5, worker->ldb, -1,
++        NULL,
++        (void *) (uintptr_t) worker->c_addr, 4, worker->ldc, worker->stride_c,
++        worker->batch_count, worker->compute_type);
++    return NULL;
++}
++
++static int ggml_cpu_pacc_try_mul_mat_id_iq1s_batch(
++        struct ggml_tensor * dst,
++        const int64_t * matrix_row_counts,
++        const struct mmid_row_mapping * matrix_rows,
++        int64_t active_as_count,
++        const int32_t * active_as,
++        int64_t max_rows) {
++    const struct ggml_tensor * src0 = dst->src[0];
++    const struct ggml_tensor * src1 = dst->src[1];
++    const struct ggml_tensor * ids  = dst->src[2];
++    if (src0->type != GGML_TYPE_IQ1_S ||
++        !ggml_cpu_pacc_env_enabled("HETGPU_LLAMA_CPU_PACC_IQ1S_BATCH", true)) {
++        return -1;
++    }
++
++    GGML_TENSOR_BINARY_OP_LOCALS
++
++    const int tile_m = 32;
++    const int max_workers = 4;
++    const size_t quant_weight_row_bytes = ggml_row_size(src0->type, ne00);
++    if (ne00 <= 0 || ne01 <= 0 || ne00 > INT_MAX || ne01 > INT_MAX ||
++        ne01 % tile_m != 0 || max_rows <= 0 || max_rows > INT_MAX ||
++        nb01 != quant_weight_row_bytes || nb10 != sizeof(float) ||
++        nb0 != sizeof(float)) {
++        return -1;
++    }
++    if ((size_t) ne00 > SIZE_MAX / (size_t) max_rows ||
++        (size_t) ne01 > SIZE_MAX / (size_t) max_rows ||
++        (size_t) ne00 > SIZE_MAX / (size_t) ne01) {
++        return -1;
++    }
++
++    const size_t weight_elems = (size_t) ne00 * (size_t) ne01;
++    const size_t input_elems = (size_t) ne00 * (size_t) max_rows;
++    const size_t output_elems = (size_t) ne01 * (size_t) max_rows;
++    const size_t weight_bytes = weight_elems * sizeof(ggml_bf16_t);
++    if (weight_elems > SIZE_MAX / sizeof(float) ||
++        input_elems > SIZE_MAX / sizeof(float) ||
++        output_elems > SIZE_MAX / sizeof(float)) {
++        return -1;
++    }
++
++    const struct ggml_type_traits * traits = ggml_get_type_traits(src0->type);
++    if (!traits || !traits->to_float) {
++        return -1;
++    }
++    float * weight_f32 = (float *) malloc(weight_elems * sizeof(float));
++    ggml_bf16_t * weight_bf16 =
++        (ggml_bf16_t *) malloc(weight_elems * sizeof(ggml_bf16_t));
++    float * input = (float *) malloc(input_elems * sizeof(float));
++    ggml_bf16_t * input_bf16 =
++        (ggml_bf16_t *) malloc(input_elems * sizeof(ggml_bf16_t));
++    float * output = (float *) malloc(output_elems * sizeof(float));
++    const int row_tasks = (int) (ne01 / tile_m);
++    const size_t tile_output_elems =
++        (size_t) row_tasks * (size_t) tile_m * (size_t) max_rows;
++    float * tile_output = (float *) malloc(tile_output_elems * sizeof(float));
++    if (!weight_f32 || !weight_bf16 || !input || !input_bf16 ||
++        !output || !tile_output) {
++        free(tile_output);
++        free(output);
++        free(input_bf16);
++        free(input);
++        free(weight_bf16);
++        free(weight_f32);
++        return -1;
++    }
++
++    static pthread_mutex_t stage_mutex = PTHREAD_MUTEX_INITIALIZER;
++    static int shared_fd = -1;
++    int result = -1;
++    uint64_t dequant_us = 0;
++    uint64_t stage_us = 0;
++    uint64_t submit_us = 0;
++    uint64_t readback_us = 0;
++    const uint64_t total_start_us = ggml_time_us();
++    pthread_mutex_lock(&stage_mutex);
++
++    if (shared_fd < 0) {
++        const char * path = getenv("HETGPU_PACC_IQ1S_COH_DEV");
++        if (!path || path[0] == '\0') {
++            path = "/dev/hetgpu_pacc_mbox_ddr_coh0";
++        }
++        shared_fd = open(path, O_RDWR | O_SYNC);
++    }
++    if (shared_fd < 0) {
++        goto done;
++    }
++
++    const char * base_env = getenv("HETGPU_PACC_SHARED_DDR_BASE");
++    const char * user_env = getenv("HETGPU_PACC_SHARED_DDR_USER_OFF");
++    const char * weight_env = getenv("HETGPU_PACC_IQ1S_WEIGHT_OFF");
++    const char * scratch_env = getenv("HETGPU_PACC_IQ1S_SCRATCH_OFF");
++    const char * bytes_env = getenv("HETGPU_PACC_SHARED_DDR_BYTES");
++    const uint64_t base = base_env ? strtoull(base_env, NULL, 0) : 0x20110600000ULL;
++    const uint64_t user_off = user_env ? strtoull(user_env, NULL, 0) : 0x100000ULL;
++    const uint64_t weight_off = weight_env ? strtoull(weight_env, NULL, 0) : 0x01000000ULL;
++    const uint64_t scratch_off = scratch_env ? strtoull(scratch_env, NULL, 0) : 0xf0000000ULL;
++    const uint64_t shared_bytes = bytes_env ? strtoull(bytes_env, NULL, 0) : 0x100000000ULL;
++    const uint64_t input_bytes =
++        (uint64_t) input_elems * sizeof(ggml_bf16_t);
++    const uint64_t output_bytes = (uint64_t) tile_output_elems * sizeof(float);
++    const uint64_t output_off = (scratch_off + input_bytes + 63) & ~63ULL;
++    if (base == 0 || weight_off + weight_bytes > scratch_off ||
++        output_off + output_bytes > shared_bytes) {
++        goto done;
++    }
++
++    for (int64_t ia = 0; ia < active_as_count; ++ia) {
++        const int cur_a = active_as[ia];
++        const int64_t rows = matrix_row_counts[cur_a];
++        if (rows <= 0) {
++            continue;
++        }
++        const struct mmid_row_mapping * expert_rows =
++            matrix_rows + (size_t) cur_a * ids->ne[0] * ids->ne[1];
++        for (int64_t col = 0; col < rows; ++col) {
++            const int id = expert_rows[col].i1;
++            const int64_t token = expert_rows[col].i2;
++            if (id < 0 || id >= ne1 || token < 0 || token >= ne12 || ne11 <= 0) {
++                goto done;
++            }
++            const int64_t input_col = id % ne11;
++            memcpy(input + (size_t) col * ne00,
++                   (const char *) src1->data + (size_t) token * nb12 +
++                       (size_t) input_col * nb11,
++                   (size_t) ne00 * sizeof(float));
++        }
++
++        const void * weight =
++            (const char *) src0->data + (size_t) cur_a * nb02;
++        uint64_t phase_start_us = ggml_time_us();
++        traits->to_float(weight, weight_f32, (int64_t) weight_elems);
++        ggml_cpu_fp32_to_bf16(
++            weight_f32, weight_bf16, (int64_t) weight_elems);
++        for (int64_t kk = 0; kk < ne00; ++kk) {
++            for (int64_t col = 0; col < rows; ++col) {
++                input_bf16[(size_t) kk * rows + col] =
++                    GGML_FP32_TO_BF16(input[(size_t) col * ne00 + kk]);
++            }
++        }
++        dequant_us += ggml_time_us() - phase_start_us;
++        phase_start_us = ggml_time_us();
++        if (pwrite(shared_fd, weight_bf16, weight_bytes,
++                   (off_t) (user_off + weight_off)) !=
++                (ssize_t) weight_bytes ||
++            pwrite(shared_fd, input_bf16, (size_t) input_bytes,
++                   (off_t) (user_off + scratch_off)) != (ssize_t) input_bytes) {
++            goto done;
++        }
++        memset(tile_output, 0, (size_t) output_bytes);
++        if (pwrite(shared_fd, tile_output, (size_t) output_bytes,
++                   (off_t) (user_off + output_off)) != (ssize_t) output_bytes) {
++            goto done;
++        }
++        stage_us += ggml_time_us() - phase_start_us;
++
++        const int worker_count = MIN(max_workers, row_tasks);
++        pthread_t threads[max_workers];
++        struct ggml_cpu_pacc_iq1s_batch_worker workers[max_workers];
++        int created = 0;
++        const uintptr_t source_id = (uintptr_t) weight;
++        const uint32_t cache_tag =
++            (uint32_t) (((source_id >> 4) ^ (source_id >> 32)) & 0x007fffffU);
++        const int compute_type = (int) (4U | (cache_tag << 8));
++        phase_start_us = ggml_time_us();
++        for (int worker = 0; worker < worker_count; ++worker) {
++            const int base_tasks = row_tasks / worker_count;
++            const int extra_tasks = row_tasks % worker_count;
++            const int task_count = base_tasks + (worker < extra_tasks ? 1 : 0);
++            const int task_begin =
++                worker * base_tasks + (worker < extra_tasks ? worker : extra_tasks);
++            const int row_begin = task_begin * tile_m;
++            workers[worker] = (struct ggml_cpu_pacc_iq1s_batch_worker) {
++                .m = tile_m,
++                .n = (int) rows,
++                .k = (int) ne00,
++                .lda = (int) ne00,
++                .ldb = (int) rows,
++                .ldc = (int) rows,
++                .batch_count = task_count,
++                .stride_a = (int64_t) tile_m * ne00,
++                .stride_c = (int64_t) tile_m * rows,
++                .compute_type = compute_type,
++                .a_addr = base + weight_off +
++                    (uint64_t) row_begin * ne00 * sizeof(ggml_bf16_t),
++                .b_addr = base + scratch_off,
++                .c_addr = base + output_off +
++                    (uint64_t) task_begin * tile_m * rows * sizeof(float),
++                .rc = -1,
++            };
++            if (pthread_create(&threads[worker], NULL,
++                               ggml_cpu_pacc_iq1s_batch_worker_main,
++                               &workers[worker]) != 0) {
++                break;
++            }
++            ++created;
++        }
++        for (int worker = 0; worker < created; ++worker) {
++            pthread_join(threads[worker], NULL);
++        }
++        if (created != worker_count) {
++            goto done;
++        }
++        for (int worker = 0; worker < worker_count; ++worker) {
++            if (workers[worker].rc != 0) {
++                goto done;
++            }
++        }
++        submit_us += ggml_time_us() - phase_start_us;
++
++        phase_start_us = ggml_time_us();
++        if (pread(shared_fd, tile_output, (size_t) output_bytes,
++                  (off_t) (user_off + output_off)) != (ssize_t) output_bytes) {
++            goto done;
++        }
++        for (int task = 0; task < row_tasks; ++task) {
++            const float * tile =
++                tile_output + (size_t) task * tile_m * rows;
++            const int row_begin = task * tile_m;
++            for (int64_t col = 0; col < rows; ++col) {
++                for (int row = 0; row < tile_m; ++row) {
++                    output[(size_t) col * ne01 + row_begin + row] =
++                        tile[(size_t) row * rows + col];
++                }
++            }
++        }
++        for (int64_t col = 0; col < rows; ++col) {
++            const int id = expert_rows[col].i1;
++            const int64_t token = expert_rows[col].i2;
++            memcpy((char *) dst->data + (size_t) token * nb2 + (size_t) id * nb1,
++                   output + (size_t) col * ne01,
++                   (size_t) ne01 * sizeof(float));
++        }
++        readback_us += ggml_time_us() - phase_start_us;
++    }
++    result = 0;
++
++done:
++    pthread_mutex_unlock(&stage_mutex);
++    if (ggml_cpu_pacc_env_enabled("HETGPU_LLAMA_CPU_PACC_TRACE", false)) {
++        static atomic_int trace_count;
++        const int trace_id = atomic_fetch_add_explicit(&trace_count, 1, memory_order_relaxed);
++        if (trace_id < ggml_cpu_pacc_env_i32("HETGPU_LLAMA_CPU_PACC_TRACE_LIMIT", 32)) {
++            fprintf(stderr,
++                    "[HETGPU CPU PACC] iq1s_bf16_batch name=%s experts=%" PRId64
++                    " m=%" PRId64 " max_n=%" PRId64 " k=%" PRId64
++                    " submits_per_expert=%d rc=%d total_ms=%.3f"
++                    " dequant_ms=%.3f stage_ms=%.3f submit_ms=%.3f"
++                    " readback_ms=%.3f\n",
++                    src0->name, active_as_count, ne01, max_rows, ne00,
++                    MIN(max_workers, row_tasks), result,
++                    (ggml_time_us() - total_start_us) / 1000.0,
++                    dequant_us / 1000.0, stage_us / 1000.0,
++                    submit_us / 1000.0, readback_us / 1000.0);
++        }
++    }
++    free(tile_output);
++    free(output);
++    free(input_bf16);
++    free(input);
++    free(weight_bf16);
++    free(weight_f32);
++    return result;
++}
++#endif
++
++static int ggml_cpu_pacc_try_mul_mat_id(
++        struct ggml_tensor * dst,
++        const int64_t * matrix_row_counts,
++        const struct mmid_row_mapping * matrix_rows,
++        int64_t active_as_count,
++        const int32_t * active_as) {
++    if (!ggml_cpu_pacc_env_enabled("HETGPU_LLAMA_CPU_PACC_MUL_MAT_ID", false)) {
++        return -1;
++    }
++
++    const struct ggml_tensor * src0 = dst->src[0];
++    const struct ggml_tensor * src1 = dst->src[1];
++    const struct ggml_tensor * ids  = dst->src[2];
++    const char * tensor_filter = getenv("HETGPU_LLAMA_CPU_PACC_TENSOR_FILTER");
++    if (tensor_filter && tensor_filter[0] != '\0' &&
++        strstr(src0->name, tensor_filter) == NULL) {
++        return -1;
++    }
++
++    GGML_TENSOR_BINARY_OP_LOCALS
++
++    if (src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32 ||
++        nb10 != sizeof(float) || nb0 != sizeof(float) ||
++        ne00 <= 0 || ne01 <= 0 || active_as_count <= 0 ||
++        ne00 > INT_MAX || ne01 > INT_MAX) {
++        return -1;
++    }
++
++    const int64_t min_m = ggml_cpu_pacc_env_i32("HETGPU_LLAMA_CPU_PACC_MIN_M", 512);
++    const int64_t min_k = ggml_cpu_pacc_env_i32("HETGPU_LLAMA_CPU_PACC_MIN_K", 512);
++    if (ne01 < min_m || ne00 < min_k) {
++        return -1;
++    }
++    const int64_t max_active_experts =
++        ggml_cpu_pacc_env_i32("HETGPU_LLAMA_CPU_PACC_MAX_ACTIVE_EXPERTS", 16);
++    if (max_active_experts > 0 && active_as_count > max_active_experts) {
++        if (ggml_cpu_pacc_env_enabled("HETGPU_LLAMA_CPU_PACC_TRACE", false)) {
++            static atomic_int reject_trace_count;
++            const int trace_id =
++                atomic_fetch_add_explicit(&reject_trace_count, 1, memory_order_relaxed);
++            if (trace_id < ggml_cpu_pacc_env_i32("HETGPU_LLAMA_CPU_PACC_TRACE_LIMIT", 32)) {
++                fprintf(stderr,
++                        "[HETGPU CPU PACC] reject mul_mat_id name=%s active_experts=%" PRId64
++                        " limit=%" PRId64 " ids=%" PRId64 "x%" PRId64
++                        " src1_cols=%" PRId64 "\n",
++                        src0->name, active_as_count, max_active_experts,
++                        ids->ne[0], ids->ne[1], ne11);
++            }
++        }
++        return -1;
++    }
++
++    int64_t max_rows = 0;
++    for (int64_t ia = 0; ia < active_as_count; ++ia) {
++        max_rows = MAX(max_rows, matrix_row_counts[active_as[ia]]);
++    }
++    const int max_n = ggml_cpu_pacc_env_i32("HETGPU_LLAMA_CPU_PACC_MMID_MAX_N", 16);
++    if (max_n <= 0 || max_rows <= 0 || max_rows > max_n || max_rows > INT_MAX) {
++        return -1;
++    }
++
++#if defined(__linux__)
++    if (src0->type == GGML_TYPE_IQ1_S) {
++        const int iq1s_rc = ggml_cpu_pacc_try_mul_mat_id_iq1s_batch(
++            dst, matrix_row_counts, matrix_rows, active_as_count, active_as, max_rows);
++        if (iq1s_rc == 0) {
++            return 0;
++        }
++    }
++#endif
++
++    if ((size_t) ne00 > SIZE_MAX / (size_t) ne01 ||
++        (size_t) ne00 > SIZE_MAX / (size_t) max_rows ||
++        (size_t) ne01 > SIZE_MAX / (size_t) max_rows) {
++        return -1;
++    }
++    const size_t weight_elems = (size_t) ne00 * (size_t) ne01;
++    const size_t input_elems = (size_t) ne00 * (size_t) max_rows;
++    const size_t output_elems = (size_t) ne01 * (size_t) max_rows;
++    if (weight_elems > SIZE_MAX / sizeof(float) ||
++        weight_elems > SIZE_MAX / sizeof(ggml_bf16_t) ||
++        input_elems > SIZE_MAX / sizeof(float) ||
++        output_elems > SIZE_MAX / sizeof(float)) {
++        return -1;
++    }
++
++    float * weight_f32 = NULL;
++    ggml_bf16_t * weight_bf16 = NULL;
++    float * input = (float *) malloc(input_elems * sizeof(float));
++    float * output = (float *) malloc(output_elems * sizeof(float));
++    const struct ggml_type_traits * traits = ggml_get_type_traits(src0->type);
++    const bool convert_weight = src0->type != GGML_TYPE_BF16;
++    if (convert_weight) {
++        if (!traits || !traits->to_float) {
++            free(output);
++            free(input);
++            return -1;
++        }
++        weight_f32 = (float *) malloc(weight_elems * sizeof(float));
++        weight_bf16 = (ggml_bf16_t *) malloc(weight_elems * sizeof(ggml_bf16_t));
++    }
++    if (!input || !output || (convert_weight && (!weight_f32 || !weight_bf16))) {
++        free(weight_bf16);
++        free(weight_f32);
++        free(output);
++        free(input);
++        return -1;
++    }
++
++    const float alpha = 1.0f;
++    const float beta = 0.0f;
++    int result = 0;
++    for (int64_t ia = 0; ia < active_as_count && result == 0; ++ia) {
++        const int cur_a = active_as[ia];
++        const int64_t rows = matrix_row_counts[cur_a];
++        if (rows <= 0) {
++            continue;
++        }
++
++        const void * weight = (const char *) src0->data + (size_t) cur_a * nb02;
++        const void * pacc_weight = weight;
++        if (convert_weight) {
++            traits->to_float(weight, weight_f32, (int64_t) weight_elems);
++            ggml_cpu_fp32_to_bf16(weight_f32, weight_bf16, (int64_t) weight_elems);
++            pacc_weight = weight_bf16;
++        }
++
++        const struct mmid_row_mapping * expert_rows =
++            matrix_rows + (size_t) cur_a * ids->ne[0] * ids->ne[1];
++        for (int64_t col = 0; col < rows; ++col) {
++            const int id = expert_rows[col].i1;
++            const int64_t token = expert_rows[col].i2;
++            if (id < 0 || id >= ne1 || token < 0 || token >= ne12 || ne11 <= 0) {
++                result = -1;
++                break;
++            }
++            const int64_t input_col = id % ne11;
++            memcpy(input + (size_t) col * ne00,
++                   (const char *) src1->data + (size_t) token * nb12 + (size_t) input_col * nb11,
++                   (size_t) ne00 * sizeof(float));
++        }
++        if (result != 0) {
++            break;
++        }
++
++        result = hetgpu_pacc_submit_gemm_mmvf_small_n(
++            1, 0, (int) ne01, (int) rows, (int) ne00,
++            &alpha,
++            pacc_weight, 5, (int) ne00, 0,
++            input, 4, (int) ne00, 0,
++            &beta,
++            output, 4, (int) ne01, 0,
++            1, 4);
++        if (result != 0) {
++            break;
++        }
++
++        for (int64_t col = 0; col < rows; ++col) {
++            const int id = expert_rows[col].i1;
++            const int64_t token = expert_rows[col].i2;
++            memcpy((char *) dst->data + (size_t) token * nb2 + (size_t) id * nb1,
++                   output + (size_t) col * ne01,
++                   (size_t) ne01 * sizeof(float));
++        }
++    }
++
++    if (ggml_cpu_pacc_env_enabled("HETGPU_LLAMA_CPU_PACC_TRACE", false)) {
++        static atomic_int trace_count;
++        const int trace_id = atomic_fetch_add_explicit(&trace_count, 1, memory_order_relaxed);
++        if (trace_id < ggml_cpu_pacc_env_i32("HETGPU_LLAMA_CPU_PACC_TRACE_LIMIT", 32)) {
++            fprintf(stderr,
++                    "[HETGPU CPU PACC] mul_mat_id name=%s type=%s experts=%" PRId64
++                    " ids=%" PRId64 "x%" PRId64 " src1_cols=%" PRId64
++                    " m=%" PRId64 " max_n=%" PRId64 " k=%" PRId64 " rc=%d\n",
++                    src0->name, ggml_type_name(src0->type), active_as_count,
++                    ids->ne[0], ids->ne[1], ne11, ne01, max_rows, ne00, result);
++        }
++    }
++
++    free(weight_bf16);
++    free(weight_f32);
++    free(output);
++    free(input);
++    return result;
+@@ -1842,0 +2340 @@
++#endif
+@@ -1970,0 +2469,16 @@
++#ifdef GGML_USE_PACC_RUNTIME
++    if (ggml_cpu_pacc_env_enabled("HETGPU_LLAMA_CPU_PACC_MUL_MAT_ID", false)) {
++        if (ith == 0) {
++            const int rc = ggml_cpu_pacc_try_mul_mat_id(
++                dst, matrix_row_counts, matrix_rows, *active_as_count, active_as);
++            atomic_store_explicit(&params->threadpool->current_chunk,
++                                  rc == 0 ? 1 : 0, memory_order_release);
++        }
++        ggml_barrier(params->threadpool);
++        if (atomic_load_explicit(&params->threadpool->current_chunk,
++                                 memory_order_acquire) == 1) {
++            return;
++        }
++    }
++#endif
++

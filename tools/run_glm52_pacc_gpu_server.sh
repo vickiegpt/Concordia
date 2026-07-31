@@ -11,8 +11,14 @@ PARALLEL="${PARALLEL:-1}"
 CTX="${CTX:-1024}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 UBATCH_SIZE="${UBATCH_SIZE:-32}"
-GPU_LAYERS="${GPU_LAYERS:-3}"
-TENSOR_OVERRIDE="${TENSOR_OVERRIDE:-}"
+SPLIT_ATTN_GPU_FFN_PACC="${SPLIT_ATTN_GPU_FFN_PACC:-0}"
+if [[ "$SPLIT_ATTN_GPU_FFN_PACC" == "1" ]]; then
+    GPU_LAYERS="${GPU_LAYERS:-80}"
+    TENSOR_OVERRIDE="${TENSOR_OVERRIDE:-^blk\.[0-9]+\.ffn_.*=CPU}"
+else
+    GPU_LAYERS="${GPU_LAYERS:-3}"
+    TENSOR_OVERRIDE="${TENSOR_OVERRIDE:-}"
+fi
 THREADS="${THREADS:-32}"
 THREADS_BATCH="${THREADS_BATCH:-${THREADS}}"
 POLL="${POLL:-100}"
@@ -140,7 +146,12 @@ export HETGPU_PACC_IQ1S_FILTER_K="${HETGPU_PACC_IQ1S_FILTER_K:-6144}"
 export HETGPU_PACC_IQ1S_CPU_FALLBACK="${HETGPU_PACC_IQ1S_CPU_FALLBACK:-0}"
 export HETGPU_PACC_IQ1S_CPU_THREADS="${HETGPU_PACC_IQ1S_CPU_THREADS:-32}"
 
-export HETGPU_PACC_VISIBLE_DEVICES="${HETGPU_PACC_VISIBLE_DEVICES:-0}"
+if [[ "$SPLIT_ATTN_GPU_FFN_PACC" == "1" ]]; then
+    pacc_visible_default="0,1,2,3"
+else
+    pacc_visible_default="0"
+fi
+export HETGPU_PACC_VISIBLE_DEVICES="${HETGPU_PACC_VISIBLE_DEVICES:-$pacc_visible_default}"
 export HETGPU_PACC_GEMM_DEVICES="${HETGPU_PACC_GEMM_DEVICES:-0,1,2,3}"
 export HETGPU_PACC_MBOX_DEVICE='/dev/hetgpu_pacc_mbox_ddr_coh{}'
 export HETGPU_PACC_MAILBOX_DEVICE='/dev/hetgpu_pacc_mbox_live{}'
@@ -151,7 +162,11 @@ export HETGPU_PACC_JOBD_BOOTSTRAP=0
 export HETGPU_PACC_SHARED_DDR_BASE=0x20110600000
 export HETGPU_PACC_SHARED_DDR_PACC_BASE=0x20110600000
 export HETGPU_PACC_SHARED_DDR_USER_OFF=0x100000
+export HETGPU_PACC_SHARED_DDR_PAYLOAD_BASE_OFF="${HETGPU_PACC_SHARED_DDR_PAYLOAD_BASE_OFF:-0x100000}"
 export HETGPU_PACC_SHARED_DDR_BYTES=0x100000000
+export HETGPU_PACC_SHARED_DDR_MMAP="${HETGPU_PACC_SHARED_DDR_MMAP:-1}"
+export HETGPU_PACC_SHARED_DDR_CONTROL_MMAP="${HETGPU_PACC_SHARED_DDR_CONTROL_MMAP:-1}"
+export HETGPU_PACC_SHARED_DDR_NO_HELPER="${HETGPU_PACC_SHARED_DDR_NO_HELPER:-0}"
 export HETGPU_PACC_IQ1S_COH_DEV=/dev/hetgpu_pacc_mbox_ddr_coh0
 export HETGPU_PACC_IQ1S_WEIGHT_OFF=0x01000000
 export HETGPU_PACC_IQ1S_SCRATCH_OFF=0xf0000000
@@ -163,8 +178,37 @@ export HETGPU_PACC_IQ1S_WORKERS="${HETGPU_PACC_IQ1S_WORKERS:-4}"
 export HETGPU_PACC_ALLOW_HOST_GEMM_FALLBACK="${HETGPU_PACC_ALLOW_HOST_GEMM_FALLBACK:-0}"
 export HETGPU_PACC_GEMM_TRACE="${HETGPU_PACC_GEMM_TRACE:-0}"
 
+# The deployed XSFMM firmware accepts at most 32 output rows per MMVF
+# submission. The runtime distributes the resulting row tiles across all
+# configured PACC devices and verifies both completion and output visibility.
+export HETGPU_PACC_GEMM_MMVF_ROUTE_MAX_N="${HETGPU_PACC_GEMM_MMVF_ROUTE_MAX_N:-16}"
+export HETGPU_PACC_GEMM_MMVF_MAX_N="${HETGPU_PACC_GEMM_MMVF_MAX_N:-16}"
+export HETGPU_PACC_MMVF_MAX_M="${HETGPU_PACC_MMVF_MAX_M:-32}"
+export HETGPU_PACC_MMVF_PARALLEL_MIN_M="${HETGPU_PACC_MMVF_PARALLEL_MIN_M:-32}"
+export HETGPU_PACC_GEMM_WORKERS="${HETGPU_PACC_GEMM_WORKERS:-4}"
+export HETGPU_PACC_GEMM_WEIGHT_ARENA="${HETGPU_PACC_GEMM_WEIGHT_ARENA:-0}"
+export HETGPU_PACC_MMVF_BATCH_WAIT_COMPLETION="${HETGPU_PACC_MMVF_BATCH_WAIT_COMPLETION:-1}"
+export HETGPU_PACC_MMVF_COLLECT_WAIT_OUTPUT="${HETGPU_PACC_MMVF_COLLECT_WAIT_OUTPUT:-1}"
+export HETGPU_PACC_MMVF_OUTPUT_TIMEOUT_MS="${HETGPU_PACC_MMVF_OUTPUT_TIMEOUT_MS:-30000}"
+
+# With FFN tensors assigned to the CPU backend, this hook redirects
+# GGML_OP_MUL_MAT_ID (MoE expert GEMV) to the four-PACC MMVF path.
+export HETGPU_LLAMA_CPU_PACC_MUL_MAT_ID="${HETGPU_LLAMA_CPU_PACC_MUL_MAT_ID:-$SPLIT_ATTN_GPU_FFN_PACC}"
+# The deployed XSFMM ABI accepts BF16/F16 matrices. IQ1_S experts are
+# dequantized one active expert at a time, then submitted as four compact
+# row-major batches of 32-row tiles.
+export HETGPU_LLAMA_CPU_PACC_IQ1S_BATCH="${HETGPU_LLAMA_CPU_PACC_IQ1S_BATCH:-1}"
+export HETGPU_LLAMA_CPU_PACC_TENSOR_FILTER="${HETGPU_LLAMA_CPU_PACC_TENSOR_FILTER:-ffn_}"
+export HETGPU_LLAMA_CPU_PACC_MMID_MAX_N="${HETGPU_LLAMA_CPU_PACC_MMID_MAX_N:-16}"
+export HETGPU_LLAMA_CPU_PACC_MAX_ACTIVE_EXPERTS="${HETGPU_LLAMA_CPU_PACC_MAX_ACTIVE_EXPERTS:-16}"
+export HETGPU_LLAMA_CPU_PACC_MIN_M="${HETGPU_LLAMA_CPU_PACC_MIN_M:-512}"
+export HETGPU_LLAMA_CPU_PACC_MIN_K="${HETGPU_LLAMA_CPU_PACC_MIN_K:-512}"
+export HETGPU_LLAMA_CPU_PACC_TRACE="${HETGPU_LLAMA_CPU_PACC_TRACE:-0}"
+export HETGPU_LLAMA_CPU_PACC_TRACE_LIMIT="${HETGPU_LLAMA_CPU_PACC_TRACE_LIMIT:-32}"
+
 echo "starting GLM-5.2 server at http://${HOST}:${PORT}"
 echo "parallel=${PARALLEL} gpu_layers=${GPU_LAYERS} threads=${THREADS}/${THREADS_BATCH} batch=${BATCH_SIZE} ubatch=${UBATCH_SIZE}"
+echo "split_attention_gpu_ffn_pacc=${SPLIT_ATTN_GPU_FFN_PACC}"
 tensor_override_args=()
 if [[ -n "$TENSOR_OVERRIDE" ]]; then
     tensor_override_args+=(--override-tensor "$TENSOR_OVERRIDE")
@@ -176,6 +220,10 @@ cpu_wait_args=()
 if [[ -n "$POLL" ]]; then
     cpu_wait_args+=(--poll "$POLL")
 fi
+warmup_args=()
+if [[ "${NO_WARMUP:-0}" == "1" ]]; then
+    warmup_args+=(--no-warmup)
+fi
 
 set +e
 "$LLAMA_BIN" \
@@ -185,6 +233,7 @@ set +e
     --ctx-size "$CTX" --parallel "$PARALLEL" \
     --threads "$THREADS" --threads-batch "$THREADS_BATCH" \
     "${cpu_wait_args[@]}" \
+    "${warmup_args[@]}" \
     --cont-batching --batch-size "$BATCH_SIZE" --ubatch-size "$UBATCH_SIZE" \
     --checkpoint-min-step "${CHECKPOINT_MIN_STEP:-16}" \
     --cache-ram "${CACHE_RAM_MIB:-8192}" --kv-unified \
