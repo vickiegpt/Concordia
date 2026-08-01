@@ -13,7 +13,7 @@
 +    const void * beta, void * c, int ctype, int ldc, int64_t stride_c,
 +    int batch_count, int compute_type);
 +extern int hetgpu_pacc_submit_gemm(
-@@ -1841,0 +1853,486 @@
+@@ -1841,0 +1853,33 @@
 +}
 +
 +#ifdef GGML_USE_PACC_RUNTIME
@@ -47,7 +47,7 @@
 +        (void *) (uintptr_t) worker->c_addr, 4, worker->ldc, worker->stride_c,
 +        worker->batch_count, worker->compute_type);
 +    return NULL;
-+}
+@@ -1842,0 +1887,92 @@
 +
 +static int ggml_cpu_pacc_try_mul_mat_id_iq1s_batch(
 +        struct ggml_tensor * dst,
@@ -68,6 +68,9 @@
 +
 +    const int tile_m = 32;
 +    const int max_workers = 4;
++    const int requested_workers =
++        ggml_cpu_pacc_env_i32("HETGPU_LLAMA_CPU_PACC_WORKERS", max_workers);
++    const int worker_limit = MAX(1, MIN(max_workers, requested_workers));
 +    const size_t quant_weight_row_bytes = ggml_row_size(src0->type, ne00);
 +    if (ne00 <= 0 || ne01 <= 0 || ne00 > INT_MAX || ne01 > INT_MAX ||
 +        ne01 % tile_m != 0 || max_rows <= 0 || max_rows > INT_MAX ||
@@ -137,7 +140,7 @@
 +    if (shared_fd < 0) {
 +        goto done;
 +    }
-+
+@@ -1843,0 +1980,365 @@
 +    const char * base_env = getenv("HETGPU_PACC_SHARED_DDR_BASE");
 +    const char * user_env = getenv("HETGPU_PACC_SHARED_DDR_USER_OFF");
 +    const char * weight_env = getenv("HETGPU_PACC_IQ1S_WEIGHT_OFF");
@@ -206,7 +209,7 @@
 +        }
 +        stage_us += ggml_time_us() - phase_start_us;
 +
-+        const int worker_count = MIN(max_workers, row_tasks);
++        const int worker_count = MIN(worker_limit, row_tasks);
 +        pthread_t threads[max_workers];
 +        struct ggml_cpu_pacc_iq1s_batch_worker workers[max_workers];
 +        int created = 0;
@@ -300,7 +303,7 @@
 +                    " dequant_ms=%.3f stage_ms=%.3f submit_ms=%.3f"
 +                    " readback_ms=%.3f\n",
 +                    src0->name, active_as_count, ne01, max_rows, ne00,
-+                    MIN(max_workers, row_tasks), result,
++                    MIN(worker_limit, row_tasks), result,
 +                    (ggml_time_us() - total_start_us) / 1000.0,
 +                    dequant_us / 1000.0, stage_us / 1000.0,
 +                    submit_us / 1000.0, readback_us / 1000.0);
@@ -500,9 +503,10 @@
 +    free(output);
 +    free(input);
 +    return result;
-@@ -1842,0 +2340 @@
++}
 +#endif
-@@ -1970,0 +2469,16 @@
++
+@@ -1970,0 +2472,16 @@
 +#ifdef GGML_USE_PACC_RUNTIME
 +    if (ggml_cpu_pacc_env_enabled("HETGPU_LLAMA_CPU_PACC_MUL_MAT_ID", false)) {
 +        if (ith == 0) {

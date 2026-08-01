@@ -49,4 +49,4 @@ apply_one \
     "${LLAMA_ROOT}/ggml/src/ggml-cpu/ggml-cpu.c" \
     "${ROOT}/patches/llama-cpp-ggml-cpu-pacc-moe.patch" \
     "480d1535782932d9e66ca0339071d7baff491bad875df7e5201cec671171385c" \
-    "385ed63a714d0f45060d215b714dfdc29902056a21b661edc0f2d948f1bb95f3"
+    "412fb86821038d6793314ddb5b683916a267954bb84c4093375801c7c42fd672"
