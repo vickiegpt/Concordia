@@ -13,7 +13,7 @@
 +    const void * beta, void * c, int ctype, int ldc, int64_t stride_c,
 +    int batch_count, int compute_type);
 +extern int hetgpu_pacc_submit_gemm(
-@@ -1841,0 +1853,33 @@
+@@ -1841,0 +1853,303 @@
 +}
 +
 +#ifdef GGML_USE_PACC_RUNTIME
@@ -47,7 +47,7 @@
 +        (void *) (uintptr_t) worker->c_addr, 4, worker->ldc, worker->stride_c,
 +        worker->batch_count, worker->compute_type);
 +    return NULL;
-@@ -1842,0 +1887,92 @@
++}
 +
 +static int ggml_cpu_pacc_try_mul_mat_id_iq1s_batch(
 +        struct ggml_tensor * dst,
@@ -59,7 +59,7 @@
 +    const struct ggml_tensor * src0 = dst->src[0];
 +    const struct ggml_tensor * src1 = dst->src[1];
 +    const struct ggml_tensor * ids  = dst->src[2];
-+    if (src0->type != GGML_TYPE_IQ1_S ||
++    if ((src0->type != GGML_TYPE_IQ1_S && src0->type != GGML_TYPE_IQ2_XXS) ||
 +        !ggml_cpu_pacc_env_enabled("HETGPU_LLAMA_CPU_PACC_IQ1S_BATCH", true)) {
 +        return -1;
 +    }
@@ -140,7 +140,7 @@
 +    if (shared_fd < 0) {
 +        goto done;
 +    }
-@@ -1843,0 +1980,365 @@
++
 +    const char * base_env = getenv("HETGPU_PACC_SHARED_DDR_BASE");
 +    const char * user_env = getenv("HETGPU_PACC_SHARED_DDR_USER_OFF");
 +    const char * weight_env = getenv("HETGPU_PACC_IQ1S_WEIGHT_OFF");
@@ -297,12 +297,13 @@
 +        const int trace_id = atomic_fetch_add_explicit(&trace_count, 1, memory_order_relaxed);
 +        if (trace_id < ggml_cpu_pacc_env_i32("HETGPU_LLAMA_CPU_PACC_TRACE_LIMIT", 32)) {
 +            fprintf(stderr,
-+                    "[HETGPU CPU PACC] iq1s_bf16_batch name=%s experts=%" PRId64
++                    "[HETGPU CPU PACC] quant_bf16_batch name=%s type=%s experts=%" PRId64
 +                    " m=%" PRId64 " max_n=%" PRId64 " k=%" PRId64
 +                    " submits_per_expert=%d rc=%d total_ms=%.3f"
 +                    " dequant_ms=%.3f stage_ms=%.3f submit_ms=%.3f"
 +                    " readback_ms=%.3f\n",
-+                    src0->name, active_as_count, ne01, max_rows, ne00,
++                    src0->name, ggml_type_name(src0->type), active_as_count,
++                    ne01, max_rows, ne00,
 +                    MIN(worker_limit, row_tasks), result,
 +                    (ggml_time_us() - total_start_us) / 1000.0,
 +                    dequant_us / 1000.0, stage_us / 1000.0,
@@ -316,9 +317,9 @@
 +    free(weight_bf16);
 +    free(weight_f32);
 +    return result;
-+}
+@@ -1842,0 +2157 @@
 +#endif
-+
+@@ -1843,0 +2159,190 @@
 +static int ggml_cpu_pacc_try_mul_mat_id(
 +        struct ggml_tensor * dst,
 +        const int64_t * matrix_row_counts,
@@ -381,11 +382,14 @@
 +    }
 +
 +#if defined(__linux__)
-+    if (src0->type == GGML_TYPE_IQ1_S) {
-+        const int iq1s_rc = ggml_cpu_pacc_try_mul_mat_id_iq1s_batch(
++    if (src0->type == GGML_TYPE_IQ1_S || src0->type == GGML_TYPE_IQ2_XXS) {
++        const int quant_rc = ggml_cpu_pacc_try_mul_mat_id_iq1s_batch(
 +            dst, matrix_row_counts, matrix_rows, active_as_count, active_as, max_rows);
-+        if (iq1s_rc == 0) {
++        if (quant_rc == 0) {
 +            return 0;
++        }
++        if (ggml_cpu_pacc_env_enabled("HETGPU_LLAMA_CPU_PACC_STRICT", false)) {
++            return -2;
 +        }
 +    }
 +#endif
@@ -506,12 +510,15 @@
 +}
 +#endif
 +
-@@ -1970,0 +2472,16 @@
+@@ -1970,0 +2476,19 @@
 +#ifdef GGML_USE_PACC_RUNTIME
 +    if (ggml_cpu_pacc_env_enabled("HETGPU_LLAMA_CPU_PACC_MUL_MAT_ID", false)) {
 +        if (ith == 0) {
 +            const int rc = ggml_cpu_pacc_try_mul_mat_id(
 +                dst, matrix_row_counts, matrix_rows, *active_as_count, active_as);
++            if (rc == -2) {
++                GGML_ABORT("required PACC mul_mat_id offload failed");
++            }
 +            atomic_store_explicit(&params->threadpool->current_chunk,
 +                                  rc == 0 ? 1 : 0, memory_order_release);
 +        }

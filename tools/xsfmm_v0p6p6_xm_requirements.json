@@ -44,7 +44,8 @@
     "sf.vtzero.t mt0": "0x43e06057",
     "sf.vsettn t1,t0": "0x8402f357",
     "sf.mm.f.f mt0,v8,v16": "0xf2881077",
-    "sf.vste32 t0,(a2)": "0x52567027"
+    "sf.vste32 t0,(a2)": "0x52567027",
+    "sf.vtdiscard": "0x43c06057"
   },
   "required_delivery_fields": [
     "schema",

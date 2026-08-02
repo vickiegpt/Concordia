@@ -111,6 +111,8 @@ __asm__(
     "  addi t2, t2, -1\n"
     "  j 3b\n"
     "4:\n"
+    "  csrwi vstart, 0\n"
+    "  .word 0x43c06057\n" /* sf.vtdiscard */
     "  li a0, 0\n"
     "  ret\n"
     ".size xsfmm_native_bf16, .-xsfmm_native_bf16\n");

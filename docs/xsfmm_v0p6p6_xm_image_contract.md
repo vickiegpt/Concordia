@@ -56,6 +56,7 @@ The runtime's required instruction words are:
 | `sf.vsettn t1,t0` | `0x8402f357` |
 | `sf.mm.f.f mt0,v8,v16` | `0xf2881077` |
 | `sf.vste32 t0,(a2)` | `0x52567027` |
+| `sf.vtdiscard` | `0x43c06057` |
 
 ## Platform Contract
 
@@ -101,12 +102,30 @@ An image is accepted only when all gates pass:
    not proof of execution.
 4. `mstatus.MS` can be enabled for the submitting task.
 5. A minimal 4x4x4 BF16 test completes `sf.vtzero.t`,
-   `sf.mm.f.f`, and `sf.vste32` without timeout or illegal instruction.
+   `sf.mm.f.f`, `sf.vste32`, and `sf.vtdiscard` without timeout or illegal
+   instruction.
 6. The 4x4x4 output has zero mismatches against a host FP32 reference.
 7. A 32x32x32 BF16 test has zero mismatches.
 8. All four PACC instances pass independently.
 9. Four concurrent PACC requests complete with unique per-PACC control slots.
 10. The main-host boot ID remains unchanged during PACC-only validation.
+11. XM issue and completion counters wrap or drain correctly across at least
+    10,000 requests; no fixed-width counter may permanently stop submission.
+
+The 2026-08-02 hardware-only run narrowed the current image failure to the XM
+datapath. PACC0 and PACC1 returned exact output for `M=32,N=2,K=6144`, then
+stopped after 168-176 cumulative tiles, close to `2^19` matrix instructions
+when the 3072 `sf.mm.f.f` operations and stores per tile are counted. Changing
+jobd batching, callback lifetime, `mstatus.MS`, and `sf.vtdiscard` only moved
+the boundary. PACC2 and PACC3 stopped on their first tile. The replacement
+image must explicitly test this counter-wrap case.
+
+Until that image is available, jobd defaults to a 480,000-command estimated
+lifetime budget. PACC1 completed 30 consecutive `M=32,N=8,K=4096` requests
+with zero mismatches; a 250-iteration stress run failed closed at iteration 133
+with status `0xffff1f25` before the hardware hang. The PACC-only recovery left
+the main-host boot ID unchanged. This is a recoverability guard, not evidence
+that the current image meets the sustained-run gate.
 
 Advertising `xsfmmbase` in a DTB is not sufficient. Returning from
 configuration instructions is not sufficient. A completion record without

@@ -167,6 +167,7 @@ struct GemmTiming {
 };
 
 static struct GemmTiming g_last_gemm_timing;
+static uint64_t g_xsfmm_estimated_commands;
 
 extern int xsfmm_native_bf16(const uint16_t *a_km,
                              const uint16_t *b_kn,
@@ -5313,28 +5314,59 @@ static int run_gemm_xsfmm_hardware_only(const struct GemmJob *job,
            (size_t)(packed_c_stride * batch_count) * sizeof(*c_tile));
     struct XsfmmRequest request = {
         .magic = HETGPU_XSFMM_REQUEST_MAGIC,
-        .a = (uintptr_t)a_pack,
-        .b = (uintptr_t)b_pack,
-        .c = (uintptr_t)c_tile,
         .m = job->m,
         .n = job->n,
         .k = job->k,
         .repeats = jobd_xsfmm_repeats(),
         .status = -1,
-        .batch_count = batch_count,
         .a_batch_stride = packed_a_stride,
         .b_batch_stride = b_batch_stride == 0 ? 0 : packed_b_stride,
         .c_batch_stride = packed_c_stride,
     };
     uint64_t xsfmm_start_ns = monotonic_ns();
-    if (jobd_run_xsfmm_request(&request) != 0) {
-        status = 0xffff1f23;
-        goto out;
+    uint64_t context_batch = parse_env_u64_default(
+        "HETGPU_PACC_JOBD_XSFMM_CONTEXT_BATCH", 1);
+    if (context_batch == 0 || context_batch > batch_count) {
+        context_batch = batch_count;
+    }
+    for (uint64_t batch = 0; batch < batch_count; batch += context_batch) {
+        uint64_t count = min_u64(context_batch, batch_count - batch);
+        uint64_t command_budget = parse_env_u64_default(
+            "HETGPU_PACC_JOBD_XSFMM_COMMAND_BUDGET", 480000);
+        uint64_t commands_per_tile = job->k / 2 + job->m + 8;
+        uint64_t requested_commands;
+
+        if (commands_per_tile > UINT64_MAX / count ||
+            commands_per_tile * count > UINT64_MAX / request.repeats) {
+            status = 0xffff1f25;
+            goto out;
+        }
+        requested_commands = commands_per_tile * count * request.repeats;
+
+        if (command_budget != 0 &&
+            (requested_commands > command_budget ||
+             g_xsfmm_estimated_commands > command_budget - requested_commands)) {
+            status = 0xffff1f25;
+            goto out;
+        }
+
+        request.a = (uintptr_t)(a_pack + batch * packed_a_stride);
+        request.b = (uintptr_t)(b_pack +
+            (b_batch_stride == 0 ? 0 : batch * packed_b_stride));
+        request.c = (uintptr_t)(c_tile + batch * packed_c_stride);
+        request.batch_count = count;
+        if (jobd_run_xsfmm_request(&request) != 0) {
+            status = 0xffff1f23;
+            goto out;
+        }
+        g_xsfmm_estimated_commands += requested_commands;
+        g_last_gemm_timing.xsfmm_cycles += request.cycles;
+        g_last_gemm_timing.xsfmm_repeats += request.completed_repeats;
     }
     uint64_t xsfmm_elapsed_ns = monotonic_ns() - xsfmm_start_ns;
-    g_last_gemm_timing.xsfmm_cycles +=
-        request.cycles ? request.cycles : xsfmm_elapsed_ns;
-    g_last_gemm_timing.xsfmm_repeats += request.completed_repeats;
+    if (g_last_gemm_timing.xsfmm_cycles == 0) {
+        g_last_gemm_timing.xsfmm_cycles = xsfmm_elapsed_ns;
+    }
 
     for (uint64_t batch = 0; batch < batch_count; batch++) {
         void *batch_c = (uint8_t *)c +

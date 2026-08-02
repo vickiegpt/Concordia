@@ -16,6 +16,7 @@ EXPECTED_WORDS=(
     0x8402f357
     0xf2881077
     0x52567027
+    0x43c06057
 )
 
 encoding_ok=1

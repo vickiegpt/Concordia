@@ -175,6 +175,9 @@ static int xsfmm_run_set(const char *value, const struct kernel_param *kp)
 					(size_t)request->m,
 					(size_t)request->n,
 					(size_t)request->k);
+				asm volatile("csrwi vstart, 0\n\t"
+					     ".word 0x43c06057"
+					     ::: "memory");
 				if (status)
 					break;
 			}
@@ -188,7 +191,7 @@ static int xsfmm_run_set(const char *value, const struct kernel_param *kp)
 	request->completed_repeats = completed;
 	request->status = status;
 	asm volatile("fence rw, rw" ::: "memory");
-	csr_write(CSR_STATUS, saved_status);
+	csr_write(CSR_STATUS, saved_status & ~SR_MS_MASK);
 	return 0;
 }
 
