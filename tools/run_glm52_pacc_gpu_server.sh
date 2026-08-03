@@ -12,20 +12,42 @@ CTX="${CTX:-1024}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 UBATCH_SIZE="${UBATCH_SIZE:-32}"
 SPLIT_ATTN_GPU_FFN_PACC="${SPLIT_ATTN_GPU_FFN_PACC:-0}"
-if [[ "$SPLIT_ATTN_GPU_FFN_PACC" == "1" ]]; then
+SPLIT_ATTN_GPU_FFN_CPU="${SPLIT_ATTN_GPU_FFN_CPU:-0}"
+if [[ "$SPLIT_ATTN_GPU_FFN_PACC" == "1" && "$SPLIT_ATTN_GPU_FFN_CPU" == "1" ]]; then
+    echo "SPLIT_ATTN_GPU_FFN_PACC and SPLIT_ATTN_GPU_FFN_CPU are mutually exclusive" >&2
+    exit 2
+fi
+if [[ "$SPLIT_ATTN_GPU_FFN_CPU" == "1" ]]; then
     GPU_LAYERS="${GPU_LAYERS:-80}"
     TENSOR_OVERRIDE="${TENSOR_OVERRIDE:-^blk\.[0-9]+\.ffn_.*=CPU}"
     CUDA_PACC_IQ1S_HOOK_DEFAULT=0
+    PACC_BOOT_DEFAULT=0
+    LLAMA_CPU_PACC_DEFAULT=0
+    THREADS_DEFAULT=16
+    CACHE_RAM_DEFAULT=0
+elif [[ "$SPLIT_ATTN_GPU_FFN_PACC" == "1" ]]; then
+    GPU_LAYERS="${GPU_LAYERS:-80}"
+    TENSOR_OVERRIDE="${TENSOR_OVERRIDE:-^blk\.[0-9]+\.ffn_.*=CPU}"
+    CUDA_PACC_IQ1S_HOOK_DEFAULT=0
+    PACC_BOOT_DEFAULT=1
+    LLAMA_CPU_PACC_DEFAULT=1
+    THREADS_DEFAULT=32
+    CACHE_RAM_DEFAULT=8192
 else
     GPU_LAYERS="${GPU_LAYERS:-3}"
     TENSOR_OVERRIDE="${TENSOR_OVERRIDE:-}"
     CUDA_PACC_IQ1S_HOOK_DEFAULT=1
+    PACC_BOOT_DEFAULT=1
+    LLAMA_CPU_PACC_DEFAULT=0
+    THREADS_DEFAULT=32
+    CACHE_RAM_DEFAULT=8192
 fi
-THREADS="${THREADS:-32}"
+THREADS="${THREADS:-$THREADS_DEFAULT}"
 THREADS_BATCH="${THREADS_BATCH:-${THREADS}}"
 POLL="${POLL:-100}"
 LOG_DIR="${LOG_DIR:-${B}/logs/glm52-pacc-gpu-server-$(date +%Y%m%d-%H%M%S)}"
 PACC_MASK="${PACC_MASK:-0xf}"
+PACC_BOOT_EFFECTIVE="${PACC_BOOT:-$PACC_BOOT_DEFAULT}"
 XSFMM_FIRMWARE="${XSFMM_FIRMWARE:-lanxin/lx500_pacc_jobd_xsfmm_kernel_exec.bin}"
 STABLE_FIRMWARE="${STABLE_FIRMWARE:-lanxin/lx500_pacc_jobd_hostbase_idmarker.bin}"
 HOST_BOOT_ID_BEFORE="$(cat /proc/sys/kernel/random/boot_id)"
@@ -53,25 +75,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for dev in /dev/hetgpu_pacc_mbox_ddr_coh{0..3} /dev/hetgpu_pacc_mbox_live{0..3}; do
-    [[ -e "$dev" ]] || { echo "missing PACC device: $dev" >&2; exit 2; }
-done
-RESERVE_PARAM=/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_reserve_system_ram
-BASE_PARAM=/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_base_override
-SIZE_PARAM=/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_size
-[[ -r "$RESERVE_PARAM" && "$(<"$RESERVE_PARAM")" == "Y" ]] || {
-    echo "unsafe PACC shared DDR: System RAM range is not reserved" >&2
-    echo "run: sudo $ROOT/tools/load_pacc_shared_ddr_reserved.sh" >&2
-    exit 2
-}
-(( $(<"$BASE_PARAM") == 0x20110600000 )) || {
-    echo "unexpected PACC shared DDR base: $(<"$BASE_PARAM")" >&2
-    exit 2
-}
-(( $(<"$SIZE_PARAM") >= 0x100000000 )) || {
-    echo "PACC shared DDR reservation is smaller than 4 GiB: $(<"$SIZE_PARAM")" >&2
-    exit 2
-}
+if [[ "$PACC_BOOT_EFFECTIVE" != "0" ]]; then
+    for dev in /dev/hetgpu_pacc_mbox_ddr_coh{0..3} /dev/hetgpu_pacc_mbox_live{0..3}; do
+        [[ -e "$dev" ]] || { echo "missing PACC device: $dev" >&2; exit 2; }
+    done
+    RESERVE_PARAM=/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_reserve_system_ram
+    BASE_PARAM=/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_base_override
+    SIZE_PARAM=/sys/module/hetgpu_pacc_mbox_ddr_coh/parameters/shared_ddr_size
+    [[ -r "$RESERVE_PARAM" && "$(<"$RESERVE_PARAM")" == "Y" ]] || {
+        echo "unsafe PACC shared DDR: System RAM range is not reserved" >&2
+        echo "run: sudo $ROOT/tools/load_pacc_shared_ddr_reserved.sh" >&2
+        exit 2
+    }
+    (( $(<"$BASE_PARAM") == 0x20110600000 )) || {
+        echo "unexpected PACC shared DDR base: $(<"$BASE_PARAM")" >&2
+        exit 2
+    }
+    (( $(<"$SIZE_PARAM") >= 0x100000000 )) || {
+        echo "PACC shared DDR reservation is smaller than 4 GiB: $(<"$SIZE_PARAM")" >&2
+        exit 2
+    }
+fi
 [[ -x "$LLAMA_BIN" ]] || { echo "missing llama-server: $LLAMA_BIN" >&2; exit 2; }
 [[ -r "$MODEL" ]] || { echo "missing model: $MODEL" >&2; exit 2; }
 for shard in "${MODEL%-00001-of-00006.gguf}"-0000{1..6}-of-00006.gguf; do
@@ -79,7 +103,7 @@ for shard in "${MODEL%-00001-of-00006.gguf}"-0000{1..6}-of-00006.gguf; do
 done
 mkdir -p "$LOG_DIR"
 
-if [[ "${PACC_BOOT:-1}" != "0" ]]; then
+if [[ "$PACC_BOOT_EFFECTIVE" != "0" ]]; then
     python3 - <<'PY'
 import os
 fd = os.open("/dev/hetgpu_pacc_mbox_ddr_coh0", os.O_RDWR | os.O_SYNC)
@@ -195,7 +219,7 @@ export HETGPU_PACC_MMVF_OUTPUT_TIMEOUT_MS="${HETGPU_PACC_MMVF_OUTPUT_TIMEOUT_MS:
 
 # With FFN tensors assigned to the CPU backend, this hook redirects
 # GGML_OP_MUL_MAT_ID (MoE expert GEMV) to the four-PACC MMVF path.
-export HETGPU_LLAMA_CPU_PACC_MUL_MAT_ID="${HETGPU_LLAMA_CPU_PACC_MUL_MAT_ID:-$SPLIT_ATTN_GPU_FFN_PACC}"
+export HETGPU_LLAMA_CPU_PACC_MUL_MAT_ID="${HETGPU_LLAMA_CPU_PACC_MUL_MAT_ID:-$LLAMA_CPU_PACC_DEFAULT}"
 # The deployed XSFMM ABI accepts BF16/F16 matrices. IQ1_S experts are
 # dequantized one active expert at a time, then submitted as four compact
 # row-major batches of 32-row tiles.
@@ -204,7 +228,7 @@ export HETGPU_LLAMA_CPU_PACC_TENSOR_FILTER="${HETGPU_LLAMA_CPU_PACC_TENSOR_FILTE
 export HETGPU_LLAMA_CPU_PACC_MMID_MAX_N="${HETGPU_LLAMA_CPU_PACC_MMID_MAX_N:-16}"
 export HETGPU_LLAMA_CPU_PACC_MAX_ACTIVE_EXPERTS="${HETGPU_LLAMA_CPU_PACC_MAX_ACTIVE_EXPERTS:-16}"
 export HETGPU_LLAMA_CPU_PACC_WORKERS="${HETGPU_LLAMA_CPU_PACC_WORKERS:-4}"
-export HETGPU_LLAMA_CPU_PACC_STRICT="${HETGPU_LLAMA_CPU_PACC_STRICT:-$SPLIT_ATTN_GPU_FFN_PACC}"
+export HETGPU_LLAMA_CPU_PACC_STRICT="${HETGPU_LLAMA_CPU_PACC_STRICT:-$LLAMA_CPU_PACC_DEFAULT}"
 export HETGPU_LLAMA_CPU_PACC_MIN_M="${HETGPU_LLAMA_CPU_PACC_MIN_M:-512}"
 export HETGPU_LLAMA_CPU_PACC_MIN_K="${HETGPU_LLAMA_CPU_PACC_MIN_K:-512}"
 export HETGPU_LLAMA_CPU_PACC_TRACE="${HETGPU_LLAMA_CPU_PACC_TRACE:-0}"
@@ -213,6 +237,7 @@ export HETGPU_LLAMA_CPU_PACC_TRACE_LIMIT="${HETGPU_LLAMA_CPU_PACC_TRACE_LIMIT:-3
 echo "starting GLM-5.2 server at http://${HOST}:${PORT}"
 echo "parallel=${PARALLEL} gpu_layers=${GPU_LAYERS} threads=${THREADS}/${THREADS_BATCH} batch=${BATCH_SIZE} ubatch=${UBATCH_SIZE}"
 echo "split_attention_gpu_ffn_pacc=${SPLIT_ATTN_GPU_FFN_PACC}"
+echo "split_attention_gpu_ffn_cpu=${SPLIT_ATTN_GPU_FFN_CPU}"
 tensor_override_args=()
 if [[ -n "$TENSOR_OVERRIDE" ]]; then
     tensor_override_args+=(--override-tensor "$TENSOR_OVERRIDE")
@@ -228,7 +253,6 @@ warmup_args=()
 if [[ "${NO_WARMUP:-0}" == "1" ]]; then
     warmup_args+=(--no-warmup)
 fi
-
 set +e
 "$LLAMA_BIN" \
     -m "$MODEL" --gpu-layers "$GPU_LAYERS" \
@@ -240,7 +264,7 @@ set +e
     "${warmup_args[@]}" \
     --cont-batching --batch-size "$BATCH_SIZE" --ubatch-size "$UBATCH_SIZE" \
     --checkpoint-min-step "${CHECKPOINT_MIN_STEP:-16}" \
-    --cache-ram "${CACHE_RAM_MIB:-8192}" --kv-unified \
+    --cache-ram "${CACHE_RAM_MIB:-$CACHE_RAM_DEFAULT}" --kv-unified \
     2>&1 | tee "$LOG_DIR/server.log"
 rc=${PIPESTATUS[0]}
 set -e
