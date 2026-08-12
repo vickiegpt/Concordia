@@ -37,6 +37,27 @@ prompt="${KIMI_TPS_PROMPT:-Say that you have started in one short sentence.}"
 require_run="${KIMI_TPS_REQUIRE_RUN:-0}"
 run_timeout="${KIMI_TPS_TIMEOUT:-0}"
 
+truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+select_zluda_features() {
+    if [[ -n "${KIMI_TPS_ZLUDA_FEATURES:-}" ]]; then
+        printf '%s\n' "${KIMI_TPS_ZLUDA_FEATURES}"
+        return
+    fi
+
+    local cocotb="${KIMI_TMATMUL_COCOTB:-${HETGPU_KIMI_TMATMUL_COCOTB:-${HETGPU_TMATMUL_COCOTB:-0}}}"
+    if truthy "${cocotb}"; then
+        printf '%s\n' "intel"
+    else
+        printf '%s\n' "nvidia"
+    fi
+}
+
 mkdir -p "${work_dir}/logs" "${work_dir}/aof"
 
 if [[ "${KIMI_TPS_KEEP:-0}" != "1" && -z "${KIMI_TPS_WORKDIR:-}" ]]; then
@@ -248,9 +269,9 @@ done
 
 if [[ "${KIMI_TPS_BUILD_ZLUDA:-1}" == "1" &&
       ( "${cases_csv}" == *"concordia"* || "${KIMI_TPS_BASELINE_WITH_SHIM:-1}" == "1" ) ]]; then
-    cargo_features="nvidia"
-    if [[ "${KIMI_TPS_USE_CUDART_SHIM:-0}" == "1" ]]; then
-        cargo_features="nvidia,embed_cudart"
+    cargo_features="$(select_zluda_features)"
+    if [[ "${KIMI_TPS_USE_CUDART_SHIM:-0}" == "1" && "${cargo_features}" != *"embed_cudart"* ]]; then
+        cargo_features="${cargo_features},embed_cudart"
     fi
     echo "[kimi-tps] building ZLUDA with features ${cargo_features}"
     cargo build -p zluda --no-default-features --features "${cargo_features}" \

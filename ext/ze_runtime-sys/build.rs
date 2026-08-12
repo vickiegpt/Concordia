@@ -1,7 +1,9 @@
-use std::env::VarError;
-use std::{env, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
-fn main() -> Result<(), VarError> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let src_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join("src");
 
     cc::Build::new()
@@ -23,21 +25,44 @@ fn main() -> Result<(), VarError> {
         // Only link ze_loader if it is actually present on this system.
         // On non-Intel platforms (RISC-V, ARM, etc.) ze_loader is not installed,
         // and building sifive/gemmini/tenstorrent features should not fail because of it.
+        let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+        let manifest_lib_dir = manifest_dir.join("lib");
         let search_dirs = [
-            "/usr/lib/x86_64-linux-gnu",
-            "/usr/lib/aarch64-linux-gnu",
-            "/usr/local/lib",
-            "/usr/lib",
+            manifest_lib_dir.as_path(),
+            Path::new("/usr/lib/x86_64-linux-gnu"),
+            Path::new("/usr/lib/aarch64-linux-gnu"),
+            Path::new("/usr/local/lib"),
+            Path::new("/usr/lib"),
         ];
-        let found = search_dirs.iter().any(|d| {
-            std::path::Path::new(d).join("libze_loader.so").exists()
-                || std::path::Path::new(d).join("libze_loader.so.1").exists()
-        });
-        if found {
+        let unversioned = search_dirs
+            .iter()
+            .map(|d| d.join("libze_loader.so"))
+            .find(|p| p.exists());
+        let versioned = search_dirs
+            .iter()
+            .map(|d| d.join("libze_loader.so.1"))
+            .find(|p| p.exists());
+        if let Some(loader) = unversioned {
+            println!(
+                "cargo:rustc-link-search=native={}",
+                loader.parent().expect("loader path has parent").display()
+            );
             println!("cargo:rustc-link-lib=dylib=ze_loader");
-            for d in &search_dirs {
-                println!("cargo:rustc-link-search=native={}", d);
+        } else if let Some(loader) = versioned {
+            let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+            let link_name = out_dir.join("libze_loader.so");
+            let _ = fs::remove_file(&link_name);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+                symlink(&loader, &link_name).or_else(|_| fs::copy(&loader, &link_name).map(|_| ()))?;
             }
+            #[cfg(not(unix))]
+            {
+                fs::copy(&loader, &link_name)?;
+            }
+            println!("cargo:rustc-link-search=native={}", out_dir.display());
+            println!("cargo:rustc-link-lib=dylib=ze_loader");
         } else {
             cc::Build::new()
                 .file(src_dir.join("runner/ze_stub.c"))

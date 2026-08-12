@@ -55,6 +55,7 @@ struct Nvint4Execution {
 struct Nvint4RouteConfig {
     enabled: bool,
     gpu_fallback: bool,
+    bitlinear_hook: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +80,15 @@ fn env_truthy(name: &str) -> bool {
 
 pub(crate) fn is_nvint4_entry(kernel_name: &str) -> bool {
     kernel_name == NVINT4_ENTRY
+}
+
+fn is_bitlinear_kernel_name(kernel_name: &str) -> bool {
+    let name = kernel_name.to_ascii_lowercase();
+    name.contains("bitlinear") || name.contains("bit_linear")
+}
+
+fn should_hook_kernel(kernel_name: &str, config: Nvint4RouteConfig) -> bool {
+    is_nvint4_entry(kernel_name) || (config.bitlinear_hook && is_bitlinear_kernel_name(kernel_name))
 }
 
 fn validate_launch_shape(grid: (u32, u32, u32), block: (u32, u32, u32)) -> Result<(), String> {
@@ -385,6 +395,7 @@ unsafe fn execute_hardware(
 
 fn hardware_json(status: &Nvint4HardwareStatus) -> serde_json::Value {
     serde_json::json!({
+        "v3_status": status.v3_status,
         "instruction_dma_status": status.instruction_dma_status,
         "stall_status": status.stall_status,
         "wide_dma_status": status.wide_dma_status,
@@ -394,10 +405,13 @@ fn hardware_json(status: &Nvint4HardwareStatus) -> serde_json::Value {
         "ls_read_beats": status.ls_read_beats,
         "tmatmul_read_beats": status.tmatmul_read_beats,
         "elapsed_us": status.elapsed_us,
+        "staging_backend": status.staging_backend,
+        "numa_node": status.numa_node,
     })
 }
 
 fn route_record(
+    kernel_name: &str,
     launch: Option<Nvint4Launch>,
     stream: CUstream,
     final_status: &str,
@@ -407,7 +421,8 @@ fn route_record(
 ) -> serde_json::Value {
     serde_json::json!({
         "route": "ptx_nvint4_to_dax_tmatmul",
-        "kernel": NVINT4_ENTRY,
+        "kernel": kernel_name,
+        "abi": NVINT4_ENTRY,
         "final_status": final_status,
         "reason": reason,
         "dim": launch.map(|value| value.dim),
@@ -418,12 +433,12 @@ fn route_record(
         "packed_bytes": 1_048_576,
         "input_bytes": NVINT4_INPUT_BYTES,
         "output_bytes": NVINT4_OUTPUT_BYTES,
-        "dpa": {
-            "matrix": "0x000000",
-            "input": "0x400000",
-            "output": "0x500000",
-            "program": "0x600000",
-        },
+        "dpa": execution.map(|value| serde_json::json!({
+            "matrix": format!("0x{:x}", value.status.matrix_dpa),
+            "input": format!("0x{:x}", value.status.input_dpa),
+            "output": format!("0x{:x}", value.status.output_dpa),
+            "program": format!("0x{:x}", value.status.program_dpa),
+        })),
         "timing_us": {
             "total": total_us,
             "hardware": execution.map(|value| value.status.elapsed_us),
@@ -447,7 +462,7 @@ where
     E: FnOnce(Nvint4Launch) -> Result<Nvint4Execution, String>,
     L: FnMut(&serde_json::Value) -> Result<(), String>,
 {
-    if !is_nvint4_entry(kernel_name) || !config.enabled {
+    if !should_hook_kernel(kernel_name, config) || !config.enabled {
         return None;
     }
 
@@ -461,6 +476,7 @@ where
                 "fail"
             };
             let record = route_record(
+                kernel_name,
                 None,
                 stream,
                 final_status,
@@ -482,6 +498,7 @@ where
     match executor(launch) {
         Ok(execution) => {
             let record = route_record(
+                kernel_name,
                 Some(launch),
                 stream,
                 "pass",
@@ -503,6 +520,7 @@ where
                 "fail"
             };
             let record = route_record(
+                kernel_name,
                 Some(launch),
                 stream,
                 final_status,
@@ -533,11 +551,15 @@ fn open_route_log() -> Result<Option<File>, String> {
     if path.trim().is_empty() {
         return Ok(None);
     }
+    open_route_log_path(&path).map(Some)
+}
+
+fn open_route_log_path(path: &str) -> Result<File, String> {
     OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&path)
-        .map(Some)
+        .write(true)
+        .open(path)
         .map_err(|error| format!("open HETGPU_NVINT4_ROUTE_LOG={path:?}: {error}"))
 }
 
@@ -551,8 +573,15 @@ pub(crate) unsafe fn try_launch(
     let config = Nvint4RouteConfig {
         enabled: env_truthy("HETGPU_NVINT4_TMATMUL"),
         gpu_fallback: env_truthy("HETGPU_NVINT4_GPU_FALLBACK"),
+        bitlinear_hook: env_truthy("HETGPU_NVINT4_BITLINEAR_HOOK"),
     };
-    if !is_nvint4_entry(kernel_name) || !config.enabled {
+    if env_truthy("HETGPU_NVINT4_TRACE") {
+        eprintln!(
+            "[NVINT4 TMatmul] observed launch kernel={kernel_name:?} enabled={}",
+            config.enabled
+        );
+    }
+    if !should_hook_kernel(kernel_name, config) || !config.enabled {
         return None;
     }
 
@@ -565,7 +594,7 @@ pub(crate) unsafe fn try_launch(
                 "fail"
             };
             let launch = parse_launch_params(kernel_params, grid, block, stream).ok();
-            let record = route_record(launch, stream, final_status, &reason, None, 0);
+            let record = route_record(kernel_name, launch, stream, final_status, &reason, None, 0);
             eprintln!("{record}");
             return if config.gpu_fallback {
                 None
@@ -628,12 +657,13 @@ pub unsafe extern "C" fn hetgpu_nvint4_convert_for_test(
 #[cfg(test)]
 mod tests {
     use super::{
-        failure_disposition, is_nvint4_entry, nvint4_extents, pack_ternary_codes,
-        parse_launch_params, range_fits_allocation, sign_extend_nibble, ternary_code,
-        validate_launch_shape, FailureDisposition, NVINT4_ENTRY,
+        failure_disposition, is_nvint4_entry, nvint4_extents, open_route_log_path,
+        pack_ternary_codes, parse_launch_params, range_fits_allocation, sign_extend_nibble,
+        ternary_code, validate_launch_shape, FailureDisposition, NVINT4_ENTRY,
     };
     use core::ffi::c_void;
     use cuda_types::cuda::CUstream;
+    use std::io::Write;
     use std::ptr;
 
     #[test]
@@ -778,17 +808,75 @@ mod tests {
         );
         assert_eq!(failure_disposition(true), FailureDisposition::GpuFallback);
     }
+
+    #[test]
+    fn route_log_can_be_created_and_appended() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("runtime-routes.jsonl");
+        {
+            let mut log = open_route_log_path(path.to_str().unwrap()).unwrap();
+            writeln!(log, "{{\"run\":1}}").unwrap();
+        }
+        {
+            let mut log = open_route_log_path(path.to_str().unwrap()).unwrap();
+            writeln!(log, "{{\"run\":2}}").unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "{\"run\":1}\n{\"run\":2}\n"
+        );
+    }
 }
 
 #[cfg(test)]
 mod nvidia_nvint4_route_tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+    use std::sync::Mutex;
+
+    static NVINT4_ROUTE_ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
+            let lock = super::super::test_env::lock();
+            let previous = vars
+                .iter()
+                .map(|(name, _)| (*name, std::env::var(name).ok()))
+                .collect::<Vec<_>>();
+            for (name, value) in vars {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+            Self {
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in self.previous.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 
     fn fake_execution() -> Nvint4Execution {
         Nvint4Execution {
             status: Nvint4HardwareStatus {
-                instruction_dma_status: 2,
+                v3_status: 2,
+                instruction_dma_status: 0,
                 stall_status: 1,
                 wide_dma_status: 2,
                 exec_status: 0,
@@ -796,6 +884,12 @@ mod nvidia_nvint4_route_tests {
                 ls_read_beats: 64,
                 tmatmul_read_beats: 16_384,
                 elapsed_us: 20,
+                staging_backend: "cuda_dax",
+                numa_node: None,
+                matrix_dpa: cxl_tmatmul::TMATMUL_DPA_MATRIX,
+                input_dpa: cxl_tmatmul::TMATMUL_DPA_INPUT,
+                output_dpa: cxl_tmatmul::TMATMUL_DPA_OUTPUT,
+                program_dpa: cxl_tmatmul::TMATMUL_DPA_PROGRAM,
             },
             cuda_device: 0,
         }
@@ -822,6 +916,7 @@ mod nvidia_nvint4_route_tests {
                 Nvint4RouteConfig {
                     enabled: true,
                     gpu_fallback: false,
+                    bitlinear_hook: false,
                 },
                 NVINT4_ENTRY,
                 params.as_mut_ptr(),
@@ -862,6 +957,7 @@ mod nvidia_nvint4_route_tests {
                 Nvint4RouteConfig {
                     enabled: true,
                     gpu_fallback: true,
+                    bitlinear_hook: false,
                 },
                 NVINT4_ENTRY,
                 params.as_mut_ptr(),
@@ -902,6 +998,7 @@ mod nvidia_nvint4_route_tests {
                 Nvint4RouteConfig {
                     enabled: true,
                     gpu_fallback: false,
+                    bitlinear_hook: false,
                 },
                 NVINT4_ENTRY,
                 params.as_mut_ptr(),
@@ -932,6 +1029,7 @@ mod nvidia_nvint4_route_tests {
                 Nvint4RouteConfig {
                     enabled: true,
                     gpu_fallback: false,
+                    bitlinear_hook: false,
                 },
                 "tmatmul_nvint4_dense_v2",
                 ptr::null_mut(),
@@ -953,6 +1051,7 @@ mod nvidia_nvint4_route_tests {
                 Nvint4RouteConfig {
                     enabled: false,
                     gpu_fallback: false,
+                    bitlinear_hook: false,
                 },
                 NVINT4_ENTRY,
                 ptr::null_mut(),
@@ -968,5 +1067,42 @@ mod nvidia_nvint4_route_tests {
         };
         assert!(result.is_none());
         assert!(!called.get());
+    }
+
+    #[test]
+    fn bitlinear_name_only_hooks_when_explicitly_enabled() {
+        let _mutex = NVINT4_ROUTE_ENV_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_NVINT4_TMATMUL", Some("1")),
+            ("HETGPU_NVINT4_BITLINEAR_HOOK", None),
+            ("HETGPU_NVINT4_GPU_FALLBACK", None),
+            ("HETGPU_NVINT4_ROUTE_LOG", None),
+        ]);
+
+        let native_result = unsafe {
+            try_launch(
+                "layer_00_BitLinear_forward",
+                ptr::null_mut(),
+                (1, 1, 1),
+                (1, 1, 1),
+                CUstream(ptr::null_mut()),
+            )
+        };
+        assert!(native_result.is_none());
+
+        std::env::set_var("HETGPU_NVINT4_BITLINEAR_HOOK", "1");
+        let hooked_result = unsafe {
+            try_launch(
+                "layer_00_BitLinear_forward",
+                ptr::null_mut(),
+                (1, 1, 1),
+                (1, 1, 1),
+                CUstream(ptr::null_mut()),
+            )
+        };
+        assert!(matches!(
+            hooked_result,
+            Some(Err(ref err)) if err.contains("null kernel_params")
+        ));
     }
 }

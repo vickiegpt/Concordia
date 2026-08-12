@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::ptr;
 
@@ -30,6 +30,14 @@ const TMATMUL_CSR_DEV_ID: u32 = 0x544D4D31;
 const CSR_DIM_D: usize = 0x08;
 const CSR_DDR_DATA_WIDTH: usize = 0x0c;
 const CSR_MC_STATUS: usize = 0x18;
+const CSR_HW_VERSION: usize = 0x30;
+const CSR_HW_CAPS: usize = 0x34;
+const CSR_V3_INPUT_LO: usize = 0x40;
+const CSR_V3_INPUT_HI: usize = 0x44;
+const CSR_V3_MATRIX_LO: usize = 0x48;
+const CSR_V3_MATRIX_HI: usize = 0x4c;
+const CSR_V3_LAUNCH: usize = 0x50;
+const CSR_V3_STATUS: usize = 0x54;
 const CSR_PROBE_ADDR: usize = 0x10;
 const CSR_PROBE_WDATA: usize = 0x14;
 const CSR_PROBE_CTRL: usize = 0x18;
@@ -58,6 +66,7 @@ const DMA_IDLE: u32 = 0;
 const DMA_RUNNING: u32 = 1;
 const DMA_DONE: u32 = 2;
 const DMA_ERROR: u32 = 0xff;
+const TMATMUL_V3_HW_VERSION: u32 = 3;
 const TMATMUL_DMA_ERROR_STATUS: u32 = 0xff;
 const NVINT4_DIM: u32 = 2048;
 const NVINT4_PACKED_BYTES: usize = 1 << 20;
@@ -74,6 +83,28 @@ const CUDA_HOST_REGISTER_MAPPED: u32 = 0x02;
 const CUDA_MEMCPY_DEFAULT: i32 = 4;
 #[cfg(unix)]
 const CUDA_IPC_MEM_LAZY_ENABLE_PEER_ACCESS: u32 = 1;
+#[cfg(unix)]
+const NUMA_HUGEPAGE_BYTES: usize = 2 << 20;
+#[cfg(unix)]
+const NUMA_HUGEPAGE_SHIFT: libc::c_int = 21;
+#[cfg(unix)]
+const NUMA_DEFAULT_NODE: u32 = 1;
+#[cfg(unix)]
+const NUMA_DEFAULT_HPA_BASE: u64 = 0x0c0f_0000_0000;
+#[cfg(unix)]
+const NUMA_DEFAULT_HPA_SIZE: u64 = 0x1_0000_0000;
+#[cfg(unix)]
+const NUMA_DEFAULT_MAX_DPA: u64 = 0x8000_0000;
+#[cfg(unix)]
+const NUMA_DEFAULT_SCAN_PAGES: u32 = 64;
+#[cfg(unix)]
+const NUMA_LOCAL_MATRIX: usize = 0;
+#[cfg(unix)]
+const NUMA_LOCAL_INPUT: usize = 0x10_0000;
+#[cfg(unix)]
+const NUMA_LOCAL_OUTPUT: usize = 0x10_1000;
+#[cfg(unix)]
+const NUMA_LOCAL_PROGRAM: usize = 0x10_5000;
 
 #[cfg(unix)]
 static MATRIX_STAGE_CACHE: std::sync::Mutex<Option<(usize, usize, u64)>> =
@@ -138,6 +169,7 @@ pub(crate) struct CxlTmatmulRunStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Nvint4HardwareStatus {
+    pub(crate) v3_status: u32,
     pub(crate) instruction_dma_status: u32,
     pub(crate) stall_status: u32,
     pub(crate) wide_dma_status: u32,
@@ -146,6 +178,12 @@ pub(crate) struct Nvint4HardwareStatus {
     pub(crate) ls_read_beats: u32,
     pub(crate) tmatmul_read_beats: u32,
     pub(crate) elapsed_us: u64,
+    pub(crate) staging_backend: &'static str,
+    pub(crate) numa_node: Option<u32>,
+    pub(crate) matrix_dpa: u64,
+    pub(crate) input_dpa: u64,
+    pub(crate) output_dpa: u64,
+    pub(crate) program_dpa: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +193,17 @@ struct Nvint4FixedLayout {
     output: (usize, usize),
     program: (usize, usize),
     dax_len: usize,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Nvint4RuntimeLayout {
+    matrix_dpa: u64,
+    input_dpa: u64,
+    output_dpa: u64,
+    program_dpa: u64,
+    staging_backend: &'static str,
+    numa_node: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +245,7 @@ struct CxlType2TmatmulCsrRun {
 enum StagingBackend {
     Mmap,
     CsrProbe,
+    NumaMemcpy,
 }
 
 #[cfg(unix)]
@@ -304,8 +354,9 @@ fn parse_staging_backend(value: Option<&str>) -> Result<StagingBackend, CxlTmatm
     match value.unwrap_or("mmap") {
         "" | "mmap" | "dax" | "hpa" => Ok(StagingBackend::Mmap),
         "csr" | "csr_probe" | "probe" => Ok(StagingBackend::CsrProbe),
+        "numa" | "numa_memcpy" | "numa-memcpy" => Ok(StagingBackend::NumaMemcpy),
         other => Err(CxlTmatmulError::Io(format!(
-            "invalid HETGPU_CXL_TMATMUL_STAGING={other:?}, expected mmap or csr_probe"
+            "invalid HETGPU_CXL_TMATMUL_STAGING={other:?}, expected mmap, csr_probe, or numa_memcpy"
         ))),
     }
 }
@@ -647,26 +698,7 @@ pub(crate) fn assemble_tmatmul_program(
 ) -> Result<Vec<u8>, CxlTmatmulError> {
     let mut program = Vec::new();
 
-    for (line_idx, raw_line) in assembly.lines().enumerate() {
-        let line_no = line_idx + 1;
-        let line = raw_line.split(';').next().unwrap_or("").trim();
-        if line.is_empty()
-            || line.starts_with('.')
-            || line == "{"
-            || line == "}"
-            || line.ends_with(':')
-        {
-            continue;
-        }
-
-        let tokens: Vec<&str> = line
-            .split(|c: char| c.is_whitespace() || c == ',')
-            .filter(|token| !token.is_empty())
-            .collect();
-        if tokens.is_empty() {
-            continue;
-        }
-
+    for (line_no, tokens) in executable_assembly_tokens(assembly) {
         let instr = assemble_tmatmul_instruction(line_no, &tokens, labels)?;
         program.extend_from_slice(&instr);
     }
@@ -678,6 +710,116 @@ pub(crate) fn assemble_tmatmul_program(
     }
 
     finalize_replay_safe_program(program)
+}
+
+fn executable_assembly_tokens(assembly: &str) -> Vec<(usize, Vec<&str>)> {
+    assembly
+        .lines()
+        .enumerate()
+        .filter_map(|(line_idx, raw_line)| {
+            let line_no = line_idx + 1;
+            let line = raw_line.split(';').next().unwrap_or("").trim();
+            if line.is_empty()
+                || line.starts_with('.')
+                || line == "{"
+                || line == "}"
+                || line.ends_with(':')
+            {
+                return None;
+            }
+
+            let tokens: Vec<&str> = line
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .filter(|token| !token.is_empty())
+                .collect();
+            (!tokens.is_empty()).then_some((line_no, tokens))
+        })
+        .collect()
+}
+
+fn verify_tmatmul_assembly_for_submit(
+    assembly: &str,
+    labels: &HashMap<String, u64>,
+    expected_matrix_dpa: u64,
+) -> Result<Vec<u8>, CxlTmatmulError> {
+    let program = assemble_tmatmul_program(assembly, labels)?;
+    let mut flow = Vec::new();
+
+    for (line_no, tokens) in executable_assembly_tokens(assembly) {
+        let op = tokens[0].to_ascii_lowercase();
+        match op.as_str() {
+            "ldv" => {
+                let addr = resolve_address(line_no, tokens[2], labels)?;
+                verify_submit_dpa(line_no, "ldv", "read input", addr, TMATMUL_DPA_INPUT)?;
+                flow.push("ldv");
+            }
+            "tmatmul_import" => {
+                flow.push("tmatmul_import");
+            }
+            "tmatmul_go" | "tmatmul_go_nvint8" => {
+                let addr = resolve_address(line_no, tokens[1], labels)?;
+                verify_submit_dpa(
+                    line_no,
+                    op.as_str(),
+                    "read matrix",
+                    addr,
+                    expected_matrix_dpa,
+                )?;
+                flow.push("tmatmul_go");
+            }
+            "tmatmul_export" => {
+                flow.push("tmatmul_export");
+            }
+            "sv" => {
+                let addr = resolve_address(line_no, tokens[2], labels)?;
+                verify_submit_dpa(line_no, "sv", "write output", addr, TMATMUL_DPA_OUTPUT)?;
+                flow.push("sv");
+            }
+            "stall" => {
+                flow.push("stall");
+            }
+            _ => {
+                return Err(CxlTmatmulError::AssembleFailed(format!(
+                    "asm verification failed line {line_no}: unsupported instruction '{}' for RUN_CSR_ONLY matmul submit",
+                    tokens[0]
+                )));
+            }
+        }
+    }
+
+    let expected = [
+        "ldv",
+        "tmatmul_import",
+        "tmatmul_go",
+        "tmatmul_export",
+        "sv",
+        "stall",
+    ];
+    if flow.as_slice() != expected {
+        return Err(CxlTmatmulError::AssembleFailed(format!(
+            "asm verification failed: RUN_CSR_ONLY matmul submit expects exact flow {}, got {}",
+            expected.join(" -> "),
+            flow.join(" -> ")
+        )));
+    }
+
+    Ok(program)
+}
+
+fn verify_submit_dpa(
+    line_no: usize,
+    op: &str,
+    action: &str,
+    actual: u64,
+    expected: u64,
+) -> Result<(), CxlTmatmulError> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(CxlTmatmulError::AssembleFailed(format!(
+            "asm verification failed line {line_no}: {op} must {action} DPA 0x{expected:08x}, got 0x{actual:08x}"
+        )))
+    }
 }
 
 #[cfg(unix)]
@@ -698,7 +840,8 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
         ));
     }
 
-    let program = assemble_tmatmul_program(assembly, labels)?;
+    let matrix_offset = matrix_dpa_offset()?;
+    let program = verify_tmatmul_assembly_for_submit(assembly, labels, matrix_offset)?;
     if program.len() != TMATMUL_PROGRAM_BYTES {
         return Err(CxlTmatmulError::Device(format!(
             "RUN_CSR_ONLY fetches exactly {TMATMUL_PROGRAM_BYTES} bytes, encoded program is {} bytes",
@@ -728,7 +871,6 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
     let dim = usize::try_from(info.dim_d).map_err(|_| CxlTmatmulError::SizeOverflow)?;
     let matrix_len = matrix_bytes_for_assembly(dim, assembly)?;
     let vector_len = vector_bytes(dim)?;
-    let matrix_offset = matrix_dpa_offset()?;
     let matrix_stage_mode = matrix_stage_mode()?;
     let io_stage_mode = io_stage_mode()?;
     validate_fixed_layout_at_offsets(matrix_offset, matrix_len, vector_len, program.len())?;
@@ -825,18 +967,6 @@ pub(crate) unsafe fn submit_nvint4_packed_hardware_from_device_ptrs(
         )));
     }
 
-    let layout = nvint4_fixed_layout()?;
-    let program = assemble_tmatmul_program(
-        "
-        ldv v0,0x400000
-        tmatmul_import v0
-        tmatmul_go 0x000000
-        stall
-        ",
-        &HashMap::new(),
-    )?;
-    let program = program_fetch_image(&program)?;
-
     let device_path = cxl_tmatmul_device_path();
     let device = OpenOptions::new()
         .read(true)
@@ -844,6 +974,7 @@ pub(crate) unsafe fn submit_nvint4_packed_hardware_from_device_ptrs(
         .open(&device_path)
         .map_err(|e| CxlTmatmulError::Io(format!("open {device_path}: {e}")))?;
     let info = get_info(&device)?;
+    record_hardware_phase("get_info_done")?;
     if info.version != CXL_TYPE2_TMATMUL_UAPI_VERSION {
         return Err(CxlTmatmulError::Device(format!(
             "unsupported UAPI version {}, expected {}",
@@ -875,31 +1006,51 @@ pub(crate) unsafe fn submit_nvint4_packed_hardware_from_device_ptrs(
         )));
     }
 
-    let mut staging = StagingMap::open_cuda_dax(layout.dax_len)?;
-    staging.stage_cuda_dax_device_to_offset_on_stream(
+    record_hardware_phase("staging_open_start")?;
+    let (mut staging, layout) = Nvint4DataStage::open()?;
+    record_hardware_phase(&format!(
+        "staging_open_done backend={} node={:?} matrix_dpa=0x{:x} input_dpa=0x{:x} output_dpa=0x{:x} program_dpa=0x{:x}",
+        layout.staging_backend,
+        layout.numa_node,
+        layout.matrix_dpa,
+        layout.input_dpa,
+        layout.output_dpa,
+        layout.program_dpa
+    ))?;
+    staging.stage_device(
         packed_matrix_ptr,
         NVINT4_PACKED_BYTES,
-        TMATMUL_DPA_MATRIX,
+        layout.matrix_dpa,
         "NVINT4 packed matrix",
         cuda,
     )?;
-    staging.stage_cuda_dax_device_to_offset_on_stream(
+    record_hardware_phase("matrix_stage_done")?;
+    staging.stage_device(
         input_ptr,
         NVINT4_INPUT_BYTES,
-        TMATMUL_DPA_INPUT,
+        layout.input_dpa,
         "NVINT4 input q8.8",
         cuda,
     )?;
-    staging.fill_bytes(TMATMUL_DPA_OUTPUT, 0xa5, NVINT4_OUTPUT_BYTES)?;
-    staging.stage_bytes(TMATMUL_DPA_PROGRAM, &program)?;
+    record_hardware_phase("input_stage_done")?;
+    staging.fill_bytes(layout.output_dpa, 0xa5, NVINT4_OUTPUT_BYTES)?;
+    record_hardware_phase("output_stage_done")?;
 
+    record_hardware_phase("csr_map_start")?;
     let bar = StagingMap::open_csr_probe(0)?;
     let bar_dim = bar.csr_mmio_rd32(CSR_DIM_D)?;
     let bar_width = bar.csr_mmio_rd32(CSR_DDR_DATA_WIDTH)?;
     let bar_mc = bar.csr_mmio_rd32(CSR_MC_STATUS)?;
+    let hw_version = bar.csr_mmio_rd32(CSR_HW_VERSION)?;
+    let hw_caps = bar.csr_mmio_rd32(CSR_HW_CAPS)?;
     if bar_dim != dim || bar_width != 512 || !mc_ready(bar_mc) {
         return Err(CxlTmatmulError::Device(format!(
             "BAR contract mismatch: dim={bar_dim} width={bar_width} mc_status=0x{bar_mc:08x}"
+        )));
+    }
+    if hw_version != TMATMUL_V3_HW_VERSION {
+        return Err(CxlTmatmulError::Device(format!(
+            "NVINT4 direct descriptor requires V3 hardware, got version={hw_version} caps=0x{hw_caps:08x}"
         )));
     }
     for (name, status) in [
@@ -915,8 +1066,11 @@ pub(crate) unsafe fn submit_nvint4_packed_hardware_from_device_ptrs(
             )));
         }
     }
+    record_hardware_phase("csr_contract_done")?;
 
+    record_hardware_phase("instruction_reset_start")?;
     bar.reset_instruction_engine_before_run()?;
+    record_hardware_phase("instruction_reset_done")?;
     let timeout_ms = timeout_ms_or_default(timeout_ms);
     let started = std::time::Instant::now();
     let deadline = started + std::time::Duration::from_millis(timeout_ms as u64);
@@ -932,9 +1086,15 @@ pub(crate) unsafe fn submit_nvint4_packed_hardware_from_device_ptrs(
     let instruction_before = bar.csr_mmio_rd32(CSR_INST_DBG_INSTR_CNT)?;
     let ls_read_before = bar.csr_mmio_rd32(CSR_INST_DBG_LS_R_BEAT)?;
     let tmatmul_read_before = bar.csr_mmio_rd32(CSR_INST_DBG_TM_R_BEAT)?;
-    let writes = nvint4_launch_writes(TMATMUL_DPA_OUTPUT, NVINT4_OUTPUT_BYTES)?;
+    let writes = nvint4_v3_launch_writes(
+        layout.output_dpa,
+        NVINT4_OUTPUT_BYTES,
+        layout.input_dpa,
+        layout.matrix_dpa,
+    )?;
+    record_hardware_phase("wide_dma_start")?;
     for &(offset, value) in &writes[..4] {
-        bar.csr_mmio_wr32(offset, value)?;
+        recorded_csr_write(&bar, "wide_dma", offset, value)?;
     }
     loop {
         let status = bar.csr_mmio_rd32(CSR_INST_WIDE_DMA_STATUS)?;
@@ -958,17 +1118,27 @@ pub(crate) unsafe fn submit_nvint4_packed_hardware_from_device_ptrs(
         }
         std::hint::spin_loop();
     }
+    record_hardware_phase("wide_dma_running")?;
+    record_hardware_phase("v3_launch_start")?;
     for &(offset, value) in &writes[4..] {
-        bar.csr_mmio_wr32(offset, value)?;
+        recorded_csr_write(&bar, "v3_descriptor", offset, value)?;
     }
+    record_hardware_phase("v3_launch_written")?;
 
     let mut status;
+    let mut first_status_read = true;
     loop {
-        let instruction_dma_status = bar.csr_mmio_rd32(CSR_INST_INSTR_STATUS_EXPLICIT)?;
+        let v3_status = bar.csr_mmio_rd32(CSR_V3_STATUS)? & 0xff;
         let wide_dma_status = bar.csr_mmio_rd32(CSR_INST_WIDE_DMA_STATUS)?;
-        if !dma_status_is_valid(instruction_dma_status) || !dma_status_is_valid(wide_dma_status) {
+        if first_status_read {
+            record_hardware_phase(&format!(
+                "v3_first_status_read v3=0x{v3_status:02x} wide=0x{wide_dma_status:02x}"
+            ))?;
+            first_status_read = false;
+        }
+        if !dma_status_is_valid(v3_status) || !dma_status_is_valid(wide_dma_status) {
             return Err(CxlTmatmulError::Device(format!(
-                "invalid DMA status: instruction=0x{instruction_dma_status:08x} wide=0x{wide_dma_status:08x}"
+                "invalid V3 status: v3=0x{v3_status:08x} wide=0x{wide_dma_status:08x}"
             )));
         }
         let current_dim = bar.csr_mmio_rd32(CSR_DIM_D)?;
@@ -978,7 +1148,8 @@ pub(crate) unsafe fn submit_nvint4_packed_hardware_from_device_ptrs(
             )));
         }
         status = Nvint4HardwareStatus {
-            instruction_dma_status,
+            v3_status,
+            instruction_dma_status: DMA_IDLE,
             stall_status: bar.csr_mmio_rd32(CSR_INST_STALL_STATUS)?,
             wide_dma_status,
             exec_status: bar.csr_mmio_rd32(CSR_INST_EXEC_STATUS)?,
@@ -992,13 +1163,19 @@ pub(crate) unsafe fn submit_nvint4_packed_hardware_from_device_ptrs(
                 .csr_mmio_rd32(CSR_INST_DBG_TM_R_BEAT)?
                 .wrapping_sub(tmatmul_read_before),
             elapsed_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            staging_backend: layout.staging_backend,
+            numa_node: layout.numa_node,
+            matrix_dpa: layout.matrix_dpa,
+            input_dpa: layout.input_dpa,
+            output_dpa: layout.output_dpa,
+            program_dpa: layout.program_dpa,
         };
-        if let Some(error) = nvint4_completion_error(&status) {
+        if let Some(error) = nvint4_v3_completion_error(&status) {
             return Err(CxlTmatmulError::Device(format!(
                 "NVINT4 hardware execution failed: {error}; status={status:?}"
             )));
         }
-        if nvint4_is_complete(&status) {
+        if nvint4_v3_is_complete(&status) {
             break;
         }
         if std::time::Instant::now() >= deadline {
@@ -1008,15 +1185,55 @@ pub(crate) unsafe fn submit_nvint4_packed_hardware_from_device_ptrs(
         }
         std::hint::spin_loop();
     }
+    record_hardware_phase("hardware_complete")?;
 
-    staging.copy_cuda_dax_offset_to_device_on_stream(
+    staging.copy_to_device(
         output_ptr,
         NVINT4_OUTPUT_BYTES,
-        TMATMUL_DPA_OUTPUT,
+        layout.output_dpa,
         "NVINT4 raw s64 output",
         cuda,
     )?;
+    record_hardware_phase("output_copy_done")?;
     Ok(status)
+}
+
+#[cfg(unix)]
+fn record_hardware_phase(phase: &str) -> Result<(), CxlTmatmulError> {
+    let Some(path) = std::env::var_os("HETGPU_TMATMUL_PHASE_LOG") else {
+        return Ok(());
+    };
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .write(true)
+        .custom_flags(libc::O_DSYNC)
+        .open(&path)
+        .map_err(|e| {
+            CxlTmatmulError::Io(format!(
+                "open HETGPU_TMATMUL_PHASE_LOG {}: {e}",
+                PathBuf::from(&path).display()
+            ))
+        })?;
+    writeln!(log, "rust {phase}")
+        .and_then(|_| log.sync_data())
+        .map_err(|e| CxlTmatmulError::Io(format!("persist hardware phase {phase:?}: {e}")))
+}
+
+#[cfg(unix)]
+fn recorded_csr_write(
+    bar: &StagingMap,
+    group: &str,
+    offset: usize,
+    value: u32,
+) -> Result<(), CxlTmatmulError> {
+    record_hardware_phase(&format!(
+        "{group}_write_before offset=0x{offset:x} value=0x{value:08x}"
+    ))?;
+    bar.csr_mmio_wr32(offset, value)?;
+    record_hardware_phase(&format!(
+        "{group}_write_after offset=0x{offset:x} value=0x{value:08x}"
+    ))
 }
 
 #[cfg(not(unix))]
@@ -1336,6 +1553,7 @@ fn nvint4_fixed_layout() -> Result<Nvint4FixedLayout, CxlTmatmulError> {
 fn nvint4_launch_writes(
     output_dpa: u64,
     output_bytes: usize,
+    program_dpa: u64,
 ) -> Result<Vec<(usize, u32)>, CxlTmatmulError> {
     let output_bytes = u32::try_from(output_bytes).map_err(|_| CxlTmatmulError::SizeOverflow)?;
     Ok(vec![
@@ -1343,11 +1561,80 @@ fn nvint4_launch_writes(
         (CSR_INST_WIDE_DMA_DST_HI, (output_dpa >> 32) as u32),
         (CSR_INST_WIDE_DMA_LEN, output_bytes),
         (CSR_INST_WIDE_DMA_START, 1),
-        (CSR_INST_INSTR_SRC_LO, TMATMUL_DPA_PROGRAM as u32),
-        (CSR_INST_INSTR_SRC_HI, (TMATMUL_DPA_PROGRAM >> 32) as u32),
+        (CSR_INST_INSTR_SRC_LO, program_dpa as u32),
+        (CSR_INST_INSTR_SRC_HI, (program_dpa >> 32) as u32),
         (CSR_INST_INSTR_LEN, TMATMUL_PROGRAM_BYTES as u32),
         (CSR_INST_INSTR_START, 1),
     ])
+}
+
+fn nvint4_v3_launch_writes(
+    output_dpa: u64,
+    output_bytes: usize,
+    input_dpa: u64,
+    matrix_dpa: u64,
+) -> Result<Vec<(usize, u32)>, CxlTmatmulError> {
+    let output_bytes = u32::try_from(output_bytes).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+    Ok(vec![
+        (CSR_INST_WIDE_DMA_DST_LO, output_dpa as u32),
+        (CSR_INST_WIDE_DMA_DST_HI, (output_dpa >> 32) as u32),
+        (CSR_INST_WIDE_DMA_LEN, output_bytes),
+        (CSR_INST_WIDE_DMA_START, 1),
+        (CSR_V3_INPUT_LO, input_dpa as u32),
+        (CSR_V3_INPUT_HI, (input_dpa >> 32) as u32),
+        (CSR_V3_MATRIX_LO, matrix_dpa as u32),
+        (CSR_V3_MATRIX_HI, (matrix_dpa >> 32) as u32),
+        (CSR_V3_LAUNCH, 1),
+    ])
+}
+
+fn nvint4_v3_completion_error(status: &Nvint4HardwareStatus) -> Option<String> {
+    if status.v3_status == DMA_ERROR {
+        return Some("V3 descriptor reported ERROR".to_string());
+    }
+    if status.wide_dma_status == DMA_ERROR {
+        return Some("wide DMA reported ERROR".to_string());
+    }
+    if status.exec_status & 1 != 0 {
+        return Some(format!(
+            "unsupported/illegal opcode: exec_status=0x{:08x}",
+            status.exec_status
+        ));
+    }
+    if status.v3_status == DMA_DONE
+        && status.stall_status != 0
+        && status.wide_dma_status == DMA_DONE
+        && status.tmatmul_read_beats != NVINT4_EXPECTED_TM_READ_BEATS
+    {
+        return Some(format!(
+            "tmatmul read beats {} != {}",
+            status.tmatmul_read_beats, NVINT4_EXPECTED_TM_READ_BEATS
+        ));
+    }
+    None
+}
+
+fn nvint4_v3_is_complete(status: &Nvint4HardwareStatus) -> bool {
+    nvint4_v3_completion_error(status).is_none()
+        && status.v3_status == DMA_DONE
+        && status.stall_status != 0
+        && status.wide_dma_status == DMA_DONE
+}
+
+#[cfg(unix)]
+fn numa_dpa_candidate_is_eligible(dpa_base: u64, max_dpa: u64) -> bool {
+    dpa_base
+        .checked_add(NUMA_HUGEPAGE_BYTES as u64)
+        .is_some_and(|end| end <= max_dpa)
+}
+
+#[cfg(unix)]
+fn select_lowest_numa_dpa(candidates: &[u64], max_dpa: u64) -> Option<u64> {
+    candidates
+        .iter()
+        .copied()
+        .filter(|&dpa| numa_dpa_candidate_is_eligible(dpa, max_dpa))
+        .min()
 }
 
 fn nvint4_completion_error(status: &Nvint4HardwareStatus) -> Option<String> {
@@ -1745,6 +2032,472 @@ fn run_prepared_hardware_matmul_via_bar(
 }
 
 #[cfg(unix)]
+struct NumaStaging {
+    ptr: *mut u8,
+    len: usize,
+    dpa_base: u64,
+    hpa_base: u64,
+    node: u32,
+}
+
+#[cfg(unix)]
+struct NumaCandidate {
+    ptr: *mut u8,
+    hpa_base: u64,
+    dpa_base: u64,
+}
+
+#[cfg(unix)]
+impl Drop for NumaCandidate {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe {
+                libc::munmap(self.ptr.cast(), NUMA_HUGEPAGE_BYTES);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl NumaStaging {
+    fn open() -> Result<Self, CxlTmatmulError> {
+        let node = env_u32_any(
+            &["HETGPU_TMATMUL_NUMA_NODE", "HETGPU_CXL_TMATMUL_NUMA_NODE"],
+            NUMA_DEFAULT_NODE,
+        )?;
+        if node >= usize::BITS {
+            return Err(CxlTmatmulError::Device(format!(
+                "NUMA node {node} does not fit the local nodemask"
+            )));
+        }
+        let aperture_base = env_u64_any(&[
+            "HETGPU_TMATMUL_NUMA_HPA_BASE",
+            "HETGPU_CXL_TMATMUL_NUMA_HPA_BASE",
+        ])?
+        .unwrap_or(NUMA_DEFAULT_HPA_BASE);
+        let aperture_size = env_u64_any(&[
+            "HETGPU_TMATMUL_NUMA_HPA_SIZE",
+            "HETGPU_CXL_TMATMUL_NUMA_HPA_SIZE",
+        ])?
+        .unwrap_or(NUMA_DEFAULT_HPA_SIZE);
+        let aperture_end = aperture_base
+            .checked_add(aperture_size)
+            .ok_or(CxlTmatmulError::SizeOverflow)?;
+        let max_dpa = env_u64_any(&[
+            "HETGPU_TMATMUL_NUMA_MAX_DPA",
+            "HETGPU_CXL_TMATMUL_NUMA_MAX_DPA",
+        ])?
+        .unwrap_or(NUMA_DEFAULT_MAX_DPA);
+        let scan_pages = env_u32_any(
+            &[
+                "HETGPU_TMATMUL_NUMA_SCAN_PAGES",
+                "HETGPU_CXL_TMATMUL_NUMA_SCAN_PAGES",
+            ],
+            NUMA_DEFAULT_SCAN_PAGES,
+        )?;
+        if scan_pages == 0 {
+            return Err(CxlTmatmulError::Device(
+                "NUMA huge-page scan requires at least one candidate".to_string(),
+            ));
+        }
+        if max_dpa > aperture_size {
+            return Err(CxlTmatmulError::Device(format!(
+                "NUMA max DPA 0x{max_dpa:x} exceeds aperture size 0x{aperture_size:x}"
+            )));
+        }
+
+        let nodemask = 1usize << node;
+        let maxnode = libc::c_ulong::from(usize::BITS);
+        let bind_rc = unsafe {
+            libc::syscall(
+                libc::SYS_set_mempolicy,
+                libc::MPOL_BIND,
+                &nodemask as *const usize,
+                maxnode,
+            )
+        };
+        if bind_rc != 0 {
+            return Err(CxlTmatmulError::Io(format!(
+                "set_mempolicy(MPOL_BIND,node={node}): {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        let huge_flags = libc::MAP_PRIVATE
+            | libc::MAP_ANONYMOUS
+            | libc::MAP_HUGETLB
+            | (NUMA_HUGEPAGE_SHIFT << libc::MAP_HUGE_SHIFT);
+        let allocation_result = (|| {
+            let mut candidates = Vec::new();
+            let mut allocation_error = None;
+            for _ in 0..scan_pages {
+                let mapping = unsafe {
+                    libc::mmap(
+                        ptr::null_mut(),
+                        NUMA_HUGEPAGE_BYTES,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        huge_flags,
+                        -1,
+                        0,
+                    )
+                };
+                if mapping == libc::MAP_FAILED {
+                    allocation_error = Some(std::io::Error::last_os_error());
+                    break;
+                }
+                candidates.push(inspect_numa_mapping(
+                    mapping.cast::<u8>(),
+                    node,
+                    aperture_base,
+                    aperture_end,
+                )?);
+            }
+            if candidates.is_empty() {
+                let error = allocation_error
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| "no candidate mappings returned".to_string());
+                return Err(CxlTmatmulError::Io(format!(
+                    "mmap a 2 MiB huge page on NUMA node {node}: {error}; reserve pages through node{node}/hugepages/hugepages-2048kB/nr_hugepages"
+                )));
+            }
+            Ok(candidates)
+        })();
+        let reset_rc = unsafe {
+            libc::syscall(
+                libc::SYS_set_mempolicy,
+                libc::MPOL_DEFAULT,
+                ptr::null::<usize>(),
+                0usize,
+            )
+        };
+        if reset_rc != 0 {
+            return Err(CxlTmatmulError::Io(format!(
+                "reset NUMA memory policy: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let mut candidates = allocation_result?;
+        let candidate_dpas = candidates
+            .iter()
+            .map(|candidate| candidate.dpa_base)
+            .collect::<Vec<_>>();
+        let selected_dpa = select_lowest_numa_dpa(&candidate_dpas, max_dpa).ok_or_else(|| {
+            let lowest = candidate_dpas.iter().copied().min().unwrap_or(u64::MAX);
+            CxlTmatmulError::Device(format!(
+                "no NUMA huge page fits below max DPA 0x{max_dpa:x}; lowest of {} candidates was 0x{lowest:x}; reserve a lower-DPA node{node} huge-page pool or raise HETGPU_TMATMUL_NUMA_SCAN_PAGES",
+                candidate_dpas.len()
+            ))
+        })?;
+        let selected_index = candidates
+            .iter()
+            .position(|candidate| candidate.dpa_base == selected_dpa)
+            .ok_or(CxlTmatmulError::SizeOverflow)?;
+        let mut selected = candidates.swap_remove(selected_index);
+        let mapping = selected.ptr;
+        selected.ptr = ptr::null_mut();
+        let hpa_base = selected.hpa_base;
+        let dpa_base = selected.dpa_base;
+        drop(selected);
+        drop(candidates);
+        eprintln!(
+            "[CXL TMatmul] numa_memcpy selected node={} hpa=0x{:x} dpa=0x{:x} bytes={} max_dpa=0x{:x} candidates={}",
+            node,
+            hpa_base,
+            dpa_base,
+            NUMA_HUGEPAGE_BYTES,
+            max_dpa,
+            candidate_dpas.len()
+        );
+        Ok(Self {
+            ptr: mapping,
+            len: NUMA_HUGEPAGE_BYTES,
+            dpa_base,
+            hpa_base,
+            node,
+        })
+    }
+
+    fn runtime_layout(&self) -> Result<Nvint4RuntimeLayout, CxlTmatmulError> {
+        let dpa = |local: usize| {
+            self.dpa_base
+                .checked_add(local as u64)
+                .ok_or(CxlTmatmulError::SizeOverflow)
+        };
+        let layout = Nvint4RuntimeLayout {
+            matrix_dpa: dpa(NUMA_LOCAL_MATRIX)?,
+            input_dpa: dpa(NUMA_LOCAL_INPUT)?,
+            output_dpa: dpa(NUMA_LOCAL_OUTPUT)?,
+            program_dpa: dpa(NUMA_LOCAL_PROGRAM)?,
+            staging_backend: "numa_memcpy",
+            numa_node: Some(self.node),
+        };
+        self.local_offset(layout.matrix_dpa, NVINT4_PACKED_BYTES)?;
+        self.local_offset(layout.input_dpa, NVINT4_INPUT_BYTES)?;
+        self.local_offset(layout.output_dpa, NVINT4_OUTPUT_BYTES)?;
+        self.local_offset(layout.program_dpa, TMATMUL_PROGRAM_BYTES)?;
+        Ok(layout)
+    }
+
+    fn local_offset(&self, dpa: u64, bytes: usize) -> Result<usize, CxlTmatmulError> {
+        let local = dpa.checked_sub(self.dpa_base).ok_or_else(|| {
+            CxlTmatmulError::Device(format!(
+                "DPA 0x{dpa:x} precedes NUMA staging DPA 0x{:x}",
+                self.dpa_base
+            ))
+        })?;
+        let local = usize::try_from(local).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+        let end = local
+            .checked_add(bytes)
+            .ok_or(CxlTmatmulError::SizeOverflow)?;
+        if end > self.len {
+            return Err(CxlTmatmulError::AllocationTooSmall {
+                name: "NUMA huge page",
+                have: self.len,
+                need: end,
+            });
+        }
+        Ok(local)
+    }
+
+    fn stage_device(
+        &mut self,
+        device_ptr: usize,
+        bytes: usize,
+        dpa: u64,
+        label: &str,
+        cuda: CudaDaxContext,
+    ) -> Result<(), CxlTmatmulError> {
+        let local = self.local_offset(dpa, bytes)?;
+        let mut host = vec![0u8; bytes];
+        unsafe {
+            CudaRuntime::load()?
+                .copy_device_to_host_on_stream(device_ptr, &mut host, label, cuda)?;
+            ptr::copy_nonoverlapping(host.as_ptr(), self.ptr.add(local), bytes);
+            flush_range(self.ptr.add(local), bytes);
+        }
+        eprintln!(
+            "[CXL TMatmul] numa_memcpy staged {} bytes={} node={} dpa=0x{:x}",
+            label, bytes, self.node, dpa
+        );
+        Ok(())
+    }
+
+    fn stage_bytes(&mut self, dpa: u64, bytes: &[u8]) -> Result<(), CxlTmatmulError> {
+        let local = self.local_offset(dpa, bytes.len())?;
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), self.ptr.add(local), bytes.len());
+            flush_range(self.ptr.add(local), bytes.len());
+        }
+        Ok(())
+    }
+
+    fn fill_bytes(&mut self, dpa: u64, value: u8, bytes: usize) -> Result<(), CxlTmatmulError> {
+        let local = self.local_offset(dpa, bytes)?;
+        unsafe {
+            ptr::write_bytes(self.ptr.add(local), value, bytes);
+            flush_range(self.ptr.add(local), bytes);
+        }
+        Ok(())
+    }
+
+    fn copy_to_device(
+        &mut self,
+        device_ptr: usize,
+        bytes: usize,
+        dpa: u64,
+        label: &str,
+        cuda: CudaDaxContext,
+    ) -> Result<(), CxlTmatmulError> {
+        let local = self.local_offset(dpa, bytes)?;
+        let mut host = vec![0u8; bytes];
+        unsafe {
+            invalidate_range(self.ptr.add(local), bytes);
+            ptr::copy_nonoverlapping(self.ptr.add(local), host.as_mut_ptr(), bytes);
+            CudaRuntime::load()?.copy_host_to_device_on_stream(device_ptr, &host, label, cuda)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn inspect_numa_mapping(
+    mapping: *mut u8,
+    node: u32,
+    aperture_base: u64,
+    aperture_end: u64,
+) -> Result<NumaCandidate, CxlTmatmulError> {
+    let candidate = NumaCandidate {
+        ptr: mapping,
+        hpa_base: 0,
+        dpa_base: 0,
+    };
+    unsafe {
+        ptr::write_bytes(mapping, 0, NUMA_HUGEPAGE_BYTES);
+    }
+
+    let page_size = page_size();
+    let page_count = NUMA_HUGEPAGE_BYTES / page_size;
+    let mut pages = (0..page_count)
+        .map(|index| unsafe { mapping.add(index * page_size).cast::<libc::c_void>() })
+        .collect::<Vec<_>>();
+    let mut status = vec![0i32; page_count];
+    let move_rc = unsafe {
+        libc::syscall(
+            libc::SYS_move_pages,
+            0i32,
+            page_count,
+            pages.as_mut_ptr(),
+            ptr::null::<i32>(),
+            status.as_mut_ptr(),
+            0i32,
+        )
+    };
+    if move_rc != 0 || status.iter().any(|&actual| actual != node as i32) {
+        return Err(CxlTmatmulError::Device(format!(
+            "NUMA huge page placement verification failed for node {node}: rc={move_rc} status={status:?}"
+        )));
+    }
+
+    let pagemap = File::open("/proc/self/pagemap")
+        .map_err(|e| CxlTmatmulError::Io(format!("open /proc/self/pagemap: {e}")))?;
+    let mut first_pfn = None;
+    for index in 0..page_count {
+        let virtual_page = unsafe { mapping.add(index * page_size) } as u64 / page_size as u64;
+        let mut bytes = [0u8; 8];
+        pagemap
+            .read_exact_at(&mut bytes, virtual_page * 8)
+            .map_err(|e| CxlTmatmulError::Io(format!("read /proc/self/pagemap: {e}")))?;
+        let entry = u64::from_ne_bytes(bytes);
+        let pfn = entry & ((1u64 << 55) - 1);
+        if (entry & (1u64 << 63)) == 0 || pfn == 0 {
+            return Err(CxlTmatmulError::Device(format!(
+                "pagemap did not expose a present PFN for NUMA page {index}"
+            )));
+        }
+        let base = *first_pfn.get_or_insert(pfn);
+        if pfn != base + index as u64 {
+            return Err(CxlTmatmulError::Device(format!(
+                "NUMA huge page is not physically contiguous at page {index}: first_pfn=0x{base:x} pfn=0x{pfn:x}"
+            )));
+        }
+    }
+
+    let hpa_base = first_pfn
+        .ok_or(CxlTmatmulError::SizeOverflow)?
+        .checked_mul(page_size as u64)
+        .ok_or(CxlTmatmulError::SizeOverflow)?;
+    let hpa_end = hpa_base
+        .checked_add(NUMA_HUGEPAGE_BYTES as u64)
+        .ok_or(CxlTmatmulError::SizeOverflow)?;
+    if hpa_base < aperture_base || hpa_end > aperture_end {
+        return Err(CxlTmatmulError::Device(format!(
+            "NUMA node {node} huge page HPA 0x{hpa_base:x}..0x{hpa_end:x} is outside Type-2 aperture 0x{aperture_base:x}..0x{aperture_end:x}"
+        )));
+    }
+
+    let mut candidate = candidate;
+    candidate.hpa_base = hpa_base;
+    candidate.dpa_base = hpa_base - aperture_base;
+    Ok(candidate)
+}
+
+#[cfg(unix)]
+impl Drop for NumaStaging {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.ptr.cast(), self.len);
+        }
+        eprintln!(
+            "[CXL TMatmul] numa_memcpy released node={} hpa=0x{:x} dpa=0x{:x}",
+            self.node, self.hpa_base, self.dpa_base
+        );
+    }
+}
+
+#[cfg(unix)]
+enum Nvint4DataStage {
+    CudaDax(StagingMap),
+    NumaMemcpy(NumaStaging),
+}
+
+#[cfg(unix)]
+impl Nvint4DataStage {
+    fn open() -> Result<(Self, Nvint4RuntimeLayout), CxlTmatmulError> {
+        match cxl_tmatmul_staging_backend()? {
+            StagingBackend::Mmap => {
+                let fixed = nvint4_fixed_layout()?;
+                let layout = Nvint4RuntimeLayout {
+                    matrix_dpa: TMATMUL_DPA_MATRIX,
+                    input_dpa: TMATMUL_DPA_INPUT,
+                    output_dpa: TMATMUL_DPA_OUTPUT,
+                    program_dpa: TMATMUL_DPA_PROGRAM,
+                    staging_backend: "cuda_dax",
+                    numa_node: None,
+                };
+                Ok((
+                    Self::CudaDax(StagingMap::open_cuda_dax(fixed.dax_len)?),
+                    layout,
+                ))
+            }
+            StagingBackend::NumaMemcpy => {
+                let staging = NumaStaging::open()?;
+                let layout = staging.runtime_layout()?;
+                Ok((Self::NumaMemcpy(staging), layout))
+            }
+            StagingBackend::CsrProbe => Err(CxlTmatmulError::Device(
+                "NVINT4 bulk staging does not support csr_probe".to_string(),
+            )),
+        }
+    }
+
+    fn stage_device(
+        &mut self,
+        device_ptr: usize,
+        bytes: usize,
+        dpa: u64,
+        label: &str,
+        cuda: CudaDaxContext,
+    ) -> Result<(), CxlTmatmulError> {
+        match self {
+            Self::CudaDax(staging) => staging
+                .stage_cuda_dax_device_to_offset_on_stream(device_ptr, bytes, dpa, label, cuda),
+            Self::NumaMemcpy(staging) => staging.stage_device(device_ptr, bytes, dpa, label, cuda),
+        }
+    }
+
+    fn stage_bytes(&mut self, dpa: u64, bytes: &[u8]) -> Result<(), CxlTmatmulError> {
+        match self {
+            Self::CudaDax(staging) => staging.stage_bytes(dpa, bytes),
+            Self::NumaMemcpy(staging) => staging.stage_bytes(dpa, bytes),
+        }
+    }
+
+    fn fill_bytes(&mut self, dpa: u64, value: u8, bytes: usize) -> Result<(), CxlTmatmulError> {
+        match self {
+            Self::CudaDax(staging) => staging.fill_bytes(dpa, value, bytes),
+            Self::NumaMemcpy(staging) => staging.fill_bytes(dpa, value, bytes),
+        }
+    }
+
+    fn copy_to_device(
+        &mut self,
+        device_ptr: usize,
+        bytes: usize,
+        dpa: u64,
+        label: &str,
+        cuda: CudaDaxContext,
+    ) -> Result<(), CxlTmatmulError> {
+        match self {
+            Self::CudaDax(staging) => staging
+                .copy_cuda_dax_offset_to_device_on_stream(device_ptr, bytes, dpa, label, cuda),
+            Self::NumaMemcpy(staging) => {
+                staging.copy_to_device(device_ptr, bytes, dpa, label, cuda)
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
 enum StagingMap {
     Mmap {
         ptr: *mut u8,
@@ -1771,8 +2524,15 @@ impl StagingMap {
     }
 
     fn open(used_len: usize) -> Result<Self, CxlTmatmulError> {
-        if cxl_tmatmul_staging_backend()? == StagingBackend::CsrProbe {
-            return Self::open_csr_probe(used_len);
+        match cxl_tmatmul_staging_backend()? {
+            StagingBackend::CsrProbe => return Self::open_csr_probe(used_len),
+            StagingBackend::NumaMemcpy => {
+                return Err(CxlTmatmulError::Device(
+                    "numa_memcpy staging is currently supported by the packed ternary NVINT4 route"
+                        .to_string(),
+                ));
+            }
+            StagingBackend::Mmap => {}
         }
 
         if let Some(hpa_base) = cxl_tmatmul_hpa_base()? {
@@ -1802,10 +2562,18 @@ impl StagingMap {
     }
 
     fn open_cuda_dax(used_len: usize) -> Result<Self, CxlTmatmulError> {
-        if cxl_tmatmul_staging_backend()? == StagingBackend::CsrProbe {
-            return Err(CxlTmatmulError::Device(
-                "cuda_dax matrix staging requires DAX mmap staging, not csr_probe".to_string(),
-            ));
+        match cxl_tmatmul_staging_backend()? {
+            StagingBackend::Mmap => {}
+            StagingBackend::CsrProbe => {
+                return Err(CxlTmatmulError::Device(
+                    "cuda_dax matrix staging requires DAX mmap staging, not csr_probe".to_string(),
+                ));
+            }
+            StagingBackend::NumaMemcpy => {
+                return Err(CxlTmatmulError::Device(
+                    "cuda_dax staging cannot open while numa_memcpy is selected".to_string(),
+                ));
+            }
         }
         if cxl_tmatmul_hpa_base()?.is_some() {
             return Err(CxlTmatmulError::Device(
@@ -2685,10 +3453,62 @@ impl CudaRuntime {
                 "cuda_dax {label} host source is empty"
             )));
         }
-        let gpu = cuda_dax_gpu()?;
-        let stream = cuda_dax_stream()?;
-        self.check_cuda("cudaSetDevice", (self.cuda_set_device)(gpu))?;
-        let stream_ptr = stream as *mut libc::c_void;
+        self.copy_host_to_device_on_stream(
+            device_ptr,
+            bytes,
+            label,
+            CudaDaxContext {
+                gpu: cuda_dax_gpu()?,
+                stream: cuda_dax_stream()?,
+            },
+        )
+    }
+
+    unsafe fn copy_device_to_host_on_stream(
+        &self,
+        device_ptr: usize,
+        host: &mut [u8],
+        label: &str,
+        cuda: CudaDaxContext,
+    ) -> Result<(), CxlTmatmulError> {
+        if device_ptr == 0 || host.is_empty() {
+            return Err(CxlTmatmulError::Device(format!(
+                "numa_memcpy {label} has an invalid device source or empty host destination"
+            )));
+        }
+        self.check_cuda("cudaSetDevice", (self.cuda_set_device)(cuda.gpu))?;
+        let stream_ptr = cuda.stream as *mut libc::c_void;
+        self.check_cuda(
+            "cudaMemcpyAsync",
+            (self.cuda_memcpy_async)(
+                host.as_mut_ptr().cast::<libc::c_void>(),
+                device_ptr as *const libc::c_void,
+                host.len(),
+                CUDA_MEMCPY_DEFAULT,
+                stream_ptr,
+            ),
+        )?;
+        self.check_cuda(
+            "cudaStreamSynchronize",
+            (self.cuda_stream_synchronize)(stream_ptr),
+        )?;
+        Ok(())
+    }
+
+    unsafe fn copy_host_to_device_on_stream(
+        &self,
+        device_ptr: usize,
+        bytes: &[u8],
+        label: &str,
+        cuda: CudaDaxContext,
+    ) -> Result<(), CxlTmatmulError> {
+        if device_ptr == 0 || bytes.is_empty() {
+            return Err(CxlTmatmulError::Device(format!(
+                "numa_memcpy {label} has an invalid device destination or empty host source"
+            )));
+        }
+        self.check_cuda("cudaSetDevice", (self.cuda_set_device)(cuda.gpu))?;
+        let stream_ptr = cuda.stream as *mut libc::c_void;
         self.check_cuda(
             "cudaMemcpyAsync",
             (self.cuda_memcpy_async)(
@@ -2704,11 +3524,11 @@ impl CudaRuntime {
             (self.cuda_stream_synchronize)(stream_ptr),
         )?;
         eprintln!(
-            "[CXL TMatmul] cuda_dax copied {} host bytes={} gpu={} stream=0x{:x}",
+            "[CXL TMatmul] copied {} host bytes={} gpu={} stream=0x{:x}",
             label,
             bytes.len(),
-            gpu,
-            stream
+            cuda.gpu,
+            cuda.stream
         );
         Ok(())
     }
@@ -3357,6 +4177,42 @@ fn sanitize_kernel_name(kernel_name: &str) -> String {
 mod tests {
     use super::*;
 
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
+            let lock = super::super::test_env::lock();
+            let previous = vars
+                .iter()
+                .map(|(name, _)| (*name, std::env::var(name).ok()))
+                .collect::<Vec<_>>();
+            for (name, value) in vars {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+            Self {
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in self.previous.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
     const SIMPLE_PTX: &str = r#"
 .version 7.0
 .target sm_80
@@ -3392,7 +4248,9 @@ mod tests {
 
     #[test]
     fn nvint4_wide_dma_is_armed_before_instruction_start() {
-        let writes = nvint4_launch_writes(TMATMUL_DPA_OUTPUT, NVINT4_OUTPUT_BYTES).unwrap();
+        let writes =
+            nvint4_launch_writes(TMATMUL_DPA_OUTPUT, NVINT4_OUTPUT_BYTES, TMATMUL_DPA_PROGRAM)
+                .unwrap();
         assert_eq!(
             writes,
             vec![
@@ -3408,8 +4266,111 @@ mod tests {
         );
     }
 
+    #[test]
+    fn nvint4_v3_wide_dma_is_armed_before_direct_launch() {
+        let writes =
+            nvint4_v3_launch_writes(0x2010_1000, NVINT4_OUTPUT_BYTES, 0x2010_0000, 0x2000_0000)
+                .unwrap();
+
+        assert_eq!(
+            writes,
+            vec![
+                (CSR_INST_WIDE_DMA_DST_LO, 0x2010_1000),
+                (CSR_INST_WIDE_DMA_DST_HI, 0),
+                (CSR_INST_WIDE_DMA_LEN, 16_384),
+                (CSR_INST_WIDE_DMA_START, 1),
+                (CSR_V3_INPUT_LO, 0x2010_0000),
+                (CSR_V3_INPUT_HI, 0),
+                (CSR_V3_MATRIX_LO, 0x2000_0000),
+                (CSR_V3_MATRIX_HI, 0),
+                (CSR_V3_LAUNCH, 1),
+            ]
+        );
+        assert!(
+            writes.iter().all(|(offset, _)| ![
+                CSR_INST_INSTR_SRC_LO,
+                CSR_INST_INSTR_SRC_HI,
+                CSR_INST_INSTR_LEN,
+                CSR_INST_INSTR_START,
+            ]
+            .contains(offset)),
+            "V3 launch must not touch instruction-DMA CSRs"
+        );
+    }
+
+    #[test]
+    fn nvint4_v3_completion_requires_v3_stall_and_wide_dma() {
+        let complete = Nvint4HardwareStatus {
+            v3_status: DMA_DONE,
+            ..nvint4_complete_status()
+        };
+        assert!(nvint4_v3_completion_error(&complete).is_none());
+        assert!(nvint4_v3_is_complete(&complete));
+
+        for incomplete in [
+            Nvint4HardwareStatus {
+                v3_status: DMA_RUNNING,
+                ..complete.clone()
+            },
+            Nvint4HardwareStatus {
+                stall_status: 0,
+                ..complete.clone()
+            },
+            Nvint4HardwareStatus {
+                wide_dma_status: DMA_RUNNING,
+                ..complete.clone()
+            },
+        ] {
+            assert!(nvint4_v3_completion_error(&incomplete).is_none());
+            assert!(!nvint4_v3_is_complete(&incomplete));
+        }
+    }
+
+    #[test]
+    fn nvint4_v3_rejects_errors_and_wrong_read_count() {
+        for (status, expected) in [
+            (
+                Nvint4HardwareStatus {
+                    v3_status: DMA_ERROR,
+                    ..nvint4_complete_status()
+                },
+                "V3 descriptor reported ERROR",
+            ),
+            (
+                Nvint4HardwareStatus {
+                    v3_status: DMA_DONE,
+                    tmatmul_read_beats: NVINT4_EXPECTED_TM_READ_BEATS - 1,
+                    ..nvint4_complete_status()
+                },
+                "tmatmul read beats",
+            ),
+        ] {
+            let error = nvint4_v3_completion_error(&status).unwrap();
+            assert!(error.contains(expected), "unexpected error: {error}");
+            assert!(!nvint4_v3_is_complete(&status));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nvint4_v3_numa_selects_lowest_page_below_dpa_ceiling() {
+        let candidates = [0xffc0_0000, 0x4000_0000, 0x7fe0_0000, 0x8000_0000];
+
+        assert_eq!(
+            select_lowest_numa_dpa(&candidates, 0x8000_0000),
+            Some(0x4000_0000)
+        );
+        assert!(numa_dpa_candidate_is_eligible(0x7fe0_0000, 0x8000_0000));
+        assert!(!numa_dpa_candidate_is_eligible(0x8000_0000, 0x8000_0000));
+        assert_eq!(
+            select_lowest_numa_dpa(&[0xffc0_0000, 0xffe0_0000], 0x8000_0000),
+            None
+        );
+    }
+
     fn nvint4_complete_status() -> Nvint4HardwareStatus {
         Nvint4HardwareStatus {
+            v3_status: DMA_IDLE,
             instruction_dma_status: DMA_DONE,
             stall_status: 1,
             wide_dma_status: DMA_DONE,
@@ -3418,6 +4379,12 @@ mod tests {
             ls_read_beats: 64,
             tmatmul_read_beats: NVINT4_EXPECTED_TM_READ_BEATS,
             elapsed_us: 10,
+            staging_backend: "cuda_dax",
+            numa_node: None,
+            matrix_dpa: TMATMUL_DPA_MATRIX,
+            input_dpa: TMATMUL_DPA_INPUT,
+            output_dpa: TMATMUL_DPA_OUTPUT,
+            program_dpa: TMATMUL_DPA_PROGRAM,
         }
     }
 
@@ -3654,6 +4621,103 @@ mod tests {
         let program = assemble_tmatmul_program(asm, &labels).unwrap();
 
         assert_eq!(program, encode_smoke_program());
+    }
+
+    #[test]
+    fn pre_submit_asm_verifier_accepts_canonical_hardware_matmul() {
+        let asm = "
+            ldv v0,PARAM_1
+            tmatmul_import v0
+            tmatmul_go PARAM_0
+            tmatmul_export v1
+            sv v1,PARAM_2
+            stall
+        ";
+        let labels = std::collections::HashMap::from([
+            ("PARAM_0".to_string(), TMATMUL_DPA_MATRIX),
+            ("PARAM_1".to_string(), TMATMUL_DPA_INPUT),
+            ("PARAM_2".to_string(), TMATMUL_DPA_OUTPUT),
+        ]);
+
+        let program = verify_tmatmul_assembly_for_submit(asm, &labels, TMATMUL_DPA_MATRIX).unwrap();
+
+        assert_eq!(program, encode_smoke_program());
+    }
+
+    #[test]
+    fn pre_submit_asm_verifier_rejects_program_window_store() {
+        let asm = "
+            ldv v0,PARAM_1
+            tmatmul_import v0
+            tmatmul_go PARAM_0
+            tmatmul_export v1
+            sv v1,PARAM_2
+            stall
+        ";
+        let labels = std::collections::HashMap::from([
+            ("PARAM_0".to_string(), TMATMUL_DPA_MATRIX),
+            ("PARAM_1".to_string(), TMATMUL_DPA_INPUT),
+            ("PARAM_2".to_string(), TMATMUL_DPA_PROGRAM),
+        ]);
+
+        let err = verify_tmatmul_assembly_for_submit(asm, &labels, TMATMUL_DPA_MATRIX).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("asm verification failed line 6: sv must write output DPA"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn submit_path_verifies_asm_before_opening_fpga_device() {
+        let _guard = EnvGuard::set(&[
+            (
+                "HETGPU_CXL_TMATMUL_DEVICE",
+                Some("/tmp/hetgpu-tmatmul-device-that-should-not-open"),
+            ),
+            ("HETGPU_TMATMUL_DEVICE", None),
+            ("CXL_TMATMUL_DEVICE", None),
+            ("HETGPU_TMATMUL_MATRIX_CXL_OFFSET", None),
+            ("HETGPU_CXL_TMATMUL_MATRIX_OFFSET", None),
+            ("HETGPU_TMATMUL_MATRIX_DPA", None),
+        ]);
+        let asm = "ldv v0,PARAM_1\n\
+                   tmatmul_import v0\n\
+                   tmatmul_go PARAM_0\n\
+                   tmatmul_export v1\n\
+                   sv v1,PARAM_2\n\
+                   stall\n";
+        let labels = std::collections::HashMap::from([
+            ("PARAM_0".to_string(), TMATMUL_DPA_MATRIX),
+            ("PARAM_1".to_string(), TMATMUL_DPA_INPUT),
+            ("PARAM_2".to_string(), TMATMUL_DPA_PROGRAM),
+        ]);
+
+        let err = unsafe {
+            submit_hardware_matmul_from_ptrs(
+                asm,
+                &labels,
+                0x1000 as *const u8,
+                usize::MAX,
+                0x2000 as *const u8,
+                usize::MAX,
+                0x3000 as *mut u8,
+                usize::MAX,
+                0,
+            )
+        }
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("asm verification failed"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !err.to_string().contains("open "),
+            "asm verification must happen before opening FPGA device: {err}"
+        );
     }
 
     #[test]
@@ -3911,6 +4975,14 @@ mod tests {
         assert_eq!(
             parse_staging_backend(Some("csr")).unwrap(),
             StagingBackend::CsrProbe
+        );
+        assert_eq!(
+            parse_staging_backend(Some("numa_memcpy")).unwrap(),
+            StagingBackend::NumaMemcpy
+        );
+        assert_eq!(
+            parse_staging_backend(Some("numa")).unwrap(),
+            StagingBackend::NumaMemcpy
         );
         assert!(parse_staging_backend(Some("bogus")).is_err());
     }

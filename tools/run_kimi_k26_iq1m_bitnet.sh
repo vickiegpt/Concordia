@@ -33,6 +33,13 @@ gpu_layers="${LLAMA_ARG_N_GPU_LAYERS:-${N_GPU_LAYERS:-}}"
 system_prompt="${SYSTEM_PROMPT:-You are Kimi, an AI assistant created by Moonshot AI.}"
 user_prompt="${1:-用一句中文说明你已经启动。}"
 
+truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 required=()
 for shard_index in 1 2 3 4 5 6; do
     required+=("$(printf '%s-%05d-of-00006.gguf' "${model_prefix}" "${shard_index}")")
@@ -63,6 +70,55 @@ kimi_extra_llama_args="${KIMI_EXTRA_LLAMA_ARGS---no-display-prompt}"
 if [[ -n "${kimi_extra_llama_args}" ]]; then
     read -r -a kimi_extra_args <<<"${kimi_extra_llama_args}"
     extra_args+=("${kimi_extra_args[@]}")
+fi
+
+bitlinear_tmatmul="${KIMI_BITLINEAR_TMATMUL:-${HETGPU_KIMI_BITLINEAR_TMATMUL:-0}}"
+if truthy "${bitlinear_tmatmul}"; then
+    export HETGPU_NVINT4_TMATMUL="${HETGPU_NVINT4_TMATMUL:-1}"
+    export HETGPU_NVINT4_BITLINEAR_HOOK="${HETGPU_NVINT4_BITLINEAR_HOOK:-1}"
+    if ! truthy "${KIMI_BITLINEAR_TMATMUL_STRICT:-${HETGPU_KIMI_BITLINEAR_TMATMUL_STRICT:-0}}"; then
+        export HETGPU_NVINT4_GPU_FALLBACK="${HETGPU_NVINT4_GPU_FALLBACK:-1}"
+    fi
+    export HETGPU_NVINT4_ROUTE_LOG="${HETGPU_NVINT4_ROUTE_LOG:-${KIMI_BITLINEAR_TMATMUL_ROUTE_LOG:-/tmp/kimi-bitlinear-nvint4-route.jsonl}}"
+fi
+
+cocotb_tmatmul="${KIMI_TMATMUL_COCOTB:-${HETGPU_KIMI_TMATMUL_COCOTB:-0}}"
+if truthy "${cocotb_tmatmul}"; then
+    export HETGPU_TMATMUL_COCOTB="${HETGPU_TMATMUL_COCOTB:-1}"
+    export HETGPU_TMATMUL_ASM_DIR="${HETGPU_TMATMUL_ASM_DIR:-/tmp/tmatmul-asm}"
+    export HETGPU_CXL_TMATMUL_STAGING="${HETGPU_CXL_TMATMUL_STAGING:-mmap}"
+    export HETGPU_TMATMUL_MATRIX_STAGE="${HETGPU_TMATMUL_MATRIX_STAGE:-host}"
+    export HETGPU_TMATMUL_IO_STAGE="${HETGPU_TMATMUL_IO_STAGE:-host}"
+    export HETGPU_TMATMUL_OUTPUT_DTYPE="${HETGPU_TMATMUL_OUTPUT_DTYPE:-f32}"
+    export HETGPU_BITNET_DISAGGREGATE="${HETGPU_BITNET_DISAGGREGATE:-1}"
+    export HETGPU_TMATMUL_BITNET_DISAGGREGATE="${HETGPU_TMATMUL_BITNET_DISAGGREGATE:-1}"
+    export HETGPU_BITNET_FFN_CXL="${HETGPU_BITNET_FFN_CXL:-1}"
+    export HETGPU_TMATMUL_PRE_JIT_NAMED_FALLBACK="${HETGPU_TMATMUL_PRE_JIT_NAMED_FALLBACK:-1}"
+    export HETGPU_TMATMUL_NAMED_FALLBACK="${HETGPU_TMATMUL_NAMED_FALLBACK:-1}"
+    export HETGPU_TMATMUL_HARDWARE_MATMUL="${HETGPU_TMATMUL_HARDWARE_MATMUL:-1}"
+    if ! truthy "${KIMI_TMATMUL_COCOTB_ALLOW_CXL:-${HETGPU_KIMI_TMATMUL_COCOTB_ALLOW_CXL:-0}}"; then
+        export HETGPU_CXL_TMATMUL=0
+        export HETGPU_TMATMUL_CXL=0
+    fi
+    export HETGPU_BITNET_ROUTE_LOG="${HETGPU_BITNET_ROUTE_LOG:-${KIMI_TMATMUL_ROUTE_LOG:-/tmp/kimi-bitnet-disagg-routes.jsonl}}"
+fi
+
+fpga_tmatmul="${KIMI_TMATMUL_FPGA:-${HETGPU_KIMI_TMATMUL_FPGA:-0}}"
+if truthy "${fpga_tmatmul}"; then
+    export HETGPU_TMATMUL_ASM_DIR="${HETGPU_TMATMUL_ASM_DIR:-/tmp/tmatmul-asm}"
+    export HETGPU_CXL_TMATMUL_STAGING="${HETGPU_CXL_TMATMUL_STAGING:-mmap}"
+    export HETGPU_TMATMUL_MATRIX_STAGE="${HETGPU_TMATMUL_MATRIX_STAGE:-cuda_dax}"
+    export HETGPU_TMATMUL_IO_STAGE="${HETGPU_TMATMUL_IO_STAGE:-cuda_dax}"
+    export HETGPU_TMATMUL_OUTPUT_DTYPE="${HETGPU_TMATMUL_OUTPUT_DTYPE:-f32}"
+    export HETGPU_BITNET_DISAGGREGATE="${HETGPU_BITNET_DISAGGREGATE:-1}"
+    export HETGPU_TMATMUL_BITNET_DISAGGREGATE="${HETGPU_TMATMUL_BITNET_DISAGGREGATE:-1}"
+    export HETGPU_BITNET_FFN_CXL="${HETGPU_BITNET_FFN_CXL:-1}"
+    export HETGPU_TMATMUL_PRE_JIT_NAMED_FALLBACK="${HETGPU_TMATMUL_PRE_JIT_NAMED_FALLBACK:-1}"
+    export HETGPU_TMATMUL_NAMED_FALLBACK="${HETGPU_TMATMUL_NAMED_FALLBACK:-1}"
+    export HETGPU_TMATMUL_HARDWARE_MATMUL="${HETGPU_TMATMUL_HARDWARE_MATMUL:-1}"
+    export HETGPU_CXL_TMATMUL="${HETGPU_CXL_TMATMUL:-1}"
+    export HETGPU_TMATMUL_CXL="${HETGPU_TMATMUL_CXL:-1}"
+    export HETGPU_BITNET_ROUTE_LOG="${HETGPU_BITNET_ROUTE_LOG:-${KIMI_TMATMUL_ROUTE_LOG:-/tmp/kimi-bitnet-disagg-routes.jsonl}}"
 fi
 
 exec "$runner" \

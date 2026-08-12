@@ -8680,6 +8680,38 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn nvidia_try_launch_tmatmul_before_native(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    grid: (u32, u32, u32),
+    block: (u32, u32, u32),
+    stream: cuda_types::cuda::CUstream,
+) -> Option<CUresult> {
+    if let Some(result) =
+        super::nvint4_tmatmul::try_launch(kernel_name, kernel_params, grid, block, stream)
+    {
+        return Some(result.map_err(|err| {
+            eprintln!("[NVINT4 TMatmul] strict launch failed: {err}");
+            CUerror::UNKNOWN
+        }));
+    }
+
+    if let Some(result) = nvidia_try_launch_named_cxl_tmatmul(kernel_name, kernel_params) {
+        return Some(result.map_err(|err| {
+            eprintln!("[CXL TMatmul][NVIDIA] named launch failed: {err}");
+            CUerror::UNKNOWN
+        }));
+    }
+
+    None
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) fn launch_kernel(
     f: &super::module::NvidiaKernel,
     grid_dim_x: ::core::ffi::c_uint,
@@ -8694,7 +8726,7 @@ pub(crate) fn launch_kernel(
     extra: *mut *mut ::core::ffi::c_void,
 ) -> CUresult {
     if let Some(result) = unsafe {
-        super::nvint4_tmatmul::try_launch(
+        nvidia_try_launch_tmatmul_before_native(
             &f.function_name,
             kernel_params,
             (grid_dim_x, grid_dim_y, grid_dim_z),
@@ -8702,10 +8734,7 @@ pub(crate) fn launch_kernel(
             h_stream,
         )
     } {
-        return result.map_err(|err| {
-            eprintln!("[NVINT4 TMatmul] strict launch failed: {err}");
-            CUerror::UNKNOWN
-        });
+        return result;
     }
     nvidia_log_bitnet_route_for_native_launch(&f.function_name);
     let concordia_ptrs = nvidia_kimi_concordia_param_snapshot(&f.function_name, kernel_params);
@@ -8758,7 +8787,7 @@ pub(crate) fn launch_kernel_ex(
     extra: *mut *mut ::core::ffi::c_void,
 ) -> CUresult {
     if let Some(result) = unsafe {
-        super::nvint4_tmatmul::try_launch(
+        nvidia_try_launch_tmatmul_before_native(
             &f.function_name,
             kernel_params,
             (config.gridDimX, config.gridDimY, config.gridDimZ),
@@ -8766,10 +8795,7 @@ pub(crate) fn launch_kernel_ex(
             config.hStream,
         )
     } {
-        return result.map_err(|err| {
-            eprintln!("[NVINT4 TMatmul] strict launch failed: {err}");
-            CUerror::UNKNOWN
-        });
+        return result;
     }
     nvidia_log_bitnet_route_for_native_launch(&f.function_name);
     let concordia_ptrs = nvidia_kimi_concordia_param_snapshot(&f.function_name, kernel_params);
@@ -8909,6 +8935,47 @@ mod nvidia_bitnet_route_tests {
         };
 
         assert!(matches!(result, Some(Err(_))));
+        let logged = std::fs::read_to_string(&route_log).unwrap();
+        assert!(logged.contains(r#""route":"cxl_tmatmul""#));
+        assert!(logged.contains(r#""hardware_matmul_enabled":true"#));
+    }
+
+    #[test]
+    fn nvidia_pre_native_launch_consumes_named_cxl_candidate_when_strict() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let route_log = dir.path().join("routes.jsonl");
+        let route_log_text = route_log.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_NVINT4_TMATMUL", None),
+            ("HETGPU_NVINT4_BITLINEAR_HOOK", None),
+            ("HETGPU_NVINT4_GPU_FALLBACK", None),
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_FFN_CXL", None),
+            ("HETGPU_TMATMUL_BITNET_DISAGGREGATE", None),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
+            ("HETGPU_BITNET_CXL_KERNELS", Some("mul_mat_q")),
+            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", Some(&route_log_text)),
+            ("HETGPU_CXL_TMATMUL", Some("1")),
+            ("HETGPU_TMATMUL_CXL", None),
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_MATRIX_STAGE", Some("cuda_dax")),
+            ("HETGPU_TMATMUL_IO_STAGE", Some("cuda_dax")),
+        ]);
+
+        let result = unsafe {
+            super::nvidia_try_launch_tmatmul_before_native(
+                "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
+                std::ptr::null_mut(),
+                (1, 1, 1),
+                (1, 1, 1),
+                cuda_types::cuda::CUstream(std::ptr::null_mut()),
+            )
+        };
+
+        assert_eq!(result, Some(Err(cuda_types::cuda::CUerror::UNKNOWN)));
         let logged = std::fs::read_to_string(&route_log).unwrap();
         assert!(logged.contains(r#""route":"cxl_tmatmul""#));
         assert!(logged.contains(r#""hardware_matmul_enabled":true"#));
@@ -9577,7 +9644,7 @@ pub(crate) unsafe fn launch_named_kernel_c(
         not(feature = "tenstorrent"),
         not(feature = "tmatmul")
     ))]
-    if let Some(result) = super::nvint4_tmatmul::try_launch(
+    if let Some(result) = nvidia_try_launch_tmatmul_before_native(
         kernel_name,
         kernel_params,
         (grid_dim_x, grid_dim_y, grid_dim_z),
@@ -9586,27 +9653,7 @@ pub(crate) unsafe fn launch_named_kernel_c(
     ) {
         return match result {
             Ok(()) => 0,
-            Err(err) => {
-                eprintln!("[NVINT4 TMatmul] named launch failed: {err}");
-                999
-            }
-        };
-    }
-
-    #[cfg(all(
-        feature = "nvidia",
-        not(feature = "amd"),
-        not(feature = "intel"),
-        not(feature = "tenstorrent"),
-        not(feature = "tmatmul")
-    ))]
-    if let Some(result) = nvidia_try_launch_named_cxl_tmatmul(kernel_name, kernel_params) {
-        return match result {
-            Ok(()) => 0,
-            Err(err) => {
-                eprintln!("[CXL TMatmul][NVIDIA] named launch failed: {err}");
-                999
-            }
+            Err(_) => 999,
         };
     }
 

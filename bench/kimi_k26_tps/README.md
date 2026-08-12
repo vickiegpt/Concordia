@@ -41,14 +41,37 @@ KIMI_TPS_WORKDIR=/tmp/kimi-k26-tps
 KIMI_TPS_REQUIRE_RUN=1
 KIMI_TPS_BASELINE_WITH_SHIM=1
 KIMI_TPS_USE_CUDART_SHIM=0
+KIMI_TPS_ZLUDA_FEATURES=nvidia
 ```
 
 If the runner or model is missing, the script still emits CSV/JSONL evidence with `skipped_missing_runner` or `skipped_missing_model`. Set `KIMI_TPS_REQUIRE_RUN=1` to turn those statuses into a failing command.
+
+For local PTX/cocotb ternary disaggregation without the default CXL `/dev` path:
+
+```bash
+KIMI_TMATMUL_COCOTB=1 \
+KIMI_BITLINEAR_TMATMUL=1 \
+KIMI_TPS_CASES=baseline \
+bash bench/kimi_k26_tps/run_kimi_k26_tps.sh
+```
+
+That profile defaults to `HETGPU_TMATMUL_COCOTB=1`, `HETGPU_TMATMUL_ASM_DIR=/tmp/tmatmul-asm`, host matrix/I/O staging, `HETGPU_TMATMUL_OUTPUT_DTYPE=f32`, BitNet disaggregation, and `HETGPU_CXL_TMATMUL=0`/`HETGPU_TMATMUL_CXL=0`. Override `KIMI_TPS_ZLUDA_FEATURES` if you need a specific ZLUDA backend feature set.
+
+For real FPGA offload from GPU memory through `/dev/cxl_tmatmul*`:
+
+```bash
+KIMI_TMATMUL_FPGA=1 \
+KIMI_BITLINEAR_TMATMUL=1 \
+KIMI_TPS_CASES=baseline \
+bash bench/kimi_k26_tps/run_kimi_k26_tps.sh
+```
+
+That profile defaults to `HETGPU_CXL_TMATMUL=1`, `HETGPU_TMATMUL_CXL=1`, `HETGPU_TMATMUL_MATRIX_STAGE=cuda_dax`, `HETGPU_TMATMUL_IO_STAGE=cuda_dax`, and `HETGPU_TMATMUL_HARDWARE_MATMUL=1`, so the NVIDIA launch hook can submit to the FPGA device and copy the result back.
 
 ## Parser Tests
 
 ```bash
 bash bench/kimi_k26_tps/test_parser.sh
 bash bench/kimi_k26_tps/test_runner_static.sh
+bash bench/kimi_k26_tps/test_runner_fake_run.sh
 ```
-
