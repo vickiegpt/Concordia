@@ -81,6 +81,9 @@ pub mod ze_module;
 pub(crate) mod cxl_tmatmul;
 
 #[cfg(any(feature = "intel", feature = "nvidia"))]
+pub(crate) mod xrt_tmatmul;
+
+#[cfg(any(feature = "intel", feature = "nvidia"))]
 pub(crate) mod bitnet_disagg;
 
 #[cfg(test)]
