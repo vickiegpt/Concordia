@@ -86,7 +86,7 @@ fn hetgpu_log_cuda_calls_enabled() -> bool {
     not(feature = "tenstorrent")
 ))]
 #[no_mangle]
-pub unsafe extern "C" fn hetgpu_sifive_launch_named_kernel(
+pub unsafe extern "C" fn hetgpu_launch_named_kernel(
     kernel_name: *const c_char,
     grid_dim_x: ::core::ffi::c_uint,
     grid_dim_y: ::core::ffi::c_uint,
@@ -100,6 +100,41 @@ pub unsafe extern "C" fn hetgpu_sifive_launch_named_kernel(
     extra: *mut *mut c_void,
 ) -> i32 {
     crate::r#impl::function::launch_named_kernel_c(
+        kernel_name,
+        grid_dim_x,
+        grid_dim_y,
+        grid_dim_z,
+        block_dim_x,
+        block_dim_y,
+        block_dim_z,
+        shared_mem_bytes,
+        stream,
+        kernel_params,
+        extra,
+    )
+}
+
+#[cfg(all(
+    any(feature = "sifive", feature = "nvidia"),
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_sifive_launch_named_kernel(
+    kernel_name: *const c_char,
+    grid_dim_x: ::core::ffi::c_uint,
+    grid_dim_y: ::core::ffi::c_uint,
+    grid_dim_z: ::core::ffi::c_uint,
+    block_dim_x: ::core::ffi::c_uint,
+    block_dim_y: ::core::ffi::c_uint,
+    block_dim_z: ::core::ffi::c_uint,
+    shared_mem_bytes: ::core::ffi::c_uint,
+    stream: *mut c_void,
+    kernel_params: *mut *mut c_void,
+    extra: *mut *mut c_void,
+) -> i32 {
+    hetgpu_launch_named_kernel(
         kernel_name,
         grid_dim_x,
         grid_dim_y,

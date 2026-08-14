@@ -563,9 +563,14 @@ impl KimiConcordiaManager {
     }
 }
 
+fn has_identifier_token(name: &str, token: &str) -> bool {
+    name.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|part| part == token)
+}
+
 pub(crate) fn is_kimi_stateful_kernel_name(kernel_name: &str) -> bool {
     let name = kernel_name.to_ascii_lowercase();
-    if name.contains("kv")
+    if has_identifier_token(&name, "kv")
         || name.contains("k_cache")
         || name.contains("v_cache")
         || name.contains("cache_update")
@@ -1482,6 +1487,9 @@ mod tests {
         assert!(is_kimi_stateful_kernel_name("ggml_cuda_op_mul_mat_q_kv"));
         assert!(is_kimi_stateful_kernel_name("rope_neox_attention_decode"));
         assert!(is_kimi_stateful_kernel_name("paged_kv_cache_update"));
+        assert!(!is_kimi_stateful_kernel_name(
+            "_Z13mul_mat_vec_qIL9ggml_type6ELi3EEvPKvS2_Pfiiii"
+        ));
         assert!(!is_kimi_stateful_kernel_name("layer_03_ffn_gate_mul_mat"));
         assert!(!is_kimi_stateful_kernel_name("tensor_add_relu"));
     }

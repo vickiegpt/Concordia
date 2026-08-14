@@ -26,17 +26,41 @@ use super::LiveCheck;
 #[cfg(unix)]
 use libc::{dlsym, RTLD_DEFAULT};
 
-fn prefer_self_proc_address(symbol: &str) -> bool {
-    matches!(
-        symbol,
+fn preferred_self_proc_address(symbol: &str) -> Option<&str> {
+    match symbol {
+        "cuLaunchKernel_ptsz" => Some("cuLaunchKernel"),
+        "cuLaunchKernelEx_ptsz" => Some("cuLaunchKernelEx"),
         "cuLaunchKernel"
-            | "cuLaunchKernelEx"
-            | "cuModuleLoadData"
-            | "cuModuleLoadDataEx"
-            | "cuModuleGetFunction"
-            | "cuModuleUnload"
-            | "cuFuncGetAttribute"
-    )
+        | "cuLaunchKernelEx"
+        | "cuModuleLoadData"
+        | "cuModuleLoadDataEx"
+        | "cuModuleGetFunction"
+        | "cuModuleUnload"
+        | "cuFuncGetAttribute" => Some(symbol),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod proc_address_tests {
+    use super::preferred_self_proc_address;
+
+    #[test]
+    fn per_thread_launch_symbols_use_the_intercepted_launch_wrappers() {
+        assert_eq!(
+            preferred_self_proc_address("cuLaunchKernel_ptsz"),
+            Some("cuLaunchKernel")
+        );
+        assert_eq!(
+            preferred_self_proc_address("cuLaunchKernelEx_ptsz"),
+            Some("cuLaunchKernelEx")
+        );
+        assert_eq!(
+            preferred_self_proc_address("cuLaunchKernel"),
+            Some("cuLaunchKernel")
+        );
+        assert_eq!(preferred_self_proc_address("cuMemcpyDtoD_v2"), None);
+    }
 }
 
 #[cfg(all(
@@ -135,11 +159,13 @@ pub(crate) fn get_proc_address(
     #[cfg(unix)]
     unsafe {
         let sym_str = std::ffi::CStr::from_ptr(symbol).to_string_lossy();
-        let prefer_self = prefer_self_proc_address(&sym_str);
+        let self_symbol =
+            preferred_self_proc_address(&sym_str).and_then(|name| CString::new(name).ok());
+        let prefer_self = self_symbol.is_some();
         let self_handle = get_self_library_handle();
         let mut addr = std::ptr::null_mut();
-        if prefer_self && !self_handle.is_null() {
-            addr = dlsym(self_handle, symbol);
+        if let Some(self_symbol) = self_symbol.as_ref().filter(|_| !self_handle.is_null()) {
+            addr = dlsym(self_handle, self_symbol.as_ptr());
         }
         if addr.is_null() {
             #[cfg(feature = "nvidia")]
@@ -167,7 +193,9 @@ pub(crate) fn get_proc_address(
             }
         }
         if addr.is_null() && !self_handle.is_null() {
-            addr = dlsym(self_handle, symbol);
+            if let Some(self_symbol) = &self_symbol {
+                addr = dlsym(self_handle, self_symbol.as_ptr());
+            }
         }
         if addr.is_null() {
             // Fallback to global search.
@@ -179,6 +207,13 @@ pub(crate) fn get_proc_address(
             return Err(CUerror::NOT_FOUND);
         }
         *pfn = addr as *mut c_void;
+        if std::env::var_os("HETGPU_CUDA_PROC_TRACE").is_some()
+            && (sym_str.contains("LaunchKernel") || sym_str.contains("ModuleGetFunction"))
+        {
+            eprintln!(
+                "[hetGPU] cuGetProcAddress: symbol={sym_str} preferred_self={prefer_self} addr={addr:p}"
+            );
+        }
     }
 
     Ok(())
@@ -198,11 +233,13 @@ pub(crate) fn get_proc_address_v2(
     #[cfg(unix)]
     unsafe {
         let sym_str = std::ffi::CStr::from_ptr(symbol).to_string_lossy();
-        let prefer_self = prefer_self_proc_address(&sym_str);
+        let self_symbol =
+            preferred_self_proc_address(&sym_str).and_then(|name| CString::new(name).ok());
+        let prefer_self = self_symbol.is_some();
         let self_handle = get_self_library_handle();
         let mut addr = std::ptr::null_mut();
-        if prefer_self && !self_handle.is_null() {
-            addr = dlsym(self_handle, symbol);
+        if let Some(self_symbol) = self_symbol.as_ref().filter(|_| !self_handle.is_null()) {
+            addr = dlsym(self_handle, self_symbol.as_ptr());
         }
         if addr.is_null() {
             #[cfg(feature = "nvidia")]
@@ -240,7 +277,9 @@ pub(crate) fn get_proc_address_v2(
             }
         }
         if addr.is_null() && !self_handle.is_null() {
-            addr = dlsym(self_handle, symbol);
+            if let Some(self_symbol) = &self_symbol {
+                addr = dlsym(self_handle, self_symbol.as_ptr());
+            }
         }
         if addr.is_null() {
             // Fallback to global search.
@@ -257,6 +296,13 @@ pub(crate) fn get_proc_address_v2(
             }
             eprintln!("[hetGPU] cuGetProcAddress_v2: '{}' NOT FOUND", sym_str);
             return Ok(());
+        }
+        if std::env::var_os("HETGPU_CUDA_PROC_TRACE").is_some()
+            && (sym_str.contains("LaunchKernel") || sym_str.contains("ModuleGetFunction"))
+        {
+            eprintln!(
+                "[hetGPU] cuGetProcAddress_v2: symbol={sym_str} preferred_self={prefer_self} addr={addr:p}"
+            );
         }
     }
 

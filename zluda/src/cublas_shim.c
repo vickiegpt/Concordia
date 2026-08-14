@@ -2570,6 +2570,26 @@ cublasStatus_t cublasGemmBatchedEx(cublasHandle_t handle,
     if (hetgpu_cublas_noop_return_success("cublasGemmBatchedEx", m, n, k, batchCount)) {
         return CUBLAS_STATUS_SUCCESS;
     }
+    typedef cublasStatus_t (*func_type)(
+        cublasHandle_t,
+        cublasOperation_t, cublasOperation_t,
+        int, int, int,
+        const void *,
+        const void *const *, cudaDataType, int,
+        const void *const *, cudaDataType, int,
+        const void *,
+        void *const *, cudaDataType, int,
+        int,
+        cublasComputeType_t, cublasGemmAlgo_t);
+    GET_REAL_FUNC(cublasGemmBatchedEx, func_type);
+    if (real_cublasGemmBatchedEx) {
+        return real_cublasGemmBatchedEx(
+            handle, transa, transb, m, n, k,
+            alpha, Aarray, Atype, lda,
+            Barray, Btype, ldb,
+            beta, Carray, Ctype, ldc,
+            batchCount, computeType, algo);
+    }
     if (!Aarray || !Barray || !Carray || batchCount < 0) {
         return CUBLAS_STATUS_INVALID_VALUE;
     }

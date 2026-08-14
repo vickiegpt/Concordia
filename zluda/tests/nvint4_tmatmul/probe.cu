@@ -375,6 +375,9 @@ static Options parse_options(int argc, char** argv) {
 
 using ConverterHook = int (*)(
     size_t, uint32_t, uint32_t, cudaStream_t, size_t*, size_t*);
+using NamedLaunchHook = int (*)(
+    const char*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+    uint32_t, void*, void**, void**);
 
 static std::string read_text(const std::string& path) {
     std::ifstream input(path);
@@ -525,6 +528,11 @@ static int run_hardware(
     if (!route_log_path || !*route_log_path) {
         throw std::runtime_error("HETGPU_NVINT4_ROUTE_LOG is required");
     }
+    auto launch_hook = reinterpret_cast<NamedLaunchHook>(
+        dlsym(RTLD_DEFAULT, "hetgpu_launch_named_kernel"));
+    if (!launch_hook) {
+        throw std::runtime_error("hetgpu_launch_named_kernel not found");
+    }
 
     Sha256 source_hash;
     Sha256 packed_hash;
@@ -551,9 +559,22 @@ static int run_hardware(
         CUDA_CHECK(cudaMemcpyAsync(device.input, test.input.data(), kInputBytes,
                                    cudaMemcpyHostToDevice, stream));
         auto hardware_start = std::chrono::steady_clock::now();
-        tmatmul_nvint4_dense<<<1, 1, 0, stream>>>(
-            device.weights, device.input, device.output, kDim, options.delta);
-        CUDA_CHECK(cudaGetLastError());
+        const uint8_t* weights_arg = device.weights;
+        const int16_t* input_arg = device.input;
+        int64_t* output_arg = device.output;
+        uint32_t dim_arg = kDim;
+        uint32_t delta_arg = options.delta;
+        void* kernel_params[] = {
+            &weights_arg, &input_arg, &output_arg, &dim_arg, &delta_arg,
+        };
+        int launch_result = launch_hook(
+            "tmatmul_nvint4_dense", 1, 1, 1, 1, 1, 1, 0,
+            reinterpret_cast<void*>(stream), kernel_params, nullptr);
+        if (launch_result != 0) {
+            throw std::runtime_error(
+                "hetgpu_launch_named_kernel failed: rc=" +
+                std::to_string(launch_result));
+        }
         CUDA_CHECK(cudaStreamSynchronize(stream));
         hardware_us += static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
@@ -620,6 +641,8 @@ static int run_hardware(
            << ", \"hardware\": " << hardware_us << ", \"total\": " << total_us
            << "},\n"
            << "  \"hardware\": {\n"
+           << "    \"v3_status\": "
+           << extract_json_uint(route_log, "v3_status") << ",\n"
            << "    \"instruction_dma_status\": "
            << extract_json_uint(route_log, "instruction_dma_status") << ",\n"
            << "    \"stall_status\": "
