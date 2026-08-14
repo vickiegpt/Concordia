@@ -3382,7 +3382,13 @@ static int kernel_may_use_tmatmul_reference(const char* kernel_name) {
     if (!kernel_name) return 0;
     return strstr(kernel_name, "tmatmul") != NULL ||
            strstr(kernel_name, "ternary_matmul") != NULL ||
-           strstr(kernel_name, "TMatmul") != NULL;
+           strstr(kernel_name, "TMatmul") != NULL ||
+           strstr(kernel_name, "bitlinear") != NULL ||
+           strstr(kernel_name, "BitLinear") != NULL ||
+           strstr(kernel_name, "bit_linear") != NULL ||
+           strstr(kernel_name, "bitnet") != NULL ||
+           strstr(kernel_name, "BitNet") != NULL ||
+           strstr(kernel_name, "nvint4") != NULL;
 }
 
 static CUfunction lazy_load_registered_function_for_launch(const char* kernel_name, const void* launch_func) {

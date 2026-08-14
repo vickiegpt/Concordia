@@ -78,17 +78,47 @@ fn env_truthy(name: &str) -> bool {
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }
 
+fn env_csv_lowercase(name: &str) -> Vec<String> {
+    std::env::var(name)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|marker| !marker.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
 pub(crate) fn is_nvint4_entry(kernel_name: &str) -> bool {
     kernel_name == NVINT4_ENTRY
 }
 
 fn is_bitlinear_kernel_name(kernel_name: &str) -> bool {
     let name = kernel_name.to_ascii_lowercase();
-    name.contains("bitlinear") || name.contains("bit_linear")
+    if name == CONVERTER_NAME {
+        return false;
+    }
+    name.contains("bitlinear")
+        || name.contains("bit_linear")
+        || name.contains("bitnet")
+        || name.contains("nvint4_dense")
+}
+
+fn is_explicit_bitlinear_marker_kernel_name(kernel_name: &str) -> bool {
+    let name = kernel_name.to_ascii_lowercase();
+    if name == CONVERTER_NAME {
+        return false;
+    }
+    env_csv_lowercase("HETGPU_NVINT4_BITLINEAR_KERNELS")
+        .into_iter()
+        .chain(env_csv_lowercase("HETGPU_NVINT4_KERNEL_MARKERS"))
+        .any(|marker| name.contains(&marker))
 }
 
 fn should_hook_kernel(kernel_name: &str, config: Nvint4RouteConfig) -> bool {
-    is_nvint4_entry(kernel_name) || (config.bitlinear_hook && is_bitlinear_kernel_name(kernel_name))
+    is_nvint4_entry(kernel_name)
+        || (config.bitlinear_hook
+            && (is_bitlinear_kernel_name(kernel_name)
+                || is_explicit_bitlinear_marker_kernel_name(kernel_name)))
 }
 
 fn validate_launch_shape(grid: (u32, u32, u32), block: (u32, u32, u32)) -> Result<(), String> {
@@ -1077,6 +1107,8 @@ mod nvidia_nvint4_route_tests {
             ("HETGPU_NVINT4_BITLINEAR_HOOK", None),
             ("HETGPU_NVINT4_GPU_FALLBACK", None),
             ("HETGPU_NVINT4_ROUTE_LOG", None),
+            ("HETGPU_NVINT4_BITLINEAR_KERNELS", None),
+            ("HETGPU_NVINT4_KERNEL_MARKERS", None),
         ]);
 
         let native_result = unsafe {
@@ -1102,6 +1134,90 @@ mod nvidia_nvint4_route_tests {
         };
         assert!(matches!(
             hooked_result,
+            Some(Err(ref err)) if err.contains("null kernel_params")
+        ));
+    }
+
+    #[test]
+    fn bitlinear_hook_matches_sglang_and_bitnet_aliases() {
+        let _mutex = NVINT4_ROUTE_ENV_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_NVINT4_TMATMUL", Some("1")),
+            ("HETGPU_NVINT4_BITLINEAR_HOOK", Some("1")),
+            ("HETGPU_NVINT4_GPU_FALLBACK", None),
+            ("HETGPU_NVINT4_ROUTE_LOG", None),
+            ("HETGPU_NVINT4_BITLINEAR_KERNELS", None),
+            ("HETGPU_NVINT4_KERNEL_MARKERS", None),
+        ]);
+
+        for kernel_name in [
+            "sglang_moe_bitnet_layer_forward",
+            "BitNetLinear_forward",
+            "fused_nvint4_dense_kernel",
+        ] {
+            let result = unsafe {
+                try_launch(
+                    kernel_name,
+                    ptr::null_mut(),
+                    (1, 1, 1),
+                    (1, 1, 1),
+                    CUstream(ptr::null_mut()),
+                )
+            };
+            assert!(
+                matches!(result, Some(Err(ref err)) if err.contains("null kernel_params")),
+                "{kernel_name} did not route through nvint4 hook: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn converter_kernel_never_self_hooks() {
+        let _mutex = NVINT4_ROUTE_ENV_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_NVINT4_TMATMUL", Some("1")),
+            ("HETGPU_NVINT4_BITLINEAR_HOOK", Some("1")),
+            ("HETGPU_NVINT4_GPU_FALLBACK", None),
+            ("HETGPU_NVINT4_ROUTE_LOG", None),
+            ("HETGPU_NVINT4_BITLINEAR_KERNELS", Some("nvint4")),
+            ("HETGPU_NVINT4_KERNEL_MARKERS", Some("packed_ternary")),
+        ]);
+
+        let result = unsafe {
+            try_launch(
+                CONVERTER_NAME,
+                ptr::null_mut(),
+                (1, 1, 1),
+                (1, 1, 1),
+                CUstream(ptr::null_mut()),
+            )
+        };
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn explicit_marker_env_extends_bitlinear_hook() {
+        let _mutex = NVINT4_ROUTE_ENV_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_NVINT4_TMATMUL", Some("1")),
+            ("HETGPU_NVINT4_BITLINEAR_HOOK", Some("1")),
+            ("HETGPU_NVINT4_GPU_FALLBACK", None),
+            ("HETGPU_NVINT4_ROUTE_LOG", None),
+            ("HETGPU_NVINT4_BITLINEAR_KERNELS", Some("moonshot_fpga")),
+            ("HETGPU_NVINT4_KERNEL_MARKERS", None),
+        ]);
+
+        let result = unsafe {
+            try_launch(
+                "sglang_moonshot_fpga_expert_kernel",
+                ptr::null_mut(),
+                (1, 1, 1),
+                (1, 1, 1),
+                CUstream(ptr::null_mut()),
+            )
+        };
+        assert!(matches!(
+            result,
             Some(Err(ref err)) if err.contains("null kernel_params")
         ));
     }
