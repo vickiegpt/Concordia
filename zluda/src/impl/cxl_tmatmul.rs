@@ -145,6 +145,263 @@ impl fmt::Display for CxlTmatmulError {
 
 impl std::error::Error for CxlTmatmulError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CudaCopyDirection {
+    DeviceToHost,
+    HostToDevice,
+}
+
+pub(crate) trait CudaCopyOps {
+    /// Returns the number of bytes copied. A success shorter than the request is
+    /// rejected by the caller even though the CUDA driver normally copies all
+    /// bytes atomically with respect to its return status.
+    unsafe fn copy(
+        &self,
+        dst: *mut libc::c_void,
+        src: *const libc::c_void,
+        bytes: usize,
+        direction: CudaCopyDirection,
+    ) -> Result<usize, CxlTmatmulError>;
+}
+
+struct NvidiaDriverCopy;
+
+impl CudaCopyOps for NvidiaDriverCopy {
+    unsafe fn copy(
+        &self,
+        dst: *mut libc::c_void,
+        src: *const libc::c_void,
+        bytes: usize,
+        direction: CudaCopyDirection,
+    ) -> Result<usize, CxlTmatmulError> {
+        nvidia_runtime_sys::init().map_err(CxlTmatmulError::Device)?;
+        let functions = nvidia_runtime_sys::get_cuda_funcs().ok_or_else(|| {
+            CxlTmatmulError::Device("NVIDIA runtime function table is unavailable".into())
+        })?;
+        let result = match direction {
+            CudaCopyDirection::DeviceToHost => {
+                let copy = functions.cuMemcpyDtoH_v2.ok_or_else(|| {
+                    CxlTmatmulError::Device("missing NVIDIA runtime symbol cuMemcpyDtoH_v2".into())
+                })?;
+                copy(
+                    dst,
+                    cuda_types::cuda::CUdeviceptr_v2(src as *mut libc::c_void),
+                    bytes,
+                )
+            }
+            CudaCopyDirection::HostToDevice => {
+                let copy = functions.cuMemcpyHtoD_v2.ok_or_else(|| {
+                    CxlTmatmulError::Device("missing NVIDIA runtime symbol cuMemcpyHtoD_v2".into())
+                })?;
+                copy(
+                    cuda_types::cuda::CUdeviceptr_v2(dst as *mut libc::c_void),
+                    src,
+                    bytes,
+                )
+            }
+        };
+        result.map_err(|error| {
+            CxlTmatmulError::Device(format!("NVIDIA CUDA copy failed: {error:?}"))
+        })?;
+        Ok(bytes)
+    }
+}
+
+fn validate_cuda_range(pointer: usize, bytes: usize, label: &str) -> Result<(), CxlTmatmulError> {
+    if pointer == 0 {
+        return Err(CxlTmatmulError::Device(format!(
+            "{label} CUDA pointer is null"
+        )));
+    }
+    if bytes == 0 {
+        return Err(CxlTmatmulError::Device(format!(
+            "{label} CUDA copy length is zero"
+        )));
+    }
+    pointer
+        .checked_add(bytes - 1)
+        .ok_or(CxlTmatmulError::SizeOverflow)?;
+    Ok(())
+}
+
+unsafe fn copy_cuda_to_host_with(
+    src: usize,
+    bytes: usize,
+    copier: &dyn CudaCopyOps,
+) -> Result<Vec<u8>, CxlTmatmulError> {
+    validate_cuda_range(src, bytes, "source")?;
+    let mut host = vec![0_u8; bytes];
+    let copied = copier.copy(
+        host.as_mut_ptr().cast(),
+        src as *const libc::c_void,
+        bytes,
+        CudaCopyDirection::DeviceToHost,
+    )?;
+    if copied != bytes {
+        return Err(CxlTmatmulError::Device(format!(
+            "short CUDA device-to-host copy: copied {copied} of {bytes} bytes"
+        )));
+    }
+    Ok(host)
+}
+
+unsafe fn copy_host_to_cuda_with(
+    dst: usize,
+    bytes: &[u8],
+    copier: &dyn CudaCopyOps,
+) -> Result<(), CxlTmatmulError> {
+    validate_cuda_range(dst, bytes.len(), "destination")?;
+    let copied = copier.copy(
+        dst as *mut libc::c_void,
+        bytes.as_ptr().cast(),
+        bytes.len(),
+        CudaCopyDirection::HostToDevice,
+    )?;
+    if copied != bytes.len() {
+        return Err(CxlTmatmulError::Device(format!(
+            "short CUDA host-to-device copy: copied {copied} of {} bytes",
+            bytes.len()
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) unsafe fn copy_cuda_to_host(
+    src: usize,
+    bytes: usize,
+) -> Result<Vec<u8>, CxlTmatmulError> {
+    copy_cuda_to_host_with(src, bytes, &NvidiaDriverCopy)
+}
+
+pub(crate) unsafe fn copy_host_to_cuda(dst: usize, bytes: &[u8]) -> Result<(), CxlTmatmulError> {
+    copy_host_to_cuda_with(dst, bytes, &NvidiaDriverCopy)
+}
+
+pub(crate) unsafe fn copy_cuda_to_dax(
+    src: usize,
+    dst_dpa: u64,
+    bytes: usize,
+) -> Result<(), CxlTmatmulError> {
+    validate_cuda_range(src, bytes, "source")?;
+    let byte_count = u64::try_from(bytes).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+    dst_dpa
+        .checked_add(byte_count)
+        .ok_or(CxlTmatmulError::SizeOverflow)?;
+    let host = copy_cuda_to_host(src, bytes)?;
+    let path = std::env::var_os("HETGPU_TMATMUL_DAX")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/dev/dax6.0"));
+    let file = OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .map_err(|error| CxlTmatmulError::Io(format!("open {}: {error}", path.display())))?;
+    let written = file
+        .write_at(&host, dst_dpa)
+        .map_err(|error| CxlTmatmulError::Io(format!("write {}: {error}", path.display())))?;
+    if written != bytes {
+        return Err(CxlTmatmulError::Io(format!(
+            "short DAX write: wrote {written} of {bytes} bytes"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod iq1s_tmatmul_cuda_copy_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct MockCopy {
+        calls: RefCell<Vec<(CudaCopyDirection, usize, usize, usize)>>,
+        short_by: usize,
+        error: Option<&'static str>,
+    }
+
+    impl CudaCopyOps for MockCopy {
+        unsafe fn copy(
+            &self,
+            dst: *mut libc::c_void,
+            src: *const libc::c_void,
+            bytes: usize,
+            direction: CudaCopyDirection,
+        ) -> Result<usize, CxlTmatmulError> {
+            self.calls
+                .borrow_mut()
+                .push((direction, dst as usize, src as usize, bytes));
+            if let Some(error) = self.error {
+                return Err(CxlTmatmulError::Device(error.into()));
+            }
+            if direction == CudaCopyDirection::DeviceToHost && src as usize >= 4096 {
+                std::ptr::copy_nonoverlapping(
+                    src.cast::<u8>(),
+                    dst.cast::<u8>(),
+                    bytes - self.short_by,
+                );
+            }
+            Ok(bytes - self.short_by)
+        }
+    }
+
+    #[test]
+    fn iq1s_tmatmul_copy_helpers_use_exact_direction_and_byte_count() {
+        let source = [7_u8, 8, 9, 10];
+        let mock = MockCopy::default();
+        let host = unsafe { copy_cuda_to_host_with(source.as_ptr() as usize, 4, &mock) }.unwrap();
+        assert_eq!(host, source);
+        assert_eq!(
+            mock.calls.borrow()[0],
+            (
+                CudaCopyDirection::DeviceToHost,
+                host.as_ptr() as usize,
+                source.as_ptr() as usize,
+                4
+            )
+        );
+
+        let mock = MockCopy::default();
+        let mut destination = [0_u8; 4];
+        unsafe { copy_host_to_cuda_with(destination.as_mut_ptr() as usize, &source, &mock) }
+            .unwrap();
+        assert_eq!(
+            mock.calls.borrow()[0],
+            (
+                CudaCopyDirection::HostToDevice,
+                destination.as_ptr() as usize,
+                source.as_ptr() as usize,
+                4
+            )
+        );
+    }
+
+    #[test]
+    fn iq1s_tmatmul_copy_helpers_fail_closed_on_invalid_short_or_missing_copy() {
+        let mock = MockCopy::default();
+        assert!(unsafe { copy_cuda_to_host_with(0, 4, &mock) }.is_err());
+        assert!(unsafe { copy_cuda_to_host_with(1, 0, &mock) }.is_err());
+        assert!(unsafe { copy_cuda_to_host_with(usize::MAX, 2, &mock) }.is_err());
+        assert!(unsafe { copy_host_to_cuda_with(0, &[1], &mock) }.is_err());
+        assert!(unsafe { copy_host_to_cuda_with(1, &[], &mock) }.is_err());
+
+        let short = MockCopy {
+            short_by: 1,
+            ..MockCopy::default()
+        };
+        assert!(unsafe { copy_cuda_to_host_with(1, 2, &short) }
+            .unwrap_err()
+            .to_string()
+            .contains("short"));
+        let missing = MockCopy {
+            error: Some("missing NVIDIA runtime symbol cuMemcpyDtoH_v2"),
+            ..MockCopy::default()
+        };
+        assert!(unsafe { copy_cuda_to_host_with(1, 2, &missing) }
+            .unwrap_err()
+            .to_string()
+            .contains("missing NVIDIA runtime symbol"));
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompiledTmatmul {
     pub(crate) source_len: usize,
