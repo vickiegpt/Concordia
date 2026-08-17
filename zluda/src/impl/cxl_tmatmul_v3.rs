@@ -794,6 +794,7 @@ impl<I: IoctlOps> V3Session<I> {
             }
             let (matrix_bytes, input_row_bytes, output_row_bytes) =
                 task_physical_bytes(self.caps.dim_d)?;
+            let stride_alignment = u64::from(self.caps.dax_alignment_bytes);
             let matrix_end = task
                 .matrix_offset
                 .checked_add(matrix_bytes)
@@ -802,11 +803,11 @@ impl<I: IoctlOps> V3Session<I> {
                 return Err("matrix range exceeds registered buffer".into());
             }
             if task.input_stride_bytes < input_row_bytes
-                || !task.input_stride_bytes.is_multiple_of(2)
+                || !task.input_stride_bytes.is_multiple_of(stride_alignment)
             {
                 return Err(format!(
-                    "input stride {} is smaller than {input_row_bytes} or not 2-byte aligned",
-                    task.input_stride_bytes
+                    "input stride {} is smaller than {input_row_bytes} or not {stride_alignment}-byte DAX aligned",
+                    task.input_stride_bytes,
                 ));
             }
             if !task.input_offset.is_multiple_of(2) {
@@ -816,11 +817,11 @@ impl<I: IoctlOps> V3Session<I> {
                 ));
             }
             if task.output_stride_bytes < output_row_bytes
-                || !task.output_stride_bytes.is_multiple_of(8)
+                || !task.output_stride_bytes.is_multiple_of(stride_alignment)
             {
                 return Err(format!(
-                    "output stride {} is smaller than {output_row_bytes} or not 8-byte aligned",
-                    task.output_stride_bytes
+                    "output stride {} is smaller than {output_row_bytes} or not {stride_alignment}-byte DAX aligned",
+                    task.output_stride_bytes,
                 ));
             }
             if !task.output_offset.is_multiple_of(8) {
@@ -1875,7 +1876,7 @@ mod tests {
             generation: 0,
         }; 3];
         let base = task(1, &placeholder);
-        let mutations: [(&str, TaskMutation); 14] = [
+        let mutations: [(&str, TaskMutation); 16] = [
             ("input stride", |task: &mut TaskV3| {
                 task.input_stride_bytes = 1
             }),
@@ -1893,6 +1894,12 @@ mod tests {
             }),
             ("output stride", |task: &mut TaskV3| {
                 task.output_stride_bytes = 16385
+            }),
+            ("input stride", |task: &mut TaskV3| {
+                task.input_stride_bytes = 4098
+            }),
+            ("output stride", |task: &mut TaskV3| {
+                task.output_stride_bytes = 16392
             }),
             ("input offset", |task: &mut TaskV3| task.input_offset = 1),
             ("output offset", |task: &mut TaskV3| task.output_offset = 1),
@@ -1933,6 +1940,39 @@ mod tests {
                 .iter()
                 .any(|call| call.starts_with("submit")));
         }
+    }
+
+    #[test]
+    fn task_strides_follow_the_caps_dax_alignment() {
+        let mut live =
+            V3Session::with_io(FakeIoctl::with_waits(vec![vec![completion(1)]])).unwrap();
+        let live_leases = register_triplet(&mut live);
+        let exact_rows = task(1, &live_leases);
+        assert_eq!(exact_rows.input_stride_bytes, 4096);
+        assert_eq!(exact_rows.output_stride_bytes, 16384);
+        live.run_tasks(&[exact_rows]).unwrap();
+
+        let mut io = FakeIoctl::with_waits(vec![vec![completion(2)]]);
+        io.caps.dax_alignment_bytes = 8192;
+        let mut aligned = V3Session::with_io(io).unwrap();
+        let aligned_leases = register_triplet(&mut aligned);
+        let mut aligned_task = task(2, &aligned_leases);
+        aligned_task.input_stride_bytes = 8192;
+        aligned.run_tasks(&[aligned_task]).unwrap();
+
+        let mut io = FakeIoctl::valid();
+        io.caps.dax_alignment_bytes = 8192;
+        let mut misaligned = V3Session::with_io(io).unwrap();
+        let misaligned_leases = register_triplet(&mut misaligned);
+        let error = misaligned
+            .run_tasks(&[task(3, &misaligned_leases)])
+            .unwrap_err();
+        assert!(error.contains("input stride"), "{error}");
+        assert!(!misaligned
+            .io()
+            .calls
+            .iter()
+            .any(|call| call.starts_with("submit")));
     }
 
     #[test]
