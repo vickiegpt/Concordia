@@ -1076,6 +1076,7 @@ pub(crate) unsafe fn execute_captured(
 
 #[derive(Serialize)]
 struct ExecutionFixture {
+    libggml_path: String,
     iq1s_hex: String,
     q8_1_mmq_hex: String,
     raw_components: Vec<Vec<i64>>,
@@ -1087,11 +1088,16 @@ struct ExecutionFixture {
 pub(crate) fn execution_fixture_json(
     captured: &CapturedLaunch,
     result: &ExecutionResult,
+    libggml_path: &Path,
 ) -> Result<String, String> {
     if result.outputs.iter().any(|value| !value.is_finite()) {
         return Err("execution fixture contains nonfinite output".into());
     }
+    let resolved_oracle = libggml_path
+        .canonicalize()
+        .map_err(|error| format!("canonical fixture libggml path: {error}"))?;
     serde_json::to_string(&ExecutionFixture {
+        libggml_path: resolved_oracle.display().to_string(),
         iq1s_hex: hex(&captured.matrix.packed),
         q8_1_mmq_hex: hex(&captured.packed_activations),
         raw_components: result.raw_components.clone(),
@@ -1943,7 +1949,10 @@ mod tests {
                 }
             }
         }
-        let captured = capture_from_host(launch, &matrix, &activations, &grid()).unwrap();
+        let reference_fixture_path = Path::new(DEFAULT_LIBGGML);
+        assert!(reference_fixture_path.is_file());
+        let oracle_grid = validated_grid(Some(reference_fixture_path)).unwrap();
+        let captured = capture_from_host(launch, &matrix, &activations, &oracle_grid).unwrap();
         let dax = MemoryDax::new(20 * 1024 * 1024);
         let mut session = V3Session::with_io(FakeV3::new(dax.clone())).unwrap();
         let copied = CaptureOutput::default();
@@ -1953,9 +1962,14 @@ mod tests {
             .outputs
             .iter()
             .all(|value| value.is_finite() && *value != 0.0));
-        let references = [-90.625_f32, -65.625_f32];
-        for (actual, reference) in result.outputs.iter().zip(references) {
-            assert!((actual - reference).abs() <= 1e-4 + 1e-4 * reference.abs());
+        // Generated independently by mmfreelm.ops.iq1s_reference using this
+        // exact packed IQ1_S/DS4 fixture and the installed libggml above.
+        let python_libggml_references = [-215.625_f32, -237.625_f32];
+        for (actual, reference) in result.outputs.iter().zip(python_libggml_references) {
+            assert!(
+                (actual - reference).abs() <= 1e-4 + 1e-4 * reference.abs(),
+                "oracle-backed fixture mismatch: actual={actual} reference={reference}"
+            );
         }
         assert_eq!(
             result
@@ -1963,7 +1977,7 @@ mod tests {
                 .iter()
                 .map(|value| value.to_bits())
                 .collect::<Vec<_>>(),
-            vec![0xc2b54000, 0xc2834000]
+            vec![0xc357a000, 0xc36da000]
         );
         assert_eq!(
             result
@@ -2016,11 +2030,15 @@ mod tests {
                 .len(),
             16
         );
-        let fixture = execution_fixture_json(&captured, &result).unwrap();
+        let fixture = execution_fixture_json(&captured, &result, reference_fixture_path).unwrap();
         let json: serde_json::Value = serde_json::from_str(&fixture).unwrap();
         assert_eq!(json["iq1s_hex"].as_str().unwrap().len(), 200);
         assert_eq!(json["q8_1_mmq_hex"].as_str().unwrap().len(), 576);
         assert_eq!(json["request_ids"].as_array().unwrap().len(), 16);
         assert_eq!(json["outputs_f32_bits"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            Path::new(json["libggml_path"].as_str().unwrap()),
+            reference_fixture_path
+        );
     }
 }
