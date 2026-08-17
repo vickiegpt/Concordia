@@ -277,17 +277,47 @@ pub(crate) unsafe fn copy_host_to_cuda(dst: usize, bytes: &[u8]) -> Result<(), C
     copy_host_to_cuda_with(dst, bytes, &NvidiaDriverCopy)
 }
 
-pub(crate) unsafe fn copy_cuda_to_dax(
+trait DaxWriteOps {
+    fn write(&self, offset: u64, bytes: &[u8]) -> Result<usize, CxlTmatmulError>;
+}
+
+struct FileDaxWrite(File);
+
+impl DaxWriteOps for FileDaxWrite {
+    fn write(&self, offset: u64, bytes: &[u8]) -> Result<usize, CxlTmatmulError> {
+        self.0
+            .write_at(bytes, offset)
+            .map_err(|error| CxlTmatmulError::Io(format!("DAX write: {error}")))
+    }
+}
+
+unsafe fn copy_cuda_to_dax_with(
     src: usize,
     dst_dpa: u64,
     bytes: usize,
+    copier: &dyn CudaCopyOps,
+    dax: &dyn DaxWriteOps,
 ) -> Result<(), CxlTmatmulError> {
     validate_cuda_range(src, bytes, "source")?;
     let byte_count = u64::try_from(bytes).map_err(|_| CxlTmatmulError::SizeOverflow)?;
     dst_dpa
         .checked_add(byte_count)
         .ok_or(CxlTmatmulError::SizeOverflow)?;
-    let host = copy_cuda_to_host(src, bytes)?;
+    let host = copy_cuda_to_host_with(src, bytes, copier)?;
+    let written = dax.write(dst_dpa, &host)?;
+    if written != bytes {
+        return Err(CxlTmatmulError::Io(format!(
+            "short DAX write: wrote {written} of {bytes} bytes"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) unsafe fn copy_cuda_to_dax(
+    src: usize,
+    dst_dpa: u64,
+    bytes: usize,
+) -> Result<(), CxlTmatmulError> {
     let path = std::env::var_os("HETGPU_TMATMUL_DAX")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/dev/dax6.0"));
@@ -295,15 +325,7 @@ pub(crate) unsafe fn copy_cuda_to_dax(
         .write(true)
         .open(&path)
         .map_err(|error| CxlTmatmulError::Io(format!("open {}: {error}", path.display())))?;
-    let written = file
-        .write_at(&host, dst_dpa)
-        .map_err(|error| CxlTmatmulError::Io(format!("write {}: {error}", path.display())))?;
-    if written != bytes {
-        return Err(CxlTmatmulError::Io(format!(
-            "short DAX write: wrote {written} of {bytes} bytes"
-        )));
-    }
-    Ok(())
+    copy_cuda_to_dax_with(src, dst_dpa, bytes, &NvidiaDriverCopy, &FileDaxWrite(file))
 }
 
 #[cfg(test)]
@@ -399,6 +421,45 @@ mod iq1s_tmatmul_cuda_copy_tests {
             .unwrap_err()
             .to_string()
             .contains("missing NVIDIA runtime symbol"));
+    }
+
+    #[derive(Default)]
+    struct MockDax {
+        calls: RefCell<Vec<(u64, Vec<u8>)>>,
+        short_by: usize,
+    }
+
+    impl DaxWriteOps for MockDax {
+        fn write(&self, offset: u64, bytes: &[u8]) -> Result<usize, CxlTmatmulError> {
+            self.calls.borrow_mut().push((offset, bytes.to_vec()));
+            Ok(bytes.len() - self.short_by)
+        }
+    }
+
+    #[test]
+    fn iq1s_tmatmul_cuda_to_dax_uses_injected_exact_copies_and_rejects_short_dax() {
+        let source = [1_u8, 2, 3, 4];
+        let cuda = MockCopy::default();
+        let dax = MockDax::default();
+        unsafe { copy_cuda_to_dax_with(source.as_ptr() as usize, 4096, 4, &cuda, &dax) }.unwrap();
+        assert_eq!(cuda.calls.borrow()[0].0, CudaCopyDirection::DeviceToHost);
+        assert_eq!(cuda.calls.borrow()[0].3, 4);
+        assert_eq!(dax.calls.borrow()[0], (4096, source.to_vec()));
+
+        let short = MockDax {
+            short_by: 1,
+            ..MockDax::default()
+        };
+        assert!(
+            unsafe { copy_cuda_to_dax_with(source.as_ptr() as usize, 4096, 4, &cuda, &short) }
+                .unwrap_err()
+                .to_string()
+                .contains("short DAX")
+        );
+        assert!(unsafe { copy_cuda_to_dax_with(0, 4096, 4, &cuda, &dax) }.is_err());
+        assert!(unsafe { copy_cuda_to_dax_with(1, 4096, 0, &cuda, &dax) }.is_err());
+        assert!(unsafe { copy_cuda_to_dax_with(usize::MAX, 4096, 2, &cuda, &dax) }.is_err());
+        assert!(unsafe { copy_cuda_to_dax_with(1, u64::MAX, 2, &cuda, &dax) }.is_err());
     }
 }
 

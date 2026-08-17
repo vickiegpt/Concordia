@@ -2,11 +2,14 @@
 
 use crate::r#impl::cxl_tmatmul::{copy_cuda_to_host, copy_host_to_cuda};
 use crate::r#impl::cxl_tmatmul_v3::{
-    BufferLease, CompletedTaskV3, IoctlOps, TaskV3, V3Session, LANE_ANY,
+    BufferLease, CompletedTaskV3, IoctlOps, TaskV3, V3Session, BUFFER_MATRIX, BUFFER_Q8_8_S16,
+    BUFFER_RAW_S64, BUFFER_READ, BUFFER_TERNARY2, BUFFER_WRITE, LANE_ANY,
 };
 use serde::Serialize;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
+use std::fs::{File, OpenOptions};
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -307,6 +310,192 @@ impl ComponentTile {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct MatrixSource {
+    signature: GgmlType19Signature,
+    packed: Arc<[u8]>,
+    grid: Arc<GridTable>,
+    row_stride: usize,
+    logical_blocks: usize,
+}
+
+impl MatrixSource {
+    pub(crate) fn new(
+        signature: GgmlType19Signature,
+        packed: Arc<[u8]>,
+        grid: Arc<GridTable>,
+    ) -> Result<Arc<Self>, String> {
+        let expected = signature.matrix_storage_bytes()?;
+        if packed.len() != expected {
+            return Err(format!(
+                "packed IQ1_S matrix must be exactly {expected} bytes"
+            ));
+        }
+        let row_stride = usize::try_from(signature.stride01)
+            .ok()
+            .and_then(|blocks| blocks.checked_mul(IQ1S_BLOCK_BYTES))
+            .ok_or("IQ1_S row stride overflow")?;
+        let logical_blocks = usize::try_from(signature.ne00 / IQ1S_BLOCK_VALUES as u64)
+            .map_err(|_| "IQ1_S block count overflow")?;
+        let logical_bytes = logical_blocks
+            .checked_mul(IQ1S_BLOCK_BYTES)
+            .ok_or("IQ1_S logical row bytes overflow")?;
+        for row in 0..usize::try_from(signature.ne01).map_err(|_| "row count overflow")? {
+            if packed[row * row_stride + logical_bytes..(row + 1) * row_stride]
+                .iter()
+                .any(|byte| *byte != 0)
+            {
+                return Err(format!("IQ1_S row {row} padding must be zero"));
+            }
+        }
+        Ok(Arc::new(Self {
+            signature,
+            packed,
+            grid,
+            row_stride,
+            logical_blocks,
+        }))
+    }
+
+    pub(crate) fn component_iter(self: &Arc<Self>) -> Result<ComponentIter, String> {
+        let rows = usize::try_from(self.signature.ne0).map_err(|_| "row count overflow")?;
+        let columns = usize::try_from(self.signature.ne00).map_err(|_| "column count overflow")?;
+        let total = plan_tiles(&self.signature)?
+            .iter()
+            .map(|tile| tile.group_count * 2)
+            .sum();
+        Ok(ComponentIter {
+            source: self.clone(),
+            row_tile: 0,
+            column_tile: 0,
+            group32: 0,
+            kind: ComponentKind::Grid,
+            row_tiles: rows.div_ceil(TILE_DIM),
+            column_tiles: columns.div_ceil(TILE_DIM),
+            generated: 0,
+            total,
+        })
+    }
+
+    fn geometry(&self, row_tile: usize, column_tile: usize) -> Result<TileGeometry, String> {
+        let rows = usize::try_from(self.signature.ne0).map_err(|_| "row count overflow")?;
+        let columns = usize::try_from(self.signature.ne00).map_err(|_| "column count overflow")?;
+        let row_start = row_tile.checked_mul(TILE_DIM).ok_or("row tile overflow")?;
+        let column_start = column_tile
+            .checked_mul(TILE_DIM)
+            .ok_or("column tile overflow")?;
+        let valid_in = (columns - column_start).min(TILE_DIM);
+        Ok(TileGeometry {
+            row_tile,
+            column_tile,
+            valid_out: (rows - row_start).min(TILE_DIM),
+            valid_in,
+            group_count: valid_in.div_ceil(GROUP_VALUES),
+        })
+    }
+
+    pub(crate) fn group(
+        &self,
+        row: usize,
+        global_group: usize,
+    ) -> Result<(f32, Iq1sGroup), String> {
+        let block_index = global_group / 8;
+        let rows = usize::try_from(self.signature.ne0).map_err(|_| "row count overflow")?;
+        if block_index >= self.logical_blocks || row >= rows {
+            return Err("IQ1_S group coordinate is outside the matrix".into());
+        }
+        let offset = row
+            .checked_mul(self.row_stride)
+            .and_then(|base| base.checked_add(block_index * IQ1S_BLOCK_BYTES))
+            .ok_or("IQ1_S block offset overflow")?;
+        let block = Iq1sBlock::parse(&self.packed[offset..offset + IQ1S_BLOCK_BYTES], &self.grid)?;
+        Ok((block.d, block.groups[global_group % 8]))
+    }
+
+    fn component(
+        &self,
+        geometry: TileGeometry,
+        group32: usize,
+        kind: ComponentKind,
+    ) -> Result<ComponentTile, String> {
+        let global_group = geometry.column_tile * (TILE_DIM / GROUP_VALUES) + group32;
+        let row_start = geometry.row_tile * TILE_DIM;
+        let mut values = Vec::with_capacity(geometry.valid_out * GROUP_VALUES);
+        for row in row_start..row_start + geometry.valid_out {
+            let (_, group) = self.group(row, global_group)?;
+            match kind {
+                ComponentKind::Grid => values.extend_from_slice(&group.grid_values),
+                ComponentKind::Delta => {
+                    values.extend(std::iter::repeat_n(group.delta_sign, GROUP_VALUES))
+                }
+            }
+        }
+        Ok(ComponentTile {
+            geometry,
+            group32,
+            kind,
+            values,
+        })
+    }
+}
+
+pub(crate) struct ComponentIter {
+    source: Arc<MatrixSource>,
+    row_tile: usize,
+    column_tile: usize,
+    group32: usize,
+    kind: ComponentKind,
+    row_tiles: usize,
+    column_tiles: usize,
+    generated: usize,
+    total: usize,
+}
+
+impl ComponentIter {
+    pub(crate) fn generated_count(&self) -> usize {
+        self.generated
+    }
+    pub(crate) fn remaining_count(&self) -> usize {
+        self.total - self.generated
+    }
+}
+
+impl Iterator for ComponentIter {
+    type Item = Result<ComponentTile, String>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.row_tile >= self.row_tiles {
+            return None;
+        }
+        let geometry = match self.source.geometry(self.row_tile, self.column_tile) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(error)),
+        };
+        let result = self.source.component(geometry, self.group32, self.kind);
+        self.generated += 1;
+        if self.kind == ComponentKind::Grid {
+            self.kind = ComponentKind::Delta;
+        } else {
+            self.kind = ComponentKind::Grid;
+            self.group32 += 1;
+            if self.group32 == geometry.group_count {
+                self.group32 = 0;
+                self.column_tile += 1;
+                if self.column_tile == self.column_tiles {
+                    self.column_tile = 0;
+                    self.row_tile += 1;
+                }
+            }
+        }
+        Some(result)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.remaining_count();
+        (n, Some(n))
+    }
+}
+impl ExactSizeIterator for ComponentIter {}
+
+#[cfg(test)]
 pub(crate) fn decompose_component_tiles(
     signature: &GgmlType19Signature,
     packed_matrix: &[u8],
@@ -447,29 +636,25 @@ pub(crate) struct MatrixCacheIdentity {
 #[derive(Debug, Default)]
 pub(crate) struct ComponentCache {
     identity: Option<MatrixCacheIdentity>,
-    components: Option<Arc<[ComponentTile]>>,
+    source: Option<Arc<MatrixSource>>,
 }
 
 impl ComponentCache {
     pub(crate) fn matches(&self, identity: &MatrixCacheIdentity) -> bool {
         self.identity.as_ref() == Some(identity)
     }
-    pub(crate) fn get(&self, identity: &MatrixCacheIdentity) -> Option<Arc<[ComponentTile]>> {
+    pub(crate) fn get(&self, identity: &MatrixCacheIdentity) -> Option<Arc<MatrixSource>> {
         self.matches(identity)
-            .then(|| self.components.clone())
+            .then(|| self.source.clone())
             .flatten()
     }
-    pub(crate) fn insert(
-        &mut self,
-        identity: MatrixCacheIdentity,
-        components: Arc<[ComponentTile]>,
-    ) {
+    pub(crate) fn insert(&mut self, identity: MatrixCacheIdentity, source: Arc<MatrixSource>) {
         self.identity = Some(identity);
-        self.components = Some(components);
+        self.source = Some(source);
     }
     pub(crate) fn invalidate(&mut self) {
         self.identity = None;
-        self.components = None;
+        self.source = None;
     }
 }
 
@@ -502,7 +687,7 @@ impl LogicalLaunch {
 #[derive(Debug, Clone)]
 pub(crate) struct CapturedLaunch {
     pub(crate) launch: LogicalLaunch,
-    pub(crate) components: Arc<[ComponentTile]>,
+    pub(crate) matrix: Arc<MatrixSource>,
     packed_activations: Arc<[u8]>,
 }
 
@@ -511,6 +696,19 @@ impl CapturedLaunch {
         &self,
     ) -> Result<impl Iterator<Item = Result<Q8_1MmqBlock, String>> + '_, String> {
         iter_q8_1_mmq(&self.launch.signature, &self.packed_activations)
+    }
+
+    fn q8_group(&self, global_group: usize) -> Result<Q8_1Block, String> {
+        let block_index = global_group / 4;
+        let subblock = global_group % 4;
+        let offset = block_index
+            .checked_mul(Q8_1_MMQ_BYTES)
+            .ok_or("Q8 offset overflow")?;
+        let packed = self
+            .packed_activations
+            .get(offset..offset + Q8_1_MMQ_BYTES)
+            .ok_or("Q8 group is outside the captured activation")?;
+        Ok(Q8_1MmqBlock::parse(packed)?.subblocks[subblock])
     }
 }
 
@@ -544,14 +742,14 @@ pub(crate) fn capture_from_host(
         let guard = cache.lock().map_err(|_| "component cache poisoned")?;
         guard.get(&identity)
     };
-    let components = if let Some(cached) = cached {
+    let matrix = if let Some(cached) = cached {
         cached
     } else {
-        let built: Arc<[ComponentTile]> = Arc::from(decompose_component_tiles(
-            &launch.signature,
-            packed_matrix,
-            grid,
-        )?);
+        let built = MatrixSource::new(
+            launch.signature.clone(),
+            Arc::from(packed_matrix),
+            Arc::new(*grid),
+        )?;
         cache
             .lock()
             .map_err(|_| "component cache poisoned")?
@@ -560,7 +758,7 @@ pub(crate) fn capture_from_host(
     };
     Ok(CapturedLaunch {
         launch,
-        components,
+        matrix,
         packed_activations: Arc::from(packed_activations),
     })
 }
@@ -578,10 +776,7 @@ pub(crate) unsafe fn capture_launch(launch: LogicalLaunch) -> Result<CapturedLau
     capture_from_host(launch, &matrix, &activations, &grid)
 }
 
-pub(crate) unsafe fn copy_outputs_to_cuda(
-    captured: &CapturedLaunch,
-    outputs: &[f32],
-) -> Result<(), String> {
+fn output_bytes(captured: &CapturedLaunch, outputs: &[f32]) -> Result<Vec<u8>, String> {
     let expected =
         usize::try_from(captured.launch.signature.ne0).map_err(|_| "output count overflow")?;
     if outputs.len() != expected || outputs.iter().any(|value| !value.is_finite()) {
@@ -591,7 +786,328 @@ pub(crate) unsafe fn copy_outputs_to_cuda(
     for value in outputs {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
+    Ok(bytes)
+}
+
+pub(crate) unsafe fn copy_outputs_to_cuda(
+    captured: &CapturedLaunch,
+    outputs: &[f32],
+) -> Result<(), String> {
+    let bytes = output_bytes(captured, outputs)?;
     copy_host_to_cuda(captured.launch.output_ptr, &bytes).map_err(|error| error.to_string())
+}
+
+pub(crate) trait DaxAccess {
+    fn write(&self, offset: u64, bytes: &[u8]) -> Result<usize, String>;
+    fn read(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, String>;
+}
+
+pub(crate) struct FileDaxAccess(File);
+
+impl FileDaxAccess {
+    pub(crate) fn open(path: &Path) -> Result<Self, String> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .map(Self)
+            .map_err(|error| format!("open DAX {}: {error}", path.display()))
+    }
+}
+
+impl DaxAccess for FileDaxAccess {
+    fn write(&self, offset: u64, bytes: &[u8]) -> Result<usize, String> {
+        self.0
+            .write_at(bytes, offset)
+            .map_err(|error| format!("DAX write: {error}"))
+    }
+    fn read(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, String> {
+        self.0
+            .read_at(bytes, offset)
+            .map_err(|error| format!("DAX read: {error}"))
+    }
+}
+
+pub(crate) trait OutputCopier {
+    unsafe fn copy(&self, pointer: usize, bytes: &[u8]) -> Result<(), String>;
+}
+
+pub(crate) struct CudaOutputCopier;
+impl OutputCopier for CudaOutputCopier {
+    unsafe fn copy(&self, pointer: usize, bytes: &[u8]) -> Result<(), String> {
+        copy_host_to_cuda(pointer, bytes).map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ExecutionResult {
+    pub(crate) outputs: Vec<f32>,
+    pub(crate) physical: Vec<PhysicalResult>,
+    pub(crate) raw_components: Vec<Vec<i64>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlannedComponent {
+    kind: ComponentKind,
+    geometry: TileGeometry,
+    group32: usize,
+    matrix_offset: u64,
+    input_offset: u64,
+    output_offset: u64,
+}
+
+fn dax_write_exact(dax: &dyn DaxAccess, offset: u64, bytes: &[u8]) -> Result<(), String> {
+    let written = dax.write(offset, bytes)?;
+    if written != bytes.len() {
+        return Err(format!(
+            "short DAX write at {offset}: {written}/{}",
+            bytes.len()
+        ));
+    }
+    Ok(())
+}
+
+fn dax_read_exact(dax: &dyn DaxAccess, offset: u64, bytes: &mut [u8]) -> Result<(), String> {
+    let read = dax.read(offset, bytes)?;
+    if read != bytes.len() {
+        return Err(format!(
+            "short DAX read at {offset}: {read}/{}",
+            bytes.len()
+        ));
+    }
+    Ok(())
+}
+
+fn aligned(value: u64, alignment: u64) -> Result<u64, String> {
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return Err("invalid DAX alignment".into());
+    }
+    value
+        .checked_add(alignment - 1)
+        .map(|v| v & !(alignment - 1))
+        .ok_or("DAX layout overflow".into())
+}
+
+pub(crate) fn execute_captured_with<I: IoctlOps>(
+    captured: &CapturedLaunch,
+    session: &mut V3Session<I>,
+    dax: &dyn DaxAccess,
+    output_copier: &dyn OutputCopier,
+    base_dpa: u64,
+) -> Result<ExecutionResult, String> {
+    captured.launch.validate_before_copy()?;
+    let alignment = u64::from(session.caps().dax_alignment_bytes);
+    if !base_dpa.is_multiple_of(alignment) {
+        return Err("executor base DPA is not aligned".into());
+    }
+    let task_count = captured.matrix.component_iter()?.len();
+    let matrix_slot = TILE_PACKED_BYTES as u64;
+    let input_slot = aligned((TILE_DIM * 2) as u64, alignment)?;
+    let output_slot = aligned((TILE_DIM * 8) as u64, alignment)?;
+    let matrix_bytes = matrix_slot
+        .checked_mul(task_count as u64)
+        .ok_or("matrix region overflow")?;
+    let input_base = aligned(
+        base_dpa
+            .checked_add(matrix_bytes)
+            .ok_or("input base overflow")?,
+        alignment,
+    )?;
+    let input_bytes = input_slot
+        .checked_mul(task_count as u64)
+        .ok_or("input region overflow")?;
+    let output_base = aligned(
+        input_base
+            .checked_add(input_bytes)
+            .ok_or("output base overflow")?,
+        alignment,
+    )?;
+    let output_region_bytes = output_slot
+        .checked_mul(task_count as u64)
+        .ok_or("output region overflow")?;
+    let end = output_base
+        .checked_add(output_region_bytes)
+        .ok_or("executor DAX range overflow")?;
+    if end > session.caps().dax_bytes {
+        return Err("executor DAX layout exceeds live capacity".into());
+    }
+
+    let zero_output = vec![0_u8; output_slot as usize];
+    let mut planned = Vec::with_capacity(task_count);
+    for (index, component) in captured.matrix.component_iter()?.enumerate() {
+        let component = component?;
+        let matrix_offset = matrix_slot
+            .checked_mul(index as u64)
+            .ok_or("matrix offset overflow")?;
+        let input_offset = input_slot
+            .checked_mul(index as u64)
+            .ok_or("input offset overflow")?;
+        let output_offset = output_slot
+            .checked_mul(index as u64)
+            .ok_or("output offset overflow")?;
+        dax_write_exact(dax, base_dpa + matrix_offset, &component.pack_ternary2()?)?;
+        let global_group =
+            component.geometry.column_tile * (TILE_DIM / GROUP_VALUES) + component.group32;
+        let q8 = captured.q8_group(global_group)?;
+        let mut input = vec![0_u8; input_slot as usize];
+        let encoded = encode_q8_8(&q8.qs);
+        let local_column = component.group32 * GROUP_VALUES;
+        for (column, value) in encoded.into_iter().enumerate() {
+            let offset = (local_column + column) * 2;
+            input[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        dax_write_exact(dax, input_base + input_offset, &input)?;
+        dax_write_exact(dax, output_base + output_offset, &zero_output)?;
+        planned.push(PlannedComponent {
+            kind: component.kind,
+            geometry: component.geometry,
+            group32: component.group32,
+            matrix_offset,
+            input_offset,
+            output_offset,
+        });
+    }
+
+    let matrix_registered = session.register_buffer(
+        base_dpa,
+        matrix_bytes,
+        BUFFER_TERNARY2,
+        BUFFER_READ | BUFFER_MATRIX,
+    )?;
+    let matrix = session.commit_buffer(matrix_registered)?;
+    let input = session.register_buffer(input_base, input_bytes, BUFFER_Q8_8_S16, BUFFER_READ)?;
+    let output = session.register_buffer(
+        output_base,
+        output_region_bytes,
+        BUFFER_RAW_S64,
+        BUFFER_WRITE,
+    )?;
+    let leases = TaskLeases {
+        matrix,
+        input,
+        output,
+    };
+    let mut tasks = Vec::with_capacity(task_count);
+    for (index, item) in planned.iter().enumerate() {
+        let request_id = u64::try_from(index + 1).map_err(|_| "request ID overflow")?;
+        let mut task = build_task(
+            request_id,
+            item.geometry,
+            leases,
+            item.output_offset,
+            alignment,
+        )?;
+        task.matrix_offset = item.matrix_offset;
+        task.input_offset = item.input_offset;
+        tasks.push((item.kind, item.geometry, item.group32, task));
+    }
+    let physical = run_component_tasks(session, leases, &tasks)?;
+
+    let mut raw_outputs = Vec::with_capacity(task_count);
+    for item in &planned {
+        let mut bytes = vec![0_u8; output_slot as usize];
+        dax_read_exact(dax, output_base + item.output_offset, &mut bytes)?;
+        let mut raw = Vec::with_capacity(item.geometry.valid_out);
+        for chunk in bytes[..item.geometry.valid_out * 8].chunks_exact(8) {
+            raw.push(i64::from_le_bytes(chunk.try_into().unwrap()));
+        }
+        raw_outputs.push(raw);
+    }
+    let mut outputs = vec![
+        0_f32;
+        usize::try_from(captured.launch.signature.ne0)
+            .map_err(|_| "output count overflow")?
+    ];
+    for pair_index in (0..planned.len()).step_by(2) {
+        let grid_plan = planned[pair_index];
+        let delta_plan = *planned
+            .get(pair_index + 1)
+            .ok_or("missing delta component")?;
+        if grid_plan.kind != ComponentKind::Grid
+            || delta_plan.kind != ComponentKind::Delta
+            || grid_plan.geometry != delta_plan.geometry
+            || grid_plan.group32 != delta_plan.group32
+        {
+            return Err("grid/delta physical component order is inconsistent".into());
+        }
+        let global_group =
+            grid_plan.geometry.column_tile * (TILE_DIM / GROUP_VALUES) + grid_plan.group32;
+        let q8 = captured.q8_group(global_group)?;
+        for row_in_tile in 0..grid_plan.geometry.valid_out {
+            let global_row = grid_plan.geometry.row_tile * TILE_DIM + row_in_tile;
+            let (d, group) = captured.matrix.group(global_row, global_group)?;
+            let contribution = reconstruct_from_raw(
+                &group,
+                d,
+                &q8,
+                raw_outputs[pair_index][row_in_tile],
+                raw_outputs[pair_index + 1][row_in_tile],
+            )?;
+            outputs[global_row] = (outputs[global_row] + contribution) as f32;
+            if !outputs[global_row].is_finite() {
+                return Err("accumulated output is nonfinite".into());
+            }
+        }
+    }
+    let output_bytes_host = output_bytes(captured, &outputs)?;
+    unsafe {
+        output_copier.copy(captured.launch.output_ptr, &output_bytes_host)?;
+    }
+    session.unregister_buffer(output)?;
+    session.unregister_buffer(input)?;
+    session.unregister_buffer(matrix)?;
+    Ok(ExecutionResult {
+        outputs,
+        physical,
+        raw_components: raw_outputs,
+    })
+}
+
+pub(crate) unsafe fn execute_captured(
+    captured: &CapturedLaunch,
+    control_path: &Path,
+    dax_path: &Path,
+    base_dpa: u64,
+) -> Result<ExecutionResult, String> {
+    let mut session = V3Session::open(control_path)?;
+    let dax = FileDaxAccess::open(dax_path)?;
+    execute_captured_with(captured, &mut session, &dax, &CudaOutputCopier, base_dpa)
+}
+
+#[derive(Serialize)]
+struct ExecutionFixture {
+    iq1s_hex: String,
+    q8_1_mmq_hex: String,
+    raw_components: Vec<Vec<i64>>,
+    submission_ids: Vec<u64>,
+    request_ids: Vec<u64>,
+    outputs_f32_bits: Vec<u32>,
+}
+
+pub(crate) fn execution_fixture_json(
+    captured: &CapturedLaunch,
+    result: &ExecutionResult,
+) -> Result<String, String> {
+    if result.outputs.iter().any(|value| !value.is_finite()) {
+        return Err("execution fixture contains nonfinite output".into());
+    }
+    serde_json::to_string(&ExecutionFixture {
+        iq1s_hex: hex(&captured.matrix.packed),
+        q8_1_mmq_hex: hex(&captured.packed_activations),
+        raw_components: result.raw_components.clone(),
+        submission_ids: result
+            .physical
+            .iter()
+            .map(|item| item.completed.submission_id)
+            .collect(),
+        request_ids: result
+            .physical
+            .iter()
+            .map(|item| item.completed.task.request_id)
+            .collect(),
+        outputs_f32_bits: result.outputs.iter().map(|value| value.to_bits()).collect(),
+    })
+    .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -936,6 +1452,10 @@ fn recover_grid(oracle: &OracleLibrary) -> Result<GridTable, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::r#impl::cxl_tmatmul_v3::{
+        BufferV3, CapsV3, CommitV3, CompletionV3, SubmitV3, WaitV3,
+    };
+    use std::collections::HashMap;
 
     fn grid() -> GridTable {
         let mut entries = [[0_i8; 8]; GRID_ENTRIES];
@@ -1092,7 +1612,22 @@ mod tests {
         };
         let mut cache = ComponentCache::default();
         assert!(!cache.matches(&base));
-        let payload: Arc<[ComponentTile]> = Arc::from(Vec::<ComponentTile>::new());
+        let source_signature = GgmlType19Signature {
+            kernel: "mul_mat_q".into(),
+            ne00: 256,
+            ne01: 1,
+            stride01: 1,
+            ne10: 256,
+            ne11: 1,
+            stride11: 1,
+            ne0: 1,
+        };
+        let payload = MatrixSource::new(
+            source_signature,
+            Arc::from(block(1, false, 0)),
+            Arc::new(grid()),
+        )
+        .unwrap();
         cache.insert(base.clone(), payload.clone());
         assert!(cache.matches(&base));
         assert!(Arc::ptr_eq(&cache.get(&base).unwrap(), &payload));
@@ -1181,15 +1716,311 @@ mod tests {
         let activations = vec![0_u8; 2 * Q8_1_MMQ_BYTES];
         let first = capture_from_host(launch.clone(), &matrix, &activations, &grid()).unwrap();
         let second = capture_from_host(launch.clone(), &matrix, &activations, &grid()).unwrap();
-        assert!(Arc::ptr_eq(&first.components, &second.components));
+        assert!(Arc::ptr_eq(&first.matrix, &second.matrix));
         assert_eq!(first.activation_blocks().unwrap().count(), 2);
 
         let mut changed = launch;
         changed.content_hash[0] ^= 1;
         let third = capture_from_host(changed, &matrix, &activations, &grid()).unwrap();
-        assert!(!Arc::ptr_eq(&first.components, &third.components));
+        assert!(!Arc::ptr_eq(&first.matrix, &third.matrix));
         assert!(
             capture_from_host(first.launch.clone(), &matrix, &activations[..287], &grid()).is_err()
         );
+    }
+
+    #[test]
+    fn component_iteration_is_lazy_and_host_bounded() {
+        let signature = GgmlType19Signature {
+            kernel: "mul_mat_q".into(),
+            ne00: 2304,
+            ne01: 2050,
+            stride01: 9,
+            ne10: 2304,
+            ne11: 1,
+            stride11: 1,
+            ne0: 2050,
+        };
+        let matrix = vec![0_u8; signature.matrix_storage_bytes().unwrap()];
+        let source = MatrixSource::new(signature, Arc::from(matrix), Arc::new(grid())).unwrap();
+        let mut iterator = source.component_iter().unwrap();
+        assert!(std::mem::size_of_val(&iterator) <= 256);
+        assert_eq!(iterator.generated_count(), 0);
+        let first = iterator.next().unwrap().unwrap();
+        assert_eq!(
+            (
+                first.geometry.row_tile,
+                first.geometry.column_tile,
+                first.group32,
+                first.kind
+            ),
+            (0, 0, 0, ComponentKind::Grid)
+        );
+        assert_eq!(iterator.generated_count(), 1);
+        assert!(iterator.remaining_count() > 1);
+    }
+
+    #[derive(Clone)]
+    struct MemoryDax {
+        bytes: Arc<Mutex<Vec<u8>>>,
+        writes: Arc<Mutex<Vec<(u64, usize)>>>,
+    }
+    impl MemoryDax {
+        fn new(bytes: usize) -> Self {
+            Self {
+                bytes: Arc::new(Mutex::new(vec![0; bytes])),
+                writes: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+    impl DaxAccess for MemoryDax {
+        fn write(&self, offset: u64, bytes: &[u8]) -> Result<usize, String> {
+            let offset = offset as usize;
+            self.bytes.lock().unwrap()[offset..offset + bytes.len()].copy_from_slice(bytes);
+            self.writes
+                .lock()
+                .unwrap()
+                .push((offset as u64, bytes.len()));
+            Ok(bytes.len())
+        }
+        fn read(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, String> {
+            let offset = offset as usize;
+            bytes.copy_from_slice(&self.bytes.lock().unwrap()[offset..offset + bytes.len()]);
+            Ok(bytes.len())
+        }
+    }
+
+    struct FakeV3 {
+        dax: MemoryDax,
+        buffers: HashMap<u32, (u64, u64, u32, u64)>,
+        next_handle: u32,
+        pending: Vec<TaskV3>,
+        submission: u64,
+    }
+    impl FakeV3 {
+        fn new(dax: MemoryDax) -> Self {
+            Self {
+                dax,
+                buffers: HashMap::new(),
+                next_handle: 1,
+                pending: Vec::new(),
+                submission: 0,
+            }
+        }
+    }
+    impl IoctlOps for FakeV3 {
+        fn query_caps(&mut self, caps: &mut CapsV3) -> Result<(), String> {
+            caps.version = 3;
+            caps.capabilities = 0x7b;
+            caps.num_instances = 16;
+            caps.dim_d = 2048;
+            caps.max_batch = 1;
+            caps.max_descriptors = 1024;
+            caps.max_inflight_submissions = 8;
+            caps.max_timeout_ms = 10_000;
+            caps.ddr_data_width_bits = 512;
+            caps.dax_alignment_bytes = 4096;
+            caps.dax_bytes = 32 * 1024 * 1024 * 1024;
+            caps.per_lane_counter_mask = 0xffff;
+            caps.accelerator_clock_hz = 400_000_000;
+            Ok(())
+        }
+        fn register_buffer(&mut self, buffer: &mut BufferV3) -> Result<(), String> {
+            buffer.handle = self.next_handle;
+            self.next_handle += 1;
+            buffer.generation = 1;
+            self.buffers.insert(
+                buffer.handle,
+                (buffer.dpa_offset, buffer.length, buffer.format, 1),
+            );
+            Ok(())
+        }
+        fn unregister_buffer(&mut self, buffer: &mut BufferV3) -> Result<(), String> {
+            self.buffers.remove(&buffer.handle);
+            Ok(())
+        }
+        fn commit_buffer(&mut self, commit: &mut CommitV3) -> Result<(), String> {
+            commit.new_generation = commit.expected_generation + 1;
+            self.buffers.get_mut(&commit.handle).unwrap().3 = commit.new_generation;
+            Ok(())
+        }
+        fn submit(&mut self, submit: &mut SubmitV3) -> Result<(), String> {
+            self.pending = unsafe {
+                std::slice::from_raw_parts(submit.tasks_ptr as *const TaskV3, submit.count as usize)
+            }
+            .to_vec();
+            self.submission += 1;
+            submit.submission_id = self.submission;
+            Ok(())
+        }
+        fn wait(
+            &mut self,
+            wait: &mut WaitV3,
+            completions: &mut [CompletionV3],
+        ) -> Result<(), String> {
+            let memory = &mut *self.dax.bytes.lock().unwrap();
+            for (index, task) in self.pending.iter().enumerate() {
+                let matrix_base = self.buffers[&task.matrix_handle].0 + task.matrix_offset;
+                let input_base = self.buffers[&task.input_handle].0 + task.input_offset;
+                let output_base = self.buffers[&task.output_handle].0 + task.output_offset;
+                for row in 0..task.valid_out as usize {
+                    let mut raw = 0_i64;
+                    for column in 0..2048_usize {
+                        let element = row * 2048 + column;
+                        let byte = memory[matrix_base as usize + element / 4];
+                        let code = (byte >> (2 * (element % 4))) & 3;
+                        let weight = match code {
+                            0 => 0_i64,
+                            1 => 1,
+                            3 => -1,
+                            _ => return Err("reserved ternary code".into()),
+                        };
+                        let qoff = input_base as usize + column * 2;
+                        let quant = i16::from_le_bytes([memory[qoff], memory[qoff + 1]]);
+                        raw += weight * i64::from(quant);
+                    }
+                    let offset = output_base as usize + row * 8;
+                    memory[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
+                }
+                let mut completion = CompletionV3::default();
+                completion.request_id = task.request_id;
+                completion.lane_used = index as u32 % 16;
+                completion.accelerator_cycles = 10;
+                completion.matrix_bytes_read = TILE_PACKED_BYTES as u64;
+                completion.input_bytes_read = 4096;
+                completion.output_bytes_written = 16384;
+                completion.start_cycle = 100 + index as u64 * 20;
+                completion.end_cycle = completion.start_cycle + 10;
+                completions[index] = completion;
+            }
+            wait.completed = self.pending.len() as u32;
+            self.pending.clear();
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CaptureOutput(Mutex<Vec<u8>>);
+    impl OutputCopier for CaptureOutput {
+        unsafe fn copy(&self, _pointer: usize, bytes: &[u8]) -> Result<(), String> {
+            *self.0.lock().unwrap() = bytes.to_vec();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn executor_stages_unique_v3_tasks_validates_raw_accumulates_and_copies_back() {
+        let signature = GgmlType19Signature {
+            kernel: "mul_mat_q".into(),
+            ne00: 256,
+            ne01: 2,
+            stride01: 1,
+            ne10: 256,
+            ne11: 1,
+            stride11: 1,
+            ne0: 2,
+        };
+        let launch = LogicalLaunch {
+            matrix_ptr: 0x1000,
+            activation_ptr: 0x2000,
+            output_ptr: 0x3000,
+            allocation_generation: 1,
+            content_hash: [9; 32],
+            signature,
+        };
+        let mut matrix = Vec::new();
+        matrix.extend_from_slice(&block(3, false, 0x700));
+        matrix.extend_from_slice(&block(5, true, 0x321));
+        let mut activations = vec![0_u8; 2 * Q8_1_MMQ_BYTES];
+        for ds4 in activations.chunks_exact_mut(Q8_1_MMQ_BYTES) {
+            for sub in 0..4 {
+                ds4[sub * 4..sub * 4 + 2].copy_from_slice(&0x3800_u16.to_le_bytes());
+                ds4[sub * 4 + 2..sub * 4 + 4].copy_from_slice(&0x3e00_u16.to_le_bytes());
+                for (index, value) in ds4[16 + sub * 32..16 + (sub + 1) * 32]
+                    .iter_mut()
+                    .enumerate()
+                {
+                    *value = (index as i8 - 16) as u8;
+                }
+            }
+        }
+        let captured = capture_from_host(launch, &matrix, &activations, &grid()).unwrap();
+        let dax = MemoryDax::new(20 * 1024 * 1024);
+        let mut session = V3Session::with_io(FakeV3::new(dax.clone())).unwrap();
+        let copied = CaptureOutput::default();
+        let result = execute_captured_with(&captured, &mut session, &dax, &copied, 0).unwrap();
+        assert_eq!(result.physical.len(), 16);
+        assert!(result
+            .outputs
+            .iter()
+            .all(|value| value.is_finite() && *value != 0.0));
+        let references = [-90.625_f32, -65.625_f32];
+        for (actual, reference) in result.outputs.iter().zip(references) {
+            assert!((actual - reference).abs() <= 1e-4 + 1e-4 * reference.abs());
+        }
+        assert_eq!(
+            result
+                .outputs
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            vec![0xc2b54000, 0xc2834000]
+        );
+        assert_eq!(
+            result
+                .physical
+                .iter()
+                .map(|item| item.completed.task.request_id)
+                .collect::<Vec<_>>(),
+            (1..=16).collect::<Vec<_>>()
+        );
+        assert!(result
+            .physical
+            .iter()
+            .all(|item| item.completed.submission_id == 1));
+        assert_eq!(
+            result
+                .physical
+                .iter()
+                .map(|item| item.completed.task.matrix_offset)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            16
+        );
+        assert_eq!(
+            result
+                .physical
+                .iter()
+                .map(|item| item.completed.task.input_offset)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            16
+        );
+        assert_eq!(
+            result
+                .physical
+                .iter()
+                .map(|item| item.completed.task.output_offset)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            16
+        );
+        assert_eq!(copied.0.lock().unwrap().len(), 8);
+        let writes = dax.writes.lock().unwrap();
+        assert_eq!(writes.len(), 16 * 3);
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|(_, bytes)| *bytes == TILE_PACKED_BYTES)
+                .map(|(offset, _)| *offset)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            16
+        );
+        let fixture = execution_fixture_json(&captured, &result).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+        assert_eq!(json["iq1s_hex"].as_str().unwrap().len(), 200);
+        assert_eq!(json["q8_1_mmq_hex"].as_str().unwrap().len(), 576);
+        assert_eq!(json["request_ids"].as_array().unwrap().len(), 16);
+        assert_eq!(json["outputs_f32_bits"].as_array().unwrap().len(), 2);
     }
 }
