@@ -22,6 +22,7 @@ const EXPECTED_DAX_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 const EXPECTED_LANE_MASK: u64 = 0xffff;
 const EXPECTED_CLOCK_HZ: u64 = 400_000_000;
 const DEFAULT_TIMEOUT_MS: u32 = 5_000;
+const MAX_PROOF_TIMEOUT_MS: u32 = 10_000;
 const MAX_SANE_QUEUE_DEPTH: u32 = 1 << 20;
 
 const IOC_NRBITS: u32 = 8;
@@ -150,6 +151,13 @@ pub(crate) struct CompletionV3 {
     pub(crate) start_cycle: u64,
     pub(crate) end_cycle: u64,
     reserved: [u64; 1],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CompletedTaskV3 {
+    pub(crate) submission_id: u64,
+    pub(crate) task: TaskV3,
+    pub(crate) completion: CompletionV3,
 }
 
 #[repr(C)]
@@ -293,6 +301,7 @@ pub(crate) struct V3Session<I: IoctlOps> {
     timeout_ms: u32,
     last_submission_id: u64,
     buffers: HashMap<u32, BufferState>,
+    used_request_ids: HashSet<u64>,
     poisoned: bool,
 }
 
@@ -322,6 +331,7 @@ impl<I: IoctlOps> V3Session<I> {
             timeout_ms,
             last_submission_id: 0,
             buffers: HashMap::new(),
+            used_request_ids: HashSet::new(),
             poisoned: false,
         })
     }
@@ -544,7 +554,7 @@ impl<I: IoctlOps> V3Session<I> {
             .unwrap_or(false)
     }
 
-    pub(crate) fn run_tasks(&mut self, tasks: &[TaskV3]) -> Result<Vec<CompletionV3>, String> {
+    pub(crate) fn run_tasks(&mut self, tasks: &[TaskV3]) -> Result<Vec<CompletedTaskV3>, String> {
         self.ensure_healthy()?;
         if let Err(error) = self.validate_tasks(tasks) {
             for handle in referenced_handles(tasks) {
@@ -564,7 +574,7 @@ impl<I: IoctlOps> V3Session<I> {
             match batch_result {
                 Ok(completions) => {
                     for completion in completions {
-                        all.insert(completion.request_id, completion);
+                        all.insert(completion.task.request_id, completion);
                     }
                     for handle in handles {
                         if let Some(state) = self.buffers.get_mut(&handle) {
@@ -594,13 +604,21 @@ impl<I: IoctlOps> V3Session<I> {
             .collect()
     }
 
-    fn run_batch(&mut self, tasks: &[TaskV3]) -> Result<Vec<CompletionV3>, String> {
+    fn run_batch(&mut self, tasks: &[TaskV3]) -> Result<Vec<CompletedTaskV3>, String> {
         let mut submit = SubmitV3 {
             size: size_of::<SubmitV3>() as u32,
             count: tasks.len() as u32,
             tasks_ptr: tasks.as_ptr() as usize as u64,
             ..SubmitV3::default()
         };
+        for task in tasks {
+            if !self.used_request_ids.insert(task.request_id) {
+                return Err(format!(
+                    "request_id={} was already used by this session",
+                    task.request_id
+                ));
+            }
+        }
         self.io
             .submit(&mut submit)
             .map_err(|error| format!("SUBMIT attempted: {error}"))?;
@@ -666,6 +684,11 @@ impl<I: IoctlOps> V3Session<I> {
             .map(|task| {
                 found
                     .remove(&task.request_id)
+                    .map(|completion| CompletedTaskV3 {
+                        submission_id: submit.submission_id,
+                        task: *task,
+                        completion,
+                    })
                     .ok_or_else(|| format!("missing completion request_id={}", task.request_id))
             })
             .collect()
@@ -675,6 +698,7 @@ impl<I: IoctlOps> V3Session<I> {
         if tasks.is_empty() {
             return Err("task list is empty".into());
         }
+        validate_output_nonoverlap(tasks, self.caps.dim_d)?;
         let mut request_ids = HashSet::with_capacity(tasks.len());
         for task in tasks {
             if task.request_id == 0 {
@@ -682,6 +706,12 @@ impl<I: IoctlOps> V3Session<I> {
             }
             if !request_ids.insert(task.request_id) {
                 return Err(format!("duplicate request_id={}", task.request_id));
+            }
+            if self.used_request_ids.contains(&task.request_id) {
+                return Err(format!(
+                    "request_id={} was reused in this open session",
+                    task.request_id
+                ));
             }
             if task.flags != 0 || task.reserved0 != 0 || task.reserved != [0; 4] {
                 return Err(format!(
@@ -762,21 +792,63 @@ impl<I: IoctlOps> V3Session<I> {
                     task.request_id
                 ));
             }
-            validate_task_range(task.matrix_offset, 1, 1, matrix.wire.length, "matrix")?;
-            validate_task_range(
+            let (matrix_bytes, input_row_bytes, output_row_bytes) =
+                task_physical_bytes(self.caps.dim_d)?;
+            let matrix_end = task
+                .matrix_offset
+                .checked_add(matrix_bytes)
+                .ok_or_else(|| "matrix range overflow".to_string())?;
+            if matrix_end > matrix.wire.length {
+                return Err("matrix range exceeds registered buffer".into());
+            }
+            if task.input_stride_bytes < input_row_bytes
+                || !task.input_stride_bytes.is_multiple_of(2)
+            {
+                return Err(format!(
+                    "input stride {} is smaller than {input_row_bytes} or not 2-byte aligned",
+                    task.input_stride_bytes
+                ));
+            }
+            if !task.input_offset.is_multiple_of(2) {
+                return Err(format!(
+                    "input offset {} is not 2-byte aligned",
+                    task.input_offset
+                ));
+            }
+            if task.output_stride_bytes < output_row_bytes
+                || !task.output_stride_bytes.is_multiple_of(8)
+            {
+                return Err(format!(
+                    "output stride {} is smaller than {output_row_bytes} or not 8-byte aligned",
+                    task.output_stride_bytes
+                ));
+            }
+            if !task.output_offset.is_multiple_of(8) {
+                return Err(format!(
+                    "output offset {} is not 8-byte aligned",
+                    task.output_offset
+                ));
+            }
+            let (_, input_end) = checked_row_extent(
                 task.input_offset,
                 task.input_stride_bytes,
                 task.batch,
-                input.wire.length,
+                input_row_bytes,
                 "input",
             )?;
-            validate_task_range(
+            if input_end > input.wire.length {
+                return Err("input range exceeds registered buffer".into());
+            }
+            let (_, output_end) = checked_row_extent(
                 task.output_offset,
                 task.output_stride_bytes,
                 task.batch,
-                output.wire.length,
+                output_row_bytes,
                 "output",
             )?;
+            if output_end > output.wire.length {
+                return Err("output range exceeds registered buffer".into());
+            }
         }
         Ok(())
     }
@@ -950,8 +1022,11 @@ fn validate_caps(caps: &CapsV3) -> Result<(), String> {
             caps.max_inflight_submissions
         ));
     }
-    if caps.max_timeout_ms == 0 {
-        return Err("caps max_timeout is zero".into());
+    if caps.max_timeout_ms == 0 || caps.max_timeout_ms > MAX_PROOF_TIMEOUT_MS {
+        return Err(format!(
+            "caps max_timeout {} is outside 1..={MAX_PROOF_TIMEOUT_MS}",
+            caps.max_timeout_ms
+        ));
     }
     if caps.ddr_data_width_bits != EXPECTED_DDR_BITS {
         return Err(format!(
@@ -986,22 +1061,67 @@ fn validate_caps(caps: &CapsV3) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_task_range(
+fn task_physical_bytes(dim_d: u32) -> Result<(u64, u64, u64), String> {
+    let dim_d = u64::from(dim_d);
+    let matrix = dim_d
+        .checked_mul(dim_d)
+        .map(|bytes| bytes / 4)
+        .ok_or_else(|| "matrix range overflow".to_string())?;
+    let input = dim_d
+        .checked_mul(2)
+        .ok_or_else(|| "input range overflow".to_string())?;
+    let output = dim_d
+        .checked_mul(8)
+        .ok_or_else(|| "output range overflow".to_string())?;
+    Ok((matrix, input, output))
+}
+
+fn checked_row_extent(
     offset: u64,
     stride: u64,
     batch: u32,
-    length: u64,
+    row_bytes: u64,
     role: &str,
-) -> Result<(), String> {
-    if stride == 0 {
-        return Err(format!("{role} stride is zero"));
+) -> Result<(u64, u64), String> {
+    if batch == 0 {
+        return Err(format!("{role} range has zero batch"));
     }
-    let last = stride
+    let last_row = stride
         .checked_mul(u64::from(batch - 1))
         .and_then(|delta| offset.checked_add(delta))
         .ok_or_else(|| format!("{role} range overflow"))?;
-    if offset >= length || last >= length {
-        return Err(format!("{role} task range outside registered buffer"));
+    let end = last_row
+        .checked_add(row_bytes)
+        .ok_or_else(|| format!("{role} range overflow"))?;
+    Ok((offset, end))
+}
+
+fn validate_output_nonoverlap(tasks: &[TaskV3], dim_d: u32) -> Result<(), String> {
+    let (_, _, output_row_bytes) = task_physical_bytes(dim_d)?;
+    let mut by_handle: HashMap<u32, Vec<(u64, u64, u64)>> = HashMap::new();
+    for task in tasks {
+        let (start, end) = checked_row_extent(
+            task.output_offset,
+            task.output_stride_bytes,
+            task.batch,
+            output_row_bytes,
+            "output",
+        )?;
+        by_handle
+            .entry(task.output_handle)
+            .or_default()
+            .push((start, end, task.request_id));
+    }
+    for ranges in by_handle.values_mut() {
+        ranges.sort_unstable_by_key(|range| range.0);
+        for adjacent in ranges.windows(2) {
+            if adjacent[1].0 < adjacent[0].1 {
+                return Err(format!(
+                    "output ranges overlap for request_id={} and request_id={}",
+                    adjacent[0].2, adjacent[1].2
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -1027,6 +1147,7 @@ mod tests {
     };
 
     type CapsMutation = fn(&mut CapsV3);
+    type TaskMutation = fn(&mut TaskV3);
 
     #[derive(Debug, Default)]
     struct FakeIoctl {
@@ -1178,20 +1299,29 @@ mod tests {
     }
 
     fn register_triplet<I: IoctlOps>(session: &mut V3Session<I>) -> [BufferLease; 3] {
+        register_triplet_at(session, 0)
+    }
+
+    fn register_triplet_at<I: IoctlOps>(session: &mut V3Session<I>, base: u64) -> [BufferLease; 3] {
         let mut leases = [
             session
                 .register_buffer(
-                    0,
+                    base,
                     2048 * 2048 / 4,
                     BUFFER_TERNARY2,
                     BUFFER_READ | BUFFER_MATRIX,
                 )
                 .unwrap(),
             session
-                .register_buffer(2048 * 2048 / 4, 8192, BUFFER_Q8_8_S16, BUFFER_READ)
+                .register_buffer(base + 2048 * 2048 / 4, 8192, BUFFER_Q8_8_S16, BUFFER_READ)
                 .unwrap(),
             session
-                .register_buffer(2048 * 2048 / 4 + 8192, 32768, BUFFER_RAW_S64, BUFFER_WRITE)
+                .register_buffer(
+                    base + 2048 * 2048 / 4 + 8192,
+                    65536,
+                    BUFFER_RAW_S64,
+                    BUFFER_WRITE,
+                )
                 .unwrap(),
         ];
         leases[0] = session.commit_buffer(leases[0]).unwrap();
@@ -1213,6 +1343,18 @@ mod tests {
             output_stride_bytes: 16384,
             ..TaskV3::default()
         }
+    }
+
+    fn disjoint_tasks(request_ids: &[u64], leases: &[BufferLease; 3]) -> Vec<TaskV3> {
+        request_ids
+            .iter()
+            .enumerate()
+            .map(|(index, request_id)| {
+                let mut task = task(*request_id, leases);
+                task.output_offset = index as u64 * 16384;
+                task
+            })
+            .collect()
     }
 
     #[test]
@@ -1407,11 +1549,12 @@ mod tests {
         let io = FakeIoctl::with_waits(vec![vec![completion(2)], vec![completion(1)]]);
         let mut session = V3Session::with_io(io).unwrap();
         let leases = register_triplet(&mut session);
-        let got = session
-            .run_tasks(&[task(1, &leases), task(2, &leases)])
-            .unwrap();
+        let tasks = disjoint_tasks(&[1, 2], &leases);
+        let got = session.run_tasks(&tasks).unwrap();
         assert_eq!(
-            got.iter().map(|c| c.request_id).collect::<Vec<_>>(),
+            got.iter()
+                .map(|record| record.completion.request_id)
+                .collect::<Vec<_>>(),
             vec![1, 2]
         );
     }
@@ -1438,9 +1581,24 @@ mod tests {
         io.next_submission = 40;
         let mut session = V3Session::with_io(io).unwrap();
         let leases = register_triplet(&mut session);
-        session
-            .run_tasks(&[task(1, &leases), task(2, &leases), task(3, &leases)])
-            .unwrap();
+        let tasks = disjoint_tasks(&[1, 2, 3], &leases);
+        let completed = session.run_tasks(&tasks).unwrap();
+        assert_eq!(
+            completed
+                .iter()
+                .map(|record| record.submission_id)
+                .collect::<Vec<_>>(),
+            vec![40, 40, 41]
+        );
+        assert_eq!(
+            completed
+                .iter()
+                .map(|record| (record.task.request_id, record.completion.request_id))
+                .collect::<Vec<_>>(),
+            vec![(1, 1), (2, 2), (3, 3)]
+        );
+        let copied: CompletedTaskV3 = completed[0];
+        assert_eq!(copied.submission_id, 40);
         assert_eq!(
             session
                 .io()
@@ -1471,6 +1629,21 @@ mod tests {
     }
 
     #[test]
+    fn timeout_caps_enforce_the_ten_second_proof_ceiling() {
+        let mut accepted = FakeIoctl::valid();
+        accepted.caps.max_timeout_ms = 10_000;
+        let mut session = V3Session::with_io(accepted).unwrap();
+        session.set_timeout_ms(10_000).unwrap();
+        assert!(session.set_timeout_ms(10_001).is_err());
+
+        let mut rejected = FakeIoctl::valid();
+        rejected.caps.max_timeout_ms = 10_001;
+        assert!(V3Session::with_io(rejected)
+            .unwrap_err()
+            .contains("max_timeout"));
+    }
+
+    #[test]
     fn wait_rejects_zero_progress_duplicate_unknown_and_bad_completions() {
         let cases = [
             (vec![vec![]], "zero progress"),
@@ -1486,10 +1659,8 @@ mod tests {
         for (waits, expected) in cases {
             let mut session = V3Session::with_io(FakeIoctl::with_waits(waits)).unwrap();
             let leases = register_triplet(&mut session);
-            assert!(session
-                .run_tasks(&[task(1, &leases), task(2, &leases)])
-                .unwrap_err()
-                .contains(expected));
+            let tasks = disjoint_tasks(&[1, 2], &leases);
+            assert!(session.run_tasks(&tasks).unwrap_err().contains(expected));
         }
 
         for (bad, expected) in [
@@ -1636,7 +1807,7 @@ mod tests {
             match counter {
                 "matrix" => done.matrix_bytes_read = 2048 * 2048 / 4 + 1,
                 "input" => done.input_bytes_read = 8192 + 1,
-                "output" => done.output_bytes_written = 32768 - 4096 + 1,
+                "output" => done.output_bytes_written = 65536 - 4096 + 1,
                 _ => unreachable!(),
             }
             let mut session = V3Session::with_io(FakeIoctl::with_waits(vec![vec![done]])).unwrap();
@@ -1656,10 +1827,8 @@ mod tests {
             .push_back(Err("timeout with missing request_id=2".into()));
         let mut session = V3Session::with_io(io).unwrap();
         let leases = register_triplet(&mut session);
-        assert!(session
-            .run_tasks(&[task(1, &leases), task(2, &leases)])
-            .unwrap_err()
-            .contains("missing"));
+        let tasks = disjoint_tasks(&[1, 2], &leases);
+        assert!(session.run_tasks(&tasks).unwrap_err().contains("missing"));
     }
 
     #[test]
@@ -1667,9 +1836,8 @@ mod tests {
         let mut session =
             V3Session::with_io(FakeIoctl::with_waits(vec![vec![completion(1)], vec![]])).unwrap();
         let leases = register_triplet(&mut session);
-        let error = session
-            .run_tasks(&[task(1, &leases), task(2, &leases)])
-            .unwrap_err();
+        let tasks = disjoint_tasks(&[1, 2], &leases);
+        let error = session.run_tasks(&tasks).unwrap_err();
         assert!(error.contains("missing request_ids=[2]"), "{error}");
     }
 
@@ -1696,6 +1864,143 @@ mod tests {
             .unwrap();
         let wrong = task(2, &[wrong_matrix, input, output]);
         assert!(other.run_tasks(&[wrong]).unwrap_err().contains("formats"));
+    }
+
+    #[test]
+    fn full_row_ranges_reject_bad_strides_alignment_overrun_and_overflow() {
+        let mut cases = Vec::new();
+        let placeholder = [BufferLease {
+            owner: 0,
+            handle: 0,
+            generation: 0,
+        }; 3];
+        let base = task(1, &placeholder);
+        let mutations: [(&str, TaskMutation); 14] = [
+            ("input stride", |task: &mut TaskV3| {
+                task.input_stride_bytes = 1
+            }),
+            ("output stride", |task: &mut TaskV3| {
+                task.output_stride_bytes = 1
+            }),
+            ("input stride", |task: &mut TaskV3| {
+                task.input_stride_bytes = 4094
+            }),
+            ("output stride", |task: &mut TaskV3| {
+                task.output_stride_bytes = 16376
+            }),
+            ("input stride", |task: &mut TaskV3| {
+                task.input_stride_bytes = 4097
+            }),
+            ("output stride", |task: &mut TaskV3| {
+                task.output_stride_bytes = 16385
+            }),
+            ("input offset", |task: &mut TaskV3| task.input_offset = 1),
+            ("output offset", |task: &mut TaskV3| task.output_offset = 1),
+            ("input range", |task: &mut TaskV3| task.input_offset = 2),
+            ("output range", |task: &mut TaskV3| {
+                task.output_offset = 32_776
+            }),
+            ("input range", |task: &mut TaskV3| {
+                task.input_offset = u64::MAX - 1
+            }),
+            ("output range", |task: &mut TaskV3| {
+                task.output_offset = u64::MAX - 7
+            }),
+            ("matrix range", |task: &mut TaskV3| task.matrix_offset = 1),
+            ("matrix range", |task: &mut TaskV3| {
+                task.matrix_offset = u64::MAX
+            }),
+        ];
+        for (label, mutate) in mutations {
+            let mut candidate = base;
+            candidate.batch = 2;
+            mutate(&mut candidate);
+            cases.push((label, candidate));
+        }
+
+        for (label, mut candidate) in cases {
+            let mut session = V3Session::with_io(FakeIoctl::valid()).unwrap();
+            let leases = register_triplet(&mut session);
+            candidate.matrix_handle = leases[0].handle();
+            candidate.input_handle = leases[1].handle();
+            candidate.output_handle = leases[2].handle();
+            candidate.matrix_generation = leases[0].generation();
+            let error = session.run_tasks(&[candidate]).unwrap_err();
+            assert!(error.contains(label), "{label}: {error}");
+            assert!(!session
+                .io()
+                .calls
+                .iter()
+                .any(|call| call.starts_with("submit")));
+        }
+    }
+
+    #[test]
+    fn output_ranges_allow_exact_touching_but_reject_one_byte_overlap() {
+        let io = FakeIoctl::with_waits(vec![vec![completion(1), completion(2)]]);
+        let mut session = V3Session::with_io(io).unwrap();
+        let leases = register_triplet(&mut session);
+        let touching = disjoint_tasks(&[1, 2], &leases);
+        session.run_tasks(&touching).unwrap();
+
+        let mut overlap_session = V3Session::with_io(FakeIoctl::valid()).unwrap();
+        let overlap_leases = register_triplet(&mut overlap_session);
+        let mut overlapping = disjoint_tasks(&[3, 4], &overlap_leases);
+        overlapping[1].output_offset -= 1;
+        assert!(overlap_session
+            .run_tasks(&overlapping)
+            .unwrap_err()
+            .contains("overlap"));
+        assert!(!overlap_session
+            .io()
+            .calls
+            .iter()
+            .any(|call| call.starts_with("submit")));
+    }
+
+    #[test]
+    fn request_ids_are_session_unique_from_each_submit_attempt() {
+        let mut success =
+            V3Session::with_io(FakeIoctl::with_waits(vec![vec![completion(1)]])).unwrap();
+        let success_leases = register_triplet(&mut success);
+        success.run_tasks(&[task(1, &success_leases)]).unwrap();
+        assert!(success
+            .run_tasks(&[task(1, &success_leases)])
+            .unwrap_err()
+            .contains("reused"));
+        assert_eq!(
+            success
+                .io()
+                .calls
+                .iter()
+                .filter(|call| call.starts_with("submit"))
+                .count(),
+            1
+        );
+
+        let mut failed_io = FakeIoctl::valid();
+        failed_io.submit_error = Some("submit EIO".into());
+        let mut failed = V3Session::with_io(failed_io).unwrap();
+        let failed_leases = register_triplet(&mut failed);
+        let attempted = disjoint_tasks(&[10, 11, 12], &failed_leases);
+        assert!(failed.run_tasks(&attempted).is_err());
+
+        let fresh_leases = register_triplet_at(&mut failed, 2 * 1024 * 1024);
+        failed.io_mut().waits.push_back(Ok(vec![completion(12)]));
+        failed.run_tasks(&[task(12, &fresh_leases)]).unwrap();
+        assert!(failed
+            .run_tasks(&[task(10, &fresh_leases)])
+            .unwrap_err()
+            .contains("reused"));
+        assert_eq!(
+            failed
+                .io()
+                .calls
+                .iter()
+                .filter(|call| call.starts_with("submit"))
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -1887,9 +2192,8 @@ mod tests {
         let io = FakeIoctl::with_waits(vec![vec![completion(2)], vec![completion(1)]]);
         let mut session = V3Session::with_io(io).unwrap();
         let leases = register_triplet(&mut session);
-        session
-            .run_tasks(&[task(1, &leases), task(2, &leases)])
-            .unwrap();
+        let tasks = disjoint_tasks(&[1, 2], &leases);
+        session.run_tasks(&tasks).unwrap();
         session.unregister_buffer(leases[1]).unwrap();
         assert_eq!(
             session.io().calls,
