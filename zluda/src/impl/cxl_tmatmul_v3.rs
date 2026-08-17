@@ -278,6 +278,7 @@ impl BufferLease {
 #[derive(Debug, Clone)]
 struct BufferState {
     wire: BufferV3,
+    committed: bool,
     quarantined: bool,
     recyclable: bool,
 }
@@ -292,6 +293,7 @@ pub(crate) struct V3Session<I: IoctlOps> {
     timeout_ms: u32,
     last_submission_id: u64,
     buffers: HashMap<u32, BufferState>,
+    poisoned: bool,
 }
 
 impl V3Session<LinuxIoctl> {
@@ -320,6 +322,7 @@ impl<I: IoctlOps> V3Session<I> {
             timeout_ms,
             last_submission_id: 0,
             buffers: HashMap::new(),
+            poisoned: false,
         })
     }
 
@@ -327,15 +330,18 @@ impl<I: IoctlOps> V3Session<I> {
         self.caps
     }
 
+    #[cfg(test)]
     pub(crate) fn io(&self) -> &I {
         &self.io
     }
 
+    #[cfg(test)]
     pub(crate) fn io_mut(&mut self) -> &mut I {
         &mut self.io
     }
 
     pub(crate) fn set_timeout_ms(&mut self, timeout_ms: u32) -> Result<(), String> {
+        self.ensure_healthy()?;
         if timeout_ms == 0 || timeout_ms > self.caps.max_timeout_ms {
             return Err(format!(
                 "timeout_ms {timeout_ms} outside 1..={}",
@@ -353,8 +359,10 @@ impl<I: IoctlOps> V3Session<I> {
         format: u32,
         flags: u32,
     ) -> Result<BufferLease, String> {
+        self.ensure_healthy()?;
         let alignment = u64::from(self.caps.dax_alignment_bytes);
-        if length == 0 || dpa_offset % alignment != 0 || length % alignment != 0 {
+        if length == 0 || !dpa_offset.is_multiple_of(alignment) || !length.is_multiple_of(alignment)
+        {
             return Err(format!(
                 "buffer range must be nonempty and {alignment}-byte aligned"
             ));
@@ -391,14 +399,31 @@ impl<I: IoctlOps> V3Session<I> {
             ..BufferV3::default()
         };
         self.io.register_buffer(&mut wire)?;
-        if wire.handle == 0 || wire.generation == 0 {
-            return Err("REGISTER_BUFFER returned zero handle or generation".into());
-        }
         if self.buffers.contains_key(&wire.handle) {
+            self.poisoned = true;
             return Err(format!(
-                "REGISTER_BUFFER reused live handle {}",
+                "REGISTER_BUFFER returned duplicate live handle {}; session poisoned",
                 wire.handle
             ));
+        }
+        if wire.handle == 0 {
+            self.poisoned = true;
+            return Err("REGISTER_BUFFER returned invalid zero handle; session poisoned".into());
+        }
+        if wire.generation == 0 {
+            return match self.io.unregister_buffer(&mut wire) {
+                Ok(()) => Err(format!(
+                    "REGISTER_BUFFER returned invalid zero generation for handle {}; registration cleaned up",
+                    wire.handle
+                )),
+                Err(error) => {
+                    self.poisoned = true;
+                    Err(format!(
+                        "REGISTER_BUFFER returned invalid zero generation for handle {}; cleanup failed and session poisoned: {error}",
+                        wire.handle
+                    ))
+                }
+            };
         }
         let lease = BufferLease {
             owner: self.owner,
@@ -409,6 +434,7 @@ impl<I: IoctlOps> V3Session<I> {
             wire.handle,
             BufferState {
                 wire,
+                committed: false,
                 quarantined: false,
                 recyclable: false,
             },
@@ -417,12 +443,41 @@ impl<I: IoctlOps> V3Session<I> {
     }
 
     pub(crate) fn commit_buffer(&mut self, lease: BufferLease) -> Result<BufferLease, String> {
-        let state = self.checked_state(lease)?;
+        self.ensure_healthy()?;
+        if lease.owner != self.owner {
+            return Err("buffer lease belongs to a different session owner".into());
+        }
+        let state = self
+            .buffers
+            .get(&lease.handle)
+            .ok_or_else(|| format!("unknown buffer handle {}", lease.handle))?;
+        if state.wire.generation != lease.generation {
+            if let Some(state) = self.buffers.get_mut(&lease.handle) {
+                if state.wire.flags & BUFFER_MATRIX != 0 {
+                    state.quarantined = true;
+                    state.recyclable = false;
+                }
+            }
+            return Err(format!(
+                "buffer handle {} generation mismatch",
+                lease.handle
+            ));
+        }
         if state.quarantined {
             return Err(format!("handle {} is quarantined", lease.handle));
         }
         if state.wire.flags & BUFFER_MATRIX == 0 {
             return Err(format!("handle {} is not a matrix buffer", lease.handle));
+        }
+        if state.committed {
+            if let Some(state) = self.buffers.get_mut(&lease.handle) {
+                state.quarantined = true;
+                state.recyclable = false;
+            }
+            return Err(format!(
+                "matrix handle {} is already committed and is now quarantined",
+                lease.handle
+            ));
         }
         let mut commit = CommitV3 {
             size: size_of::<CommitV3>() as u32,
@@ -447,11 +502,12 @@ impl<I: IoctlOps> V3Session<I> {
                 commit.new_generation
             ));
         }
-        self.buffers
+        let state = self
+            .buffers
             .get_mut(&lease.handle)
-            .ok_or_else(|| format!("buffer handle {} disappeared during commit", lease.handle))?
-            .wire
-            .generation = commit.new_generation;
+            .ok_or_else(|| format!("buffer handle {} disappeared during commit", lease.handle))?;
+        state.wire.generation = commit.new_generation;
+        state.committed = true;
         Ok(BufferLease {
             generation: commit.new_generation,
             ..lease
@@ -459,12 +515,19 @@ impl<I: IoctlOps> V3Session<I> {
     }
 
     pub(crate) fn unregister_buffer(&mut self, lease: BufferLease) -> Result<(), String> {
+        self.ensure_healthy()?;
         let state = self.checked_state(lease)?;
         if state.quarantined {
             return Err(format!("handle {} is quarantined", lease.handle));
         }
         let mut wire = state.wire;
-        self.io.unregister_buffer(&mut wire)?;
+        if let Err(error) = self.io.unregister_buffer(&mut wire) {
+            self.poisoned = true;
+            return Err(format!(
+                "UNREGISTER_BUFFER for handle {} failed ambiguously; session poisoned: {error}",
+                lease.handle
+            ));
+        }
         self.buffers.remove(&lease.handle);
         Ok(())
     }
@@ -482,6 +545,7 @@ impl<I: IoctlOps> V3Session<I> {
     }
 
     pub(crate) fn run_tasks(&mut self, tasks: &[TaskV3]) -> Result<Vec<CompletionV3>, String> {
+        self.ensure_healthy()?;
         if let Err(error) = self.validate_tasks(tasks) {
             for handle in referenced_handles(tasks) {
                 if let Some(state) = self.buffers.get_mut(&handle) {
@@ -686,6 +750,12 @@ impl<I: IoctlOps> V3Session<I> {
                     task.request_id
                 ));
             }
+            if !matrix.committed {
+                return Err(format!(
+                    "request_id={} matrix handle {} is not committed",
+                    task.request_id, task.matrix_handle
+                ));
+            }
             if task.matrix_generation != matrix.wire.generation {
                 return Err(format!(
                     "request_id={} matrix generation mismatch",
@@ -738,8 +808,8 @@ impl<I: IoctlOps> V3Session<I> {
                 completion.request_id
             ));
         }
-        if completion.end_cycle < completion.start_cycle
-            || completion.accelerator_cycles > completion.end_cycle - completion.start_cycle
+        if completion.end_cycle <= completion.start_cycle
+            || completion.accelerator_cycles != completion.end_cycle - completion.start_cycle
         {
             return Err(format!(
                 "request_id={} invalid completion cycle range",
@@ -749,6 +819,26 @@ impl<I: IoctlOps> V3Session<I> {
         let matrix = &self.buffers[&task.matrix_handle].wire;
         let input = &self.buffers[&task.input_handle].wire;
         let output = &self.buffers[&task.output_handle].wire;
+        let (minimum_matrix, minimum_input, minimum_output) =
+            completion_minimum_bytes(self.caps.dim_d, task.batch)?;
+        if completion.matrix_bytes_read < minimum_matrix {
+            return Err(format!(
+                "request_id={} invalid matrix_bytes_read counter {}, expected at least {minimum_matrix}",
+                completion.request_id, completion.matrix_bytes_read
+            ));
+        }
+        if completion.input_bytes_read < minimum_input {
+            return Err(format!(
+                "request_id={} invalid input_bytes_read counter {}, expected at least {minimum_input}",
+                completion.request_id, completion.input_bytes_read
+            ));
+        }
+        if completion.output_bytes_written < minimum_output {
+            return Err(format!(
+                "request_id={} invalid output_bytes_written counter {}, expected at least {minimum_output}",
+                completion.request_id, completion.output_bytes_written
+            ));
+        }
         if completion.matrix_bytes_read > matrix.length - task.matrix_offset {
             return Err(format!(
                 "request_id={} matrix_bytes_read out of range",
@@ -795,6 +885,32 @@ impl<I: IoctlOps> V3Session<I> {
             .get(&handle)
             .ok_or_else(|| format!("unknown {role} handle {handle}"))
     }
+
+    fn ensure_healthy(&self) -> Result<(), String> {
+        if self.poisoned {
+            Err("TernIP V3 session is poisoned until fd Drop".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn completion_minimum_bytes(dim_d: u32, batch: u32) -> Result<(u64, u64, u64), String> {
+    let dim_d = u64::from(dim_d);
+    let batch = u64::from(batch);
+    let matrix = dim_d
+        .checked_mul(dim_d)
+        .and_then(|bytes| bytes.checked_div(4))
+        .ok_or_else(|| "matrix completion byte minimum overflow".to_string())?;
+    let input = batch
+        .checked_mul(dim_d)
+        .and_then(|bytes| bytes.checked_mul(2))
+        .ok_or_else(|| "input completion byte minimum overflow".to_string())?;
+    let output = batch
+        .checked_mul(dim_d)
+        .and_then(|bytes| bytes.checked_mul(8))
+        .ok_or_else(|| "output completion byte minimum overflow".to_string())?;
+    Ok((matrix, input, output))
 }
 
 fn validate_caps(caps: &CapsV3) -> Result<(), String> {
@@ -910,6 +1026,8 @@ mod tests {
         Arc,
     };
 
+    type CapsMutation = fn(&mut CapsV3);
+
     #[derive(Debug, Default)]
     struct FakeIoctl {
         caps: CapsV3,
@@ -917,10 +1035,12 @@ mod tests {
         next_handle: u32,
         next_generation: u64,
         next_submission: u64,
+        register_results: VecDeque<(u32, u64)>,
         waits: VecDeque<Result<Vec<CompletionV3>, String>>,
         submit_error: Option<String>,
         commit_error: Option<String>,
         commit_generation: Option<u64>,
+        unregister_error: Option<String>,
         wait_timeout_seen: Vec<u32>,
         drops: Option<Arc<AtomicUsize>>,
     }
@@ -941,10 +1061,12 @@ mod tests {
                 next_handle: 1,
                 next_generation: 1,
                 next_submission: 1,
+                register_results: VecDeque::new(),
                 waits: VecDeque::new(),
                 submit_error: None,
                 commit_error: None,
                 commit_generation: None,
+                unregister_error: None,
                 wait_timeout_seen: Vec::new(),
                 drops: None,
             }
@@ -966,14 +1088,22 @@ mod tests {
 
         fn register_buffer(&mut self, buffer: &mut BufferV3) -> Result<(), String> {
             self.calls.push(format!("register:{}", buffer.dpa_offset));
-            buffer.handle = self.next_handle;
-            buffer.generation = self.next_generation;
-            self.next_handle += 1;
+            if let Some((handle, generation)) = self.register_results.pop_front() {
+                buffer.handle = handle;
+                buffer.generation = generation;
+            } else {
+                buffer.handle = self.next_handle;
+                buffer.generation = self.next_generation;
+                self.next_handle += 1;
+            }
             Ok(())
         }
 
         fn unregister_buffer(&mut self, buffer: &mut BufferV3) -> Result<(), String> {
             self.calls.push(format!("unregister:{}", buffer.handle));
+            if let Some(error) = self.unregister_error.take() {
+                return Err(error);
+            }
             Ok(())
         }
 
@@ -1040,25 +1170,32 @@ mod tests {
             accelerator_cycles: 10,
             start_cycle: 20,
             end_cycle: 30,
-            matrix_bytes_read: 4096,
+            matrix_bytes_read: 2048 * 2048 / 4,
             input_bytes_read: 4096,
-            output_bytes_written: 4096,
+            output_bytes_written: 16384,
             ..CompletionV3::default()
         }
     }
 
     fn register_triplet<I: IoctlOps>(session: &mut V3Session<I>) -> [BufferLease; 3] {
-        [
+        let mut leases = [
             session
-                .register_buffer(0, 8192, BUFFER_TERNARY2, BUFFER_READ | BUFFER_MATRIX)
+                .register_buffer(
+                    0,
+                    2048 * 2048 / 4,
+                    BUFFER_TERNARY2,
+                    BUFFER_READ | BUFFER_MATRIX,
+                )
                 .unwrap(),
             session
-                .register_buffer(8192, 8192, BUFFER_Q8_8_S16, BUFFER_READ)
+                .register_buffer(2048 * 2048 / 4, 8192, BUFFER_Q8_8_S16, BUFFER_READ)
                 .unwrap(),
             session
-                .register_buffer(16384, 8192, BUFFER_RAW_S64, BUFFER_WRITE)
+                .register_buffer(2048 * 2048 / 4 + 8192, 32768, BUFFER_RAW_S64, BUFFER_WRITE)
                 .unwrap(),
-        ]
+        ];
+        leases[0] = session.commit_buffer(leases[0]).unwrap();
+        leases
     }
 
     fn task(request_id: u64, leases: &[BufferLease; 3]) -> TaskV3 {
@@ -1073,7 +1210,7 @@ mod tests {
             output_handle: leases[2].handle(),
             matrix_generation: leases[0].generation(),
             input_stride_bytes: 4096,
-            output_stride_bytes: 4096,
+            output_stride_bytes: 16384,
             ..TaskV3::default()
         }
     }
@@ -1103,7 +1240,7 @@ mod tests {
 
     #[test]
     fn caps_fail_closed_one_field_at_a_time() {
-        let invalid: [(&str, fn(&mut CapsV3)); 12] = [
+        let invalid: [(&str, CapsMutation); 12] = [
             ("version", |c: &mut CapsV3| c.version = 2),
             ("capabilities", |c: &mut CapsV3| c.capabilities = 0x3b),
             ("num_instances", |c: &mut CapsV3| c.num_instances = 15),
@@ -1204,6 +1341,65 @@ mod tests {
                 .unwrap_err()
                 .contains("quarantined"));
         }
+    }
+
+    #[test]
+    fn uncommitted_or_recommitted_matrix_never_reaches_submit() {
+        let mut session = V3Session::with_io(FakeIoctl::valid()).unwrap();
+        let matrix = session
+            .register_buffer(
+                0,
+                2048 * 2048 / 4,
+                BUFFER_TERNARY2,
+                BUFFER_READ | BUFFER_MATRIX,
+            )
+            .unwrap();
+        let input = session
+            .register_buffer(2048 * 2048 / 4, 8192, BUFFER_Q8_8_S16, BUFFER_READ)
+            .unwrap();
+        let output = session
+            .register_buffer(2048 * 2048 / 4 + 8192, 32768, BUFFER_RAW_S64, BUFFER_WRITE)
+            .unwrap();
+        let leases = [matrix, input, output];
+        assert!(session
+            .run_tasks(&[task(1, &leases)])
+            .unwrap_err()
+            .contains("not committed"));
+        assert!(!session
+            .io()
+            .calls
+            .iter()
+            .any(|call| call.starts_with("submit")));
+
+        let committed = session.commit_buffer(matrix).unwrap();
+        assert!(session
+            .commit_buffer(committed)
+            .unwrap_err()
+            .contains("already committed"));
+        assert!(session.is_quarantined(committed));
+        assert_eq!(
+            session
+                .io()
+                .calls
+                .iter()
+                .filter(|call| call.starts_with("commit"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn stale_generation_recommit_quarantines_the_committed_matrix() {
+        let mut session = V3Session::with_io(FakeIoctl::valid()).unwrap();
+        let registered = session
+            .register_buffer(0, 4096, BUFFER_TERNARY2, BUFFER_READ | BUFFER_MATRIX)
+            .unwrap();
+        let committed = session.commit_buffer(registered).unwrap();
+        assert!(session
+            .commit_buffer(registered)
+            .unwrap_err()
+            .contains("generation"));
+        assert!(session.is_quarantined(committed));
     }
 
     #[test]
@@ -1351,17 +1547,106 @@ mod tests {
     }
 
     #[test]
-    fn completion_byte_ranges_are_relative_to_task_offsets() {
-        let mut done = completion(1);
-        done.output_bytes_written = 5000;
+    fn proof_counters_require_exact_positive_cycles_and_minimum_traffic() {
+        let cycle_cases = [
+            {
+                let mut c = completion(1);
+                c.end_cycle = c.start_cycle;
+                c.accelerator_cycles = 0;
+                c
+            },
+            {
+                let mut c = completion(1);
+                c.accelerator_cycles = 9;
+                c
+            },
+            {
+                let mut c = completion(1);
+                c.accelerator_cycles = 11;
+                c
+            },
+        ];
+        for done in cycle_cases {
+            let mut session = V3Session::with_io(FakeIoctl::with_waits(vec![vec![done]])).unwrap();
+            let leases = register_triplet(&mut session);
+            assert!(session
+                .run_tasks(&[task(1, &leases)])
+                .unwrap_err()
+                .contains("cycle"));
+        }
+
+        for (counter, value) in [
+            ("matrix", 0),
+            ("matrix", 2048 * 2048 / 4 - 1),
+            ("input", 0),
+            ("input", 2048 * 2 - 1),
+            ("output", 0),
+            ("output", 2048 * 8 - 1),
+        ] {
+            let mut done = completion(1);
+            match counter {
+                "matrix" => done.matrix_bytes_read = value,
+                "input" => done.input_bytes_read = value,
+                "output" => done.output_bytes_written = value,
+                _ => unreachable!(),
+            }
+            let mut session = V3Session::with_io(FakeIoctl::with_waits(vec![vec![done]])).unwrap();
+            let leases = register_triplet(&mut session);
+            let error = session.run_tasks(&[task(1, &leases)]).unwrap_err();
+            assert!(error.contains(counter), "{counter}={value}: {error}");
+        }
+    }
+
+    #[test]
+    fn proof_counter_minimums_scale_with_batch() {
+        for counter in ["input", "output"] {
+            let mut done = completion(1);
+            done.input_bytes_read = 2 * 2048 * 2;
+            done.output_bytes_written = 2 * 2048 * 8;
+            match counter {
+                "input" => done.input_bytes_read -= 1,
+                "output" => done.output_bytes_written -= 1,
+                _ => unreachable!(),
+            }
+            let mut session = V3Session::with_io(FakeIoctl::with_waits(vec![vec![done]])).unwrap();
+            let leases = register_triplet(&mut session);
+            let mut batched = task(1, &leases);
+            batched.batch = 2;
+            assert!(session.run_tasks(&[batched]).unwrap_err().contains(counter));
+        }
+
+        let mut done = completion(2);
+        done.input_bytes_read = 2 * 2048 * 2;
+        done.output_bytes_written = 2 * 2048 * 8;
         let mut session = V3Session::with_io(FakeIoctl::with_waits(vec![vec![done]])).unwrap();
         let leases = register_triplet(&mut session);
-        let mut offset = task(1, &leases);
-        offset.output_offset = 4096;
-        assert!(session
-            .run_tasks(&[offset])
+        let mut batched = task(2, &leases);
+        batched.batch = 2;
+        session.run_tasks(&[batched]).unwrap();
+
+        assert!(completion_minimum_bytes(u32::MAX, u32::MAX)
             .unwrap_err()
-            .contains("output_bytes"));
+            .contains("overflow"));
+    }
+
+    #[test]
+    fn completion_byte_ranges_are_relative_to_task_offsets() {
+        for counter in ["matrix", "input", "output"] {
+            let mut done = completion(1);
+            match counter {
+                "matrix" => done.matrix_bytes_read = 2048 * 2048 / 4 + 1,
+                "input" => done.input_bytes_read = 8192 + 1,
+                "output" => done.output_bytes_written = 32768 - 4096 + 1,
+                _ => unreachable!(),
+            }
+            let mut session = V3Session::with_io(FakeIoctl::with_waits(vec![vec![done]])).unwrap();
+            let leases = register_triplet(&mut session);
+            let mut offset = task(1, &leases);
+            if counter == "output" {
+                offset.output_offset = 4096;
+            }
+            assert!(session.run_tasks(&[offset]).unwrap_err().contains(counter));
+        }
     }
 
     #[test]
@@ -1493,5 +1778,132 @@ mod tests {
         assert!(!session.is_recyclable(leases[0]));
         session.unregister_buffer(leases[1]).unwrap();
         assert!(session.io().calls.iter().any(|c| c == "unregister:2"));
+    }
+
+    #[test]
+    fn ambiguous_unregister_poisons_and_retains_the_lease_until_drop() {
+        let mut io = FakeIoctl::valid();
+        io.unregister_error = Some("unregister EIO".into());
+        let mut session = V3Session::with_io(io).unwrap();
+        let lease = session
+            .register_buffer(0, 4096, BUFFER_RAW_S64, BUFFER_WRITE)
+            .unwrap();
+        assert!(session.unregister_buffer(lease).is_err());
+        assert!(session
+            .set_timeout_ms(1000)
+            .unwrap_err()
+            .contains("poisoned"));
+        assert_eq!(
+            session.io().calls,
+            vec!["query", "register:0", "unregister:1"]
+        );
+    }
+
+    #[test]
+    fn successful_register_with_invalid_identity_cleans_up_or_poisons() {
+        let mut cleanup = FakeIoctl::valid();
+        cleanup.register_results.push_back((9, 0));
+        let mut session = V3Session::with_io(cleanup).unwrap();
+        assert!(session
+            .register_buffer(0, 4096, BUFFER_RAW_S64, BUFFER_WRITE)
+            .unwrap_err()
+            .contains("invalid"));
+        assert_eq!(
+            session.io().calls,
+            vec!["query", "register:0", "unregister:9"]
+        );
+        session
+            .register_buffer(0, 4096, BUFFER_RAW_S64, BUFFER_WRITE)
+            .unwrap();
+
+        for (handle, generation, cleanup_fails) in [(0, 1, false), (9, 0, true)] {
+            let drops = Arc::new(AtomicUsize::new(0));
+            {
+                let mut io = FakeIoctl::valid();
+                io.register_results.push_back((handle, generation));
+                io.unregister_error = cleanup_fails.then(|| "cleanup EIO".into());
+                io.drops = Some(drops.clone());
+                let mut poisoned = V3Session::with_io(io).unwrap();
+                assert!(poisoned
+                    .register_buffer(0, 4096, BUFFER_RAW_S64, BUFFER_WRITE)
+                    .is_err());
+                assert!(poisoned
+                    .set_timeout_ms(1000)
+                    .unwrap_err()
+                    .contains("poisoned"));
+                assert!(poisoned.run_tasks(&[]).unwrap_err().contains("poisoned"));
+                assert!(!poisoned
+                    .io()
+                    .calls
+                    .iter()
+                    .any(|call| call.starts_with("submit")));
+                let expected_calls = if handle == 0 {
+                    vec!["query", "register:0"]
+                } else {
+                    vec!["query", "register:0", "unregister:9"]
+                };
+                assert_eq!(poisoned.io().calls, expected_calls);
+                assert_eq!(drops.load(Ordering::SeqCst), 0);
+            }
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn duplicate_successful_register_poisons_without_unregistering_live_handle() {
+        let mut io = FakeIoctl::valid();
+        io.register_results.push_back((5, 1));
+        io.register_results.push_back((5, 2));
+        let mut session = V3Session::with_io(io).unwrap();
+        let live = session
+            .register_buffer(0, 4096, BUFFER_RAW_S64, BUFFER_WRITE)
+            .unwrap();
+        assert!(session
+            .register_buffer(4096, 4096, BUFFER_RAW_S64, BUFFER_WRITE)
+            .unwrap_err()
+            .contains("duplicate"));
+        assert!(!session.io().calls.iter().any(|call| call == "unregister:5"));
+        assert!(session.run_tasks(&[]).unwrap_err().contains("poisoned"));
+        assert!(session
+            .register_buffer(8192, 4096, BUFFER_RAW_S64, BUFFER_WRITE)
+            .unwrap_err()
+            .contains("poisoned"));
+        assert!(session
+            .commit_buffer(live)
+            .unwrap_err()
+            .contains("poisoned"));
+        assert!(session
+            .unregister_buffer(live)
+            .unwrap_err()
+            .contains("poisoned"));
+        assert_eq!(
+            session.io().calls,
+            vec!["query", "register:0", "register:4096"]
+        );
+    }
+
+    #[test]
+    fn causal_order_is_register_commit_submit_partial_wait_then_unregister() {
+        let io = FakeIoctl::with_waits(vec![vec![completion(2)], vec![completion(1)]]);
+        let mut session = V3Session::with_io(io).unwrap();
+        let leases = register_triplet(&mut session);
+        session
+            .run_tasks(&[task(1, &leases), task(2, &leases)])
+            .unwrap();
+        session.unregister_buffer(leases[1]).unwrap();
+        assert_eq!(
+            session.io().calls,
+            vec![
+                "query",
+                "register:0",
+                "register:1048576",
+                "register:1056768",
+                "commit:1",
+                "submit:2",
+                "wait:1",
+                "wait:1",
+                "unregister:2",
+            ]
+        );
     }
 }
