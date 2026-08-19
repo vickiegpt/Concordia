@@ -90,11 +90,15 @@ impl RequestAggregator {
             return Vec::new();
         }
 
+        let size_bytes = remaining.iter()
+            .map(|op| op.dim as usize * 2)
+            .sum();
+
         let batch = Batch {
             id: BatchId::new(),
             operations: remaining,
             created_at: Instant::now(),
-            size_bytes: 0, // Will be calculated
+            size_bytes,
         };
 
         self.active_batches.insert(batch.id, batch.clone());
