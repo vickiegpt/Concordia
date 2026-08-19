@@ -666,7 +666,7 @@ pub(crate) unsafe fn try_launch(
     not(feature = "tenstorrent")
 ))]
 pub(crate) fn try_batch_scheduler_launch(launch: &Nvint4Launch) -> Option<bool> {
-    if let Ok(_) = std::env::var("BATCH_SCHEDULER_ENABLED") {
+    if env_truthy("BATCH_SCHEDULER_ENABLED") {
         let scheduler = get_global_scheduler();
 
         if let Ok(_) = scheduler.submit_launch(*launch) {
