@@ -86,6 +86,15 @@ pub(crate) mod xrt_tmatmul;
 #[cfg(any(feature = "intel", feature = "nvidia"))]
 pub(crate) mod bitnet_disagg;
 
+// FPGA Batch Scheduler for 16-instance optimization
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub mod batch_scheduler;
+
 #[cfg(test)]
 pub(crate) mod test_env {
     use std::sync::{Mutex, MutexGuard};

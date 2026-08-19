@@ -1,5 +1,12 @@
 use crate::r#impl::cxl_tmatmul::{self, CudaDaxContext, Nvint4HardwareStatus};
 use crate::r#impl::nvidia_runtime_sys;
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+use crate::r#impl::batch_scheduler::integration::{get_global_scheduler, BatchSchedulerManager};
 use cuda_types::cuda::{CUdevice, CUdeviceptr_v2, CUfunction, CUmodule, CUstream};
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
@@ -652,6 +659,29 @@ pub(crate) unsafe fn try_launch(
     )
 }
 
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn try_batch_scheduler_launch(launch: &Nvint4Launch) -> Option<bool> {
+    if let Ok(_) = std::env::var("BATCH_SCHEDULER_ENABLED") {
+        let scheduler = get_global_scheduler();
+
+        if let Ok(_) = scheduler.submit_launch(*launch) {
+            if let Ok(completed) = scheduler.process_pending() {
+                // Process completed operations
+                if !completed.is_empty() {
+                    return Some(true);
+                }
+            }
+        }
+    }
+
+    None // Fall back to existing logic
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn hetgpu_nvint4_convert_for_test(
     src: usize,
@@ -855,6 +885,28 @@ mod tests {
             std::fs::read_to_string(path).unwrap(),
             "{\"run\":1}\n{\"run\":2}\n"
         );
+    }
+
+    #[cfg(all(
+        feature = "nvidia",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent")
+    ))]
+    #[test]
+    fn test_batch_scheduler_hook() {
+        let launch = Nvint4Launch {
+            packed_weights: 0x1000,
+            input_q8_8: 0x2000,
+            output_s64: 0x3000,
+            dim: 2048,
+            delta: 1,
+            stream: CUstream(ptr::null_mut()),
+        };
+
+        let result = try_batch_scheduler_launch(&launch);
+        // Should return None if BATCH_SCHEDULER_ENABLED not set
+        assert!(result.is_none());
     }
 }
 
