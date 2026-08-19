@@ -148,12 +148,8 @@ fn test_batch_scheduler_basic_performance() {
         println!("║              ❌ SOME TESTS FAILED ❌                         ║");
         println!("╚═══════════════════════════════════════════════════════════════╝");
         println!("\n⚠️  Performance targets not met. Review configuration and optimization.");
-        std::process::exit(1);
+        panic!("Performance targets not met");
     }
-}
-
-fn main() {
-    test_batch_scheduler_basic_performance();
 }
 
 #[cfg(test)]

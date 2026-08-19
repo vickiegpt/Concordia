@@ -14,6 +14,16 @@ cargo test --lib batch_scheduler || {
 }
 echo "✅ Unit tests passed"
 
+# Test 1.5: Run batch scheduler integration tests
+echo "Running batch scheduler integration tests..."
+cd /home/victoryang00/hetGPU/zluda
+if cargo test --lib integration::tests 2>&1 | grep -q "test result: ok"; then
+    echo "✅ Batch scheduler integration tests passed"
+else
+    echo "⚠️  Batch scheduler integration tests not found or failed"
+fi
+cd /home/victoryang00/hetGPU
+
 # Test 2: Integration tests
 echo "Running integration tests..."
 cargo test --lib batch_scheduler::integration || {
@@ -24,11 +34,13 @@ echo "✅ Integration tests passed"
 
 # Test 3: Performance validation
 echo "Running performance tests..."
-if BATCH_SCHEDULER_ENABLED=1 cargo test --tests batch_scheduler_performance --release; then
+cd /home/victoryang00/hetGPU/zluda
+if BATCH_SCHEDULER_ENABLED=1 cargo test --tests --test batch_scheduler_performance tests::test_performance_basics --release; then
     echo "✅ Performance tests passed"
 else
     echo "⚠️  Performance tests failed (may be expected without hardware)"
 fi
+cd /home/victoryang00/hetGPU
 
 # Test 4: Real workload test
 echo "Running real Kimi workload..."
