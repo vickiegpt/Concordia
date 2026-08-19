@@ -343,6 +343,8 @@ mod tests {
     }
 
     fn create_test_assignments(count: usize, instance_count: usize) -> Vec<InstanceAssignment> {
+        use crate::r#impl::batch_scheduler::scheduler::OperationId;
+
         (0..count).map(|i| InstanceAssignment {
             instance_id: i % instance_count,
             operations: vec![(OperationId(i as u64 + 1000), i)],

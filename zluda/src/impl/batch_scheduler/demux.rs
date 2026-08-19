@@ -10,7 +10,7 @@
 //! - **Relaxed**: First-come-first-served based on completion time
 //! - **Priority**: Ordered by priority value (lower = higher priority)
 
-use super::pipeline::OperationId;
+use super::scheduler::OperationId;
 use super::error_handling::{FailureType, RecoveryAction};
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
