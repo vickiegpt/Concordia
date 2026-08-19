@@ -7,87 +7,15 @@
 ## Overview
 The FPGA Batch Scheduler optimizes matmul operations across 16 FPGA instances, providing significant TPS improvements for Kimi and matmulfreellm workloads.
 
-## Prerequisites
+### Architecture Flow
+The batch scheduler follows this execution pipeline:
 
-### Hardware Requirements
-- **FPGA Instances**: 16 CXL-based FPGA instances with ternary matmul acceleration
-- **GPU**: NVIDIA GPU with CUDA support (tested with RTX PRO 6000, 98GB memory)
-- **Memory**: Minimum 16GB system RAM, 32GB+ recommended
-- **Storage**: 10GB free disk space
+**Request Aggregator → Instance Scheduler → Memory Pipeline → Response Demux**
 
-### Software Dependencies
-- **Rust**: 1.70+ (for building ZLUDA components)
-- **CUDA Toolkit**: 11.0+ (for GPU integration)
-- **Python**: 3.8+ (for benchmark scripts)
-- **Bash**: 4.0+ (for shell scripts)
-- **jq**: 1.5+ (for JSON log parsing)
-
-### System Requirements
-- Linux kernel with CXL device support
-- Access to CXL device nodes (/dev/cxl_tmatmul*)
-- GPU driver installation with CUDA runtime
-- Development tools: gcc, make, cmake
-
-## Installation
-
-### 1. Build the Batch Scheduler
-
-```bash
-# Navigate to the repository
-cd /home/victoryang00/hetGPU
-
-# Build release version with batch scheduler enabled
-cargo build --release --features batch_scheduler
-
-# Verify build
-ls -la target/release/libzluda.so
-```
-
-### 2. Verify Device Access
-
-```bash
-# Check CXL devices are available
-ls -la /dev/cxl_tmatmul*
-
-# Check GPU availability
-nvidia-smi
-
-# Verify device permissions
-groups | grep -E "video|render"
-```
-
-If device permissions are incorrect:
-```bash
-# Add user to video group for GPU access
-sudo usermod -a -G video $USER
-
-# Add user to render group for CXL device access
-sudo usermod -a -G render $USER
-
-# Log out and back in for changes to take effect
-```
-
-### 3. Create Log Directory
-
-```bash
-# Create stats log directory
-sudo mkdir -p /var/log/batch_scheduler/
-
-# Set permissions
-sudo chown $USER:$USER /var/log/batch_scheduler/
-
-# Verify permissions
-ls -la /var/log/batch_scheduler/
-```
-
-### 4. Run Health Check
-
-```bash
-# Verify system is ready for batch scheduler
-bench/batch_scheduler/health_check.sh
-
-# Expected output: Health Score >= 80%
-```
+- **Request Aggregator**: Collects individual matmul operations into batches
+- **Instance Scheduler**: Assigns operations to FPGA instances using various policies  
+- **Memory Pipeline**: Manages memory transfers and double buffering
+- **Response Demux**: Routes completed operations back to callers
 
 ## Quick Start
 
@@ -137,41 +65,6 @@ python tests/matmulfreellm_tps_benchmark.py
 - **Verification**: Run benchmark with `TARGET_TPS=2000` and measure achieved TPS
 - **Acceptance Criteria**: Sustained TPS >= 2000 for 5+ minutes
 
-### Performance Verification Methods
-
-**Method 1: Direct Benchmarking**
-```bash
-# Kimi workload verification
-KIMI_BITLINEAR_TMATMUL=1 \
-BATCH_SCHEDULER_ENABLED=1 \
-BATCH_SIZE=64 \
-INSTANCE_COUNT=16 \
-bench/kimi_k26_tps/run_kimi_k26_tps.sh
-
-# matmulfreellm workload verification  
-BATCH_SCHEDULER_ENABLED=1 \
-BATCH_SIZE=64 \
-INSTANCE_COUNT=16 \
-python tests/matmulfreellm_tps_benchmark.py
-```
-
-**Method 2: Real-time Monitoring**
-```bash
-# Monitor live statistics
-watch -n 1 'tail -1 /var/log/batch_scheduler_stats.jsonl | jq'
-```
-
-**Method 3: Performance Regression Testing**
-```bash
-# Run comprehensive performance suite
-bench/batch_scheduler/performance_test.sh
-```
-
-### Additional Performance Metrics
-- **Instance Utilization**: Target >85% average across 16 instances
-- **Average Latency**: Target <1000μs per operation
-- **Fallback Rate**: Target <1% operations falling back to GPU
-- **Memory Efficiency**: Target >90% memory allocation reuse
 
 ## Monitoring
 Check scheduler statistics:
@@ -189,31 +82,3 @@ cat /var/log/batch_scheduler_stats.jsonl | tail -1 | jq '.fallback_count'
 tail -10 /var/log/batch_scheduler_stats.jsonl | jq '.'
 ```
 
-## Architecture
-The batch scheduler consists of:
-- Request Aggregator: Collects individual matmul operations into batches
-- Instance Scheduler: Assigns operations to FPGA instances using various policies
-- Memory Pipeline: Manages memory transfers and double buffering
-- Response Demux: Routes completed operations back to callers
-- Health Monitor: Tracks instance health and manages fallback
-
-## Scheduling Policies
-- RoundRobin: Distribute operations evenly across instances
-- SizeAware: Load balance based on operation sizes
-- LoadBalanced: Distribute based on current queue depth
-- Adaptive: Smart load balancing (recommended)
-
-## Advanced Configuration
-```bash
-# Enable prefetching
-export PIPELINE_ENABLE_PREFETCH=1
-
-# Enable double buffering
-export PIPELINE_ENABLE_DOUBLE_BUFFER=1
-
-# Set health check interval
-export HEALTH_CHECK_INTERVAL=100
-```
-
-## Error Handling
-The batch scheduler includes automatic fallback to GPU execution when FPGA instances are unhealthy or operations fail.
