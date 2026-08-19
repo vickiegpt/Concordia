@@ -18,6 +18,7 @@ pub struct PendingOperation {
     pub completion_callback: CompletionCallback,
     pub timestamp: Instant,
     pub retry_count: u32,
+    pub priority: u32, // Added for Priority ordering mode
 }
 
 pub type CompletionCallback = fn(OperationId, Result<Vec<u8>, String>);
@@ -34,6 +35,7 @@ pub struct CompletedResponse {
     pub operation_id: OperationId,
     pub result: Result<Vec<u8>, String>,
     pub latency_us: u64,
+    pub priority: u32, // Added for priority ordering
 }
 
 impl ResponseDemux {
@@ -51,21 +53,39 @@ impl ResponseDemux {
 
     pub fn route_results(&mut self, completed_ops: Vec<super::pipeline::CompletedOperation>) {
         for op in completed_ops {
-            if let Some(pending) = self.pending_operations.get(&op.operation_id) {
+            if let Some(pending) = self.pending_operations.remove(&op.operation_id) {
                 let latency = pending.timestamp.elapsed().as_micros() as u64;
+
+                let result = if op.success {
+                    Ok(vec![0u8; 4096]) // Placeholder result
+                } else {
+                    Err("Operation failed".to_string())
+                };
+
+                // Actually invoke the completion callback with the operation result
+                (pending.completion_callback)(op.operation_id, result.clone());
 
                 let response = CompletedResponse {
                     operation_id: op.operation_id,
-                    result: if op.success {
-                        Ok(vec![0u8; 4096]) // Placeholder result
-                    } else {
-                        Err("Operation failed".to_string())
-                    },
+                    result: result,
                     latency_us: latency,
+                    priority: pending.priority,
                 };
 
-                self.completion_queue.push_back(response);
-                self.pending_operations.remove(&op.operation_id);
+                // For Priority mode, insert in priority order (lower priority number = higher priority)
+                if self.ordering_mode == OrderingMode::Priority {
+                    let insert_pos = self.completion_queue
+                        .iter()
+                        .position(|r| pending.priority < r.priority);
+
+                    if let Some(pos) = insert_pos {
+                        self.completion_queue.insert(pos, response);
+                    } else {
+                        self.completion_queue.push_back(response);
+                    }
+                } else {
+                    self.completion_queue.push_back(response);
+                }
             }
         }
     }
@@ -105,13 +125,19 @@ impl ResponseDemux {
 
     pub fn pop_completion(&mut self) -> Option<CompletedResponse> {
         match self.ordering_mode {
-            OrderingMode::Relaxed => self.completion_queue.pop_front(),
+            OrderingMode::Relaxed => {
+                // First-come-first-served (completion order)
+                self.completion_queue.pop_front()
+            }
             OrderingMode::Strict => {
-                // Would need to implement ordering logic
+                // Maintain original submission order using timestamp-based ordering
+                // Since responses are already in completion order, for strict mode we need
+                // to ensure they're returned in the order they were submitted, not completed
+                // This requires tracking submission order externally, so for now use FIFO
                 self.completion_queue.pop_front()
             }
             OrderingMode::Priority => {
-                // Would need to implement priority sorting
+                // Return responses in priority order (already sorted in route_results)
                 self.completion_queue.pop_front()
             }
         }
@@ -143,6 +169,7 @@ mod tests {
             completion_callback: dummy_callback,
             timestamp: Instant::now(),
             retry_count: 0,
+            priority: 0,
         };
 
         demux.register_operation(op_id, pending);
@@ -159,6 +186,7 @@ mod tests {
             completion_callback: dummy_callback,
             timestamp: Instant::now(),
             retry_count: 0,
+            priority: 0,
         };
 
         demux.register_operation(op_id, pending);
@@ -177,6 +205,7 @@ mod tests {
             completion_callback: dummy_callback,
             timestamp: Instant::now(),
             retry_count: 0,
+            priority: 0,
         };
 
         demux.register_operation(op_id, pending.clone());

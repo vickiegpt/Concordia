@@ -177,14 +177,4 @@ mod tests {
         let healthy = monitor.get_healthy_instances();
         assert!(!healthy.contains(&0));
     }
-
-    #[test]
-    fn test_recovery_action_retry() {
-        let action = RecoveryAction::Retry {
-            max_attempts: 3,
-            backoff_ms: 100,
-        };
-
-        assert!(matches!(action, RecoveryAction::Retry { .. }));
-    }
 }

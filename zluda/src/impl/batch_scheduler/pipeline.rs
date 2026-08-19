@@ -247,7 +247,7 @@ impl MemoryPipeline {
                 let operation = CompletedOperation {
                     operation_id: operation_id.0, // Extract the u64 from OperationId
                     batch_index: *batch_index,
-                    success: latency_us < self.config.timeout_us,
+                    success: latency_us < 10000, // Default timeout of 10ms
                     latency_us,
                 };
 
@@ -446,7 +446,7 @@ mod tests {
         for result in results {
             assert!(result.success);
             assert!(result.latency_us > 0);
-            assert!(result.latency_us < 10000); // Less than timeout
+            assert!(result.latency_us < 10000); // Less than default timeout
         }
 
         // Test result collection
