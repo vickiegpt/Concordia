@@ -1,10 +1,4 @@
 // /home/victoryang00/hetGPU/zluda/src/impl/batch_scheduler/aggregator.rs
-#[cfg(all(
-    feature = "nvidia",
-    not(feature = "amd"),
-    not(feature = "intel"),
-    not(feature = "tenstorrent")
-))]
 use crate::r#impl::nvint4_tmatmul::Nvint4Launch;
 use super::config::BatchConfig;
 use std::collections::{HashMap, VecDeque};
