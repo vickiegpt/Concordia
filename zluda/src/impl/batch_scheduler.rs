@@ -162,15 +162,17 @@ impl SchedulerReport {
         let mut submission_ids = HashSet::new();
 
         for completed in completed_tasks {
-            validate_evidence(completed)?;
-            if completed.task.batch == 0 {
+            let submission_id = completed.submission_id();
+            let task = completed.task();
+            let completion = completed.completion();
+            if task.batch == 0 {
                 return Err(format!(
                     "submission_id={} has invalid zero task batch",
-                    completed.submission_id
+                    submission_id
                 ));
             }
 
-            let lane = completed.completion.lane_used;
+            let lane = completion.lane_used;
             if lane >= num_instances {
                 return Err(format!("completion lane {lane} outside 0..{num_instances}"));
             }
@@ -181,7 +183,7 @@ impl SchedulerReport {
 
             checked_add(
                 &mut report.logical_items,
-                u64::from(completed.task.batch),
+                u64::from(task.batch),
                 "logical item count",
             )?;
             checked_add(
@@ -191,27 +193,27 @@ impl SchedulerReport {
             )?;
             checked_add(
                 &mut report.total_accelerator_cycles,
-                completed.completion.accelerator_cycles,
+                completion.accelerator_cycles,
                 "accelerator cycle total",
             )?;
             checked_add(
                 &mut report.total_matrix_bytes_read,
-                completed.completion.matrix_bytes_read,
+                completion.matrix_bytes_read,
                 "matrix byte total",
             )?;
             checked_add(
                 &mut report.total_input_bytes_read,
-                completed.completion.input_bytes_read,
+                completion.input_bytes_read,
                 "input byte total",
             )?;
             checked_add(
                 &mut report.total_output_bytes_written,
-                completed.completion.output_bytes_written,
+                completion.output_bytes_written,
                 "output byte total",
             )?;
             report.lane_mask |= lane_bit;
 
-            if submission_ids.insert(completed.submission_id) {
+            if submission_ids.insert(submission_id) {
                 checked_add(
                     &mut report.unique_submission_count,
                     1,
@@ -258,55 +260,6 @@ impl SchedulerReport {
     pub(crate) fn total_output_bytes_written(&self) -> u64 {
         self.total_output_bytes_written
     }
-}
-
-fn validate_evidence(completed: &CompletedTaskV3) -> Result<(), String> {
-    if completed.submission_id == 0 {
-        return Err("submission_id must be non-zero".into());
-    }
-    if completed.task.request_id == 0 {
-        return Err(format!(
-            "submission_id={} task request_id must be non-zero",
-            completed.submission_id
-        ));
-    }
-    if completed.completion.request_id != completed.task.request_id {
-        return Err(format!(
-            "submission_id={} completion request_id={} does not match task request_id={}",
-            completed.submission_id, completed.completion.request_id, completed.task.request_id
-        ));
-    }
-    if completed.completion.status != 0 {
-        return Err(format!(
-            "request_id={} completion status={}",
-            completed.task.request_id, completed.completion.status
-        ));
-    }
-    if completed.completion.end_cycle <= completed.completion.start_cycle {
-        return Err(format!(
-            "request_id={} invalid completion cycle range {}..{}",
-            completed.task.request_id,
-            completed.completion.start_cycle,
-            completed.completion.end_cycle
-        ));
-    }
-    let cycle_range = completed
-        .completion
-        .end_cycle
-        .checked_sub(completed.completion.start_cycle)
-        .ok_or_else(|| {
-            format!(
-                "request_id={} invalid completion cycle range",
-                completed.task.request_id
-            )
-        })?;
-    if completed.completion.accelerator_cycles != cycle_range {
-        return Err(format!(
-            "request_id={} invalid completion cycle range: accelerator_cycles={} range={cycle_range}",
-            completed.task.request_id, completed.completion.accelerator_cycles
-        ));
-    }
-    Ok(())
 }
 
 fn checked_add(total: &mut u64, value: u64, metric: &str) -> Result<(), String> {
@@ -373,11 +326,7 @@ mod tests {
         completion.start_cycle = 0;
         completion.end_cycle = accelerator_cycles;
 
-        CompletedTaskV3 {
-            submission_id,
-            task,
-            completion,
-        }
+        CompletedTaskV3::test_only_new_unchecked(submission_id, task, completion)
     }
 
     #[test]
@@ -507,43 +456,6 @@ mod tests {
 
         let zero_batch = completed_task(1, 0, 0, 1, 1, 1, 1);
         assert!(SchedulerReport::from_completions(&[zero_batch], 1).is_err());
-    }
-
-    #[test]
-    fn completion_metrics_reject_invalid_evidence_records() {
-        let zero_submission = completed_task(0, 1, 0, 1, 1, 1, 1);
-        let error = SchedulerReport::from_completions(&[zero_submission], 1).unwrap_err();
-        assert!(error.contains("submission_id"), "{error}");
-
-        let mut zero_request = completed_task(1, 1, 0, 1, 1, 1, 1);
-        zero_request.task.request_id = 0;
-        let error = SchedulerReport::from_completions(&[zero_request], 1).unwrap_err();
-        assert!(error.contains("task request_id"), "{error}");
-
-        let mut mismatched_request = completed_task(1, 1, 0, 1, 1, 1, 1);
-        mismatched_request.completion.request_id = 2;
-        let error = SchedulerReport::from_completions(&[mismatched_request], 1).unwrap_err();
-        assert!(error.contains("does not match"), "{error}");
-
-        let mut failed = completed_task(1, 1, 0, 1, 1, 1, 1);
-        failed.completion.status = -5;
-        let error = SchedulerReport::from_completions(&[failed], 1).unwrap_err();
-        assert!(error.contains("completion status"), "{error}");
-
-        let zero_range = completed_task(1, 1, 0, 0, 1, 1, 1);
-        let error = SchedulerReport::from_completions(&[zero_range], 1).unwrap_err();
-        assert!(error.contains("cycle range"), "{error}");
-
-        let mut reversed_range = completed_task(1, 1, 0, 1, 1, 1, 1);
-        reversed_range.completion.start_cycle = 2;
-        reversed_range.completion.end_cycle = 1;
-        let error = SchedulerReport::from_completions(&[reversed_range], 1).unwrap_err();
-        assert!(error.contains("cycle range"), "{error}");
-
-        let mut mismatched_cycles = completed_task(1, 1, 0, 2, 1, 1, 1);
-        mismatched_cycles.completion.end_cycle = 1;
-        let error = SchedulerReport::from_completions(&[mismatched_cycles], 1).unwrap_err();
-        assert!(error.contains("cycle range"), "{error}");
     }
 
     #[test]

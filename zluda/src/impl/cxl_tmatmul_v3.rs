@@ -155,9 +155,38 @@ pub(crate) struct CompletionV3 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CompletedTaskV3 {
-    pub(crate) submission_id: u64,
-    pub(crate) task: TaskV3,
-    pub(crate) completion: CompletionV3,
+    submission_id: u64,
+    task: TaskV3,
+    completion: CompletionV3,
+}
+
+impl CompletedTaskV3 {
+    pub(crate) fn submission_id(&self) -> u64 {
+        self.submission_id
+    }
+
+    pub(crate) fn task(&self) -> &TaskV3 {
+        &self.task
+    }
+
+    pub(crate) fn completion(&self) -> &CompletionV3 {
+        &self.completion
+    }
+
+    /// Builds scheduler fixtures that exercise report-local shape and overflow checks without
+    /// exposing an unchecked constructor in production.
+    #[cfg(test)]
+    pub(crate) fn test_only_new_unchecked(
+        submission_id: u64,
+        task: TaskV3,
+        completion: CompletionV3,
+    ) -> Self {
+        Self {
+            submission_id,
+            task,
+            completion,
+        }
+    }
 }
 
 #[repr(C)]
@@ -1554,7 +1583,7 @@ mod tests {
         let got = session.run_tasks(&tasks).unwrap();
         assert_eq!(
             got.iter()
-                .map(|record| record.completion.request_id)
+                .map(|record| record.completion().request_id)
                 .collect::<Vec<_>>(),
             vec![1, 2]
         );
@@ -1587,19 +1616,19 @@ mod tests {
         assert_eq!(
             completed
                 .iter()
-                .map(|record| record.submission_id)
+                .map(|record| record.submission_id())
                 .collect::<Vec<_>>(),
             vec![40, 40, 41]
         );
         assert_eq!(
             completed
                 .iter()
-                .map(|record| (record.task.request_id, record.completion.request_id))
+                .map(|record| (record.task().request_id, record.completion().request_id))
                 .collect::<Vec<_>>(),
             vec![(1, 1), (2, 2), (3, 3)]
         );
         let copied: CompletedTaskV3 = completed[0];
-        assert_eq!(copied.submission_id, 40);
+        assert_eq!(copied.submission_id(), 40);
         assert_eq!(
             session
                 .io()

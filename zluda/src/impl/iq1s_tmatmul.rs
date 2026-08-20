@@ -1104,12 +1104,12 @@ pub(crate) fn execution_fixture_json(
         submission_ids: result
             .physical
             .iter()
-            .map(|item| item.completed.submission_id)
+            .map(|item| item.completed.submission_id())
             .collect(),
         request_ids: result
             .physical
             .iter()
-            .map(|item| item.completed.task.request_id)
+            .map(|item| item.completed.task().request_id)
             .collect(),
         outputs_f32_bits: result.outputs.iter().map(|value| value.to_bits()).collect(),
     })
@@ -1983,19 +1983,19 @@ mod tests {
             result
                 .physical
                 .iter()
-                .map(|item| item.completed.task.request_id)
+                .map(|item| item.completed.task().request_id)
                 .collect::<Vec<_>>(),
             (1..=16).collect::<Vec<_>>()
         );
         assert!(result
             .physical
             .iter()
-            .all(|item| item.completed.submission_id == 1));
+            .all(|item| item.completed.submission_id() == 1));
         assert_eq!(
             result
                 .physical
                 .iter()
-                .map(|item| item.completed.task.matrix_offset)
+                .map(|item| item.completed.task().matrix_offset)
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             16
@@ -2004,7 +2004,7 @@ mod tests {
             result
                 .physical
                 .iter()
-                .map(|item| item.completed.task.input_offset)
+                .map(|item| item.completed.task().input_offset)
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             16
@@ -2013,7 +2013,7 @@ mod tests {
             result
                 .physical
                 .iter()
-                .map(|item| item.completed.task.output_offset)
+                .map(|item| item.completed.task().output_offset)
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             16
