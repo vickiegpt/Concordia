@@ -51,13 +51,15 @@ The test calls `submit_xrt_tmatmul` directly and requires an explicit opt-in env
 
 ## Execution Through `au250-run`
 
-The host builds the Rust test executable because the `app215` container has XRT and PYNQ but no Rust toolchain. The executable has no link-time XRT dependency; inside `au250-run` it dynamically loads the container's `libxrt_coreutil.so.2`.
+The `app215` container has XRT and PYNQ but no Rust toolchain. A binary linked on the gpu01 host is not portable into that container: the host uses glibc 2.43, the container uses glibc 2.35, and the current host test binary requires symbols through `GLIBC_2.39`. The proof therefore compiles and links the Rust test inside `au250-run` so the executable uses the same userspace ABI as the XRT runtime.
+
+A host-side wrapper uses only ignored paths below `target/` for execution artifacts. It stages the host's backward-compatible Ninja executable there, bootstraps Rust 1.92.0 with the minimal profile into a persistent `target/au250-runtime` cache on the first run, and uses a separate `target/au250-app215` Cargo target directory. All compilation and linking occur inside `app215`; subsequent runs reuse those caches. No toolchain or generated binary is committed.
 
 The run procedure is:
 
-1. Build the ignored test on the host with the Intel feature configuration already used for the backend tests.
-2. Resolve the exact generated test executable path.
-3. Invoke that executable through `au250-run` with:
+1. Check the AU250 temperature through the wrapper's existing guard.
+2. Enter `app215` through `au250-run`, bootstrap or reuse the cached Rust toolchain, and build the ignored test with the Intel feature configuration already used for the backend tests.
+3. Execute the generated test in the same `au250-run` container with:
    - `HETGPU_XRT_XCLBIN=/au250_xrt/example/asym9_bs9_2641toks.xclbin`
    - `HETGPU_XRT_KERNEL=ternip_big:{ternip_big_1}`
    - `HETGPU_XRT_INSTANCE=0`
@@ -79,7 +81,7 @@ The work is complete only when all of the following hold:
 
 1. Unit tests verify that reset release occurs before DMA start and retain the existing four-BO, address-binding, timeout, and cleanup assertions.
 2. Existing `cxl_tmatmul` tests still pass.
-3. The host-built test executable starts inside `au250-run` and resolves the container XRT library.
+3. The app215-built test executable starts inside `au250-run` and resolves the container XRT library.
 4. The live test selects `ternip_big_1`, completes with a nonzero STALL code, and reports exact equality for all 9 x 1024 output elements.
 5. FPGA temperature remains below the wrapper guard and the post-run device state shows no fatal error.
 
