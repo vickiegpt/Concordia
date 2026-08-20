@@ -1,29 +1,52 @@
 //! Exact IQ1_S/MMQ decomposition used by the fail-closed TernIP V3 route.
 
+use crate::r#impl::batch_scheduler::{BatchSchedulerConfig, SchedulerReport};
 use crate::r#impl::cxl_tmatmul::{copy_cuda_to_host, copy_host_to_cuda};
 use crate::r#impl::cxl_tmatmul_v3::{
     BufferLease, CompletedTaskV3, IoctlOps, TaskV3, V3Session, BUFFER_MATRIX, BUFFER_Q8_8_S16,
-    BUFFER_RAW_S64, BUFFER_READ, BUFFER_TERNARY2, BUFFER_WRITE, LANE_ANY,
+    BUFFER_RAW_S64, BUFFER_READ, BUFFER_TERNARY2, BUFFER_WRITE, LANE_ANY, MAX_LANES,
 };
 use serde::Serialize;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::fs::{File, OpenOptions};
-use std::os::unix::fs::FileExt;
+use std::fs::OpenOptions;
+use std::hash::{Hash, Hasher};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub(crate) const IQ1S_BLOCK_BYTES: usize = 50;
 pub(crate) const IQ1S_BLOCK_VALUES: usize = 256;
+pub(crate) const Q8_1_BLOCK_BYTES: usize = 36;
 pub(crate) const Q8_1_MMQ_BYTES: usize = 144;
 pub(crate) const TILE_DIM: usize = 2048;
 pub(crate) const TILE_PACKED_BYTES: usize = TILE_DIM * TILE_DIM / 4;
 pub(crate) const GRID_ENTRIES: usize = 2048;
 const GROUP_VALUES: usize = 32;
+/// Materialization ceiling for one logical execution. The live `max_descriptors` capability only
+/// controls ioctl submission windows; it does not bound the host vector holding all descriptors.
+const MAX_EXECUTION_DESCRIPTORS: usize = 1 << 20;
 const DEFAULT_LIBGGML: &str =
     "/home/eabban/BitNet/build-cuda128-gcc12/3rdparty/llama.cpp/ggml/src/libggml.so";
 
 pub(crate) type GridTable = [[i8; 8]; GRID_ENTRIES];
+
+fn checked_execution_descriptor_count(
+    component_count: usize,
+    slice_count: usize,
+) -> Result<usize, String> {
+    let descriptor_count = component_count
+        .checked_mul(slice_count)
+        .ok_or("execution descriptor count overflow")?;
+    if descriptor_count > MAX_EXECUTION_DESCRIPTORS {
+        return Err(format!(
+            "execution requires {descriptor_count} descriptors, exceeding software safety limit {MAX_EXECUTION_DESCRIPTORS}"
+        ));
+    }
+    Ok(descriptor_count)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub(crate) struct GgmlType19Signature {
@@ -35,6 +58,43 @@ pub(crate) struct GgmlType19Signature {
     pub(crate) ne11: u64,
     pub(crate) stride11: u64,
     pub(crate) ne0: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Q8MmqLayout {
+    q8_record_count_per_k: usize,
+    active_batch_count: usize,
+    pitch_records: usize,
+    storage_bytes: usize,
+}
+
+impl Q8MmqLayout {
+    fn record_range(
+        self,
+        k_record_index: usize,
+        batch_index: usize,
+    ) -> Result<std::ops::Range<usize>, String> {
+        if k_record_index >= self.q8_record_count_per_k {
+            return Err("Q8 K record index is outside the captured activation".into());
+        }
+        if batch_index >= self.active_batch_count {
+            return Err("Q8 batch index is outside the captured activation".into());
+        }
+        let record_index = k_record_index
+            .checked_mul(self.pitch_records)
+            .and_then(|base| base.checked_add(batch_index))
+            .ok_or("Q8 record index overflow")?;
+        let offset = record_index
+            .checked_mul(Q8_1_MMQ_BYTES)
+            .ok_or("Q8 byte offset overflow")?;
+        let end = offset
+            .checked_add(Q8_1_MMQ_BYTES)
+            .ok_or("Q8 byte offset overflow")?;
+        if end > self.storage_bytes {
+            return Err("Q8 record is outside the captured activation".into());
+        }
+        Ok(offset..end)
+    }
 }
 
 impl GgmlType19Signature {
@@ -64,9 +124,6 @@ impl GgmlType19Signature {
         if self.ne00 != self.ne10 || self.ne01 != self.ne0 {
             return Err("ne10/ne0 do not match ne00/ne01".into());
         }
-        if self.ne11 != 1 || self.stride11 != self.ne11 {
-            return Err("supported MMQ requires ne11 == stride11 == 1".into());
-        }
         if !self.ne00.is_multiple_of(IQ1S_BLOCK_VALUES as u64) {
             return Err("ne00 must be divisible by 256".into());
         }
@@ -75,7 +132,47 @@ impl GgmlType19Signature {
         }
         usize::try_from(self.ne00).map_err(|_| "ne00 does not fit usize")?;
         usize::try_from(self.ne01).map_err(|_| "ne01 does not fit usize")?;
+        usize::try_from(self.stride01).map_err(|_| "stride01 does not fit usize")?;
+        usize::try_from(self.ne10).map_err(|_| "ne10 does not fit usize")?;
+        usize::try_from(self.ne11).map_err(|_| "ne11 does not fit usize")?;
+        usize::try_from(self.stride11).map_err(|_| "stride11 does not fit usize")?;
+        usize::try_from(self.ne0).map_err(|_| "ne0 does not fit usize")?;
+        self.q8_mmq_layout()?;
         Ok(self.clone())
+    }
+
+    fn q8_mmq_layout(&self) -> Result<Q8MmqLayout, String> {
+        if !self.ne10.is_multiple_of(128) {
+            return Err("ne10 must be divisible by 128".into());
+        }
+        let q8_record_count_per_k = self.ne10 / 128;
+        if q8_record_count_per_k == 0 {
+            return Err("Q8 record count per K must be positive".into());
+        }
+        if self.stride11 < self.ne11 {
+            return Err(format!(
+                "stride11 record pitch {} is smaller than active batch {}",
+                self.stride11, self.ne11
+            ));
+        }
+        let required_record_count = q8_record_count_per_k
+            .checked_sub(1)
+            .and_then(|last_k_record| last_k_record.checked_mul(self.stride11))
+            .and_then(|prefix| prefix.checked_add(self.ne11))
+            .ok_or("activation record extent overflow")?;
+        let storage_bytes = required_record_count
+            .checked_mul(Q8_1_MMQ_BYTES as u64)
+            .ok_or("activation byte extent overflow")?;
+        Ok(Q8MmqLayout {
+            q8_record_count_per_k: usize::try_from(q8_record_count_per_k)
+                .map_err(|_| "Q8 record count per K does not fit usize")?,
+            active_batch_count: usize::try_from(self.ne11)
+                .map_err(|_| "active batch count does not fit usize")?,
+            pitch_records: usize::try_from(self.stride11)
+                .map_err(|_| "Q8 record pitch does not fit usize")?,
+            storage_bytes: usize::try_from(storage_bytes)
+                .map_err(|_| "activation size does not fit usize")?,
+        })
     }
 
     pub(crate) fn matrix_storage_bytes(&self) -> Result<usize, String> {
@@ -93,13 +190,76 @@ impl GgmlType19Signature {
 
     pub(crate) fn activation_storage_bytes(&self) -> Result<usize, String> {
         self.validate()?;
-        let groups = self.ne10 / 128;
+        Ok(self.q8_mmq_layout()?.storage_bytes)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+pub(crate) struct GgmlType19VecSignature {
+    pub(crate) kernel: String,
+    pub(crate) ncols_x: u64,
+    pub(crate) nrows_x: u64,
+    pub(crate) nrows_y: u64,
+    pub(crate) nrows_dst: u64,
+}
+
+impl GgmlType19VecSignature {
+    pub(crate) fn validate(&self) -> Result<Self, String> {
+        if !self.kernel.to_ascii_lowercase().contains("mul_mat_vec_q")
+            || !self.kernel.to_ascii_lowercase().contains("ggml_type19")
+        {
+            return Err("kernel is not a qualified IQ1_S mul_mat_vec_q symbol".into());
+        }
+        if [self.ncols_x, self.nrows_x, self.nrows_y, self.nrows_dst].contains(&0) {
+            return Err("vector dimensions must be positive".into());
+        }
+        if self.ncols_x != self.nrows_y {
+            return Err("nrows_y does not match the IQ1_S input dimension".into());
+        }
+        if self.nrows_x != self.nrows_dst {
+            return Err("split IQ1_S vector launches are not supported".into());
+        }
+        if !self.ncols_x.is_multiple_of(IQ1S_BLOCK_VALUES as u64) {
+            return Err("ncols_x must be divisible by 256".into());
+        }
+        if !self.nrows_y.is_multiple_of(128) {
+            return Err("nrows_y must be divisible by 128 for the DS4 adapter".into());
+        }
+        usize::try_from(self.ncols_x).map_err(|_| "ncols_x does not fit usize")?;
+        usize::try_from(self.nrows_x).map_err(|_| "nrows_x does not fit usize")?;
+        Ok(self.clone())
+    }
+
+    pub(crate) fn mmq_signature(&self) -> Result<GgmlType19Signature, String> {
+        self.validate()?;
+        GgmlType19Signature {
+            kernel: "mul_mat_q".to_string(),
+            ne00: self.ncols_x,
+            ne01: self.nrows_x,
+            stride01: self.ncols_x / IQ1S_BLOCK_VALUES as u64,
+            ne10: self.nrows_y,
+            ne11: 1,
+            stride11: 1,
+            ne0: self.nrows_dst,
+        }
+        .validate()
+    }
+
+    pub(crate) fn matrix_storage_bytes(&self) -> Result<usize, String> {
+        self.mmq_signature()?.matrix_storage_bytes()
+    }
+
+    pub(crate) fn activation_storage_bytes(&self) -> Result<usize, String> {
+        let blocks = self
+            .nrows_y
+            .checked_div(32)
+            .ok_or("vector activation dimension is too small")?;
         usize::try_from(
-            groups
-                .checked_mul(Q8_1_MMQ_BYTES as u64)
-                .ok_or("activation size overflow")?,
+            blocks
+                .checked_mul(Q8_1_BLOCK_BYTES as u64)
+                .ok_or("vector activation size overflow")?,
         )
-        .map_err(|_| "activation size does not fit usize".into())
+        .map_err(|_| "vector activation size does not fit usize".into())
     }
 }
 
@@ -203,7 +363,18 @@ pub(crate) fn iter_q8_1_mmq<'a>(
     if packed.len() != expected {
         return Err(format!("Q8_1 MMQ storage must be exactly {expected} bytes"));
     }
-    Ok(packed.chunks_exact(Q8_1_MMQ_BYTES).map(Q8_1MmqBlock::parse))
+    let layout = signature.q8_mmq_layout()?;
+    Ok(
+        (0..layout.q8_record_count_per_k).flat_map(move |k_record_index| {
+            (0..layout.active_batch_count).map(move |batch_index| {
+                let range = layout.record_range(k_record_index, batch_index)?;
+                let packed = packed
+                    .get(range)
+                    .ok_or("Q8 record is outside the captured activation")?;
+                Q8_1MmqBlock::parse(packed)
+            })
+        }),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -340,12 +511,28 @@ impl MatrixSource {
         let logical_bytes = logical_blocks
             .checked_mul(IQ1S_BLOCK_BYTES)
             .ok_or("IQ1_S logical row bytes overflow")?;
-        for row in 0..usize::try_from(signature.ne01).map_err(|_| "row count overflow")? {
+        let row_count = usize::try_from(signature.ne01).map_err(|_| "row count overflow")?;
+        for row in 0..row_count {
             if packed[row * row_stride + logical_bytes..(row + 1) * row_stride]
                 .iter()
                 .any(|byte| *byte != 0)
             {
                 return Err(format!("IQ1_S row {row} padding must be zero"));
+            }
+        }
+        if std::env::var_os("HETGPU_CXL_TMATMUL_DEBUG_BYTES").is_some() {
+            for row in 0..row_count {
+                for block in 0..logical_blocks {
+                    let offset = row * row_stride + block * IQ1S_BLOCK_BYTES;
+                    let raw = u16::from_le_bytes([packed[offset], packed[offset + 1]]);
+                    if !half_to_f32(raw).is_finite() {
+                        let end = (offset + 8).min(packed.len());
+                        return Err(format!(
+                            "IQ1_S non-finite block row={row} block={block} offset={offset} raw_d=0x{raw:04x} bytes={:02x?}",
+                            &packed[offset..end]
+                        ));
+                    }
+                }
             }
         }
         Ok(Arc::new(Self {
@@ -668,18 +855,35 @@ pub(crate) struct LogicalLaunch {
     pub(crate) signature: GgmlType19Signature,
 }
 
+fn checked_output_element_count(signature: &GgmlType19Signature) -> Result<usize, String> {
+    let logical_batch = u32::try_from(signature.ne11).map_err(|_| {
+        format!(
+            "ne11={} is outside the u32 scheduler batch domain",
+            signature.ne11
+        )
+    })?;
+    let logical_batch =
+        usize::try_from(logical_batch).map_err(|_| "logical batch does not fit host usize")?;
+    let output_rows =
+        usize::try_from(signature.ne0).map_err(|_| "output row count does not fit host usize")?;
+    let output_elements = logical_batch
+        .checked_mul(output_rows)
+        .ok_or("output element extent overflow")?;
+    output_elements
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or("output extent overflow")?;
+    Ok(output_elements)
+}
+
 impl LogicalLaunch {
     pub(crate) fn validate_before_copy(&self) -> Result<(), String> {
         self.signature.validate()?;
+        checked_output_element_count(&self.signature)?;
         if self.matrix_ptr == 0 || self.activation_ptr == 0 || self.output_ptr == 0 {
             return Err("IQ1_S launch contains a null CUDA pointer".into());
         }
         self.signature.matrix_storage_bytes()?;
         self.signature.activation_storage_bytes()?;
-        usize::try_from(self.signature.ne0)
-            .ok()
-            .and_then(|n| n.checked_mul(4))
-            .ok_or("output size overflow")?;
         Ok(())
     }
 }
@@ -698,15 +902,20 @@ impl CapturedLaunch {
         iter_q8_1_mmq(&self.launch.signature, &self.packed_activations)
     }
 
-    fn q8_group(&self, global_group: usize) -> Result<Q8_1Block, String> {
+    fn q8_group(&self, batch_index: usize, global_group: usize) -> Result<Q8_1Block, String> {
+        let layout = self.launch.signature.q8_mmq_layout()?;
+        if batch_index >= layout.active_batch_count {
+            return Err("Q8 batch index is outside the captured activation".into());
+        }
         let block_index = global_group / 4;
         let subblock = global_group % 4;
-        let offset = block_index
-            .checked_mul(Q8_1_MMQ_BYTES)
-            .ok_or("Q8 offset overflow")?;
+        if block_index >= layout.q8_record_count_per_k {
+            return Err("Q8 group index is outside the captured activation K records".into());
+        }
+        let range = layout.record_range(block_index, batch_index)?;
         let packed = self
             .packed_activations
-            .get(offset..offset + Q8_1_MMQ_BYTES)
+            .get(range)
             .ok_or("Q8 group is outside the captured activation")?;
         Ok(Q8_1MmqBlock::parse(packed)?.subblocks[subblock])
     }
@@ -764,6 +973,7 @@ pub(crate) fn capture_from_host(
 }
 
 pub(crate) unsafe fn capture_launch(launch: LogicalLaunch) -> Result<CapturedLaunch, String> {
+    let mut launch = launch;
     launch.validate_before_copy()?;
     let matrix = copy_cuda_to_host(launch.matrix_ptr, launch.signature.matrix_storage_bytes()?)
         .map_err(|error| error.to_string())?;
@@ -772,17 +982,95 @@ pub(crate) unsafe fn capture_launch(launch: LogicalLaunch) -> Result<CapturedLau
         launch.signature.activation_storage_bytes()?,
     )
     .map_err(|error| error.to_string())?;
+    if launch.content_hash == [0; 32] {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        matrix.len().hash(&mut hasher);
+        matrix.hash(&mut hasher);
+        launch.content_hash[..8].copy_from_slice(&hasher.finish().to_le_bytes());
+    }
+    let grid = validated_grid(None)?;
+    capture_from_host(launch, &matrix, &activations, &grid)
+}
+
+pub(crate) fn canonicalize_q8_1_vector(
+    signature: &GgmlType19VecSignature,
+    packed: &[u8],
+) -> Result<Vec<u8>, String> {
+    signature.validate()?;
+    let expected = signature.activation_storage_bytes()?;
+    if packed.len() != expected {
+        return Err(format!(
+            "Q8_1 vector storage must be exactly {expected} bytes"
+        ));
+    }
+    let groups = packed.len() / (4 * Q8_1_BLOCK_BYTES);
+    let mut canonical = vec![0_u8; groups * Q8_1_MMQ_BYTES];
+    for group_index in 0..groups {
+        let source =
+            &packed[group_index * 4 * Q8_1_BLOCK_BYTES..(group_index + 1) * 4 * Q8_1_BLOCK_BYTES];
+        let destination =
+            &mut canonical[group_index * Q8_1_MMQ_BYTES..(group_index + 1) * Q8_1_MMQ_BYTES];
+        for block_index in 0..4 {
+            let source_block =
+                &source[block_index * Q8_1_BLOCK_BYTES..(block_index + 1) * Q8_1_BLOCK_BYTES];
+            let scale_offset = block_index * 4;
+            destination[scale_offset..scale_offset + 4].copy_from_slice(&source_block[..4]);
+            let values_offset = 16 + block_index * 32;
+            destination[values_offset..values_offset + 32].copy_from_slice(&source_block[4..]);
+        }
+    }
+    Ok(canonical)
+}
+
+pub(crate) unsafe fn capture_vec_launch(
+    matrix_ptr: usize,
+    activation_ptr: usize,
+    output_ptr: usize,
+    allocation_generation: u64,
+    content_hash: [u8; 32],
+    signature: GgmlType19VecSignature,
+) -> Result<CapturedLaunch, String> {
+    let signature = signature.validate()?;
+    if matrix_ptr == 0 || activation_ptr == 0 || output_ptr == 0 {
+        return Err("IQ1_S vector launch contains a null CUDA pointer".into());
+    }
+    let matrix = copy_cuda_to_host(matrix_ptr, signature.matrix_storage_bytes()?)
+        .map_err(|error| error.to_string())?;
+    let raw_activations = copy_cuda_to_host(activation_ptr, signature.activation_storage_bytes()?)
+        .map_err(|error| error.to_string())?;
+    let activations = canonicalize_q8_1_vector(&signature, &raw_activations)?;
+    let mmq_signature = signature.mmq_signature()?;
+    let mut launch = LogicalLaunch {
+        matrix_ptr,
+        activation_ptr,
+        output_ptr,
+        allocation_generation,
+        content_hash,
+        signature: mmq_signature,
+    };
+    if launch.content_hash == [0; 32] {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        matrix.len().hash(&mut hasher);
+        matrix.hash(&mut hasher);
+        launch.content_hash[..8].copy_from_slice(&hasher.finish().to_le_bytes());
+    }
     let grid = validated_grid(None)?;
     capture_from_host(launch, &matrix, &activations, &grid)
 }
 
 fn output_bytes(captured: &CapturedLaunch, outputs: &[f32]) -> Result<Vec<u8>, String> {
-    let expected =
-        usize::try_from(captured.launch.signature.ne0).map_err(|_| "output count overflow")?;
+    let expected = checked_output_element_count(&captured.launch.signature)?;
     if outputs.len() != expected || outputs.iter().any(|value| !value.is_finite()) {
         return Err("output must contain the full finite qualified f32 result".into());
     }
-    let mut bytes = Vec::with_capacity(outputs.len().checked_mul(4).ok_or("output size overflow")?);
+    let byte_count = outputs
+        .len()
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or("output size overflow")?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(byte_count)
+        .map_err(|error| format!("unable to reserve {byte_count} output bytes: {error}"))?;
     for value in outputs {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -802,29 +1090,102 @@ pub(crate) trait DaxAccess {
     fn read(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, String>;
 }
 
-pub(crate) struct FileDaxAccess(File);
+pub(crate) struct FileDaxAccess {
+    mapping: NonNull<u8>,
+    length: usize,
+    io_lock: Mutex<()>,
+}
 
 impl FileDaxAccess {
-    pub(crate) fn open(path: &Path) -> Result<Self, String> {
-        OpenOptions::new()
+    pub(crate) fn open(path: &Path, length: u64) -> Result<Self, String> {
+        let length = usize::try_from(length)
+            .map_err(|_| format!("DAX mapping length does not fit usize: {length}"))?;
+        if length == 0 || length > isize::MAX as usize {
+            return Err(format!("invalid DAX mapping length: {length}"));
+        }
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
+            .custom_flags(libc::O_SYNC | libc::O_CLOEXEC)
             .open(path)
-            .map(Self)
-            .map_err(|error| format!("open DAX {}: {error}", path.display()))
+            .map_err(|error| format!("open DAX {}: {error}", path.display()))?;
+        let mapped = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                length,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if mapped == libc::MAP_FAILED {
+            return Err(format!(
+                "mmap DAX {} length=0x{length:x}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            ));
+        }
+        let mapping = NonNull::new(mapped.cast::<u8>())
+            .ok_or_else(|| format!("mmap DAX {} returned null", path.display()))?;
+        Ok(Self {
+            mapping,
+            length,
+            io_lock: Mutex::new(()),
+        })
+    }
+
+    fn checked_range(&self, offset: u64, length: usize) -> Result<usize, String> {
+        let offset = usize::try_from(offset).map_err(|_| "DAX offset does not fit usize")?;
+        let end = offset.checked_add(length).ok_or("DAX range overflow")?;
+        if end > self.length {
+            return Err(format!(
+                "DAX range 0x{offset:x}..0x{end:x} exceeds mapping length 0x{:x}",
+                self.length
+            ));
+        }
+        Ok(offset)
     }
 }
 
 impl DaxAccess for FileDaxAccess {
     fn write(&self, offset: u64, bytes: &[u8]) -> Result<usize, String> {
-        self.0
-            .write_at(bytes, offset)
-            .map_err(|error| format!("DAX write: {error}"))
+        let offset = self.checked_range(offset, bytes.len())?;
+        let _guard = self
+            .io_lock
+            .lock()
+            .map_err(|_| "DAX mapping lock poisoned")?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                self.mapping.as_ptr().add(offset),
+                bytes.len(),
+            );
+        }
+        Ok(bytes.len())
     }
     fn read(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, String> {
-        self.0
-            .read_at(bytes, offset)
-            .map_err(|error| format!("DAX read: {error}"))
+        let offset = self.checked_range(offset, bytes.len())?;
+        let _guard = self
+            .io_lock
+            .lock()
+            .map_err(|_| "DAX mapping lock poisoned")?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.mapping.as_ptr().add(offset),
+                bytes.as_mut_ptr(),
+                bytes.len(),
+            );
+        }
+        Ok(bytes.len())
+    }
+}
+
+impl Drop for FileDaxAccess {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.mapping.as_ptr().cast(), self.length);
+        }
     }
 }
 
@@ -844,6 +1205,7 @@ pub(crate) struct ExecutionResult {
     pub(crate) outputs: Vec<f32>,
     pub(crate) physical: Vec<PhysicalResult>,
     pub(crate) raw_components: Vec<Vec<i64>>,
+    pub(crate) scheduler: SchedulerReport,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -888,6 +1250,43 @@ fn aligned(value: u64, alignment: u64) -> Result<u64, String> {
         .ok_or("DAX layout overflow".into())
 }
 
+fn cleanup_v3_leases<I: IoctlOps>(
+    session: &mut V3Session<I>,
+    leases: &[(&str, BufferLease)],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for &(name, lease) in leases {
+        if let Err(error) = session.unregister_buffer(lease) {
+            errors.push(format!("{name}: {error}"));
+        }
+    }
+    errors
+}
+
+fn cleanup_matrix_leases<I: IoctlOps>(
+    session: &mut V3Session<I>,
+    matrices: &[BufferLease],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for &matrix in matrices.iter().rev() {
+        if let Err(error) = session.unregister_buffer(matrix) {
+            errors.push(format!("matrix handle {}: {error}", matrix.handle()));
+        }
+    }
+    errors
+}
+
+fn append_cleanup_error(error: String, cleanup_errors: Vec<String>) -> String {
+    if cleanup_errors.is_empty() {
+        error
+    } else {
+        format!(
+            "{error}; executor buffer cleanup also failed: {}",
+            cleanup_errors.join("; ")
+        )
+    }
+}
+
 pub(crate) fn execute_captured_with<I: IoctlOps>(
     captured: &CapturedLaunch,
     session: &mut V3Session<I>,
@@ -896,16 +1295,44 @@ pub(crate) fn execute_captured_with<I: IoctlOps>(
     base_dpa: u64,
 ) -> Result<ExecutionResult, String> {
     captured.launch.validate_before_copy()?;
-    let alignment = u64::from(session.caps().dax_alignment_bytes);
+    let caps = session.caps();
+    let alignment = u64::from(caps.dax_alignment_bytes);
     if !base_dpa.is_multiple_of(alignment) {
         return Err("executor base DPA is not aligned".into());
     }
+    let logical_batch = u32::try_from(captured.launch.signature.ne11)
+        .map_err(|_| "logical batch does not fit u32")?;
+    let logical_batch_usize =
+        usize::try_from(logical_batch).map_err(|_| "logical batch does not fit usize")?;
+    let batch_config = BatchSchedulerConfig::from_env(caps.max_batch)?;
+    let batch_plan = batch_config.plan(logical_batch)?;
     let task_count = captured.matrix.component_iter()?.len();
-    let matrix_slot = TILE_PACKED_BYTES as u64;
-    let input_slot = aligned((TILE_DIM * 2) as u64, alignment)?;
-    let output_slot = aligned((TILE_DIM * 8) as u64, alignment)?;
+    if task_count == 0 {
+        return Err("executor has no physical components".into());
+    }
+    let task_count_u64 = u64::try_from(task_count).map_err(|_| "component count overflow")?;
+    let descriptor_count =
+        checked_execution_descriptor_count(task_count, batch_plan.slices().len())?;
+    let matrix_slot = aligned(
+        u64::try_from(TILE_PACKED_BYTES).map_err(|_| "matrix slot size overflow")?,
+        alignment,
+    )?;
+    let input_row_len = TILE_DIM.checked_mul(2).ok_or("input row size overflow")?;
+    let output_row_len = TILE_DIM.checked_mul(8).ok_or("output row size overflow")?;
+    let input_row_bytes =
+        u64::try_from(input_row_len).map_err(|_| "input row size does not fit u64")?;
+    let output_row_bytes =
+        u64::try_from(output_row_len).map_err(|_| "output row size does not fit u64")?;
+    let input_row_stride = aligned(input_row_bytes, alignment)?;
+    let output_row_stride = aligned(output_row_bytes, alignment)?;
+    let input_component_bytes = input_row_stride
+        .checked_mul(u64::from(logical_batch))
+        .ok_or("component input slab overflow")?;
+    let output_component_bytes = output_row_stride
+        .checked_mul(u64::from(logical_batch))
+        .ok_or("component output slab overflow")?;
     let matrix_bytes = matrix_slot
-        .checked_mul(task_count as u64)
+        .checked_mul(task_count_u64)
         .ok_or("matrix region overflow")?;
     let input_base = aligned(
         base_dpa
@@ -913,8 +1340,8 @@ pub(crate) fn execute_captured_with<I: IoctlOps>(
             .ok_or("input base overflow")?,
         alignment,
     )?;
-    let input_bytes = input_slot
-        .checked_mul(task_count as u64)
+    let input_bytes = input_component_bytes
+        .checked_mul(task_count_u64)
         .ok_or("input region overflow")?;
     let output_base = aligned(
         input_base
@@ -922,42 +1349,88 @@ pub(crate) fn execute_captured_with<I: IoctlOps>(
             .ok_or("output base overflow")?,
         alignment,
     )?;
-    let output_region_bytes = output_slot
-        .checked_mul(task_count as u64)
+    let output_region_bytes = output_component_bytes
+        .checked_mul(task_count_u64)
         .ok_or("output region overflow")?;
     let end = output_base
         .checked_add(output_region_bytes)
         .ok_or("executor DAX range overflow")?;
-    if end > session.caps().dax_bytes {
+    if end > caps.dax_bytes {
         return Err("executor DAX layout exceeds live capacity".into());
     }
 
-    let zero_output = vec![0_u8; output_slot as usize];
-    let mut planned = Vec::with_capacity(task_count);
+    let zero_output_row = vec![0_u8; output_row_len];
+    let mut planned = Vec::new();
+    planned
+        .try_reserve_exact(task_count)
+        .map_err(|error| format!("unable to reserve {task_count} planned components: {error}"))?;
     for (index, component) in captured.matrix.component_iter()?.enumerate() {
         let component = component?;
+        let index_u64 = u64::try_from(index).map_err(|_| "component index overflow")?;
         let matrix_offset = matrix_slot
-            .checked_mul(index as u64)
+            .checked_mul(index_u64)
             .ok_or("matrix offset overflow")?;
-        let input_offset = input_slot
-            .checked_mul(index as u64)
+        let input_offset = input_component_bytes
+            .checked_mul(index_u64)
             .ok_or("input offset overflow")?;
-        let output_offset = output_slot
-            .checked_mul(index as u64)
+        let output_offset = output_component_bytes
+            .checked_mul(index_u64)
             .ok_or("output offset overflow")?;
-        dax_write_exact(dax, base_dpa + matrix_offset, &component.pack_ternary2()?)?;
+        let matrix_dpa = base_dpa
+            .checked_add(matrix_offset)
+            .ok_or("matrix DPA overflow")?;
+        dax_write_exact(dax, matrix_dpa, &component.pack_ternary2()?)?;
         let global_group =
             component.geometry.column_tile * (TILE_DIM / GROUP_VALUES) + component.group32;
-        let q8 = captured.q8_group(global_group)?;
-        let mut input = vec![0_u8; input_slot as usize];
-        let encoded = encode_q8_8(&q8.qs);
-        let local_column = component.group32 * GROUP_VALUES;
-        for (column, value) in encoded.into_iter().enumerate() {
-            let offset = (local_column + column) * 2;
-            input[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        for batch_index in 0..logical_batch_usize {
+            let batch_u64 = u64::try_from(batch_index).map_err(|_| "batch index overflow")?;
+            let input_row_offset = input_offset
+                .checked_add(
+                    input_row_stride
+                        .checked_mul(batch_u64)
+                        .ok_or("input row offset overflow")?,
+                )
+                .ok_or("input row offset overflow")?;
+            let output_row_offset = output_offset
+                .checked_add(
+                    output_row_stride
+                        .checked_mul(batch_u64)
+                        .ok_or("output row offset overflow")?,
+                )
+                .ok_or("output row offset overflow")?;
+            let q8 = captured.q8_group(batch_index, global_group)?;
+            let mut input_row = vec![0_u8; input_row_len];
+            let encoded = encode_q8_8(&q8.qs);
+            let local_column = component
+                .group32
+                .checked_mul(GROUP_VALUES)
+                .ok_or("local input column overflow")?;
+            for (column, value) in encoded.into_iter().enumerate() {
+                let offset = local_column
+                    .checked_add(column)
+                    .and_then(|element| element.checked_mul(2))
+                    .ok_or("input element offset overflow")?;
+                let end = offset.checked_add(2).ok_or("input element end overflow")?;
+                let destination = input_row
+                    .get_mut(offset..end)
+                    .ok_or("input element exceeds staged row")?;
+                destination.copy_from_slice(&value.to_le_bytes());
+            }
+            dax_write_exact(
+                dax,
+                input_base
+                    .checked_add(input_row_offset)
+                    .ok_or("input DPA overflow")?,
+                &input_row,
+            )?;
+            dax_write_exact(
+                dax,
+                output_base
+                    .checked_add(output_row_offset)
+                    .ok_or("output DPA overflow")?,
+                &zero_output_row,
+            )?;
         }
-        dax_write_exact(dax, input_base + input_offset, &input)?;
-        dax_write_exact(dax, output_base + output_offset, &zero_output)?;
         planned.push(PlannedComponent {
             kind: component.kind,
             geometry: component.geometry,
@@ -968,99 +1441,248 @@ pub(crate) fn execute_captured_with<I: IoctlOps>(
         });
     }
 
-    let matrix_registered = session.register_buffer(
-        base_dpa,
-        matrix_bytes,
-        BUFFER_TERNARY2,
-        BUFFER_READ | BUFFER_MATRIX,
-    )?;
-    let matrix = session.commit_buffer(matrix_registered)?;
-    let input = session.register_buffer(input_base, input_bytes, BUFFER_Q8_8_S16, BUFFER_READ)?;
-    let output = session.register_buffer(
+    let mut matrices = Vec::new();
+    matrices
+        .try_reserve_exact(task_count)
+        .map_err(|error| format!("unable to reserve {task_count} matrix leases: {error}"))?;
+    for item in &planned {
+        let matrix_dpa = base_dpa
+            .checked_add(item.matrix_offset)
+            .ok_or("matrix registration DPA overflow")?;
+        let registered = match session.register_buffer(
+            matrix_dpa,
+            matrix_slot,
+            BUFFER_TERNARY2,
+            BUFFER_READ | BUFFER_MATRIX,
+        ) {
+            Ok(matrix) => matrix,
+            Err(error) => {
+                let cleanup = cleanup_matrix_leases(session, &matrices);
+                return Err(append_cleanup_error(error, cleanup));
+            }
+        };
+        let committed = match session.commit_buffer(registered) {
+            Ok(matrix) => matrix,
+            Err(error) => {
+                let mut cleanup = cleanup_v3_leases(session, &[("matrix", registered)]);
+                cleanup.extend(cleanup_matrix_leases(session, &matrices));
+                return Err(append_cleanup_error(error, cleanup));
+            }
+        };
+        matrices.push(committed);
+    }
+    let input = match session.register_buffer(input_base, input_bytes, BUFFER_Q8_8_S16, BUFFER_READ)
+    {
+        Ok(input) => input,
+        Err(error) => {
+            let cleanup = cleanup_matrix_leases(session, &matrices);
+            return Err(append_cleanup_error(error, cleanup));
+        }
+    };
+    let output = match session.register_buffer(
         output_base,
         output_region_bytes,
         BUFFER_RAW_S64,
         BUFFER_WRITE,
-    )?;
-    let leases = TaskLeases {
-        matrix,
-        input,
-        output,
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            let mut cleanup = cleanup_v3_leases(session, &[("input", input)]);
+            cleanup.extend(cleanup_matrix_leases(session, &matrices));
+            return Err(append_cleanup_error(error, cleanup));
+        }
     };
-    let mut tasks = Vec::with_capacity(task_count);
-    for (index, item) in planned.iter().enumerate() {
-        let request_id = u64::try_from(index + 1).map_err(|_| "request ID overflow")?;
-        let mut task = build_task(
-            request_id,
-            item.geometry,
-            leases,
-            item.output_offset,
-            alignment,
-        )?;
-        task.matrix_offset = item.matrix_offset;
-        task.input_offset = item.input_offset;
-        tasks.push((item.kind, item.geometry, item.group32, task));
-    }
-    let physical = run_component_tasks(session, leases, &tasks)?;
-
-    let mut raw_outputs = Vec::with_capacity(task_count);
-    for item in &planned {
-        let mut bytes = vec![0_u8; output_slot as usize];
-        dax_read_exact(dax, output_base + item.output_offset, &mut bytes)?;
-        let mut raw = Vec::with_capacity(item.geometry.valid_out);
-        for chunk in bytes[..item.geometry.valid_out * 8].chunks_exact(8) {
-            raw.push(i64::from_le_bytes(chunk.try_into().unwrap()));
-        }
-        raw_outputs.push(raw);
-    }
-    let mut outputs = vec![
-        0_f32;
-        usize::try_from(captured.launch.signature.ne0)
-            .map_err(|_| "output count overflow")?
-    ];
-    for pair_index in (0..planned.len()).step_by(2) {
-        let grid_plan = planned[pair_index];
-        let delta_plan = *planned
-            .get(pair_index + 1)
-            .ok_or("missing delta component")?;
-        if grid_plan.kind != ComponentKind::Grid
-            || delta_plan.kind != ComponentKind::Delta
-            || grid_plan.geometry != delta_plan.geometry
-            || grid_plan.group32 != delta_plan.group32
-        {
-            return Err("grid/delta physical component order is inconsistent".into());
-        }
-        let global_group =
-            grid_plan.geometry.column_tile * (TILE_DIM / GROUP_VALUES) + grid_plan.group32;
-        let q8 = captured.q8_group(global_group)?;
-        for row_in_tile in 0..grid_plan.geometry.valid_out {
-            let global_row = grid_plan.geometry.row_tile * TILE_DIM + row_in_tile;
-            let (d, group) = captured.matrix.group(global_row, global_group)?;
-            let contribution = reconstruct_from_raw(
-                &group,
-                d,
-                &q8,
-                raw_outputs[pair_index][row_in_tile],
-                raw_outputs[pair_index + 1][row_in_tile],
-            )?;
-            outputs[global_row] = (outputs[global_row] + contribution) as f32;
-            if !outputs[global_row].is_finite() {
-                return Err("accumulated output is nonfinite".into());
+    let execution = (|| -> Result<ExecutionResult, String> {
+        let mut tasks = Vec::new();
+        tasks.try_reserve_exact(descriptor_count).map_err(|error| {
+            format!("unable to reserve {descriptor_count} execution descriptors: {error}")
+        })?;
+        for (component_index, item) in planned.iter().enumerate() {
+            let leases = TaskLeases {
+                matrix: *matrices
+                    .get(component_index)
+                    .ok_or("missing committed component matrix")?,
+                input,
+                output,
+            };
+            for slice in batch_plan.slices() {
+                let request_id =
+                    u64::try_from(tasks.len().checked_add(1).ok_or("request ID overflow")?)
+                        .map_err(|_| "request ID overflow")?;
+                let slice_first_u64 = u64::from(slice.first());
+                let input_offset = item
+                    .input_offset
+                    .checked_add(
+                        input_row_stride
+                            .checked_mul(slice_first_u64)
+                            .ok_or("task input offset overflow")?,
+                    )
+                    .ok_or("task input offset overflow")?;
+                let output_offset = item
+                    .output_offset
+                    .checked_add(
+                        output_row_stride
+                            .checked_mul(slice_first_u64)
+                            .ok_or("task output offset overflow")?,
+                    )
+                    .ok_or("task output offset overflow")?;
+                let mut task = build_task(
+                    request_id,
+                    item.geometry,
+                    leases,
+                    slice.count(),
+                    output_offset,
+                    alignment,
+                )?;
+                task.input_offset = input_offset;
+                tasks.push(PlannedTask {
+                    kind: item.kind,
+                    geometry: item.geometry,
+                    group32: item.group32,
+                    batch_first: slice.first(),
+                    batch_count: slice.count(),
+                    leases,
+                    task,
+                });
             }
         }
+        let (physical, scheduler) = run_component_tasks(session, &tasks)?;
+
+        let raw_count = task_count
+            .checked_mul(logical_batch_usize)
+            .ok_or("raw component count overflow")?;
+        let mut raw_outputs = Vec::new();
+        raw_outputs.try_reserve_exact(raw_count).map_err(|error| {
+            format!("unable to reserve {raw_count} raw component rows: {error}")
+        })?;
+        for item in &planned {
+            for batch_index in 0..logical_batch_usize {
+                let batch_u64 = u64::try_from(batch_index).map_err(|_| "batch index overflow")?;
+                let row_offset = item
+                    .output_offset
+                    .checked_add(
+                        output_row_stride
+                            .checked_mul(batch_u64)
+                            .ok_or("raw output row offset overflow")?,
+                    )
+                    .ok_or("raw output row offset overflow")?;
+                let mut bytes = vec![0_u8; output_row_len];
+                dax_read_exact(
+                    dax,
+                    output_base
+                        .checked_add(row_offset)
+                        .ok_or("raw output DPA overflow")?,
+                    &mut bytes,
+                )?;
+                let valid_bytes = item
+                    .geometry
+                    .valid_out
+                    .checked_mul(8)
+                    .ok_or("raw output byte count overflow")?;
+                let mut raw = Vec::with_capacity(item.geometry.valid_out);
+                for chunk in bytes
+                    .get(..valid_bytes)
+                    .ok_or("raw output exceeds staged row")?
+                    .chunks_exact(8)
+                {
+                    raw.push(i64::from_le_bytes(
+                        chunk.try_into().map_err(|_| "invalid raw output width")?,
+                    ));
+                }
+                raw_outputs.push(raw);
+            }
+        }
+        let output_rows = usize::try_from(captured.launch.signature.ne0)
+            .map_err(|_| "output row count overflow")?;
+        let output_count = logical_batch_usize
+            .checked_mul(output_rows)
+            .ok_or("output count overflow")?;
+        let mut outputs = Vec::new();
+        outputs
+            .try_reserve_exact(output_count)
+            .map_err(|error| format!("unable to reserve {output_count} output values: {error}"))?;
+        outputs.resize(output_count, 0_f32);
+        for pair_index in (0..planned.len()).step_by(2) {
+            let grid_plan = planned[pair_index];
+            let delta_plan = *planned
+                .get(pair_index + 1)
+                .ok_or("missing delta component")?;
+            if grid_plan.kind != ComponentKind::Grid
+                || delta_plan.kind != ComponentKind::Delta
+                || grid_plan.geometry != delta_plan.geometry
+                || grid_plan.group32 != delta_plan.group32
+            {
+                return Err("grid/delta physical component order is inconsistent".into());
+            }
+            let global_group =
+                grid_plan.geometry.column_tile * (TILE_DIM / GROUP_VALUES) + grid_plan.group32;
+            for batch_index in 0..logical_batch_usize {
+                let q8 = captured.q8_group(batch_index, global_group)?;
+                let grid_raw_index = pair_index
+                    .checked_mul(logical_batch_usize)
+                    .and_then(|base| base.checked_add(batch_index))
+                    .ok_or("grid raw component index overflow")?;
+                let delta_raw_index = (pair_index + 1)
+                    .checked_mul(logical_batch_usize)
+                    .and_then(|base| base.checked_add(batch_index))
+                    .ok_or("delta raw component index overflow")?;
+                for row_in_tile in 0..grid_plan.geometry.valid_out {
+                    let global_row = grid_plan
+                        .geometry
+                        .row_tile
+                        .checked_mul(TILE_DIM)
+                        .and_then(|base| base.checked_add(row_in_tile))
+                        .ok_or("global output row overflow")?;
+                    let output_index = batch_index
+                        .checked_mul(output_rows)
+                        .and_then(|base| base.checked_add(global_row))
+                        .ok_or("batch-major output index overflow")?;
+                    let (d, group) = captured.matrix.group(global_row, global_group)?;
+                    let grid_raw = *raw_outputs
+                        .get(grid_raw_index)
+                        .and_then(|raw| raw.get(row_in_tile))
+                        .ok_or("missing grid raw output")?;
+                    let delta_raw = *raw_outputs
+                        .get(delta_raw_index)
+                        .and_then(|raw| raw.get(row_in_tile))
+                        .ok_or("missing delta raw output")?;
+                    let contribution = reconstruct_from_raw(&group, d, &q8, grid_raw, delta_raw)?;
+                    let output = outputs
+                        .get_mut(output_index)
+                        .ok_or("batch-major output exceeds allocation")?;
+                    *output = (*output + contribution) as f32;
+                    if !output.is_finite() {
+                        return Err("accumulated output is nonfinite".into());
+                    }
+                }
+            }
+        }
+        let output_bytes_host = output_bytes(captured, &outputs)?;
+        unsafe {
+            output_copier.copy(captured.launch.output_ptr, &output_bytes_host)?;
+        }
+        Ok(ExecutionResult {
+            outputs,
+            physical,
+            raw_components: raw_outputs,
+            scheduler,
+        })
+    })();
+
+    let mut cleanup_errors = cleanup_v3_leases(session, &[("output", output), ("input", input)]);
+    cleanup_errors.extend(cleanup_matrix_leases(session, &matrices));
+    match (execution, cleanup_errors.is_empty()) {
+        (Ok(result), true) => Ok(result),
+        (Ok(_), false) => Err(format!(
+            "executor buffer cleanup failed: {}",
+            cleanup_errors.join("; ")
+        )),
+        (Err(error), true) => Err(error),
+        (Err(error), false) => Err(format!(
+            "{error}; executor buffer cleanup also failed: {}",
+            cleanup_errors.join("; ")
+        )),
     }
-    let output_bytes_host = output_bytes(captured, &outputs)?;
-    unsafe {
-        output_copier.copy(captured.launch.output_ptr, &output_bytes_host)?;
-    }
-    session.unregister_buffer(output)?;
-    session.unregister_buffer(input)?;
-    session.unregister_buffer(matrix)?;
-    Ok(ExecutionResult {
-        outputs,
-        physical,
-        raw_components: raw_outputs,
-    })
 }
 
 pub(crate) unsafe fn execute_captured(
@@ -1070,7 +1692,7 @@ pub(crate) unsafe fn execute_captured(
     base_dpa: u64,
 ) -> Result<ExecutionResult, String> {
     let mut session = V3Session::open(control_path)?;
-    let dax = FileDaxAccess::open(dax_path)?;
+    let dax = FileDaxAccess::open(dax_path, session.caps().dax_bytes)?;
     execute_captured_with(captured, &mut session, &dax, &CudaOutputCopier, base_dpa)
 }
 
@@ -1129,20 +1751,39 @@ pub(crate) struct PhysicalResult {
     pub(crate) row_tile: usize,
     pub(crate) column_tile: usize,
     pub(crate) group32: usize,
+    pub(crate) batch_first: u32,
+    pub(crate) batch_count: u32,
     pub(crate) completed: CompletedTaskV3,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlannedTask {
+    kind: ComponentKind,
+    geometry: TileGeometry,
+    group32: usize,
+    batch_first: u32,
+    batch_count: u32,
+    leases: TaskLeases,
+    task: TaskV3,
 }
 
 pub(crate) fn run_component_tasks<I: IoctlOps>(
     session: &mut V3Session<I>,
-    leases: TaskLeases,
-    components: &[(ComponentKind, TileGeometry, usize, TaskV3)],
-) -> Result<Vec<PhysicalResult>, String> {
-    let tasks: Vec<TaskV3> = components.iter().map(|item| item.3).collect();
-    for task in &tasks {
-        if task.matrix_handle != leases.matrix.handle()
-            || task.matrix_generation != leases.matrix.generation()
-            || task.input_handle != leases.input.handle()
-            || task.output_handle != leases.output.handle()
+    components: &[PlannedTask],
+) -> Result<(Vec<PhysicalResult>, SchedulerReport), String> {
+    let mut tasks = Vec::new();
+    tasks.try_reserve_exact(components.len()).map_err(|error| {
+        format!(
+            "unable to reserve {} submitted descriptors: {error}",
+            components.len()
+        )
+    })?;
+    tasks.extend(components.iter().map(|item| item.task));
+    for (task, component) in tasks.iter().zip(components) {
+        if task.matrix_handle != component.leases.matrix.handle()
+            || task.matrix_generation != component.leases.matrix.generation()
+            || task.input_handle != component.leases.input.handle()
+            || task.output_handle != component.leases.output.handle()
         {
             return Err("planned V3 task does not match committed leases".into());
         }
@@ -1151,23 +1792,38 @@ pub(crate) fn run_component_tasks<I: IoctlOps>(
     if completed.len() != components.len() {
         return Err("V3 returned an incomplete component set".into());
     }
-    Ok(components
-        .iter()
-        .zip(completed)
-        .map(|((kind, geometry, group32, _), completed)| PhysicalResult {
-            kind: *kind,
-            row_tile: geometry.row_tile,
-            column_tile: geometry.column_tile,
-            group32: *group32,
-            completed,
-        })
-        .collect())
+    let scheduler = SchedulerReport::from_completions(&completed, MAX_LANES)?;
+    let mut physical = Vec::new();
+    physical
+        .try_reserve_exact(components.len())
+        .map_err(|error| {
+            format!(
+                "unable to reserve {} physical results: {error}",
+                components.len()
+            )
+        })?;
+    physical.extend(
+        components
+            .iter()
+            .zip(completed)
+            .map(|(component, completed)| PhysicalResult {
+                kind: component.kind,
+                row_tile: component.geometry.row_tile,
+                column_tile: component.geometry.column_tile,
+                group32: component.group32,
+                batch_first: component.batch_first,
+                batch_count: component.batch_count,
+                completed,
+            }),
+    );
+    Ok((physical, scheduler))
 }
 
 pub(crate) fn build_task(
     request_id: u64,
     geometry: TileGeometry,
     leases: TaskLeases,
+    batch: u32,
     output_offset: u64,
     dax_alignment: u64,
 ) -> Result<TaskV3, String> {
@@ -1178,7 +1834,7 @@ pub(crate) fn build_task(
     let mut task = TaskV3::default();
     task.request_id = request_id;
     task.lane = LANE_ANY;
-    task.batch = 1;
+    task.batch = batch;
     task.valid_out = geometry.valid_out as u32;
     task.valid_in = geometry.valid_in as u32;
     task.matrix_handle = leases.matrix.handle();
@@ -1192,6 +1848,9 @@ pub(crate) fn build_task(
 }
 
 fn align_up(value: u64, alignment: u64) -> Result<u64, String> {
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return Err("invalid alignment".into());
+    }
     value
         .checked_add(alignment - 1)
         .map(|v| v & !(alignment - 1))
@@ -1463,6 +2122,36 @@ mod tests {
     };
     use std::collections::HashMap;
 
+    static CAPTURE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn capture_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        CAPTURE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    struct RemovedEnvGuard {
+        name: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl RemovedEnvGuard {
+        fn new(name: &'static str) -> Self {
+            let original = std::env::var_os(name);
+            std::env::remove_var(name);
+            Self { name, original }
+        }
+    }
+
+    impl Drop for RemovedEnvGuard {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+
     fn grid() -> GridTable {
         let mut entries = [[0_i8; 8]; GRID_ENTRIES];
         for (index, entry) in entries.iter_mut().enumerate() {
@@ -1496,19 +2185,172 @@ mod tests {
             stride01: 28,
             ne10: 7168,
             ne11: 1,
-            stride11: 1,
+            stride11: 8064,
             ne0: 2048,
         }
+    }
+
+    fn batched_signature(batch: u64, stride11: u64) -> GgmlType19Signature {
+        GgmlType19Signature {
+            kernel: "mul_mat_q".into(),
+            ne00: 256,
+            ne01: 1,
+            stride01: 1,
+            ne10: 256,
+            ne11: batch,
+            stride11,
+            ne0: 1,
+        }
+    }
+
+    #[test]
+    fn accepts_producer_pitch_and_computes_last_active_record_extent() {
+        let signature = batched_signature(2, 3);
+        assert_eq!(signature.validate().unwrap(), signature);
+        assert_eq!(
+            signature.activation_storage_bytes().unwrap(),
+            5 * Q8_1_MMQ_BYTES
+        );
+
+        let mut too_narrow = signature;
+        too_narrow.stride11 = 1;
+        assert!(too_narrow.validate().unwrap_err().contains("stride11"));
+    }
+
+    #[test]
+    fn activation_extent_checks_pitch_boundaries_and_overflow() {
+        let batch_one = batched_signature(1, 1);
+        assert_eq!(
+            batch_one.activation_storage_bytes().unwrap(),
+            2 * Q8_1_MMQ_BYTES
+        );
+
+        let overflow = batched_signature(2, u64::MAX);
+        assert!(overflow
+            .activation_storage_bytes()
+            .unwrap_err()
+            .contains("overflow"));
+    }
+
+    fn logical_launch_for_validation(signature: GgmlType19Signature) -> LogicalLaunch {
+        LogicalLaunch {
+            matrix_ptr: 0x1000,
+            activation_ptr: 0x2000,
+            output_ptr: 0x3000,
+            allocation_generation: 1,
+            content_hash: [0x5a; 32],
+            signature,
+        }
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn validate_before_copy_rejects_batch_outside_scheduler_u32_domain() {
+        let batch = u64::from(u32::MAX) + 1;
+        let launch = logical_launch_for_validation(batched_signature(batch, batch));
+
+        let error = launch.validate_before_copy().unwrap_err();
+
+        assert!(error.contains("u32 scheduler batch domain"), "{error}");
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn validate_before_copy_rejects_full_output_extent_overflow() {
+        let mut signature = batched_signature(u64::from(u32::MAX), u64::from(u32::MAX));
+        signature.ne01 = u64::from(u32::MAX);
+        signature.ne0 = u64::from(u32::MAX);
+        let launch = logical_launch_for_validation(signature);
+
+        let error = launch.validate_before_copy().unwrap_err();
+
+        assert!(error.contains("output extent overflow"), "{error}");
+    }
+
+    #[test]
+    fn execution_descriptor_count_accepts_software_ceiling_boundary() {
+        assert_eq!(
+            checked_execution_descriptor_count(MAX_EXECUTION_DESCRIPTORS, 1).unwrap(),
+            MAX_EXECUTION_DESCRIPTORS
+        );
+    }
+
+    #[test]
+    fn execution_descriptor_count_rejects_over_limit_and_arithmetic_overflow() {
+        let over_limit =
+            checked_execution_descriptor_count(MAX_EXECUTION_DESCRIPTORS + 1, 1).unwrap_err();
+        assert!(over_limit.contains("software safety limit"), "{over_limit}");
+
+        let overflow = checked_execution_descriptor_count(usize::MAX, 2).unwrap_err();
+        assert!(overflow.contains("overflow"), "{overflow}");
+    }
+
+    fn producer_pitched_activations() -> Vec<u8> {
+        let mut activations = vec![0_u8; 5 * Q8_1_MMQ_BYTES];
+        for (record_index, marker) in [(0, 10), (1, 11), (3, 30), (4, 31)] {
+            activations[record_index * Q8_1_MMQ_BYTES + 16] = marker;
+        }
+        activations
+    }
+
+    #[test]
+    fn q8_group_selects_k_record_then_batch_and_rejects_out_of_range_indices() {
+        let _capture_guard = capture_test_guard();
+        let signature = batched_signature(2, 3);
+        let launch = LogicalLaunch {
+            matrix_ptr: 0x1000,
+            activation_ptr: 0x2000,
+            output_ptr: 0x3000,
+            allocation_generation: 1,
+            content_hash: [3; 32],
+            signature,
+        };
+        let matrix = block(1, false, 0);
+        let activations = producer_pitched_activations();
+
+        let captured = capture_from_host(launch, &matrix, &activations, &grid()).unwrap();
+        assert_eq!(captured.q8_group(0, 0).unwrap().qs[0], 10);
+        assert_eq!(captured.q8_group(1, 0).unwrap().qs[0], 11);
+        assert_eq!(captured.q8_group(0, 4).unwrap().qs[0], 30);
+        assert_eq!(captured.q8_group(1, 4).unwrap().qs[0], 31);
+        assert!(captured.q8_group(2, 0).unwrap_err().contains("batch"));
+        assert!(captured.q8_group(0, 8).unwrap_err().contains("group"));
+    }
+
+    #[test]
+    fn capture_parses_active_records_and_ignores_pitch_padding() {
+        let _capture_guard = capture_test_guard();
+        let signature = batched_signature(2, 3);
+        let launch = LogicalLaunch {
+            matrix_ptr: 0x4000,
+            activation_ptr: 0x5000,
+            output_ptr: 0x6000,
+            allocation_generation: 1,
+            content_hash: [4; 32],
+            signature,
+        };
+        let matrix = block(1, false, 0);
+        let mut activations = producer_pitched_activations();
+        let padding_offset = 2 * Q8_1_MMQ_BYTES;
+        activations[padding_offset..padding_offset + 2].copy_from_slice(&0x7e00_u16.to_le_bytes());
+        let captured = capture_from_host(launch.clone(), &matrix, &activations, &grid()).unwrap();
+        assert_eq!(captured.activation_blocks().unwrap().count(), 4);
+
+        let active_offset = 3 * Q8_1_MMQ_BYTES;
+        activations[active_offset..active_offset + 2].copy_from_slice(&0x7e00_u16.to_le_bytes());
+        assert!(capture_from_host(launch, &matrix, &activations, &grid())
+            .unwrap_err()
+            .contains("finite"));
     }
 
     #[test]
     fn validates_real_kimi_block_unit_signature() {
         let signature = kimi_signature();
         assert_eq!(signature.validate().unwrap(), signature);
-        let mut obsolete = signature.clone();
-        obsolete.stride01 = 1400;
-        obsolete.stride11 = 8064;
-        assert!(obsolete.validate().unwrap_err().contains("stride11"));
+        assert_eq!(
+            signature.activation_storage_bytes().unwrap(),
+            (55 * 8064 + 1) * Q8_1_MMQ_BYTES
+        );
     }
 
     #[test]
@@ -1539,6 +2381,44 @@ mod tests {
         assert!(Q8_1MmqBlock::parse(&packed[..143]).is_err());
         packed[0..2].copy_from_slice(&0x7e00_u16.to_le_bytes());
         assert!(Q8_1MmqBlock::parse(&packed).unwrap_err().contains("finite"));
+    }
+
+    #[test]
+    fn canonicalizes_one_token_q8_vector_into_ds4_groups() {
+        let signature = GgmlType19VecSignature {
+            kernel: "_Z13mul_mat_vec_qIL9ggml_type19ELi1EEvPKvS2_Pfiiii".into(),
+            ncols_x: 256,
+            nrows_x: 256,
+            nrows_y: 256,
+            nrows_dst: 256,
+        };
+        let mut raw = vec![0_u8; signature.activation_storage_bytes().unwrap()];
+        for block_index in 0..8 {
+            let offset = block_index * Q8_1_BLOCK_BYTES;
+            raw[offset..offset + 4].copy_from_slice(&[
+                block_index as u8,
+                block_index as u8 + 1,
+                block_index as u8 + 2,
+                block_index as u8 + 3,
+            ]);
+            raw[offset + 4..offset + Q8_1_BLOCK_BYTES].fill(block_index as u8 + 10);
+        }
+
+        let canonical = canonicalize_q8_1_vector(&signature, &raw).unwrap();
+        assert_eq!(canonical.len(), 2 * Q8_1_MMQ_BYTES);
+        assert_eq!(
+            &canonical[..16],
+            &raw[..4 * Q8_1_BLOCK_BYTES]
+                .chunks(36)
+                .flat_map(|block| block[..4].iter().copied())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(&canonical[16..48], &[10; 32]);
+        assert_eq!(&canonical[48..80], &[11; 32]);
+        assert_eq!(&canonical[80..112], &[12; 32]);
+        assert_eq!(&canonical[112..144], &[13; 32]);
+        assert_eq!(signature.mmq_signature().unwrap().ne11, 1);
+        assert_eq!(signature.mmq_signature().unwrap().stride11, 1);
     }
 
     #[test]
@@ -1700,6 +2580,7 @@ mod tests {
 
     #[test]
     fn host_capture_validates_ds4_and_reuses_only_the_full_matrix_identity() {
+        let _capture_guard = capture_test_guard();
         let signature = GgmlType19Signature {
             kernel: "mul_mat_q".into(),
             ne00: 256,
@@ -1778,6 +2659,30 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn file_dax_access_uses_a_bounded_shared_mapping() {
+        let file = tempfile::NamedTempFile::new().expect("create mapped DAX fixture");
+        file.as_file()
+            .set_len(4096)
+            .expect("size mapped DAX fixture");
+        let dax = FileDaxAccess::open(file.path(), 4096).expect("map DAX fixture");
+
+        assert_eq!(dax.write(64, &[1, 2, 3, 4]).unwrap(), 4);
+        let mut readback = [0_u8; 4];
+        assert_eq!(dax.read(64, &mut readback).unwrap(), 4);
+        assert_eq!(readback, [1, 2, 3, 4]);
+        assert!(dax.write(4094, &[1, 2, 3]).unwrap_err().contains("range"));
+        assert!(dax
+            .read(4096, &mut [0_u8; 1])
+            .unwrap_err()
+            .contains("range"));
+
+        drop(dax);
+        let bytes = std::fs::read(file.path()).expect("read mapped DAX fixture backing file");
+        assert_eq!(&bytes[64..68], &[1, 2, 3, 4]);
+    }
+
     impl DaxAccess for MemoryDax {
         fn write(&self, offset: u64, bytes: &[u8]) -> Result<usize, String> {
             let offset = offset as usize;
@@ -1801,16 +2706,26 @@ mod tests {
         next_handle: u32,
         pending: Vec<TaskV3>,
         submission: u64,
+        max_batch: u32,
+        submitted: Arc<Mutex<Vec<TaskV3>>>,
     }
     impl FakeV3 {
         fn new(dax: MemoryDax) -> Self {
-            Self {
+            Self::with_max_batch(dax, 1).0
+        }
+
+        fn with_max_batch(dax: MemoryDax, max_batch: u32) -> (Self, Arc<Mutex<Vec<TaskV3>>>) {
+            let submitted = Arc::new(Mutex::new(Vec::new()));
+            let io = Self {
                 dax,
                 buffers: HashMap::new(),
                 next_handle: 1,
                 pending: Vec::new(),
                 submission: 0,
-            }
+                max_batch,
+                submitted: submitted.clone(),
+            };
+            (io, submitted)
         }
     }
     impl IoctlOps for FakeV3 {
@@ -1819,7 +2734,7 @@ mod tests {
             caps.capabilities = 0x7b;
             caps.num_instances = 16;
             caps.dim_d = 2048;
-            caps.max_batch = 1;
+            caps.max_batch = self.max_batch;
             caps.max_descriptors = 1024;
             caps.max_inflight_submissions = 8;
             caps.max_timeout_ms = 10_000;
@@ -1854,6 +2769,10 @@ mod tests {
                 std::slice::from_raw_parts(submit.tasks_ptr as *const TaskV3, submit.count as usize)
             }
             .to_vec();
+            self.submitted
+                .lock()
+                .unwrap()
+                .extend_from_slice(&self.pending);
             self.submission += 1;
             submit.submission_id = self.submission;
             Ok(())
@@ -1868,32 +2787,40 @@ mod tests {
                 let matrix_base = self.buffers[&task.matrix_handle].0 + task.matrix_offset;
                 let input_base = self.buffers[&task.input_handle].0 + task.input_offset;
                 let output_base = self.buffers[&task.output_handle].0 + task.output_offset;
-                for row in 0..task.valid_out as usize {
-                    let mut raw = 0_i64;
-                    for column in 0..2048_usize {
-                        let element = row * 2048 + column;
-                        let byte = memory[matrix_base as usize + element / 4];
-                        let code = (byte >> (2 * (element % 4))) & 3;
-                        let weight = match code {
-                            0 => 0_i64,
-                            1 => 1,
-                            3 => -1,
-                            _ => return Err("reserved ternary code".into()),
-                        };
-                        let qoff = input_base as usize + column * 2;
-                        let quant = i16::from_le_bytes([memory[qoff], memory[qoff + 1]]);
-                        raw += weight * i64::from(quant);
+                for batch_index in 0..task.batch as usize {
+                    let input_row = input_base
+                        .checked_add(task.input_stride_bytes * batch_index as u64)
+                        .ok_or("fake input row overflow")?;
+                    let output_row = output_base
+                        .checked_add(task.output_stride_bytes * batch_index as u64)
+                        .ok_or("fake output row overflow")?;
+                    for row in 0..task.valid_out as usize {
+                        let mut raw = 0_i64;
+                        for column in 0..2048_usize {
+                            let element = row * 2048 + column;
+                            let byte = memory[matrix_base as usize + element / 4];
+                            let code = (byte >> (2 * (element % 4))) & 3;
+                            let weight = match code {
+                                0 => 0_i64,
+                                1 => 1,
+                                3 => -1,
+                                _ => return Err("reserved ternary code".into()),
+                            };
+                            let qoff = input_row as usize + column * 2;
+                            let quant = i16::from_le_bytes([memory[qoff], memory[qoff + 1]]);
+                            raw += weight * i64::from(quant);
+                        }
+                        let offset = output_row as usize + row * 8;
+                        memory[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
                     }
-                    let offset = output_base as usize + row * 8;
-                    memory[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
                 }
                 let mut completion = CompletionV3::default();
                 completion.request_id = task.request_id;
-                completion.lane_used = index as u32 % 16;
+                completion.lane_used = index as u32 % MAX_LANES;
                 completion.accelerator_cycles = 10;
-                completion.matrix_bytes_read = TILE_PACKED_BYTES as u64;
-                completion.input_bytes_read = 4096;
-                completion.output_bytes_written = 16384;
+                completion.matrix_bytes_read = TILE_PACKED_BYTES as u64 * u64::from(task.batch);
+                completion.input_bytes_read = 4096 * u64::from(task.batch);
+                completion.output_bytes_written = 16384 * u64::from(task.batch);
                 completion.start_cycle = 100 + index as u64 * 20;
                 completion.end_cycle = completion.start_cycle + 10;
                 completions[index] = completion;
@@ -1915,6 +2842,7 @@ mod tests {
 
     #[test]
     fn executor_stages_unique_v3_tasks_validates_raw_accumulates_and_copies_back() {
+        let _capture_guard = capture_test_guard();
         let signature = GgmlType19Signature {
             kernel: "mul_mat_q".into(),
             ne00: 256,
@@ -1991,11 +2919,30 @@ mod tests {
             .physical
             .iter()
             .all(|item| item.completed.submission_id() == 1));
+        assert!(result
+            .physical
+            .iter()
+            .all(|item| item.batch_first == 0 && item.batch_count == 1));
+        assert_eq!(result.scheduler.descriptor_count(), 16);
+        assert_eq!(result.scheduler.logical_items(), 16);
         assert_eq!(
             result
                 .physical
                 .iter()
                 .map(|item| item.completed.task().matrix_offset)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            1
+        );
+        assert!(result
+            .physical
+            .iter()
+            .all(|item| item.completed.task().matrix_offset == 0));
+        assert_eq!(
+            result
+                .physical
+                .iter()
+                .map(|item| item.completed.task().matrix_handle)
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             16
@@ -2039,6 +2986,381 @@ mod tests {
         assert_eq!(
             Path::new(json["libggml_path"].as_str().unwrap()),
             reference_fixture_path
+        );
+    }
+
+    #[test]
+    fn executor_slices_four_logical_rows_by_live_v3_batch_cap_and_preserves_output_order() {
+        // Global environment lock always precedes the IQ1_S capture/cache lock. No other IQ1_S
+        // test acquires these in the opposite order, so parallel test execution cannot deadlock.
+        let _env_lock = crate::r#impl::test_env::lock();
+        let _capture_guard = capture_test_guard();
+        let _batch_limit_guard = RemovedEnvGuard::new("HETGPU_FPGA_BATCH_LIMIT");
+
+        let signature = GgmlType19Signature {
+            kernel: "mul_mat_q".into(),
+            ne00: 256,
+            ne01: 2,
+            stride01: 1,
+            ne10: 256,
+            ne11: 4,
+            stride11: 4,
+            ne0: 2,
+        };
+        let launch = LogicalLaunch {
+            matrix_ptr: 0x41000,
+            activation_ptr: 0x42000,
+            output_ptr: 0x43000,
+            allocation_generation: 1,
+            content_hash: [0x4b; 32],
+            signature,
+        };
+        let mut matrix = Vec::new();
+        matrix.extend_from_slice(&block(3, false, 0x700));
+        matrix.extend_from_slice(&block(5, true, 0x321));
+        let mut activations = vec![0_u8; 8 * Q8_1_MMQ_BYTES];
+        let scales = [
+            (0x3800_u16, 0x3e00_u16),
+            (0x3c00_u16, 0x4200_u16),
+            (0x3e00_u16, 0x4480_u16),
+            (0x4000_u16, 0x4600_u16),
+        ];
+        for k_record in 0..2 {
+            for (batch, &(d, s)) in scales.iter().enumerate() {
+                let record = &mut activations[(k_record * 4 + batch) * Q8_1_MMQ_BYTES
+                    ..(k_record * 4 + batch + 1) * Q8_1_MMQ_BYTES];
+                for sub in 0..4 {
+                    record[sub * 4..sub * 4 + 2].copy_from_slice(&d.to_le_bytes());
+                    record[sub * 4 + 2..sub * 4 + 4].copy_from_slice(&s.to_le_bytes());
+                    for (index, value) in record[16 + sub * 32..16 + (sub + 1) * 32]
+                        .iter_mut()
+                        .enumerate()
+                    {
+                        *value = (index as i8 - 16) as u8;
+                    }
+                }
+            }
+        }
+
+        let oracle = validated_grid(Some(Path::new(DEFAULT_LIBGGML))).unwrap();
+        let captured = capture_from_host(launch, &matrix, &activations, &oracle).unwrap();
+        let dax = MemoryDax::new(24 * 1024 * 1024);
+        let (io, submitted) = FakeV3::with_max_batch(dax.clone(), 2);
+        let mut session = V3Session::with_io(io).unwrap();
+        let copied = CaptureOutput::default();
+        let result = execute_captured_with(&captured, &mut session, &dax, &copied, 0).unwrap();
+
+        let component_count = captured.matrix.component_iter().unwrap().len();
+        let submitted = submitted.lock().unwrap();
+        assert_eq!(submitted.len(), component_count * 2);
+        assert_eq!(result.physical.len(), component_count * 2);
+        assert_eq!(
+            result
+                .physical
+                .iter()
+                .map(|item| (item.batch_first, item.batch_count))
+                .collect::<Vec<_>>(),
+            (0..component_count)
+                .flat_map(|_| [(0, 2), (2, 2)])
+                .collect::<Vec<_>>()
+        );
+        assert!(submitted
+            .iter()
+            .all(|task| task.batch == 2 && task.lane == LANE_ANY));
+        assert_eq!(
+            submitted
+                .iter()
+                .map(|task| task.request_id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            submitted.len()
+        );
+        for component_tasks in submitted.chunks_exact(2) {
+            let first = component_tasks[0];
+            let second = component_tasks[1];
+            assert_eq!(first.matrix_offset, 0);
+            assert_eq!(second.matrix_offset, 0);
+            assert_eq!(first.matrix_handle, second.matrix_handle);
+            assert_eq!(
+                second.input_offset,
+                first.input_offset + 2 * first.input_stride_bytes
+            );
+            assert_eq!(
+                second.output_offset,
+                first.output_offset + 2 * first.output_stride_bytes
+            );
+            assert!(first.input_stride_bytes.is_multiple_of(4096));
+            assert!(first.output_stride_bytes.is_multiple_of(4096));
+        }
+        assert_eq!(
+            submitted
+                .chunks_exact(2)
+                .map(|tasks| tasks[0].matrix_handle)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            component_count
+        );
+        let mut input_ranges = submitted
+            .iter()
+            .map(|task| {
+                (
+                    task.input_offset,
+                    task.input_offset + u64::from(task.batch) * task.input_stride_bytes,
+                )
+            })
+            .collect::<Vec<_>>();
+        input_ranges.sort_unstable();
+        assert!(input_ranges.windows(2).all(|pair| pair[0].1 <= pair[1].0));
+        let mut output_ranges = submitted
+            .iter()
+            .map(|task| {
+                (
+                    task.output_offset,
+                    task.output_offset + u64::from(task.batch) * task.output_stride_bytes,
+                )
+            })
+            .collect::<Vec<_>>();
+        output_ranges.sort_unstable();
+        assert!(output_ranges.windows(2).all(|pair| pair[0].1 <= pair[1].0));
+        assert_eq!(
+            result
+                .outputs
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            [
+                -215.625_f32,
+                -237.625_f32,
+                -431.25_f32,
+                -475.25_f32,
+                -646.875_f32,
+                -712.875_f32,
+                -862.5_f32,
+                -950.5_f32,
+            ]
+            .map(f32::to_bits)
+        );
+        assert_eq!(copied.0.lock().unwrap().len(), 4 * 2 * 4);
+        assert_eq!(result.raw_components.len(), component_count * 4);
+        assert_eq!(
+            result.scheduler.descriptor_count(),
+            (component_count * 2) as u64
+        );
+        assert_eq!(
+            result.scheduler.logical_items(),
+            (component_count * 4) as u64
+        );
+        assert_eq!(result.scheduler.unique_submission_count(), 1);
+        assert_ne!(result.scheduler.lane_mask(), 0);
+        assert_eq!(
+            result
+                .scheduler
+                .per_lane_completion_counts()
+                .iter()
+                .sum::<u64>(),
+            (component_count * 2) as u64
+        );
+        assert!(session.io().buffers.is_empty());
+    }
+
+    fn parse_live_base_dpa(value: &str) -> Result<u64, String> {
+        let value = value.trim();
+        if let Some(hex) = value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+        {
+            u64::from_str_radix(hex, 16)
+                .map_err(|_| format!("invalid HETGPU_CXL_TMATMUL_V3_BASE_DPA: {value}"))
+        } else {
+            value
+                .parse::<u64>()
+                .map_err(|_| format!("invalid HETGPU_CXL_TMATMUL_V3_BASE_DPA: {value}"))
+        }
+    }
+
+    #[test]
+    fn live_v3_host_captured_batch_four_fixture() {
+        if std::env::var("HETGPU_RUN_LIVE_V3_BATCH").as_deref() != Ok("1") {
+            eprintln!(
+                "SKIP live_v3_host_captured_batch_four_fixture: set HETGPU_RUN_LIVE_V3_BATCH=1"
+            );
+            return;
+        }
+
+        let _env_lock = crate::r#impl::test_env::lock();
+        let _capture_guard = capture_test_guard();
+        let fixture_batch_limit = std::env::var("HETGPU_FPGA_BATCH_LIMIT")
+            .expect("live fixture requires HETGPU_FPGA_BATCH_LIMIT=2");
+        assert_eq!(
+            fixture_batch_limit, "2",
+            "live fixture must prove exactly two batch-2 slices"
+        );
+        let control_path = std::env::var("HETGPU_CXL_TMATMUL_DEVICE")
+            .unwrap_or_else(|_| "/dev/cxl_tmatmul3b001".into());
+        let dax_path =
+            std::env::var("HETGPU_CXL_TMATMUL_DAX").unwrap_or_else(|_| "/dev/dax6.0".into());
+        let base_dpa = std::env::var("HETGPU_CXL_TMATMUL_V3_BASE_DPA")
+            .map(|value| parse_live_base_dpa(&value))
+            .unwrap_or(Ok(0x0100_0000))
+            .expect("valid live v3 base DPA");
+
+        let signature = GgmlType19Signature {
+            kernel: "mul_mat_q".into(),
+            ne00: 256,
+            ne01: 2,
+            stride01: 1,
+            ne10: 256,
+            ne11: 4,
+            stride11: 4,
+            ne0: 2,
+        };
+        let launch = LogicalLaunch {
+            matrix_ptr: 0x41000,
+            activation_ptr: 0x42000,
+            output_ptr: 0x43000,
+            allocation_generation: 1,
+            content_hash: [0x4b; 32],
+            signature,
+        };
+        let mut matrix = Vec::new();
+        matrix.extend_from_slice(&block(3, false, 0x700));
+        matrix.extend_from_slice(&block(5, true, 0x321));
+        let mut activations = vec![0_u8; 8 * Q8_1_MMQ_BYTES];
+        let scales = [
+            (0x3800_u16, 0x3e00_u16),
+            (0x3c00_u16, 0x4200_u16),
+            (0x3e00_u16, 0x4480_u16),
+            (0x4000_u16, 0x4600_u16),
+        ];
+        for k_record in 0..2 {
+            for (batch, &(d, s)) in scales.iter().enumerate() {
+                let record = &mut activations[(k_record * 4 + batch) * Q8_1_MMQ_BYTES
+                    ..(k_record * 4 + batch + 1) * Q8_1_MMQ_BYTES];
+                for sub in 0..4 {
+                    record[sub * 4..sub * 4 + 2].copy_from_slice(&d.to_le_bytes());
+                    record[sub * 4 + 2..sub * 4 + 4].copy_from_slice(&s.to_le_bytes());
+                    for (index, value) in record[16 + sub * 32..16 + (sub + 1) * 32]
+                        .iter_mut()
+                        .enumerate()
+                    {
+                        *value = (index as i8 - 16) as u8;
+                    }
+                }
+            }
+        }
+
+        let oracle = validated_grid(Some(Path::new(DEFAULT_LIBGGML)))
+            .expect("load the validated local libggml IQ1_S grid");
+        let captured = capture_from_host(launch, &matrix, &activations, &oracle)
+            .expect("capture host IQ1_S batch fixture");
+        let mut session = V3Session::open(Path::new(&control_path)).expect("open live v3 session");
+        let caps = session.caps();
+        let dax = FileDaxAccess::open(Path::new(&dax_path), caps.dax_bytes)
+            .expect("mmap live DAX device");
+        assert_eq!(caps.version, 3, "live fixture requires QUERY_CAPS_V3");
+        assert!(
+            caps.num_instances >= MAX_LANES,
+            "live fixture requires at least {MAX_LANES} advertised lanes"
+        );
+        assert!(
+            caps.max_batch >= 2,
+            "live fixture requires caps.max_batch >= batch-2 slices"
+        );
+
+        let copied = CaptureOutput::default();
+        let result = execute_captured_with(&captured, &mut session, &dax, &copied, base_dpa)
+            .expect("execute live host-captured IQ1_S batch fixture");
+        let component_count = captured
+            .matrix
+            .component_iter()
+            .expect("iterate live fixture components")
+            .len();
+        let expected_descriptor_count = component_count
+            .checked_mul(2)
+            .expect("live descriptor count overflow");
+        let expected_slices = (0..component_count)
+            .flat_map(|_| [(0_u32, 2_u32), (2_u32, 2_u32)])
+            .collect::<Vec<_>>();
+        assert_eq!(result.physical.len(), expected_descriptor_count);
+        assert_eq!(
+            result
+                .physical
+                .iter()
+                .map(|item| (item.batch_first, item.batch_count))
+                .collect::<Vec<_>>(),
+            expected_slices,
+            "live descriptors must be component-major with two ordered batch-2 slices"
+        );
+        for component_slices in result.physical.chunks_exact(2) {
+            assert_eq!(component_slices[0].batch_first, 0);
+            assert_eq!(component_slices[1].batch_first, 2);
+            assert!(component_slices.iter().all(|item| item.batch_count == 2
+                && item.completed.task().batch == 2
+                && item.completed.task().lane == LANE_ANY));
+        }
+        let expected_bits = [
+            -215.625_f32,
+            -237.625_f32,
+            -431.25_f32,
+            -475.25_f32,
+            -646.875_f32,
+            -712.875_f32,
+            -862.5_f32,
+            -950.5_f32,
+        ]
+        .map(f32::to_bits);
+        let actual_bits = result
+            .outputs
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_bits, expected_bits, "live output must be bit-exact");
+        assert_eq!(
+            copied.0.lock().unwrap().as_slice(),
+            output_bytes(&captured, &result.outputs)
+                .expect("serialize validated output")
+                .as_slice()
+        );
+
+        let report = &result.scheduler;
+        assert_eq!(report.descriptor_count(), expected_descriptor_count as u64);
+        let evidence = serde_json::json!({
+            "event": "hetgpu_v3_live_batch_fixture_completed",
+            "validated": true,
+            "control_device": control_path,
+            "dax_device": dax_path,
+            "base_dpa": base_dpa,
+            "caps": {
+                "version": caps.version,
+                "num_instances": caps.num_instances,
+                "max_lanes": MAX_LANES,
+                "max_batch": caps.max_batch,
+                "max_descriptors": caps.max_descriptors,
+            },
+            "logical_batch": 4,
+            "configured_batch_limit": 2,
+            "component_count": component_count,
+            "expected_descriptor_count": expected_descriptor_count,
+            "ordered_component_major_slices": result.physical.iter().map(|item| {
+                serde_json::json!({
+                    "batch_first": item.batch_first,
+                    "batch_count": item.batch_count,
+                })
+            }).collect::<Vec<_>>(),
+            "output_f32_bits": actual_bits,
+            "descriptor_count": report.descriptor_count(),
+            "logical_items": report.logical_items(),
+            "submission_count": report.unique_submission_count(),
+            "lane_mask": report.lane_mask(),
+            "per_lane_completion_counts": report.per_lane_completion_counts(),
+            "accelerator_cycles": report.total_accelerator_cycles(),
+            "matrix_bytes_read": report.total_matrix_bytes_read(),
+            "input_bytes_read": report.total_input_bytes_read(),
+            "output_bytes_written": report.total_output_bytes_written(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&evidence).expect("serialize live completion evidence")
         );
     }
 }

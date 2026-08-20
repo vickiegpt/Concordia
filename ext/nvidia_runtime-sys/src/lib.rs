@@ -50,6 +50,26 @@ type CuModuleGetFunctionFn =
     unsafe extern "C" fn(*mut CUfunction, CUmodule, *const c_char) -> CUresult;
 type CuModuleGetGlobalFn =
     unsafe extern "C" fn(*mut CUdeviceptr, *mut size_t, CUmodule, *const c_char) -> CUresult;
+type CuLibraryLoadDataFn = unsafe extern "C" fn(
+    *mut CUlibrary,
+    *const c_void,
+    *mut CUjit_option,
+    *mut *mut c_void,
+    c_uint,
+    *mut CUlibraryOption,
+    *mut *mut c_void,
+    c_uint,
+) -> CUresult;
+type CuLibraryGetKernelFn =
+    unsafe extern "C" fn(*mut CUkernel, CUlibrary, *const c_char) -> CUresult;
+type CuKernelGetFunctionFn = unsafe extern "C" fn(*mut CUfunction, CUkernel) -> CUresult;
+type CuOccupancyMaxActiveBlocksPerMultiprocessorWithFlagsFn = unsafe extern "C" fn(
+    *mut c_int,
+    CUfunction,
+    c_int,
+    size_t,
+    c_uint,
+) -> CUresult;
 type CuLaunchKernelFn = unsafe extern "C" fn(
     CUfunction,
     c_uint,
@@ -137,6 +157,11 @@ pub struct NvidiaCudaFunctions {
     pub cuModuleUnload: Option<CuModuleUnloadFn>,
     pub cuModuleGetFunction: Option<CuModuleGetFunctionFn>,
     pub cuModuleGetGlobal_v2: Option<CuModuleGetGlobalFn>,
+    pub cuLibraryLoadData: Option<CuLibraryLoadDataFn>,
+    pub cuLibraryGetKernel: Option<CuLibraryGetKernelFn>,
+    pub cuKernelGetFunction: Option<CuKernelGetFunctionFn>,
+    pub cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags:
+        Option<CuOccupancyMaxActiveBlocksPerMultiprocessorWithFlagsFn>,
     pub cuLaunchKernel: Option<CuLaunchKernelFn>,
     pub cuStreamCreate: Option<CuStreamCreateFn>,
     pub cuStreamDestroy_v2: Option<CuStreamDestroyFn>,
@@ -225,6 +250,13 @@ pub fn init() -> Result<(), String> {
                 cuModuleUnload: load_fn(lib, "cuModuleUnload"),
                 cuModuleGetFunction: load_fn(lib, "cuModuleGetFunction"),
                 cuModuleGetGlobal_v2: load_fn(lib, "cuModuleGetGlobal_v2"),
+                cuLibraryLoadData: load_fn(lib, "cuLibraryLoadData"),
+                cuLibraryGetKernel: load_fn(lib, "cuLibraryGetKernel"),
+                cuKernelGetFunction: load_fn(lib, "cuKernelGetFunction"),
+                cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags: load_fn(
+                    lib,
+                    "cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags",
+                ),
                 cuLaunchKernel: load_fn(lib, "cuLaunchKernel"),
                 cuStreamCreate: load_fn(lib, "cuStreamCreate"),
                 cuStreamDestroy_v2: load_fn(lib, "cuStreamDestroy_v2"),
@@ -323,6 +355,10 @@ impl NvidiaCudaFunctions {
             cuModuleUnload: None,
             cuModuleGetFunction: None,
             cuModuleGetGlobal_v2: None,
+            cuLibraryLoadData: None,
+            cuLibraryGetKernel: None,
+            cuKernelGetFunction: None,
+            cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags: None,
             cuLaunchKernel: None,
             cuStreamCreate: None,
             cuStreamDestroy_v2: None,
@@ -769,6 +805,23 @@ pub fn cuMemHostGetDevicePointer_v2(
     999
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_cuda_library_entrypoints_used_by_cublas() {
+        init().expect("NVIDIA driver must be available for this test");
+        let funcs = get_cuda_funcs().expect("CUDA function table must be initialized");
+        assert!(funcs.cuLibraryLoadData.is_some());
+        assert!(funcs.cuLibraryGetKernel.is_some());
+        assert!(funcs.cuKernelGetFunction.is_some());
+        assert!(funcs
+            .cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags
+            .is_some());
+    }
+}
+
 pub fn cuMemGetAddressRange_v2(
     pbase: *mut CUdeviceptr,
     psize: *mut size_t,
@@ -827,6 +880,84 @@ pub fn cuModuleGetFunction(hfunc: *mut CUfunction, hmod: CUmodule, name: *const 
     if let Some(funcs) = get_cuda_funcs() {
         if let Some(f) = funcs.cuModuleGetFunction {
             let result = unsafe { f(hfunc, hmod, name) };
+            return cuda_result_to_int(result);
+        }
+    }
+    999
+}
+
+pub fn cuLibraryLoadData(
+    library: *mut CUlibrary,
+    code: *const c_void,
+    jit_options: *mut CUjit_option,
+    jit_option_values: *mut *mut c_void,
+    num_jit_options: c_uint,
+    library_options: *mut CUlibraryOption,
+    library_option_values: *mut *mut c_void,
+    num_library_options: c_uint,
+) -> i32 {
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuLibraryLoadData {
+            let result = unsafe {
+                f(
+                    library,
+                    code,
+                    jit_options,
+                    jit_option_values,
+                    num_jit_options,
+                    library_options,
+                    library_option_values,
+                    num_library_options,
+                )
+            };
+            return cuda_result_to_int(result);
+        }
+    }
+    999
+}
+
+pub fn cuLibraryGetKernel(
+    kernel: *mut CUkernel,
+    library: CUlibrary,
+    name: *const c_char,
+) -> i32 {
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuLibraryGetKernel {
+            let result = unsafe { f(kernel, library, name) };
+            return cuda_result_to_int(result);
+        }
+    }
+    999
+}
+
+pub fn cuKernelGetFunction(function: *mut CUfunction, kernel: CUkernel) -> i32 {
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuKernelGetFunction {
+            let result = unsafe { f(function, kernel) };
+            return cuda_result_to_int(result);
+        }
+    }
+    999
+}
+
+pub fn cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(
+    num_blocks: *mut c_int,
+    function: CUfunction,
+    block_size: c_int,
+    dynamic_smem_size: size_t,
+    flags: c_uint,
+) -> i32 {
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags {
+            let result = unsafe {
+                f(
+                    num_blocks,
+                    function,
+                    block_size,
+                    dynamic_smem_size,
+                    flags,
+                )
+            };
             return cuda_result_to_int(result);
         }
     }

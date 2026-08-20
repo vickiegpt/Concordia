@@ -285,6 +285,7 @@ typedef int (*hetgpu_sifive_submit_gemm_mmvf_small_n_fn)(
 typedef unsigned long long (*hetgpu_sifive_resolve_device_addr_fn)(const void *ptr);
 typedef int (*hetgpu_sifive_is_device_ptr_fn)(const void *ptr);
 typedef size_t (*hetgpu_sifive_allocation_remaining_fn)(const void *ptr);
+typedef int (*hetgpu_pointer_get_attribute_fn)(void *data, int attribute, const void *ptr);
 typedef int (*hetgpu_cuda_get_device_fn)(int *device);
 
 static void *hetgpu_resolve_runtime_symbol(const char *name) {
@@ -505,6 +506,36 @@ static unsigned long long hetgpu_sifive_resolve_device_addr_checked(const void *
 static int hetgpu_sifive_is_device_ptr_checked(const void *ptr) {
     hetgpu_sifive_is_device_ptr_fn fn = hetgpu_is_device_ptr_fn();
     return fn ? fn(ptr) : 0;
+}
+
+static hetgpu_pointer_get_attribute_fn hetgpu_pointer_get_attribute_fn_resolved(void) {
+    static hetgpu_pointer_get_attribute_fn fn = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        attempted = 1;
+        fn = (hetgpu_pointer_get_attribute_fn)
+            hetgpu_resolve_runtime_symbol("cuPointerGetAttribute");
+    }
+    return fn;
+}
+
+static int hetgpu_pointer_is_device(const void *ptr) {
+    if (hetgpu_sifive_is_device_ptr_checked(ptr)) {
+        return 1;
+    }
+
+    /*
+     * The NVIDIA backend uses real CUDA virtual addresses, which are not
+     * present in the SIFIVE allocation map and may be above 4 GiB.  Query
+     * the driver instead of guessing from the numeric address.
+     */
+    hetgpu_pointer_get_attribute_fn fn = hetgpu_pointer_get_attribute_fn_resolved();
+    if (!fn || !ptr) {
+        return 0;
+    }
+    unsigned int memory_type = 0;
+    const int rc = fn(&memory_type, 2 /* CU_POINTER_ATTRIBUTE_MEMORY_TYPE */, ptr);
+    return rc == 0 && memory_type == 2 /* CU_MEMORYTYPE_DEVICE */;
 }
 
 static size_t hetgpu_sifive_allocation_remaining_checked(const void *ptr) {
@@ -1223,14 +1254,24 @@ static cublasStatus_t host_gemm_fallback(
     void *tmp_B = NULL;
     void *tmp_C = NULL;
     int copy_C_back = 0;
-    const int a_is_device = hetgpu_sifive_is_device_ptr(A);
-    const int b_is_device = hetgpu_sifive_is_device_ptr(B);
-    const int c_is_device = hetgpu_sifive_is_device_ptr(C);
-    const void *host_A = a_is_device ? (const void *)(uintptr_t)hetgpu_sifive_resolve_device_addr(A) : A;
-    const void *host_B = b_is_device ? (const void *)(uintptr_t)hetgpu_sifive_resolve_device_addr(B) : B;
-    void *host_C = c_is_device ? (void *)(uintptr_t)hetgpu_sifive_resolve_device_addr(C) : C;
+    const int a_is_device = hetgpu_pointer_is_device(A);
+    const int b_is_device = hetgpu_pointer_is_device(B);
+    const int c_is_device = hetgpu_pointer_is_device(C);
+    const void *host_A = A;
+    const void *host_B = B;
+    void *host_C = C;
 
-    if (a_is_device && !host_A) {
+    DEBUG_LOG("%s host fallback shape m=%d n=%d k=%d trans=%d/%d lda=%d ldb=%d ldc=%d A=%p B=%p C=%p classified_device=%d/%d/%d",
+              name, m, n, k, (int)transa, (int)transb, lda, ldb, ldc,
+              A, B, C, a_is_device, b_is_device, c_is_device);
+
+    /*
+     * A SIFIVE device allocation's resolved address is a device/physical
+     * address, not a CPU-dereferenceable mapping.  Always stage classified
+     * device operands through cudaMemcpy.  Host allocations (including the
+     * dynamic-MoE host expert pool) are intentionally read/written in place.
+     */
+    if (a_is_device) {
         tmp_A = malloc(a_bytes ? a_bytes : 1);
         if (!tmp_A || cudaMemcpy(tmp_A, A, a_bytes, HETGPU_CUDA_MEMCPY_DEVICE_TO_HOST) != 0) {
             free(tmp_A);
@@ -1238,7 +1279,7 @@ static cublasStatus_t host_gemm_fallback(
         }
         host_A = tmp_A;
     }
-    if (b_is_device && !host_B) {
+    if (b_is_device) {
         tmp_B = malloc(b_bytes ? b_bytes : 1);
         if (!tmp_B || cudaMemcpy(tmp_B, B, b_bytes, HETGPU_CUDA_MEMCPY_DEVICE_TO_HOST) != 0) {
             free(tmp_A);
@@ -1247,7 +1288,7 @@ static cublasStatus_t host_gemm_fallback(
         }
         host_B = tmp_B;
     }
-    if (c_is_device && !host_C) {
+    if (c_is_device) {
         tmp_C = malloc(c_bytes ? c_bytes : 1);
         if (!tmp_C) {
             free(tmp_A);

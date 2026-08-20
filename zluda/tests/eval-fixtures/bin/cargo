@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+arguments=" $* "
+gate=unknown
+passed=1
+
+case ${arguments} in
+    *" --test batch_scheduler_integration_test "*) gate=integration_contract; passed=3 ;;
+    *" batch_scheduler "*) gate=planner; passed=13 ;;
+    *" iq1s_tmatmul "*) gate=iq1s; passed=25 ;;
+    *" cxl_tmatmul_v3 "*) gate=cxl_v3; passed=31 ;;
+    *" nvidia_iq1s_completed "*) gate=nvidia_completion; passed=4 ;;
+    *" check "*) printf 'Finished dev profile\n' >&2; exit 0 ;;
+esac
+
+if [[ ${HETGPU_FAKE_CARGO_ZERO_GATE:-} == "${gate}" ]]; then
+    passed=0
+fi
+if [[ ${gate} == planner && -n ${HETGPU_FAKE_CARGO_MUTATE_FILE:-} ]]; then
+    case ${HETGPU_FAKE_CARGO_MUTATE_FILE} in
+        /tmp/*) ;;
+        *)
+            echo "refusing to mutate a fake-cargo fixture outside /tmp" >&2
+            exit 97
+            ;;
+    esac
+    [[ -f ${HETGPU_FAKE_CARGO_MUTATE_FILE} ]] || {
+        echo "fake-cargo mutation fixture is not a regular file" >&2
+        exit 98
+    }
+    printf '%s\n' 'mutated by fake cargo' >>"${HETGPU_FAKE_CARGO_MUTATE_FILE}"
+fi
+printf 'test result: ok. %s passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' \
+    "${passed}"

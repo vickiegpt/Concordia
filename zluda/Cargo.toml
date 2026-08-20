@@ -6,7 +6,7 @@ edition = "2021"
 
 [lib]
 name = "nvcuda"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["intel"]
@@ -15,6 +15,7 @@ amd = ["dep:hip_runtime_sys", "cuda_types/amd", "comgr/amd"]
 tenstorrent = []
 gemmini = []
 nvidia = ["dep:nvidia_runtime_sys", "comgr/nvidia", "ptx/nvidia"]
+evaluation = []
 tmatmul = []
 cutile = ["comgr/cutile"]
 sifive = ["comgr/sifive", "ptx/sifive", "dep:sifive_runtime_sys"]

@@ -5,6 +5,8 @@ fn main() {
     let embed = std::env::var("CARGO_FEATURE_EMBED_CUDART").is_ok();
     if embed {
         println!("cargo:rerun-if-changed=src/cudart_shim.c");
+        println!("cargo:rerun-if-changed=src/cudart_dax_pool.c");
+        println!("cargo:rerun-if-changed=src/cudart_dax_pool.h");
         println!("cargo:rerun-if-changed=src/cublas_shim.c");
         println!("cargo:rerun-if-changed=src/cublaslt_shim.c");
         println!("cargo:rerun-if-changed=src/cusparse_shim.c");
@@ -76,6 +78,7 @@ fn main() {
         shim_build.arg("-o");
         shim_build.arg(&shim_so);
         shim_build.arg("src/cudart_shim.c");
+        shim_build.arg("src/cudart_dax_pool.c");
         shim_build.arg("src/cublas_shim.c");
         shim_build.arg("src/cublaslt_shim.c");
         shim_build.arg("src/cusparse_shim.c");
@@ -87,6 +90,7 @@ fn main() {
             shim_build.arg(format!("-Wl,--version-script={}", version_script.display()));
             shim_build.arg("-ldl");
         }
+        shim_build.arg("-pthread");
         shim_build.arg("-lz");
         let status = shim_build.status().unwrap();
         assert!(status.success(), "failed to build embedded CUDA shim");

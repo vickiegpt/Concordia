@@ -1,4 +1,33 @@
 pub(crate) mod r#impl;
+
+/// Production-backed batch planner entrypoint used by external evaluation tests.
+///
+/// This intentionally exposes only the ordered logical slices, keeping the scheduler's
+/// invariant-bearing types private to the runtime.
+#[doc(hidden)]
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    feature = "evaluation",
+    not(feature = "amd"),
+    not(feature = "intel")
+))]
+pub fn hetgpu_v3_batch_plan_for_evaluation(
+    logical_batch: u32,
+    live_max_batch: u32,
+    configured_limit: Option<&str>,
+) -> std::result::Result<Vec<(u32, u32)>, String> {
+    let config = crate::r#impl::batch_scheduler::BatchSchedulerConfig::parse(
+        configured_limit,
+        live_max_batch,
+    )?;
+    let plan = config.plan(logical_batch)?;
+    Ok(plan
+        .slices()
+        .iter()
+        .map(|slice| (slice.first(), slice.count()))
+        .collect())
+}
 // Import necessary for FromCuda
 use crate::r#impl::FromCuda;
 // Import std::ptr for null_mut
@@ -472,6 +501,10 @@ cuda_base::cuda_function_declarations!(
             cuModuleGetLoadingMode,
             cuModuleLoadData,
             cuModuleUnload,
+            cuLibraryLoadData,
+            cuLibraryGetKernel,
+            cuKernelGetFunction,
+            cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags,
             cuMemAddressFree,
             cuMemAddressReserve,
             cuMemCreate,

@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) const V3_VERSION: u32 = 3;
 pub(crate) const REQUIRED_CAPABILITIES: u64 = 0x7b;
 pub(crate) const LANE_ANY: u32 = u32::MAX;
+/// Matches the loaded driver's `TMATMUL_V3_MAX_LANES` wave limit.
+pub(crate) const MAX_LANES: u32 = 4;
 pub(crate) const BUFFER_TERNARY2: u32 = 1;
 pub(crate) const BUFFER_Q8_8_S16: u32 = 2;
 pub(crate) const BUFFER_RAW_S64: u32 = 3;
@@ -15,11 +17,10 @@ pub(crate) const BUFFER_READ: u32 = 1 << 0;
 pub(crate) const BUFFER_WRITE: u32 = 1 << 1;
 pub(crate) const BUFFER_MATRIX: u32 = 1 << 2;
 
-const EXPECTED_INSTANCES: u32 = 16;
 const EXPECTED_DIM_D: u32 = 2048;
 const EXPECTED_DDR_BITS: u32 = 512;
 const EXPECTED_DAX_BYTES: u64 = 32 * 1024 * 1024 * 1024;
-const EXPECTED_LANE_MASK: u64 = 0xffff;
+const REQUIRED_LANE_MASK: u64 = (1_u64 << MAX_LANES) - 1;
 const EXPECTED_CLOCK_HZ: u64 = 400_000_000;
 const DEFAULT_TIMEOUT_MS: u32 = 5_000;
 const MAX_PROOF_TIMEOUT_MS: u32 = 10_000;
@@ -449,21 +450,6 @@ impl<I: IoctlOps> V3Session<I> {
             self.poisoned = true;
             return Err("REGISTER_BUFFER returned invalid zero handle; session poisoned".into());
         }
-        if wire.generation == 0 {
-            return match self.io.unregister_buffer(&mut wire) {
-                Ok(()) => Err(format!(
-                    "REGISTER_BUFFER returned invalid zero generation for handle {}; registration cleaned up",
-                    wire.handle
-                )),
-                Err(error) => {
-                    self.poisoned = true;
-                    Err(format!(
-                        "REGISTER_BUFFER returned invalid zero generation for handle {}; cleanup failed and session poisoned: {error}",
-                        wire.handle
-                    ))
-                }
-            };
-        }
         let lease = BufferLease {
             owner: self.owner,
             handle: wire.handle,
@@ -749,7 +735,8 @@ impl<I: IoctlOps> V3Session<I> {
                 ));
             }
             if task.lane != LANE_ANY
-                && (task.lane >= self.caps.num_instances
+                && (task.lane >= MAX_LANES
+                    || task.lane >= self.caps.num_instances
                     || self.caps.per_lane_counter_mask & (1_u64 << task.lane) == 0)
             {
                 return Err(format!(
@@ -890,7 +877,8 @@ impl<I: IoctlOps> V3Session<I> {
                 completion.request_id, completion.status
             ));
         }
-        if completion.lane_used >= self.caps.num_instances
+        if completion.lane_used >= MAX_LANES
+            || completion.lane_used >= self.caps.num_instances
             || self.caps.per_lane_counter_mask & (1_u64 << completion.lane_used) == 0
         {
             return Err(format!(
@@ -941,7 +929,17 @@ impl<I: IoctlOps> V3Session<I> {
                 completion.request_id, completion.output_bytes_written
             ));
         }
-        if completion.matrix_bytes_read > matrix.length - task.matrix_offset {
+        let matrix_traffic_limit = matrix
+            .length
+            .checked_sub(task.matrix_offset)
+            .and_then(|bytes| bytes.checked_mul(u64::from(task.batch)))
+            .ok_or_else(|| {
+                format!(
+                    "request_id={} matrix traffic range overflow",
+                    completion.request_id
+                )
+            })?;
+        if completion.matrix_bytes_read > matrix_traffic_limit {
             return Err(format!(
                 "request_id={} matrix_bytes_read out of range",
                 completion.request_id
@@ -1000,8 +998,9 @@ impl<I: IoctlOps> V3Session<I> {
 fn completion_minimum_bytes(dim_d: u32, batch: u32) -> Result<(u64, u64, u64), String> {
     let dim_d = u64::from(dim_d);
     let batch = u64::from(batch);
-    let matrix = dim_d
+    let matrix = batch
         .checked_mul(dim_d)
+        .and_then(|bytes| bytes.checked_mul(dim_d))
         .and_then(|bytes| bytes.checked_div(4))
         .ok_or_else(|| "matrix completion byte minimum overflow".to_string())?;
     let input = batch
@@ -1028,10 +1027,11 @@ fn validate_caps(caps: &CapsV3) -> Result<(), String> {
             caps.capabilities
         ));
     }
-    if caps.num_instances != EXPECTED_INSTANCES {
+    if caps.num_instances < MAX_LANES || caps.num_instances > u64::BITS {
         return Err(format!(
-            "caps num_instances {} is not 16",
-            caps.num_instances
+            "caps num_instances {} is outside {MAX_LANES}..={}",
+            caps.num_instances,
+            u64::BITS
         ));
     }
     if caps.dim_d != EXPECTED_DIM_D {
@@ -1073,10 +1073,10 @@ fn validate_caps(caps: &CapsV3) -> Result<(), String> {
     if caps.dax_bytes != EXPECTED_DAX_BYTES {
         return Err(format!("caps dax bytes {} is not 32 GiB", caps.dax_bytes));
     }
-    if caps.per_lane_counter_mask != EXPECTED_LANE_MASK {
+    if caps.per_lane_counter_mask & REQUIRED_LANE_MASK != REQUIRED_LANE_MASK {
         return Err(format!(
-            "caps lane_mask 0x{:x} is not 0xffff",
-            caps.per_lane_counter_mask
+            "caps lane_mask 0x{:x} does not expose required mask 0x{REQUIRED_LANE_MASK:x}",
+            caps.per_lane_counter_mask,
         ));
     }
     if caps.accelerator_clock_hz != EXPECTED_CLOCK_HZ {
@@ -1317,7 +1317,7 @@ mod tests {
     fn completion(request_id: u64) -> CompletionV3 {
         CompletionV3 {
             request_id,
-            lane_used: 15,
+            lane_used: 3,
             accelerator_cycles: 10,
             start_cycle: 20,
             end_cycle: 30,
@@ -1389,6 +1389,7 @@ mod tests {
 
     #[test]
     fn v3_uapi_layout_and_ioctl_numbers_match_loaded_driver() {
+        assert_eq!(MAX_LANES, 4);
         assert_eq!(size_of::<CapsV3>(), 128);
         assert_eq!(size_of::<BufferV3>(), 64);
         assert_eq!(size_of::<CommitV3>(), 64);
@@ -1415,7 +1416,7 @@ mod tests {
         let invalid: [(&str, CapsMutation); 12] = [
             ("version", |c: &mut CapsV3| c.version = 2),
             ("capabilities", |c: &mut CapsV3| c.capabilities = 0x3b),
-            ("num_instances", |c: &mut CapsV3| c.num_instances = 15),
+            ("num_instances", |c: &mut CapsV3| c.num_instances = 3),
             ("dim_d", |c: &mut CapsV3| c.dim_d = 1024),
             ("max_descriptors", |c: &mut CapsV3| c.max_descriptors = 0),
             ("max_inflight", |c: &mut CapsV3| {
@@ -1425,9 +1426,7 @@ mod tests {
             ("ddr", |c: &mut CapsV3| c.ddr_data_width_bits = 256),
             ("alignment", |c: &mut CapsV3| c.dax_alignment_bytes = 0),
             ("dax", |c: &mut CapsV3| c.dax_bytes -= 1),
-            ("lane_mask", |c: &mut CapsV3| {
-                c.per_lane_counter_mask = 0x7fff
-            }),
+            ("lane_mask", |c: &mut CapsV3| c.per_lane_counter_mask = 0x7),
             ("clock", |c: &mut CapsV3| {
                 c.accelerator_clock_hz = 399_000_000
             }),
@@ -1446,6 +1445,18 @@ mod tests {
         assert!(V3Session::with_io(io)
             .unwrap_err()
             .contains("max_descriptors"));
+    }
+
+    #[test]
+    fn caps_accept_exactly_four_runtime_lanes() {
+        let mut io = FakeIoctl::valid();
+        io.caps.num_instances = MAX_LANES;
+        io.caps.per_lane_counter_mask = (1_u64 << MAX_LANES) - 1;
+
+        let session = V3Session::with_io(io).unwrap();
+
+        assert_eq!(session.caps().num_instances, MAX_LANES);
+        assert_eq!(session.caps().per_lane_counter_mask, 0xf);
     }
 
     #[test]
@@ -1575,7 +1586,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_wait_accepts_lane_15_and_preserves_input_order() {
+    fn partial_wait_accepts_lane_3_and_preserves_input_order() {
         let io = FakeIoctl::with_waits(vec![vec![completion(2)], vec![completion(1)]]);
         let mut session = V3Session::with_io(io).unwrap();
         let leases = register_triplet(&mut session);
@@ -1600,6 +1611,28 @@ mod tests {
             .run_tasks(&[explicit])
             .unwrap_err()
             .contains("requested lane"));
+    }
+
+    #[test]
+    fn lanes_outside_four_lane_runtime_policy_fail_closed() {
+        let mut explicit_session = V3Session::with_io(FakeIoctl::valid()).unwrap();
+        let explicit_leases = register_triplet(&mut explicit_session);
+        let mut explicit = task(1, &explicit_leases);
+        explicit.lane = MAX_LANES;
+        assert!(explicit_session
+            .run_tasks(&[explicit])
+            .unwrap_err()
+            .contains("invalid lane"));
+
+        let mut invalid_completion = completion(1);
+        invalid_completion.lane_used = MAX_LANES;
+        let mut completion_session =
+            V3Session::with_io(FakeIoctl::with_waits(vec![vec![invalid_completion]])).unwrap();
+        let completion_leases = register_triplet(&mut completion_session);
+        assert!(completion_session
+            .run_tasks(&[task(1, &completion_leases)])
+            .unwrap_err()
+            .contains("completion lane"));
     }
 
     #[test]
@@ -1800,11 +1833,13 @@ mod tests {
 
     #[test]
     fn proof_counter_minimums_scale_with_batch() {
-        for counter in ["input", "output"] {
+        for counter in ["matrix", "input", "output"] {
             let mut done = completion(1);
+            done.matrix_bytes_read = 2 * 2048 * 2048 / 4;
             done.input_bytes_read = 2 * 2048 * 2;
             done.output_bytes_written = 2 * 2048 * 8;
             match counter {
+                "matrix" => done.matrix_bytes_read -= 1,
                 "input" => done.input_bytes_read -= 1,
                 "output" => done.output_bytes_written -= 1,
                 _ => unreachable!(),
@@ -1817,6 +1852,7 @@ mod tests {
         }
 
         let mut done = completion(2);
+        done.matrix_bytes_read = 2 * 2048 * 2048 / 4;
         done.input_bytes_read = 2 * 2048 * 2;
         done.output_bytes_written = 2 * 2048 * 8;
         let mut session = V3Session::with_io(FakeIoctl::with_waits(vec![vec![done]])).unwrap();
@@ -2174,27 +2210,12 @@ mod tests {
     }
 
     #[test]
-    fn successful_register_with_invalid_identity_cleans_up_or_poisons() {
-        let mut cleanup = FakeIoctl::valid();
-        cleanup.register_results.push_back((9, 0));
-        let mut session = V3Session::with_io(cleanup).unwrap();
-        assert!(session
-            .register_buffer(0, 4096, BUFFER_RAW_S64, BUFFER_WRITE)
-            .unwrap_err()
-            .contains("invalid"));
-        assert_eq!(
-            session.io().calls,
-            vec!["query", "register:0", "unregister:9"]
-        );
-        session
-            .register_buffer(0, 4096, BUFFER_RAW_S64, BUFFER_WRITE)
-            .unwrap();
-
-        for (handle, generation, cleanup_fails) in [(0, 1, false), (9, 0, true)] {
+    fn successful_register_with_zero_handle_poisons_the_session() {
+        for cleanup_fails in [false, true] {
             let drops = Arc::new(AtomicUsize::new(0));
             {
                 let mut io = FakeIoctl::valid();
-                io.register_results.push_back((handle, generation));
+                io.register_results.push_back((0, 1));
                 io.unregister_error = cleanup_fails.then(|| "cleanup EIO".into());
                 io.drops = Some(drops.clone());
                 let mut poisoned = V3Session::with_io(io).unwrap();
@@ -2211,16 +2232,36 @@ mod tests {
                     .calls
                     .iter()
                     .any(|call| call.starts_with("submit")));
-                let expected_calls = if handle == 0 {
-                    vec!["query", "register:0"]
-                } else {
-                    vec!["query", "register:0", "unregister:9"]
-                };
-                assert_eq!(poisoned.io().calls, expected_calls);
+                assert_eq!(poisoned.io().calls, vec!["query", "register:0"]);
                 assert_eq!(drops.load(Ordering::SeqCst), 0);
             }
             assert_eq!(drops.load(Ordering::SeqCst), 1);
         }
+    }
+
+    #[test]
+    fn register_accepts_driver_initial_generation_zero_and_commit_advances_it() {
+        let mut io = FakeIoctl::valid();
+        io.register_results.push_back((9, 0));
+        let mut session = V3Session::with_io(io).unwrap();
+        let registered = session
+            .register_buffer(
+                0,
+                2048 * 2048 / 4,
+                BUFFER_TERNARY2,
+                BUFFER_READ | BUFFER_MATRIX,
+            )
+            .unwrap();
+        assert_eq!(registered.generation(), 0);
+
+        let committed = session.commit_buffer(registered).unwrap();
+
+        assert_eq!(committed.generation(), 1);
+        session.unregister_buffer(committed).unwrap();
+        assert_eq!(
+            session.io().calls,
+            vec!["query", "register:0", "commit:9", "unregister:9"]
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@ use tt_runtime_sys::*;
 use ze_runtime_sys::*;
 
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_char, c_int, c_uint, c_void};
 
 use std::{cell::RefCell, collections::HashMap, ptr::NonNull};
 
@@ -39,6 +39,99 @@ fn preferred_self_proc_address(symbol: &str) -> Option<&str> {
         | "cuFuncGetAttribute" => Some(symbol),
         _ => None,
     }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_status_to_cu_result(status: i32) -> CUresult {
+    if status == 0 {
+        Ok(())
+    } else if status > 0 {
+        let code = std::num::NonZeroU32::new(status as u32).unwrap_or(CUerror::UNKNOWN.0);
+        Err(CUerror(code))
+    } else {
+        Err(CUerror::UNKNOWN)
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn library_load_data(
+    library: &mut CUlibrary,
+    code: *const c_void,
+    jit_options: *mut CUjit_option,
+    jit_option_values: *mut *mut c_void,
+    num_jit_options: c_uint,
+    library_options: *mut CUlibraryOption,
+    library_option_values: *mut *mut c_void,
+    num_library_options: c_uint,
+) -> CUresult {
+    nvidia_status_to_cu_result(nvidia_runtime_sys::cuLibraryLoadData(
+        library,
+        code,
+        jit_options,
+        jit_option_values,
+        num_jit_options,
+        library_options,
+        library_option_values,
+        num_library_options,
+    ))
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn library_get_kernel(
+    kernel: &mut CUkernel,
+    library: CUlibrary,
+    name: *const c_char,
+) -> CUresult {
+    nvidia_status_to_cu_result(nvidia_runtime_sys::cuLibraryGetKernel(kernel, library, name))
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn kernel_get_function(function: &mut CUfunction, kernel: CUkernel) -> CUresult {
+    nvidia_status_to_cu_result(nvidia_runtime_sys::cuKernelGetFunction(function, kernel))
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) fn occupancy_max_active_blocks_per_multiprocessor_with_flags(
+    num_blocks: &mut c_int,
+    function: CUfunction,
+    block_size: c_int,
+    dynamic_smem_size: usize,
+    flags: c_uint,
+) -> CUresult {
+    nvidia_status_to_cu_result(
+        nvidia_runtime_sys::cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(
+            num_blocks,
+            function,
+            block_size,
+            dynamic_smem_size,
+            flags,
+        ),
+    )
 }
 
 #[cfg(test)]

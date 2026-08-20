@@ -1,6 +1,7 @@
 target/
 .worktrees/
 Cargo.lock
+!Cargo.lock
 bench/concordia_delta_checkpoint/*.ll
 bench/concordia_delta_checkpoint/*.ptx
 
@@ -8,6 +9,13 @@ bench/concordia_delta_checkpoint/*.ptx
 .idea/
 *.md
 *.py
+!zluda/tests/parse_v3_workload_timing.py
+!zluda/tests/test_parse_v3_workload_timing.py
+!zluda/tests/validate_v3_workload_completion.py
+!zluda/tests/test_validate_v3_workload_completion.py
+!zluda/tests/run_mmfreellm_2p7b_benchmark.py
+!zluda/tests/test_run_mmfreellm_2p7b_benchmark.py
+!zluda/evaluation/2026-08-20-fpga-v3-kimi-mmfreellm-evaluation.md
 !bench/concordia_claim_audit/*.md
 !bench/concordia_claim_audit/*.py
 !bench/concordia_eval_claims/*.md

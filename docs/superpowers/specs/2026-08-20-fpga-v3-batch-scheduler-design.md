@@ -3,9 +3,9 @@
 ## Goal
 
 Execute a logical IQ1_S matrix multiplication batch through the real CXL v3
-UAPI, distribute capability-bounded work across all 16 FPGA instances, preserve
-CUDA output ordering, and produce evidence that distinguishes software tests
-from live FPGA execution.
+UAPI, distribute capability-bounded work across at most four FPGA lanes,
+preserve CUDA output ordering, and produce evidence that distinguishes software
+tests from live FPGA execution.
 
 ## Corrected boundary
 
@@ -14,6 +14,12 @@ request-ID demultiplexing, capability validation, and lease quarantine. The
 batch scheduler therefore plans `TaskV3` descriptors; it does not introduce a
 second memory allocator, userspace health model, or simulated execution
 pipeline.
+
+The effective runtime limit is `MAX_LANES = 4`, matching the loaded driver's
+`TMATMUL_V3_MAX_LANES`. The device may continue to advertise 16 physical
+instances through `CapsV3.num_instances`, but task validation, completion
+validation, scheduler reports, and workload evidence accept only lanes 0
+through 3. A completion on lane 4 or above fails closed.
 
 For a logical activation batch of `N`, the scheduler partitions `[0, N)` into
 ordered slices no larger than live `CapsV3.max_batch`. Each physical matrix
@@ -66,9 +72,10 @@ Software acceptance requires planner edge-case tests, fake-v3 end-to-end
 bit-exact batch reconstruction, the complete v3 unit suite, IQ1_S tests, and an
 NVIDIA-feature build.
 
-Live acceptance requires querying `/dev/cxl_tmatmul3b001`, observing 16
-instances in its capability block, completing a real v3 batched fixture through
-`/dev/dax6.0`, preserving bit-exact output, and recording descriptor count,
-logical batch count, lane mask, per-lane completions, cycles, and elapsed time.
-Kimi and MatMulFreeLM TPS are reported only when their processes exit normally
-and emit timing blocks.
+Live acceptance requires querying `/dev/cxl_tmatmul3b001`, observing at least
+four advertised instances and lanes 0 through 3 in its counter mask, completing
+a real v3 batched fixture through `/dev/dax6.0`, preserving bit-exact output,
+and recording descriptor count, logical batch count, a four-lane mask, four
+per-lane completion counters, cycles, and elapsed time. Kimi and MatMulFreeLM
+TPS are reported only when their processes exit normally and emit timing
+blocks.

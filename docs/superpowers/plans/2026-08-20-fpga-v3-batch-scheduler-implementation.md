@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Execute capability-bounded IQ1_S batches through the real 16-instance CXL v3 UAPI and evaluate them with correctness and live-device evidence.
+**Goal:** Execute capability-bounded IQ1_S batches through the real CXL v3 UAPI with a fixed four-lane runtime maximum and evaluate them with correctness and live-device evidence.
 
-**Architecture:** A pure planner slices logical batches by `CapsV3.max_batch`; IQ1_S staging emits one `TaskV3` per component and slice with `LANE_ANY`; existing v3 submission/wait code validates and demultiplexes completions. Completion-derived reports measure actual lane use and work rather than queue bookkeeping.
+**Architecture:** A pure planner slices logical batches by `CapsV3.max_batch`; IQ1_S staging emits one `TaskV3` per component and slice with `LANE_ANY`; existing v3 submission/wait code validates and demultiplexes completions. Userspace mirrors the loaded driver's `TMATMUL_V3_MAX_LANES = 4`, so only lanes 0 through 3 are accepted even when capability discovery advertises 16 physical instances. Completion-derived reports measure actual lane use and work rather than queue bookkeeping.
 
 **Tech Stack:** Rust 2021, CUDA/ZLUDA launch interception, Linux CXL v3 ioctls, device DAX, existing fake-v3 test backend.
 
@@ -41,6 +41,7 @@
 - [ ] Add a failing fake-v3 test with logical batch 4 and live max batch 2; require two ordered slices per component, `TaskV3.batch == 2`, unique IDs, lane-any submission, and bit-exact outputs for all four rows.
 - [ ] Stage input/output regions with per-component batch strides, build slice descriptors from the planner, and reconstruct outputs by `(component, batch_index, row)`.
 - [ ] Add `SchedulerReport` to `ExecutionResult` and derive it only from validated completions.
+- [ ] Size scheduler evidence to `MAX_LANES = 4` and reject any explicit task or completion on lane 4 or above.
 - [ ] Re-run `iq1s_tmatmul` and `cxl_tmatmul_v3` suites.
 
 ### Task 4: NVIDIA integration and evidence output
@@ -70,5 +71,5 @@
 
 - [ ] Run formatter only on touched Rust files and inspect the diff for unrelated changes.
 - [ ] Run planner, IQ1_S, v3, and NVIDIA route tests; run `cargo check -p zluda --no-default-features --features nvidia`.
-- [ ] Query the live capability block and, when compatible, run the live batch fixture and the shortest clean Kimi/MatMulFreeLM gates before longer TPS samples.
+- [ ] Query the live capability block, require at least lanes 0 through 3, and, when compatible, run the live batch fixture and the shortest clean Kimi/MatMulFreeLM gates before longer TPS samples.
 - [ ] Report software, live hardware, and workload proof as separate acceptance boundaries; do not claim target TPS without measured clean timing output.

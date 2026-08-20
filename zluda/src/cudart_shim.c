@@ -14,6 +14,7 @@
 #include <sys/wait.h>
 #include <ucontext.h>
 #include <dlfcn.h>
+#include "cudart_dax_pool.h"
 
 // SIGFPE handler - log first occurrence then disable FP exceptions to continue
 static int sigfpe_count = 0;
@@ -1518,6 +1519,11 @@ cudaError_t cudaHostAlloc(void** pHost, size_t size, unsigned int flags) {
         *pHost = (void*)0x1; // sentinel non-null
         return 0;
     }
+    void *dax_ptr = hetgpu_cxl_dax_host_alloc(size);
+    if (dax_ptr) {
+        *pHost = dax_ptr;
+        return 0;
+    }
 #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
     void* ptr = NULL;
     // 256-byte alignment keeps ggml CUDA buffer allocators happy
@@ -1535,6 +1541,7 @@ cudaError_t cudaHostAlloc(void** pHost, size_t size, unsigned int flags) {
 }
 cudaError_t cudaFreeHost(void* pHost) {
     if (!pHost || pHost == (void*)0x1) return 0;
+    if (hetgpu_cxl_dax_host_free(pHost)) return 0;
 #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
     free(pHost);
 #else

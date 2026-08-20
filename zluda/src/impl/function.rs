@@ -8185,6 +8185,27 @@ fn nvidia_env_usize(name: &str) -> Option<usize> {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+fn nvidia_env_u64_any(names: &[&str]) -> Option<u64> {
+    names.iter().find_map(|name| {
+        let value = std::env::var(name).ok()?;
+        let trimmed = value.trim();
+        if let Some(hex) = trimmed
+            .strip_prefix("0x")
+            .or_else(|| trimmed.strip_prefix("0X"))
+        {
+            u64::from_str_radix(hex, 16).ok()
+        } else {
+            trimmed.parse::<u64>().ok()
+        }
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 fn nvidia_kernel_param_u64_snapshot(
     kernel_params: *mut *mut ::core::ffi::c_void,
     num_params: usize,
@@ -8493,6 +8514,374 @@ unsafe fn nvidia_cxl_read_mmq_shape(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+fn nvidia_iq1s_u64_field(field: &str, value: i32) -> Result<u64, String> {
+    u64::try_from(value).map_err(|_| format!("{field} has negative value {value}"))
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_iq1s_signature(
+    kernel_name: &str,
+    shape: NvidiaCxlMmqShape,
+) -> Result<super::iq1s_tmatmul::GgmlType19Signature, String> {
+    let name_lower = kernel_name.to_ascii_lowercase();
+    if !name_lower.contains("mul_mat_q")
+        || name_lower.contains("mul_mat_vec_q")
+        || !name_lower.contains("ggml_type19")
+    {
+        return Err(format!(
+            "kernel '{kernel_name}' is not the qualified IQ1_S mul_mat_q symbol"
+        ));
+    }
+
+    super::iq1s_tmatmul::GgmlType19Signature {
+        kernel: kernel_name.to_string(),
+        ne00: nvidia_iq1s_u64_field("ne00", shape.ne00)?,
+        ne01: nvidia_iq1s_u64_field("ne01", shape.ne01)?,
+        stride01: nvidia_iq1s_u64_field("stride01", shape.stride01)?,
+        ne10: nvidia_iq1s_u64_field("ne10", shape.ne10)?,
+        ne11: nvidia_iq1s_u64_field("ne11", shape.ne11)?,
+        stride11: nvidia_iq1s_u64_field("stride11", shape.stride11)?,
+        ne0: nvidia_iq1s_u64_field("ne0", shape.ne0)?,
+    }
+    .validate()
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_iq1s_vec_signature(
+    kernel_name: &str,
+    shape: NvidiaCxlMmvqShape,
+) -> Result<super::iq1s_tmatmul::GgmlType19VecSignature, String> {
+    let name_lower = kernel_name.to_ascii_lowercase();
+    if !name_lower.contains("mul_mat_vec_q") || !name_lower.contains("ggml_type19") {
+        return Err(format!(
+            "kernel '{kernel_name}' is not the qualified IQ1_S mul_mat_vec_q symbol"
+        ));
+    }
+    let marker = "ggml_type19eli";
+    let marker_start = name_lower
+        .find(marker)
+        .ok_or_else(|| format!("kernel '{kernel_name}' has no IQ1_S vector batch arity"))?
+        + marker.len();
+    let digits_end = name_lower[marker_start..]
+        .find(|byte: char| !byte.is_ascii_digit())
+        .map(|offset| marker_start + offset)
+        .unwrap_or(name_lower.len());
+    let ncols_y = name_lower[marker_start..digits_end]
+        .parse::<u32>()
+        .map_err(|_| format!("kernel '{kernel_name}' has an invalid vector batch arity"))?;
+    if ncols_y != 1 {
+        return Err(format!(
+            "kernel '{kernel_name}' uses ncols_y={ncols_y}; only one-token IQ1_S vector launches are supported"
+        ));
+    }
+
+    super::iq1s_tmatmul::GgmlType19VecSignature {
+        kernel: kernel_name.to_string(),
+        ncols_x: shape.ncols_x as u64,
+        nrows_x: shape.nrows_x as u64,
+        nrows_y: shape.nrows_y as u64,
+        nrows_dst: shape.nrows_dst as u64,
+    }
+    .validate()
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[derive(serde::Serialize)]
+struct NvidiaIq1sCompletedEvidence<'a> {
+    event: &'static str,
+    status: &'static str,
+    kernel: &'a str,
+    logical_batch: u64,
+    descriptor_count: u64,
+    unique_submission_count: u64,
+    lane_mask: u64,
+    per_lane_completion_counts: &'a [u64],
+    total_accelerator_cycles: u64,
+    total_matrix_bytes_read: u64,
+    total_input_bytes_read: u64,
+    total_output_bytes_written: u64,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_iq1s_completed_evidence<'a>(
+    kernel: &'a str,
+    logical_batch: u64,
+    execution: &'a super::iq1s_tmatmul::ExecutionResult,
+) -> NvidiaIq1sCompletedEvidence<'a> {
+    let scheduler = &execution.scheduler;
+    NvidiaIq1sCompletedEvidence {
+        event: "ternip_v3_iq1s_execution",
+        status: "completed",
+        kernel,
+        logical_batch,
+        descriptor_count: scheduler.descriptor_count(),
+        unique_submission_count: scheduler.unique_submission_count(),
+        lane_mask: scheduler.lane_mask(),
+        per_lane_completion_counts: scheduler.per_lane_completion_counts(),
+        total_accelerator_cycles: scheduler.total_accelerator_cycles(),
+        total_matrix_bytes_read: scheduler.total_matrix_bytes_read(),
+        total_input_bytes_read: scheduler.total_input_bytes_read(),
+        total_output_bytes_written: scheduler.total_output_bytes_written(),
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_iq1s_completed_evidence_json(evidence: NvidiaIq1sCompletedEvidence<'_>) -> String {
+    serde_json::to_string(&evidence)
+        .expect("primitive IQ1_S completion evidence must serialize as JSON")
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_iq1s_post_execution_route(
+    kernel_name: &str,
+    logical_batch: u64,
+    strict: bool,
+    execution: Result<super::iq1s_tmatmul::ExecutionResult, String>,
+    mut emit_completed: impl FnMut(&str),
+) -> Option<Result<(), String>> {
+    match execution {
+        Ok(execution) => {
+            let evidence =
+                nvidia_iq1s_completed_evidence(kernel_name, logical_batch, &execution);
+            let record = nvidia_iq1s_completed_evidence_json(evidence);
+            emit_completed(&record);
+            Some(Ok(()))
+        }
+        Err(error) => nvidia_iq1s_route_failure(kernel_name, strict, error),
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_iq1s_route_failure(
+    kernel_name: &str,
+    strict: bool,
+    error: impl Into<String>,
+) -> Option<Result<(), String>> {
+    let message = format!(
+        "kernel '{kernel_name}' IQ1_S CXL V3 execution failed: {}",
+        error.into()
+    );
+    if strict {
+        Some(Err(message))
+    } else {
+        eprintln!("[CXL TMatmul][NVIDIA] {message}; continuing native");
+        None
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_try_launch_iq1s_cxl_tmatmul(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    strict: bool,
+) -> Option<Result<(), String>> {
+    let shape = match nvidia_cxl_read_mmq_shape(kernel_params, kernel_name) {
+        Ok(shape) => shape,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+    let signature = match nvidia_iq1s_signature(kernel_name, shape) {
+        Ok(signature) => signature,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+    let matrix_ptr = match nvidia_cxl_read_pointer_param(kernel_params, 0, kernel_name) {
+        Ok(value) => value,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+    let activation_ptr = match nvidia_cxl_read_pointer_param(kernel_params, 1, kernel_name) {
+        Ok(value) => value,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+    let output_ptr = match nvidia_cxl_read_pointer_param(kernel_params, 2, kernel_name) {
+        Ok(value) => value,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+
+    let launch = super::iq1s_tmatmul::LogicalLaunch {
+        matrix_ptr,
+        activation_ptr,
+        output_ptr,
+        allocation_generation: nvidia_env_u64_any(&[
+            "HETGPU_TMATMUL_ALLOCATION_GENERATION",
+            "HETGPU_CXL_TMATMUL_ALLOCATION_GENERATION",
+        ])
+        .unwrap_or(0),
+        // capture_launch fills this from the copied matrix bytes.  This keeps
+        // the component cache safe when a CUDA allocation is reused.
+        content_hash: [0; 32],
+        signature,
+    };
+    let control_path = std::env::var("HETGPU_CXL_TMATMUL_DEVICE")
+        .or_else(|_| std::env::var("HETGPU_TMATMUL_DEVICE"))
+        .or_else(|_| std::env::var("CXL_TMATMUL_DEVICE"))
+        .unwrap_or_else(|_| "/dev/cxl_tmatmul3b001".to_string());
+    let dax_path = std::env::var("HETGPU_CXL_TMATMUL_DAX")
+        .or_else(|_| std::env::var("HETGPU_TMATMUL_DAX"))
+        .or_else(|_| std::env::var("CXL_DAX_PATH"))
+        .unwrap_or_else(|_| "/dev/dax6.0".to_string());
+    let base_dpa = nvidia_env_u64_any(&[
+        "HETGPU_CXL_TMATMUL_V3_BASE_DPA",
+        "HETGPU_TMATMUL_V3_BASE_DPA",
+        "HETGPU_TMATMUL_DATA_BASE",
+    ])
+    .unwrap_or(0x0100_0000);
+
+    eprintln!(
+        "[CXL TMatmul][NVIDIA] launching IQ1_S '{}' via TernIP V3 matrix={:#x} activation={:#x} output={:#x} control={} dax={} base_dpa={:#x}",
+        kernel_name,
+        matrix_ptr,
+        activation_ptr,
+        output_ptr,
+        control_path,
+        dax_path,
+        base_dpa,
+    );
+
+    let captured = match super::iq1s_tmatmul::capture_launch(launch) {
+        Ok(captured) => captured,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+    let logical_batch = captured.launch.signature.ne11;
+    let execution = super::iq1s_tmatmul::execute_captured(
+        &captured,
+        std::path::Path::new(&control_path),
+        std::path::Path::new(&dax_path),
+        base_dpa,
+    );
+    nvidia_iq1s_post_execution_route(kernel_name, logical_batch, strict, execution, |record| {
+        eprintln!("{record}")
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_try_launch_iq1s_vec_cxl_tmatmul(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    strict: bool,
+) -> Option<Result<(), String>> {
+    let shape = match nvidia_cxl_read_mmvq_shape(kernel_params, kernel_name) {
+        Ok(shape) => shape,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+    let signature = match nvidia_iq1s_vec_signature(kernel_name, shape) {
+        Ok(signature) => signature,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+    let matrix_ptr = match nvidia_cxl_read_pointer_param(kernel_params, 0, kernel_name) {
+        Ok(value) => value,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+    let activation_ptr = match nvidia_cxl_read_pointer_param(kernel_params, 1, kernel_name) {
+        Ok(value) => value,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+    let output_ptr = match nvidia_cxl_read_pointer_param(kernel_params, 2, kernel_name) {
+        Ok(value) => value,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+    let control_path = std::env::var("HETGPU_CXL_TMATMUL_DEVICE")
+        .or_else(|_| std::env::var("HETGPU_TMATMUL_DEVICE"))
+        .or_else(|_| std::env::var("CXL_TMATMUL_DEVICE"))
+        .unwrap_or_else(|_| "/dev/cxl_tmatmul3b001".to_string());
+    let dax_path = std::env::var("HETGPU_CXL_TMATMUL_DAX")
+        .or_else(|_| std::env::var("HETGPU_TMATMUL_DAX"))
+        .or_else(|_| std::env::var("CXL_DAX_PATH"))
+        .unwrap_or_else(|_| "/dev/dax6.0".to_string());
+    let base_dpa = nvidia_env_u64_any(&[
+        "HETGPU_CXL_TMATMUL_V3_BASE_DPA",
+        "HETGPU_TMATMUL_V3_BASE_DPA",
+        "HETGPU_TMATMUL_DATA_BASE",
+    ])
+    .unwrap_or(0x0100_0000);
+
+    eprintln!(
+        "[CXL TMatmul][NVIDIA] launching IQ1_S vector '{}' via TernIP V3 matrix={:#x} activation={:#x} output={:#x} control={} dax={} base_dpa={:#x}",
+        kernel_name,
+        matrix_ptr,
+        activation_ptr,
+        output_ptr,
+        control_path,
+        dax_path,
+        base_dpa,
+    );
+
+    let captured = match super::iq1s_tmatmul::capture_vec_launch(
+        matrix_ptr,
+        activation_ptr,
+        output_ptr,
+        nvidia_env_u64_any(&[
+            "HETGPU_TMATMUL_ALLOCATION_GENERATION",
+            "HETGPU_CXL_TMATMUL_ALLOCATION_GENERATION",
+        ])
+        .unwrap_or(0),
+        [0; 32],
+        signature,
+    ) {
+        Ok(captured) => captured,
+        Err(error) => return nvidia_iq1s_route_failure(kernel_name, strict, error),
+    };
+    let logical_batch = captured.launch.signature.ne11;
+    let execution = super::iq1s_tmatmul::execute_captured(
+        &captured,
+        std::path::Path::new(&control_path),
+        std::path::Path::new(&dax_path),
+        base_dpa,
+    );
+    nvidia_iq1s_post_execution_route(kernel_name, logical_batch, strict, execution, |record| {
+        eprintln!("{record}")
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
@@ -8557,6 +8946,24 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
     }
 
     let name_lower = kernel_name.to_ascii_lowercase();
+    if name_lower.contains("mul_mat_q")
+        && !name_lower.contains("mul_mat_vec_q")
+        && name_lower.contains("ggml_type19")
+    {
+        if let Some(result) =
+            nvidia_try_launch_iq1s_cxl_tmatmul(kernel_name, kernel_params, decision.strict)
+        {
+            return Some(result);
+        }
+    }
+    if name_lower.contains("mul_mat_vec_q") && name_lower.contains("ggml_type19") {
+        if let Some(result) =
+            nvidia_try_launch_iq1s_vec_cxl_tmatmul(kernel_name, kernel_params, decision.strict)
+        {
+            return Some(result);
+        }
+    }
+
     let Some(layout) = nvidia_cxl_matmul_layout(&name_lower) else {
         let msg = format!("kernel '{kernel_name}' is not a supported NVIDIA CXL matmul layout");
         if decision.strict {
@@ -9045,6 +9452,170 @@ mod nvidia_bitnet_route_tests {
     }
 
     #[test]
+    fn nvidia_iq1s_signature_rejects_negative_signed_fields_before_conversion() {
+        const KERNEL: &str = "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii";
+        let valid = super::NvidiaCxlMmqShape {
+            ne00: 256,
+            ne01: 1,
+            stride01: 1,
+            ne10: 256,
+            ne11: 1,
+            stride11: 1,
+            ne0: 1,
+        };
+
+        let mut negative_stride = valid;
+        negative_stride.stride11 = -1;
+        let error = super::nvidia_iq1s_signature(KERNEL, negative_stride).unwrap_err();
+        assert!(error.contains("stride11"), "unexpected error: {error}");
+        assert!(error.contains("negative"), "unexpected error: {error}");
+
+        let mut negative_dimension = valid;
+        negative_dimension.ne10 = -256;
+        let error = super::nvidia_iq1s_signature(KERNEL, negative_dimension).unwrap_err();
+        assert!(error.contains("ne10"), "unexpected error: {error}");
+        assert!(error.contains("negative"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn nvidia_iq1s_completed_evidence_is_stable_single_line_json() {
+        let per_lane_completion_counts = [2, 1, 0, 1];
+        let evidence = super::NvidiaIq1sCompletedEvidence {
+            event: "ternip_v3_iq1s_execution",
+            status: "completed",
+            kernel: "qualified_iq1s_kernel",
+            logical_batch: 4,
+            descriptor_count: 4,
+            unique_submission_count: 2,
+            lane_mask: 0b1011,
+            per_lane_completion_counts: &per_lane_completion_counts,
+            total_accelerator_cycles: 12_345,
+            total_matrix_bytes_read: 4_096,
+            total_input_bytes_read: 512,
+            total_output_bytes_written: 256,
+        };
+
+        let record = super::nvidia_iq1s_completed_evidence_json(evidence);
+
+        assert_eq!(
+            record,
+            r#"{"event":"ternip_v3_iq1s_execution","status":"completed","kernel":"qualified_iq1s_kernel","logical_batch":4,"descriptor_count":4,"unique_submission_count":2,"lane_mask":11,"per_lane_completion_counts":[2,1,0,1],"total_accelerator_cycles":12345,"total_matrix_bytes_read":4096,"total_input_bytes_read":512,"total_output_bytes_written":256}"#
+        );
+        assert!(!record.contains('\n'));
+    }
+
+    fn nvidia_iq1s_test_execution_result() -> crate::r#impl::iq1s_tmatmul::ExecutionResult {
+        use crate::r#impl::cxl_tmatmul_v3::{CompletedTaskV3, CompletionV3, TaskV3};
+
+        fn completed(
+            submission_id: u64,
+            request_id: u64,
+            lane_used: u32,
+            accelerator_cycles: u64,
+        ) -> CompletedTaskV3 {
+            let mut task = TaskV3::default();
+            task.request_id = request_id;
+            task.batch = 1;
+            let mut completion = CompletionV3::default();
+            completion.request_id = request_id;
+            completion.lane_used = lane_used;
+            completion.accelerator_cycles = accelerator_cycles;
+            completion.matrix_bytes_read = 1_024;
+            completion.input_bytes_read = 128;
+            completion.output_bytes_written = 64;
+            CompletedTaskV3::test_only_new_unchecked(submission_id, task, completion)
+        }
+
+        let completions = [
+            completed(41, 1, 0, 100),
+            completed(41, 2, 1, 200),
+            completed(42, 3, 3, 300),
+            completed(42, 4, 0, 400),
+        ];
+        let scheduler = crate::r#impl::batch_scheduler::SchedulerReport::from_completions(
+            &completions,
+            4,
+        )
+        .unwrap();
+        crate::r#impl::iq1s_tmatmul::ExecutionResult {
+            outputs: Vec::new(),
+            physical: Vec::new(),
+            raw_components: Vec::new(),
+            scheduler,
+        }
+    }
+
+    #[test]
+    fn nvidia_iq1s_completed_route_success_emits_one_parseable_record() {
+        let kernel = "qualified\"iq1s\\kernel\nline";
+        let mut emitted = Vec::new();
+
+        let result = super::nvidia_iq1s_post_execution_route(
+            kernel,
+            4,
+            true,
+            Ok(nvidia_iq1s_test_execution_result()),
+            |record| emitted.push(record.to_string()),
+        );
+
+        assert!(matches!(result, Some(Ok(()))));
+        assert_eq!(emitted.len(), 1);
+        assert!(!emitted[0].contains('\n'));
+        assert!(!emitted[0].contains('\r'));
+        let parsed: serde_json::Value = serde_json::from_str(&emitted[0]).unwrap();
+        assert_eq!(parsed["event"], "ternip_v3_iq1s_execution");
+        assert_eq!(parsed["status"], "completed");
+        assert_eq!(parsed["kernel"].as_str(), Some(kernel));
+        assert_eq!(parsed["logical_batch"], 4);
+        assert_eq!(parsed["descriptor_count"], 4);
+        assert_eq!(parsed["unique_submission_count"], 2);
+        assert_eq!(parsed["lane_mask"], 0b1011);
+        assert_eq!(
+            parsed["per_lane_completion_counts"],
+            serde_json::json!([2, 1, 0, 1])
+        );
+        assert_eq!(parsed["total_accelerator_cycles"], 1_000);
+        assert_eq!(parsed["total_matrix_bytes_read"], 4_096);
+        assert_eq!(parsed["total_input_bytes_read"], 512);
+        assert_eq!(parsed["total_output_bytes_written"], 256);
+    }
+
+    #[test]
+    fn nvidia_iq1s_completed_route_strict_error_emits_no_record() {
+        let mut emitted = Vec::new();
+
+        let result = super::nvidia_iq1s_post_execution_route(
+            "qualified_iq1s_kernel",
+            4,
+            true,
+            Err("output copy failed".to_string()),
+            |record| emitted.push(record.to_string()),
+        );
+
+        let error = result
+            .expect("strict route must consume the failed execution")
+            .expect_err("strict route must return the execution error");
+        assert!(error.contains("output copy failed"));
+        assert!(emitted.is_empty());
+    }
+
+    #[test]
+    fn nvidia_iq1s_completed_route_nonstrict_error_emits_no_record() {
+        let mut emitted = Vec::new();
+
+        let result = super::nvidia_iq1s_post_execution_route(
+            "qualified_iq1s_kernel",
+            4,
+            false,
+            Err("lease cleanup failed".to_string()),
+            |record| emitted.push(record.to_string()),
+        );
+
+        assert!(result.is_none());
+        assert!(emitted.is_empty());
+    }
+
+    #[test]
     fn nvidia_named_q4k_candidate_falls_back_before_hardware_staging() {
         let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -9087,14 +9658,14 @@ mod nvidia_bitnet_route_tests {
     }
 
     #[test]
-    fn nvidia_named_iq1s_mmq_falls_back_before_pointer_or_dax_staging() {
+    fn nvidia_named_iq1s_mmq_selects_exact_adapter_before_generic_abi_guard() {
         let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let route_log = dir.path().join("routes.jsonl");
         let route_log_text = route_log.to_string_lossy().to_string();
         let _guard = EnvGuard::set(&[
             ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
-            ("HETGPU_BITNET_DISAGG_STRICT", None),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
             ("HETGPU_BITNET_CXL_KERNELS", Some("mul_mat_q")),
             ("HETGPU_BITNET_GPU_KERNELS", None),
             ("HETGPU_BITNET_ROUTE_MANIFEST", None),
@@ -9132,12 +9703,74 @@ mod nvidia_bitnet_route_tests {
             )
         };
 
+        let error = result
+            .expect("strict IQ1_S route must be consumed before native launch")
+            .expect_err("null pointers must fail inside the IQ1_S adapter");
         assert!(
-            result.is_none(),
-            "incompatible IQ1_S MMQ ABI must stay on GPU"
+            error.contains("PARAM_0") || error.contains("IQ1_S"),
+            "unexpected pre-adapter error: {error}"
+        );
+        assert!(
+            !error.contains("packed quantized matrix/Q8_1 activation ABI"),
+            "the generic dense-NVINT8 guard ran before the IQ1_S adapter: {error}"
         );
         let logged = std::fs::read_to_string(&route_log).unwrap();
         assert!(logged.contains(r#""route":"cxl_tmatmul""#));
+        assert!(logged.contains(r#""hardware_matmul_enabled":true"#));
+    }
+
+    #[test]
+    fn nvidia_named_iq1s_vec_selects_exact_adapter_before_generic_abi_guard() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let route_log = dir.path().join("routes.jsonl");
+        let route_log_text = route_log.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
+            ("HETGPU_BITNET_CXL_KERNELS", Some("mul_mat_vec_q")),
+            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", Some(&route_log_text)),
+            ("HETGPU_CXL_TMATMUL", Some("1")),
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_MATRIX_STAGE", Some("cuda_dax")),
+            ("HETGPU_TMATMUL_IO_STAGE", Some("cuda_dax")),
+        ]);
+
+        let mut ncols_x = 2048i32;
+        let mut nrows_x = 2048i32;
+        let mut nrows_y = 2048i32;
+        let mut nrows_dst = 2048i32;
+        let mut params = [
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            (&mut ncols_x as *mut i32).cast::<c_void>(),
+            (&mut nrows_x as *mut i32).cast::<c_void>(),
+            (&mut nrows_y as *mut i32).cast::<c_void>(),
+            (&mut nrows_dst as *mut i32).cast::<c_void>(),
+        ];
+        let result = unsafe {
+            super::nvidia_try_launch_named_cxl_tmatmul(
+                "_Z13mul_mat_vec_qIL9ggml_type19ELi1EEvPKvS2_Pfiiii",
+                params.as_mut_ptr(),
+            )
+        };
+
+        let error = result
+            .expect("strict IQ1_S vector route must be consumed before native launch")
+            .expect_err("null pointers must fail inside the IQ1_S vector adapter");
+        assert!(
+            error.contains("PARAM_0") || error.contains("IQ1_S"),
+            "unexpected pre-adapter error: {error}"
+        );
+        assert!(
+            !error.contains("packed quantized matrix/Q8_1 activation ABI"),
+            "the generic dense-NVINT8 guard ran before the IQ1_S vector adapter: {error}"
+        );
+        let logged = std::fs::read_to_string(&route_log).unwrap();
+        assert!(logged.contains(r#""route":"cxl_tmatmul"#));
         assert!(logged.contains(r#""hardware_matmul_enabled":true"#));
     }
 }
