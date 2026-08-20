@@ -9,6 +9,7 @@ const MM2S_DMACR: u32 = 0x0000;
 const MM2S_SA: u32 = 0x0018;
 const MM2S_LENGTH: u32 = 0x0028;
 const STALL: u32 = 0x1000;
+const RESET: u32 = 0x2000;
 const INSTRUCTION_BYTES: usize = 16;
 const XRT_BO_SYNC_TO_DEVICE: i32 = 0;
 const XRT_BO_SYNC_FROM_DEVICE: i32 = 1;
@@ -40,6 +41,7 @@ struct InstanceRegisters {
     dma_source_hi: u32,
     dma_length: u32,
     stall: u32,
+    reset: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -503,6 +505,13 @@ fn submit_with_ops<O: XrtOps>(
     write_register(
         ops,
         session.kernel,
+        registers.reset,
+        0,
+        "xrtKernelWriteRegister(RESET)",
+    )?;
+    write_register(
+        ops,
+        session.kernel,
         registers.dma_control,
         1,
         "xrtKernelWriteRegister(MM2S_DMACR)",
@@ -637,6 +646,7 @@ fn instance_registers(instance: u32) -> Result<InstanceRegisters, XrtTmatmulErro
         dma_source_hi: add(MM2S_SA + 4)?,
         dma_length: add(MM2S_LENGTH)?,
         stall: add(STALL)?,
+        reset: add(RESET)?,
     })
 }
 
@@ -922,9 +932,11 @@ mod tests {
                 dma_source_hi: 0x001c,
                 dma_length: 0x0028,
                 stall: 0x1000,
+                reset: 0x2000,
             }
         );
         assert_eq!(instance_registers(2).unwrap().stall, 0x9000);
+        assert_eq!(instance_registers(2).unwrap().reset, 0xa000);
     }
 
     #[test]
@@ -1073,6 +1085,7 @@ mod tests {
         assert_eq!(
             writes,
             vec![
+                (0x2000, 0),
                 (0x0000, 1),
                 (0x0018, 0x4000),
                 (0x001c, 0),
