@@ -25,9 +25,11 @@
 
 **Files:**
 - Modify: `zluda/src/impl/iq1s_tmatmul.rs`
+- Modify: `zluda/src/impl/function.rs`
 
-- [ ] Add failing tests showing that a real `stride11` is accepted, activation storage spans every batch row, and `q8_group(batch, group)` selects the correct row.
-- [ ] Replace the `ne11 == stride11 == 1` restriction with checked Q8_1 row-byte and stride validation; preserve batch-one behavior.
+- [ ] Add failing producer-faithful tests for two K records, active batch 2, and `stride11 = 3`; require active record indices `0, 1, 3, 4`, ignored pitch padding, and correct `q8_group(batch, group)` selection.
+- [ ] Treat `stride11` as GGML's pitch in 144-byte Q8_1 MMQ records. Validate `stride11 >= ne11` and compute the checked capture extent as `(((ne10 / 128 - 1) * stride11) + ne11) * 144`.
+- [ ] Reject negative signed MMQ dimensions before the NVIDIA bridge converts them to unsigned signature fields; preserve batch-one behavior.
 - [ ] Run the focused IQ1_S tests and require the new layout tests to pass.
 
 ### Task 3: Component-by-slice v3 execution

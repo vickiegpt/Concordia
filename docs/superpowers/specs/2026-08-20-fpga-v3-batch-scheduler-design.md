@@ -35,10 +35,13 @@ latency separately from batched throughput.
 `zluda/src/impl/batch_scheduler.rs` owns capability-bounded batch slicing and
 completion-derived metrics. It is pure Rust and independently testable.
 
-`zluda/src/impl/iq1s_tmatmul.rs` accepts valid GGML activation row strides,
-stages every activation row once, emits component-by-slice tasks, reconstructs
-every output row in original batch order, and copies a contiguous `f32` output
-matrix back to CUDA.
+`zluda/src/impl/iq1s_tmatmul.rs` follows GGML's transposed Q8_1 MMQ record
+layout. `stride11` is the pitch in 144-byte records between adjacent K groups,
+not a byte stride between batch rows. For K-group `g` and logical batch item
+`b`, the source record is `(g * stride11 + b) * 144`; only `b < ne11` is active.
+The adapter stages those active records into component-by-slice input rows,
+emits the v3 tasks, reconstructs every output row in original batch order, and
+copies a contiguous `f32` output matrix back to CUDA.
 
 `zluda/src/impl/cxl_tmatmul_v3.rs` remains the UAPI authority. It exposes the
 live capability block needed by the planner and continues to validate every
