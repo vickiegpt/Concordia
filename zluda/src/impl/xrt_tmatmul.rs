@@ -711,6 +711,7 @@ mod tests {
     const DEVICE_HANDLE: usize = 1;
     const KERNEL_HANDLE: usize = 2;
     const FIRST_BO_HANDLE: usize = 100;
+    const AU250_VECTOR_ELEMENTS: usize = 9 * 1024;
     const TEST_ASSEMBLY: &str = r#"
         ldv v0, PARAM_INPUT
         tmatmul_import v0
@@ -922,6 +923,21 @@ mod tests {
         }
     }
 
+    fn au250_vector_add_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut vector_a = Vec::with_capacity(AU250_VECTOR_ELEMENTS * 2);
+        let mut vector_b = Vec::with_capacity(AU250_VECTOR_ELEMENTS * 2);
+        let mut expected = Vec::with_capacity(AU250_VECTOR_ELEMENTS * 2);
+
+        for index in 0..AU250_VECTOR_ELEMENTS {
+            let a_raw = ((index % 8) as i16) * 32;
+            let b_raw = 48i16;
+            vector_a.extend_from_slice(&a_raw.to_le_bytes());
+            vector_b.extend_from_slice(&b_raw.to_le_bytes());
+            expected.extend_from_slice(&(a_raw + b_raw).to_le_bytes());
+        }
+        (vector_a, vector_b, expected)
+    }
+
     #[test]
     fn instance_registers_match_ternary_matmul_contract() {
         assert_eq!(
@@ -996,6 +1012,32 @@ mod tests {
     fn xclbin_is_required() {
         let error = XrtConfig::from_lookup(|_| None).unwrap_err();
         assert!(error.to_string().contains("HETGPU_XRT_XCLBIN"));
+    }
+
+    #[test]
+    fn au250_vector_add_fixture_matches_known_good_example() {
+        let (vector_a, vector_b, expected) = au250_vector_add_fixture();
+
+        assert_eq!(vector_a.len(), 9 * 1024 * 2);
+        assert_eq!(vector_b.len(), vector_a.len());
+        assert_eq!(expected.len(), vector_a.len());
+
+        let first_a: Vec<i16> = vector_a[..16]
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        let first_b: Vec<i16> = vector_b[..16]
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        let first_expected: Vec<i16> = expected[..16]
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+
+        assert_eq!(first_a, vec![0, 32, 64, 96, 128, 160, 192, 224]);
+        assert_eq!(first_b, vec![48; 8]);
+        assert_eq!(first_expected, vec![48, 80, 112, 144, 176, 208, 240, 272]);
     }
 
     #[test]
@@ -1103,6 +1145,61 @@ mod tests {
                 Event::KernelClose,
                 Event::DeviceClose,
             ]
+        );
+    }
+
+    #[test]
+    #[ignore = "requires HETGPU_XRT_AU250_TEST=1 and the live AU250"]
+    fn au250_vector_add_runs_when_requested() {
+        assert_eq!(
+            std::env::var("HETGPU_XRT_AU250_TEST").as_deref(),
+            Ok("1"),
+            "set HETGPU_XRT_AU250_TEST=1 only inside au250-run"
+        );
+
+        let (vector_a, vector_b, expected) = au250_vector_add_fixture();
+        let mut output = vec![0u8; expected.len()];
+        let request = XrtTmatmulRequest {
+            assembly: r#"
+                ldv v0, PARAM_MATRIX
+                ldv v1, PARAM_INPUT
+                add v2, v0, v1
+                sv v2, PARAM_OUTPUT
+                stall
+            "#,
+            matrix_label: "PARAM_MATRIX",
+            input_label: "PARAM_INPUT",
+            output_label: "PARAM_OUTPUT",
+            matrix: &vector_a,
+            input: &vector_b,
+        };
+
+        let status = submit_xrt_tmatmul(request, &mut output).unwrap();
+        if output != expected {
+            let byte = output
+                .iter()
+                .zip(&expected)
+                .position(|(actual, wanted)| actual != wanted)
+                .unwrap();
+            let element_offset = byte & !1;
+            panic!(
+                "AU250 output mismatch at element {}: got raw {}, expected raw {}",
+                byte / 2,
+                i16::from_le_bytes(
+                    output[element_offset..element_offset + 2]
+                        .try_into()
+                        .unwrap()
+                ),
+                i16::from_le_bytes(
+                    expected[element_offset..element_offset + 2]
+                        .try_into()
+                        .unwrap()
+                )
+            );
+        }
+        eprintln!(
+            "AU250 XRT vector add PASS: {} elements, program={} bytes, stall=0x{:08x}",
+            AU250_VECTOR_ELEMENTS, status.program_bytes, status.stall_code
         );
     }
 
