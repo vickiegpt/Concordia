@@ -33,6 +33,13 @@ type BoAddressFn = unsafe extern "C" fn(Handle) -> u64;
 type BoWriteFn = unsafe extern "C" fn(Handle, *const libc::c_void, usize, usize) -> i32;
 type BoReadFn = unsafe extern "C" fn(Handle, *mut libc::c_void, usize, usize) -> i32;
 type BoSyncFn = unsafe extern "C" fn(Handle, i32, usize, usize) -> i32;
+type XclOpenFn = unsafe extern "C" fn(u32, *const libc::c_char, i32) -> Handle;
+type XclCloseFn = unsafe extern "C" fn(Handle);
+type XclIpNameToIndexFn = unsafe extern "C" fn(Handle, *const libc::c_char) -> i32;
+type XclOpenContextFn = unsafe extern "C" fn(Handle, *const u8, u32, bool) -> i32;
+type XclCloseContextFn = unsafe extern "C" fn(Handle, *const u8, u32) -> i32;
+type XclRegReadFn = unsafe extern "C" fn(Handle, u32, u32, *mut u32) -> i32;
+type XclRegWriteFn = unsafe extern "C" fn(Handle, u32, u32, u32) -> i32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InstanceRegisters {
@@ -49,8 +56,10 @@ struct XrtConfig {
     xclbin: PathBuf,
     device_index: u32,
     kernel_name: String,
+    ip_name: Option<String>,
     instance: u32,
     memory_arg: i32,
+    memory_group: Option<u32>,
     timeout_ms: u32,
 }
 
@@ -108,13 +117,28 @@ impl XrtConfig {
         let kernel_name = lookup("HETGPU_XRT_KERNEL")
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "ternip_ip".to_string());
+        let ip_name = lookup("HETGPU_XRT_IP_NAME").filter(|value| !value.trim().is_empty());
+        let memory_group = lookup("HETGPU_XRT_MEMORY_GROUP")
+            .map(|text| {
+                text.parse::<u32>().map_err(|error| {
+                    XrtTmatmulError::Config(format!("HETGPU_XRT_MEMORY_GROUP={text:?}: {error}"))
+                })
+            })
+            .transpose()?;
+        if ip_name.is_some() && memory_group.is_none() {
+            return Err(XrtTmatmulError::Config(
+                "HETGPU_XRT_MEMORY_GROUP is required when HETGPU_XRT_IP_NAME is set".to_string(),
+            ));
+        }
 
         Ok(Self {
             xclbin: PathBuf::from(xclbin),
             device_index,
             kernel_name,
+            ip_name,
             instance,
             memory_arg,
+            memory_group,
             timeout_ms,
         })
     }
@@ -130,6 +154,13 @@ trait XrtOps {
     fn kernel_arg_group_id(&self, kernel: Handle, arg: i32) -> i32;
     fn kernel_read_register(&self, kernel: Handle, offset: u32, value: &mut u32) -> i32;
     fn kernel_write_register(&self, kernel: Handle, offset: u32, value: u32) -> i32;
+    fn xcl_open(&self, index: u32) -> Handle;
+    fn xcl_close(&self, device: Handle);
+    fn xcl_ip_name_to_index(&self, device: Handle, name: &CStr) -> i32;
+    fn xcl_open_context(&self, device: Handle, uuid: &Xuid, index: u32, shared: bool) -> i32;
+    fn xcl_close_context(&self, device: Handle, uuid: &Xuid, index: u32) -> i32;
+    fn xcl_reg_read(&self, device: Handle, index: u32, offset: u32, value: &mut u32) -> i32;
+    fn xcl_reg_write(&self, device: Handle, index: u32, offset: u32, value: u32) -> i32;
     fn bo_alloc(&self, device: Handle, size: usize, flags: u64, group: u32) -> Handle;
     fn bo_free(&self, bo: Handle) -> i32;
     fn bo_address(&self, bo: Handle) -> u64;
@@ -138,8 +169,54 @@ trait XrtOps {
     fn bo_sync(&self, bo: Handle, direction: i32, size: usize, offset: usize) -> i32;
 }
 
+struct NativeIpApi {
+    library: Handle,
+    open: XclOpenFn,
+    close: XclCloseFn,
+    ip_name_to_index: XclIpNameToIndexFn,
+    open_context: XclOpenContextFn,
+    close_context: XclCloseContextFn,
+    reg_read: XclRegReadFn,
+    reg_write: XclRegWriteFn,
+}
+
+impl NativeIpApi {
+    fn load() -> Result<Self, XrtTmatmulError> {
+        let library = open_library(&["libxrt_core.so.2", "libxrt_core.so"])?;
+        let result = unsafe {
+            Ok(Self {
+                library,
+                open: load_symbol(library, c"xclOpen")?,
+                close: load_symbol(library, c"xclClose")?,
+                ip_name_to_index: load_symbol(library, c"xclIPName2Index")?,
+                open_context: load_symbol(library, c"xclOpenContext")?,
+                close_context: load_symbol(library, c"xclCloseContext")?,
+                reg_read: load_symbol(library, c"xclRegRead")?,
+                reg_write: load_symbol(library, c"xclRegWrite")?,
+            })
+        };
+        if result.is_err() {
+            unsafe {
+                libc::dlclose(library);
+            }
+        }
+        result
+    }
+}
+
+impl Drop for NativeIpApi {
+    fn drop(&mut self) {
+        if !self.library.is_null() {
+            unsafe {
+                libc::dlclose(self.library);
+            }
+        }
+    }
+}
+
 struct RealXrt {
     library: Handle,
+    native_ip: Option<NativeIpApi>,
     device_open: DeviceOpenFn,
     device_close: DeviceCloseFn,
     device_load_xclbin_file: DeviceLoadXclbinFileFn,
@@ -158,25 +235,22 @@ struct RealXrt {
 }
 
 impl RealXrt {
-    fn load() -> Result<Self, XrtTmatmulError> {
-        let mut failures = Vec::new();
-        let mut library = std::ptr::null_mut();
-        for candidate in ["libxrt_coreutil.so.2", "libxrt_coreutil.so"] {
-            let candidate_c = CString::new(candidate).expect("XRT library name has no NUL");
-            library =
-                unsafe { libc::dlopen(candidate_c.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-            if !library.is_null() {
-                break;
+    fn load(needs_native_ip: bool) -> Result<Self, XrtTmatmulError> {
+        let library = open_library(&["libxrt_coreutil.so.2", "libxrt_coreutil.so"])?;
+        let native_ip = match needs_native_ip.then(NativeIpApi::load).transpose() {
+            Ok(api) => api,
+            Err(error) => {
+                unsafe {
+                    libc::dlclose(library);
+                }
+                return Err(error);
             }
-            failures.push(format!("{candidate}: {}", dl_error_message()));
-        }
-        if library.is_null() {
-            return Err(XrtTmatmulError::DynamicLoad(failures.join("; ")));
-        }
+        };
 
         let result = unsafe {
             Ok(Self {
                 library,
+                native_ip,
                 device_open: load_symbol(library, c"xrtDeviceOpen")?,
                 device_close: load_symbol(library, c"xrtDeviceClose")?,
                 device_load_xclbin_file: load_symbol(library, c"xrtDeviceLoadXclbinFile")?,
@@ -200,6 +274,12 @@ impl RealXrt {
             }
         }
         result
+    }
+
+    fn native_ip(&self) -> &NativeIpApi {
+        self.native_ip
+            .as_ref()
+            .expect("native-IP API must be loaded before native-IP operations")
     }
 }
 
@@ -250,6 +330,34 @@ impl XrtOps for RealXrt {
         unsafe { (self.kernel_write_register)(kernel, offset, value) }
     }
 
+    fn xcl_open(&self, index: u32) -> Handle {
+        unsafe { (self.native_ip().open)(index, std::ptr::null(), 0) }
+    }
+
+    fn xcl_close(&self, device: Handle) {
+        unsafe { (self.native_ip().close)(device) }
+    }
+
+    fn xcl_ip_name_to_index(&self, device: Handle, name: &CStr) -> i32 {
+        unsafe { (self.native_ip().ip_name_to_index)(device, name.as_ptr()) }
+    }
+
+    fn xcl_open_context(&self, device: Handle, uuid: &Xuid, index: u32, shared: bool) -> i32 {
+        unsafe { (self.native_ip().open_context)(device, uuid.as_ptr(), index, shared) }
+    }
+
+    fn xcl_close_context(&self, device: Handle, uuid: &Xuid, index: u32) -> i32 {
+        unsafe { (self.native_ip().close_context)(device, uuid.as_ptr(), index) }
+    }
+
+    fn xcl_reg_read(&self, device: Handle, index: u32, offset: u32, value: &mut u32) -> i32 {
+        unsafe { (self.native_ip().reg_read)(device, index, offset, value) }
+    }
+
+    fn xcl_reg_write(&self, device: Handle, index: u32, offset: u32, value: u32) -> i32 {
+        unsafe { (self.native_ip().reg_write)(device, index, offset, value) }
+    }
+
     fn bo_alloc(&self, device: Handle, size: usize, flags: u64, group: u32) -> Handle {
         unsafe { (self.bo_alloc)(device, size, flags, group) }
     }
@@ -273,6 +381,20 @@ impl XrtOps for RealXrt {
     fn bo_sync(&self, bo: Handle, direction: i32, size: usize, offset: usize) -> i32 {
         unsafe { (self.bo_sync)(bo, direction, size, offset) }
     }
+}
+
+fn open_library(candidates: &[&str]) -> Result<Handle, XrtTmatmulError> {
+    let mut failures = Vec::new();
+    for candidate in candidates {
+        let candidate_c = CString::new(*candidate).expect("XRT library name has no NUL");
+        let library =
+            unsafe { libc::dlopen(candidate_c.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        if !library.is_null() {
+            return Ok(library);
+        }
+        failures.push(format!("{candidate}: {}", dl_error_message()));
+    }
+    Err(XrtTmatmulError::DynamicLoad(failures.join("; ")))
 }
 
 unsafe fn load_symbol<T: Copy>(library: Handle, name: &CStr) -> Result<T, XrtTmatmulError> {
@@ -364,7 +486,7 @@ pub(crate) fn submit_xrt_tmatmul(
     output: &mut [u8],
 ) -> Result<XrtTmatmulStatus, XrtTmatmulError> {
     let config = XrtConfig::from_env()?;
-    let xrt = RealXrt::load()?;
+    let xrt = RealXrt::load(config.ip_name.is_some())?;
     submit_with_ops(&xrt, &config, request, output)
 }
 
@@ -372,6 +494,9 @@ struct Session<'a, O: XrtOps> {
     ops: &'a O,
     device: Handle,
     kernel: Handle,
+    ip_device: Handle,
+    ip_index: Option<u32>,
+    uuid: Xuid,
     bos: Vec<Handle>,
 }
 
@@ -385,6 +510,9 @@ impl<'a, O: XrtOps> Session<'a, O> {
             ops,
             device,
             kernel: std::ptr::null_mut(),
+            ip_device: std::ptr::null_mut(),
+            ip_index: None,
+            uuid: [0; 16],
             bos: Vec::new(),
         };
 
@@ -399,17 +527,39 @@ impl<'a, O: XrtOps> Session<'a, O> {
             ops.load_xclbin_file(device, &xclbin),
         )?;
 
-        let mut uuid = [0u8; 16];
         check_xrt(
             "xrtDeviceGetXclbinUUID",
-            ops.get_xclbin_uuid(device, &mut uuid),
+            ops.get_xclbin_uuid(device, &mut session.uuid),
         )?;
-        let kernel_name = CString::new(config.kernel_name.as_str()).map_err(|_| {
-            XrtTmatmulError::Config("HETGPU_XRT_KERNEL contains a NUL byte".to_string())
-        })?;
-        session.kernel = ops.kernel_open_exclusive(device, &uuid, &kernel_name);
-        if session.kernel.is_null() {
-            return Err(XrtTmatmulError::NullHandle("xrtPLKernelOpenExclusive"));
+        if let Some(ip_name) = config.ip_name.as_deref() {
+            session.ip_device = ops.xcl_open(config.device_index);
+            if session.ip_device.is_null() {
+                return Err(XrtTmatmulError::NullHandle("xclOpen"));
+            }
+            let ip_name = CString::new(ip_name).map_err(|_| {
+                XrtTmatmulError::Config("HETGPU_XRT_IP_NAME contains a NUL byte".to_string())
+            })?;
+            let ip_index = ops.xcl_ip_name_to_index(session.ip_device, &ip_name);
+            if ip_index < 0 {
+                return Err(XrtTmatmulError::Xrt {
+                    operation: "xclIPName2Index",
+                    code: ip_index,
+                });
+            }
+            let ip_index = ip_index as u32;
+            check_xrt(
+                "xclOpenContext",
+                ops.xcl_open_context(session.ip_device, &session.uuid, ip_index, false),
+            )?;
+            session.ip_index = Some(ip_index);
+        } else {
+            let kernel_name = CString::new(config.kernel_name.as_str()).map_err(|_| {
+                XrtTmatmulError::Config("HETGPU_XRT_KERNEL contains a NUL byte".to_string())
+            })?;
+            session.kernel = ops.kernel_open_exclusive(device, &session.uuid, &kernel_name);
+            if session.kernel.is_null() {
+                return Err(XrtTmatmulError::NullHandle("xrtPLKernelOpenExclusive"));
+            }
         }
         Ok(session)
     }
@@ -437,6 +587,46 @@ impl<'a, O: XrtOps> Session<'a, O> {
         }
         Ok(address)
     }
+
+    fn register_read(
+        &self,
+        offset: u32,
+        value: &mut u32,
+        kernel_operation: &'static str,
+        ip_operation: &'static str,
+    ) -> Result<(), XrtTmatmulError> {
+        if let Some(index) = self.ip_index {
+            check_xrt(
+                ip_operation,
+                self.ops.xcl_reg_read(self.ip_device, index, offset, value),
+            )
+        } else {
+            check_xrt(
+                kernel_operation,
+                self.ops.kernel_read_register(self.kernel, offset, value),
+            )
+        }
+    }
+
+    fn register_write(
+        &self,
+        offset: u32,
+        value: u32,
+        kernel_operation: &'static str,
+        ip_operation: &'static str,
+    ) -> Result<(), XrtTmatmulError> {
+        if let Some(index) = self.ip_index {
+            check_xrt(
+                ip_operation,
+                self.ops.xcl_reg_write(self.ip_device, index, offset, value),
+            )
+        } else {
+            check_xrt(
+                kernel_operation,
+                self.ops.kernel_write_register(self.kernel, offset, value),
+            )
+        }
+    }
 }
 
 impl<O: XrtOps> Drop for Session<'_, O> {
@@ -446,6 +636,14 @@ impl<O: XrtOps> Drop for Session<'_, O> {
         }
         if !self.kernel.is_null() {
             let _ = self.ops.kernel_close(self.kernel);
+        }
+        if let Some(index) = self.ip_index {
+            let _ = self
+                .ops
+                .xcl_close_context(self.ip_device, &self.uuid, index);
+        }
+        if !self.ip_device.is_null() {
+            self.ops.xcl_close(self.ip_device);
         }
         if !self.device.is_null() {
             let _ = self.ops.device_close(self.device);
@@ -467,14 +665,18 @@ fn submit_with_ops<O: XrtOps>(
 
     let registers = instance_registers(config.instance)?;
     let mut session = Session::open(ops, config)?;
-    let group = ops.kernel_arg_group_id(session.kernel, config.memory_arg);
-    if group < 0 {
-        return Err(XrtTmatmulError::Xrt {
-            operation: "xrtKernelArgGroupId",
-            code: group,
-        });
-    }
-    let group = group as u32;
+    let group = if let Some(group) = config.memory_group {
+        group
+    } else {
+        let group = ops.kernel_arg_group_id(session.kernel, config.memory_arg);
+        if group < 0 {
+            return Err(XrtTmatmulError::Xrt {
+                operation: "xrtKernelArgGroupId",
+                code: group,
+            });
+        }
+        group as u32
+    };
 
     // This ordering is the four-BO ABI: matrix, input, output, then program.
     let matrix_bo = session.allocate_bo(request.matrix.len(), group, "xrtBOAlloc(matrix)")?;
@@ -502,48 +704,45 @@ fn submit_with_ops<O: XrtOps>(
     bo_write_and_sync(ops, input_bo, request.input, "input")?;
     bo_write_and_sync(ops, program_bo, &program, "program")?;
 
-    write_register(
-        ops,
-        session.kernel,
+    session.register_write(
         registers.reset,
         0,
         "xrtKernelWriteRegister(RESET)",
+        "xclRegWrite(RESET)",
     )?;
-    write_register(
-        ops,
-        session.kernel,
+    session.register_write(
         registers.dma_control,
         1,
         "xrtKernelWriteRegister(MM2S_DMACR)",
+        "xclRegWrite(MM2S_DMACR)",
     )?;
-    write_register(
-        ops,
-        session.kernel,
+    session.register_write(
         registers.dma_source_lo,
         program_address as u32,
         "xrtKernelWriteRegister(MM2S_SA low)",
+        "xclRegWrite(MM2S_SA low)",
     )?;
-    write_register(
-        ops,
-        session.kernel,
+    session.register_write(
         registers.dma_source_hi,
         (program_address >> 32) as u32,
         "xrtKernelWriteRegister(MM2S_SA high)",
+        "xclRegWrite(MM2S_SA high)",
     )?;
-    write_register(
-        ops,
-        session.kernel,
+    session.register_write(
         registers.dma_length,
         program.len() as u32,
         "xrtKernelWriteRegister(MM2S_LENGTH)",
+        "xclRegWrite(MM2S_LENGTH)",
     )?;
 
     let deadline = Instant::now() + Duration::from_millis(u64::from(config.timeout_ms));
     let stall_code = loop {
         let mut value = 0;
-        check_xrt(
+        session.register_read(
+            registers.stall,
+            &mut value,
             "xrtKernelReadRegister(STALL)",
-            ops.kernel_read_register(session.kernel, registers.stall, &mut value),
+            "xclRegRead(STALL)",
         )?;
         if value != 0 {
             break value;
@@ -565,12 +764,11 @@ fn submit_with_ops<O: XrtOps>(
         "xrtBORead(output)",
         ops.bo_read(output_bo, &mut completed_output),
     )?;
-    write_register(
-        ops,
-        session.kernel,
+    session.register_write(
         registers.stall,
         1,
         "xrtKernelWriteRegister(STALL)",
+        "xclRegWrite(STALL)",
     )?;
     output.copy_from_slice(&completed_output);
 
@@ -608,16 +806,6 @@ fn bo_write_and_sync<O: XrtOps>(
         },
         ops.bo_sync(bo, XRT_BO_SYNC_TO_DEVICE, bytes.len(), 0),
     )
-}
-
-fn write_register<O: XrtOps>(
-    ops: &O,
-    kernel: Handle,
-    offset: u32,
-    value: u32,
-    operation: &'static str,
-) -> Result<(), XrtTmatmulError> {
-    check_xrt(operation, ops.kernel_write_register(kernel, offset, value))
 }
 
 fn check_xrt(operation: &'static str, code: i32) -> Result<(), XrtTmatmulError> {
@@ -710,6 +898,7 @@ mod tests {
 
     const DEVICE_HANDLE: usize = 1;
     const KERNEL_HANDLE: usize = 2;
+    const IP_DEVICE_HANDLE: usize = 3;
     const FIRST_BO_HANDLE: usize = 100;
     const AU250_VECTOR_ELEMENTS: usize = 9 * 1024;
     const TEST_ASSEMBLY: &str = r#"
@@ -728,6 +917,12 @@ mod tests {
         GetUuid,
         KernelOpen(String),
         GroupId(i32),
+        XclOpen(u32),
+        IpNameToIndex(String),
+        OpenContext {
+            index: u32,
+            shared: bool,
+        },
         BoAlloc {
             bo: usize,
             size: usize,
@@ -747,12 +942,19 @@ mod tests {
             value: u32,
         },
         RegisterRead(u32),
+        IpRegisterWrite {
+            offset: u32,
+            value: u32,
+        },
+        IpRegisterRead(u32),
         BoRead {
             bo: usize,
             size: usize,
         },
         BoFree(usize),
         KernelClose,
+        CloseContext(u32),
+        XclClose,
         DeviceClose,
     }
 
@@ -853,6 +1055,56 @@ mod tests {
             }
         }
 
+        fn xcl_open(&self, index: u32) -> Handle {
+            self.state.borrow_mut().events.push(Event::XclOpen(index));
+            IP_DEVICE_HANDLE as Handle
+        }
+
+        fn xcl_close(&self, _device: Handle) {
+            self.state.borrow_mut().events.push(Event::XclClose);
+        }
+
+        fn xcl_ip_name_to_index(&self, _device: Handle, name: &CStr) -> i32 {
+            self.state
+                .borrow_mut()
+                .events
+                .push(Event::IpNameToIndex(name.to_string_lossy().into_owned()));
+            0
+        }
+
+        fn xcl_open_context(&self, _device: Handle, _uuid: &Xuid, index: u32, shared: bool) -> i32 {
+            self.state
+                .borrow_mut()
+                .events
+                .push(Event::OpenContext { index, shared });
+            0
+        }
+
+        fn xcl_close_context(&self, _device: Handle, _uuid: &Xuid, index: u32) -> i32 {
+            self.state
+                .borrow_mut()
+                .events
+                .push(Event::CloseContext(index));
+            0
+        }
+
+        fn xcl_reg_read(&self, _device: Handle, _index: u32, offset: u32, value: &mut u32) -> i32 {
+            let mut state = self.state.borrow_mut();
+            state.events.push(Event::IpRegisterRead(offset));
+            *value = state.stall_reads.pop_front().unwrap_or(0);
+            0
+        }
+
+        fn xcl_reg_write(&self, _device: Handle, _index: u32, offset: u32, value: u32) -> i32 {
+            let mut state = self.state.borrow_mut();
+            state.events.push(Event::IpRegisterWrite { offset, value });
+            if state.fail_register_write == Some(offset) {
+                -5
+            } else {
+                0
+            }
+        }
+
         fn bo_alloc(&self, _device: Handle, size: usize, _flags: u64, group: u32) -> Handle {
             let mut state = self.state.borrow_mut();
             let bo = state.next_bo;
@@ -906,8 +1158,10 @@ mod tests {
             xclbin: PathBuf::from("/tmp/ternary_matmul.xclbin"),
             device_index: 0,
             kernel_name: "ternip_ip".to_string(),
+            ip_name: None,
             instance: 0,
             memory_arg: 14,
+            memory_group: None,
             timeout_ms,
         }
     }
@@ -920,6 +1174,14 @@ mod tests {
             output_label: "PARAM_OUTPUT",
             matrix: &[1, 2, 3, 4],
             input: &[5, 6, 7, 8],
+        }
+    }
+
+    fn native_ip_config(timeout_ms: u32) -> XrtConfig {
+        XrtConfig {
+            ip_name: Some("ternip_big:ternip_big_1".to_string()),
+            memory_group: Some(0),
+            ..test_config(timeout_ms)
         }
     }
 
@@ -992,8 +1254,10 @@ mod tests {
         assert_eq!(config.xclbin, PathBuf::from("/tmp/kernel.xclbin"));
         assert_eq!(config.device_index, 0);
         assert_eq!(config.kernel_name, "ternip_ip");
+        assert_eq!(config.ip_name, None);
         assert_eq!(config.instance, 0);
         assert_eq!(config.memory_arg, 14);
+        assert_eq!(config.memory_group, None);
         assert_eq!(config.timeout_ms, 10_000);
     }
 
@@ -1006,6 +1270,32 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.memory_arg, 16);
+    }
+
+    #[test]
+    fn config_selects_native_ip_and_explicit_memory_group() {
+        let config = XrtConfig::from_lookup(|name| match name {
+            "HETGPU_XRT_XCLBIN" => Some("kernel.xclbin".into()),
+            "HETGPU_XRT_IP_NAME" => Some("ternip_big:ternip_big_1".into()),
+            "HETGPU_XRT_MEMORY_GROUP" => Some("0".into()),
+            _ => None,
+        })
+        .unwrap();
+
+        assert_eq!(config.ip_name.as_deref(), Some("ternip_big:ternip_big_1"));
+        assert_eq!(config.memory_group, Some(0));
+    }
+
+    #[test]
+    fn native_ip_requires_explicit_memory_group() {
+        let error = XrtConfig::from_lookup(|name| match name {
+            "HETGPU_XRT_XCLBIN" => Some("kernel.xclbin".into()),
+            "HETGPU_XRT_IP_NAME" => Some("ternip_big:ternip_big_1".into()),
+            _ => None,
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("HETGPU_XRT_MEMORY_GROUP"));
     }
 
     #[test]
@@ -1043,8 +1333,9 @@ mod tests {
     #[test]
     #[ignore = "requires an installed XRT userspace runtime"]
     fn installed_xrt_symbols_resolve() {
-        let api = RealXrt::load().unwrap();
+        let api = RealXrt::load(true).unwrap();
         assert!(!api.library.is_null());
+        assert!(!api.native_ip.as_ref().unwrap().library.is_null());
     }
 
     #[test]
@@ -1143,6 +1434,73 @@ mod tests {
                 Event::BoFree(101),
                 Event::BoFree(100),
                 Event::KernelClose,
+                Event::DeviceClose,
+            ]
+        );
+    }
+
+    #[test]
+    fn native_ip_submit_uses_xcl_registers_and_explicit_four_bo_group() {
+        let xrt = FakeXrt::new([0, 1]);
+        let mut output = [0u8; 8];
+
+        let status =
+            submit_with_ops(&xrt, &native_ip_config(20), test_request(), &mut output).unwrap();
+
+        assert_eq!(status.stall_code, 1);
+        assert_eq!(output, [0x5a; 8]);
+        let events = xrt.events();
+        assert!(events.contains(&Event::XclOpen(0)));
+        assert!(events.contains(&Event::IpNameToIndex("ternip_big:ternip_big_1".to_string())));
+        assert!(events.contains(&Event::OpenContext {
+            index: 0,
+            shared: false,
+        }));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            Event::KernelOpen(_) | Event::GroupId(_) | Event::KernelClose
+        )));
+
+        let allocations: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::BoAlloc { bo, size, group } => Some((*bo, *size, *group)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            allocations,
+            vec![(100, 4, 0), (101, 4, 0), (102, 8, 0), (103, 128, 0)]
+        );
+
+        let writes: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::IpRegisterWrite { offset, value } => Some((*offset, *value)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            writes,
+            vec![
+                (0x2000, 0),
+                (0x0000, 1),
+                (0x0018, 0x4000),
+                (0x001c, 0),
+                (0x0028, 128),
+                (0x1000, 1),
+            ]
+        );
+        assert!(events.contains(&Event::IpRegisterRead(0x1000)));
+        assert_eq!(
+            &events[events.len() - 7..],
+            &[
+                Event::BoFree(103),
+                Event::BoFree(102),
+                Event::BoFree(101),
+                Event::BoFree(100),
+                Event::CloseContext(0),
+                Event::XclClose,
                 Event::DeviceClose,
             ]
         );

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 cd "$repo_root"
@@ -28,16 +28,16 @@ fi
 
 export HETGPU_XRT_AU250_TEST=1
 export HETGPU_XRT_XCLBIN=/au250_xrt/example/asym9_bs9_2641toks.xclbin
-export HETGPU_XRT_KERNEL="ternip_big:{ternip_big_1}"
+export HETGPU_XRT_IP_NAME=ternip_big:ternip_big_1
 export HETGPU_XRT_INSTANCE=0
-export HETGPU_XRT_MEMORY_ARG=4
+export HETGPU_XRT_MEMORY_GROUP=0
 export HETGPU_XRT_TIMEOUT_MS=10000
 
 cargo test -p zluda --features nvidia --no-default-features \
     au250_vector_add_runs_when_requested -- --ignored --nocapture
 
 xbutil examine -d 0000:64:00.1 \
-    -r dynamic-regions,error,firewall,thermal
+    -r dynamic-regions -r error -r firewall -r thermal
 '
 
 au250-temp
