@@ -6,9 +6,14 @@ use std::time::{Duration, Instant};
 
 const AXI_INSTANCE_STRIDE: u32 = 0x4000;
 const MM2S_DMACR: u32 = 0x0000;
+const MM2S_DMASR: u32 = 0x0004;
 const MM2S_SA: u32 = 0x0018;
 const MM2S_LENGTH: u32 = 0x0028;
 const STALL: u32 = 0x1000;
+const RESET: u32 = 0x2000;
+const DMACR_RESET: u32 = 1 << 2;
+const DMASR_HALTED: u32 = 1 << 0;
+const DMASR_IDLE: u32 = 1 << 1;
 const INSTRUCTION_BYTES: usize = 16;
 const XRT_BO_SYNC_TO_DEVICE: i32 = 0;
 const XRT_BO_SYNC_FROM_DEVICE: i32 = 1;
@@ -32,6 +37,13 @@ type BoAddressFn = unsafe extern "C" fn(Handle) -> u64;
 type BoWriteFn = unsafe extern "C" fn(Handle, *const libc::c_void, usize, usize) -> i32;
 type BoReadFn = unsafe extern "C" fn(Handle, *mut libc::c_void, usize, usize) -> i32;
 type BoSyncFn = unsafe extern "C" fn(Handle, i32, usize, usize) -> i32;
+type XclOpenFn = unsafe extern "C" fn(u32, *const libc::c_char, i32) -> Handle;
+type XclCloseFn = unsafe extern "C" fn(Handle);
+type XclIpNameToIndexFn = unsafe extern "C" fn(Handle, *const libc::c_char) -> i32;
+type XclOpenContextFn = unsafe extern "C" fn(Handle, *const u8, u32, bool) -> i32;
+type XclCloseContextFn = unsafe extern "C" fn(Handle, *const u8, u32) -> i32;
+type XclRegReadFn = unsafe extern "C" fn(Handle, u32, u32, *mut u32) -> i32;
+type XclRegWriteFn = unsafe extern "C" fn(Handle, u32, u32, u32) -> i32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InstanceRegisters {
@@ -40,6 +52,7 @@ struct InstanceRegisters {
     dma_source_hi: u32,
     dma_length: u32,
     stall: u32,
+    reset: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,8 +60,11 @@ struct XrtConfig {
     xclbin: PathBuf,
     device_index: u32,
     kernel_name: String,
+    ip_name: Option<String>,
     instance: u32,
     memory_arg: i32,
+    memory_group: Option<u32>,
+    num_vector_registers: u8,
     timeout_ms: u32,
 }
 
@@ -106,13 +122,39 @@ impl XrtConfig {
         let kernel_name = lookup("HETGPU_XRT_KERNEL")
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "ternip_ip".to_string());
+        let ip_name = lookup("HETGPU_XRT_IP_NAME").filter(|value| !value.trim().is_empty());
+        let memory_group = lookup("HETGPU_XRT_MEMORY_GROUP")
+            .map(|text| {
+                text.parse::<u32>().map_err(|error| {
+                    XrtTmatmulError::Config(format!("HETGPU_XRT_MEMORY_GROUP={text:?}: {error}"))
+                })
+            })
+            .transpose()?;
+        if ip_name.is_some() && memory_group.is_none() {
+            return Err(XrtTmatmulError::Config(
+                "HETGPU_XRT_MEMORY_GROUP is required when HETGPU_XRT_IP_NAME is set".to_string(),
+            ));
+        }
+        let num_vector_registers_u32 = parse_u32(
+            "HETGPU_XRT_NUM_VECTOR_REGISTERS",
+            lookup("HETGPU_XRT_NUM_VECTOR_REGISTERS"),
+            8,
+        )?;
+        let num_vector_registers = u8::try_from(num_vector_registers_u32).map_err(|_| {
+            XrtTmatmulError::Config(
+                "HETGPU_XRT_NUM_VECTOR_REGISTERS does not fit in u8".to_string(),
+            )
+        })?;
 
         Ok(Self {
             xclbin: PathBuf::from(xclbin),
             device_index,
             kernel_name,
+            ip_name,
             instance,
             memory_arg,
+            memory_group,
+            num_vector_registers,
             timeout_ms,
         })
     }
@@ -128,6 +170,13 @@ trait XrtOps {
     fn kernel_arg_group_id(&self, kernel: Handle, arg: i32) -> i32;
     fn kernel_read_register(&self, kernel: Handle, offset: u32, value: &mut u32) -> i32;
     fn kernel_write_register(&self, kernel: Handle, offset: u32, value: u32) -> i32;
+    fn xcl_open(&self, index: u32) -> Handle;
+    fn xcl_close(&self, device: Handle);
+    fn xcl_ip_name_to_index(&self, device: Handle, name: &CStr) -> i32;
+    fn xcl_open_context(&self, device: Handle, uuid: &Xuid, index: u32, shared: bool) -> i32;
+    fn xcl_close_context(&self, device: Handle, uuid: &Xuid, index: u32) -> i32;
+    fn xcl_reg_read(&self, device: Handle, index: u32, offset: u32, value: &mut u32) -> i32;
+    fn xcl_reg_write(&self, device: Handle, index: u32, offset: u32, value: u32) -> i32;
     fn bo_alloc(&self, device: Handle, size: usize, flags: u64, group: u32) -> Handle;
     fn bo_free(&self, bo: Handle) -> i32;
     fn bo_address(&self, bo: Handle) -> u64;
@@ -136,8 +185,58 @@ trait XrtOps {
     fn bo_sync(&self, bo: Handle, direction: i32, size: usize, offset: usize) -> i32;
 }
 
+struct NativeIpApi {
+    library: Handle,
+    open: XclOpenFn,
+    close: XclCloseFn,
+    ip_name_to_index: XclIpNameToIndexFn,
+    open_context: XclOpenContextFn,
+    close_context: XclCloseContextFn,
+    reg_read: XclRegReadFn,
+    reg_write: XclRegWriteFn,
+}
+
+impl NativeIpApi {
+    fn load() -> Result<Self, XrtTmatmulError> {
+        let library = open_library(&["libxrt_core.so.2", "libxrt_core.so"])?;
+        let result: Result<Self, XrtTmatmulError> = unsafe {
+            Ok(Self {
+                library,
+                open: load_symbol(library, c"xclOpen")?,
+                close: load_symbol(library, c"xclClose")?,
+                ip_name_to_index: load_symbol(library, c"xclIPName2Index")?,
+                open_context: load_symbol(library, c"xclOpenContext")?,
+                close_context: load_symbol(library, c"xclCloseContext")?,
+                reg_read: load_symbol(library, c"xclRegRead")?,
+                reg_write: load_symbol(library, c"xclRegWrite")?,
+            })
+        };
+        if result.is_err() {
+            unsafe {
+                libc::dlclose(library);
+            }
+        }
+        result.map_err(|error| {
+            XrtTmatmulError::DynamicLoad(format!(
+                "AP_CTRL_NONE requires the app215-compatible legacy xcl register API: {error}"
+            ))
+        })
+    }
+}
+
+impl Drop for NativeIpApi {
+    fn drop(&mut self) {
+        if !self.library.is_null() {
+            unsafe {
+                libc::dlclose(self.library);
+            }
+        }
+    }
+}
+
 struct RealXrt {
     library: Handle,
+    native_ip: Option<NativeIpApi>,
     device_open: DeviceOpenFn,
     device_close: DeviceCloseFn,
     device_load_xclbin_file: DeviceLoadXclbinFileFn,
@@ -156,25 +255,22 @@ struct RealXrt {
 }
 
 impl RealXrt {
-    fn load() -> Result<Self, XrtTmatmulError> {
-        let mut failures = Vec::new();
-        let mut library = std::ptr::null_mut();
-        for candidate in ["libxrt_coreutil.so.2", "libxrt_coreutil.so"] {
-            let candidate_c = CString::new(candidate).expect("XRT library name has no NUL");
-            library =
-                unsafe { libc::dlopen(candidate_c.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-            if !library.is_null() {
-                break;
+    fn load(needs_native_ip: bool) -> Result<Self, XrtTmatmulError> {
+        let library = open_library(&["libxrt_coreutil.so.2", "libxrt_coreutil.so"])?;
+        let native_ip = match needs_native_ip.then(NativeIpApi::load).transpose() {
+            Ok(api) => api,
+            Err(error) => {
+                unsafe {
+                    libc::dlclose(library);
+                }
+                return Err(error);
             }
-            failures.push(format!("{candidate}: {}", dl_error_message()));
-        }
-        if library.is_null() {
-            return Err(XrtTmatmulError::DynamicLoad(failures.join("; ")));
-        }
+        };
 
         let result = unsafe {
             Ok(Self {
                 library,
+                native_ip,
                 device_open: load_symbol(library, c"xrtDeviceOpen")?,
                 device_close: load_symbol(library, c"xrtDeviceClose")?,
                 device_load_xclbin_file: load_symbol(library, c"xrtDeviceLoadXclbinFile")?,
@@ -198,6 +294,12 @@ impl RealXrt {
             }
         }
         result
+    }
+
+    fn native_ip(&self) -> &NativeIpApi {
+        self.native_ip
+            .as_ref()
+            .expect("native-IP API must be loaded before native-IP operations")
     }
 }
 
@@ -248,6 +350,34 @@ impl XrtOps for RealXrt {
         unsafe { (self.kernel_write_register)(kernel, offset, value) }
     }
 
+    fn xcl_open(&self, index: u32) -> Handle {
+        unsafe { (self.native_ip().open)(index, std::ptr::null(), 0) }
+    }
+
+    fn xcl_close(&self, device: Handle) {
+        unsafe { (self.native_ip().close)(device) }
+    }
+
+    fn xcl_ip_name_to_index(&self, device: Handle, name: &CStr) -> i32 {
+        unsafe { (self.native_ip().ip_name_to_index)(device, name.as_ptr()) }
+    }
+
+    fn xcl_open_context(&self, device: Handle, uuid: &Xuid, index: u32, shared: bool) -> i32 {
+        unsafe { (self.native_ip().open_context)(device, uuid.as_ptr(), index, shared) }
+    }
+
+    fn xcl_close_context(&self, device: Handle, uuid: &Xuid, index: u32) -> i32 {
+        unsafe { (self.native_ip().close_context)(device, uuid.as_ptr(), index) }
+    }
+
+    fn xcl_reg_read(&self, device: Handle, index: u32, offset: u32, value: &mut u32) -> i32 {
+        unsafe { (self.native_ip().reg_read)(device, index, offset, value) }
+    }
+
+    fn xcl_reg_write(&self, device: Handle, index: u32, offset: u32, value: u32) -> i32 {
+        unsafe { (self.native_ip().reg_write)(device, index, offset, value) }
+    }
+
     fn bo_alloc(&self, device: Handle, size: usize, flags: u64, group: u32) -> Handle {
         unsafe { (self.bo_alloc)(device, size, flags, group) }
     }
@@ -271,6 +401,20 @@ impl XrtOps for RealXrt {
     fn bo_sync(&self, bo: Handle, direction: i32, size: usize, offset: usize) -> i32 {
         unsafe { (self.bo_sync)(bo, direction, size, offset) }
     }
+}
+
+fn open_library(candidates: &[&str]) -> Result<Handle, XrtTmatmulError> {
+    let mut failures = Vec::new();
+    for candidate in candidates {
+        let candidate_c = CString::new(*candidate).expect("XRT library name has no NUL");
+        let library =
+            unsafe { libc::dlopen(candidate_c.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        if !library.is_null() {
+            return Ok(library);
+        }
+        failures.push(format!("{candidate}: {}", dl_error_message()));
+    }
+    Err(XrtTmatmulError::DynamicLoad(failures.join("; ")))
 }
 
 unsafe fn load_symbol<T: Copy>(library: Handle, name: &CStr) -> Result<T, XrtTmatmulError> {
@@ -315,6 +459,7 @@ pub(crate) enum XrtTmatmulError {
     InvalidBuffer(String),
     Assemble(String),
     Timeout { timeout_ms: u32 },
+    Quiesce { primary: String, cleanup: String },
 }
 
 impl fmt::Display for XrtTmatmulError {
@@ -332,6 +477,10 @@ impl fmt::Display for XrtTmatmulError {
             Self::Timeout { timeout_ms } => {
                 write!(f, "XRT tmatmul timed out after {timeout_ms} ms")
             }
+            Self::Quiesce { primary, cleanup } => write!(
+                f,
+                "XRT tmatmul failed ({primary}) and device quiescence could not be confirmed ({cleanup}); handles were retained to protect live BOs"
+            ),
         }
     }
 }
@@ -362,7 +511,7 @@ pub(crate) fn submit_xrt_tmatmul(
     output: &mut [u8],
 ) -> Result<XrtTmatmulStatus, XrtTmatmulError> {
     let config = XrtConfig::from_env()?;
-    let xrt = RealXrt::load()?;
+    let xrt = RealXrt::load(config.ip_name.is_some())?;
     submit_with_ops(&xrt, &config, request, output)
 }
 
@@ -370,7 +519,11 @@ struct Session<'a, O: XrtOps> {
     ops: &'a O,
     device: Handle,
     kernel: Handle,
+    ip_device: Handle,
+    ip_index: Option<u32>,
+    uuid: Xuid,
     bos: Vec<Handle>,
+    release_handles: bool,
 }
 
 impl<'a, O: XrtOps> Session<'a, O> {
@@ -383,7 +536,11 @@ impl<'a, O: XrtOps> Session<'a, O> {
             ops,
             device,
             kernel: std::ptr::null_mut(),
+            ip_device: std::ptr::null_mut(),
+            ip_index: None,
+            uuid: [0; 16],
             bos: Vec::new(),
+            release_handles: true,
         };
 
         let xclbin = config.xclbin.to_str().ok_or_else(|| {
@@ -397,17 +554,39 @@ impl<'a, O: XrtOps> Session<'a, O> {
             ops.load_xclbin_file(device, &xclbin),
         )?;
 
-        let mut uuid = [0u8; 16];
         check_xrt(
             "xrtDeviceGetXclbinUUID",
-            ops.get_xclbin_uuid(device, &mut uuid),
+            ops.get_xclbin_uuid(device, &mut session.uuid),
         )?;
-        let kernel_name = CString::new(config.kernel_name.as_str()).map_err(|_| {
-            XrtTmatmulError::Config("HETGPU_XRT_KERNEL contains a NUL byte".to_string())
-        })?;
-        session.kernel = ops.kernel_open_exclusive(device, &uuid, &kernel_name);
-        if session.kernel.is_null() {
-            return Err(XrtTmatmulError::NullHandle("xrtPLKernelOpenExclusive"));
+        if let Some(ip_name) = config.ip_name.as_deref() {
+            session.ip_device = ops.xcl_open(config.device_index);
+            if session.ip_device.is_null() {
+                return Err(XrtTmatmulError::NullHandle("xclOpen"));
+            }
+            let ip_name = CString::new(ip_name).map_err(|_| {
+                XrtTmatmulError::Config("HETGPU_XRT_IP_NAME contains a NUL byte".to_string())
+            })?;
+            let ip_index = ops.xcl_ip_name_to_index(session.ip_device, &ip_name);
+            if ip_index < 0 {
+                return Err(XrtTmatmulError::Xrt {
+                    operation: "xclIPName2Index",
+                    code: ip_index,
+                });
+            }
+            let ip_index = ip_index as u32;
+            check_xrt(
+                "xclOpenContext",
+                ops.xcl_open_context(session.ip_device, &session.uuid, ip_index, false),
+            )?;
+            session.ip_index = Some(ip_index);
+        } else {
+            let kernel_name = CString::new(config.kernel_name.as_str()).map_err(|_| {
+                XrtTmatmulError::Config("HETGPU_XRT_KERNEL contains a NUL byte".to_string())
+            })?;
+            session.kernel = ops.kernel_open_exclusive(device, &session.uuid, &kernel_name);
+            if session.kernel.is_null() {
+                return Err(XrtTmatmulError::NullHandle("xrtPLKernelOpenExclusive"));
+            }
         }
         Ok(session)
     }
@@ -435,15 +614,125 @@ impl<'a, O: XrtOps> Session<'a, O> {
         }
         Ok(address)
     }
+
+    fn register_read(
+        &self,
+        offset: u32,
+        value: &mut u32,
+        kernel_operation: &'static str,
+        ip_operation: &'static str,
+    ) -> Result<(), XrtTmatmulError> {
+        if let Some(index) = self.ip_index {
+            check_xrt(
+                ip_operation,
+                self.ops.xcl_reg_read(self.ip_device, index, offset, value),
+            )
+        } else {
+            check_xrt(
+                kernel_operation,
+                self.ops.kernel_read_register(self.kernel, offset, value),
+            )
+        }
+    }
+
+    fn register_write(
+        &self,
+        offset: u32,
+        value: u32,
+        kernel_operation: &'static str,
+        ip_operation: &'static str,
+    ) -> Result<(), XrtTmatmulError> {
+        if let Some(index) = self.ip_index {
+            check_xrt(
+                ip_operation,
+                self.ops.xcl_reg_write(self.ip_device, index, offset, value),
+            )
+        } else {
+            check_xrt(
+                kernel_operation,
+                self.ops.kernel_write_register(self.kernel, offset, value),
+            )
+        }
+    }
+
+    fn quiesce_after_launch(
+        &mut self,
+        registers: InstanceRegisters,
+        timeout_ms: u32,
+    ) -> Result<(), XrtTmatmulError> {
+        // Until reset completion is observed, retaining the BO and device handles is safer
+        // than allowing an independently running engine to access released storage.
+        self.release_handles = false;
+        self.register_write(
+            registers.reset,
+            1,
+            "xrtKernelWriteRegister(RESET quiesce)",
+            "xclRegWrite(RESET quiesce)",
+        )?;
+        self.register_write(
+            registers.dma_control,
+            DMACR_RESET,
+            "xrtKernelWriteRegister(MM2S_DMACR reset)",
+            "xclRegWrite(MM2S_DMACR reset)",
+        )?;
+
+        let deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms.max(100)));
+        loop {
+            let mut control = 0;
+            self.register_read(
+                registers.dma_control,
+                &mut control,
+                "xrtKernelReadRegister(MM2S_DMACR reset)",
+                "xclRegRead(MM2S_DMACR reset)",
+            )?;
+            if control & DMACR_RESET == 0 {
+                let mut status = 0;
+                self.register_read(
+                    registers.dma_control + MM2S_DMASR,
+                    &mut status,
+                    "xrtKernelReadRegister(MM2S_DMASR quiesce)",
+                    "xclRegRead(MM2S_DMASR quiesce)",
+                )?;
+                if status & (DMASR_HALTED | DMASR_IDLE) != 0 {
+                    self.release_handles = true;
+                    return Ok(());
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(XrtTmatmulError::Timeout {
+                    timeout_ms: timeout_ms.max(100),
+                });
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 impl<O: XrtOps> Drop for Session<'_, O> {
     fn drop(&mut self) {
+        if !self.release_handles {
+            // The process/driver owns final recovery. Do not release or reuse addresses that
+            // an engine may still be accessing when quiescence could not be confirmed.
+            self.bos.clear();
+            self.kernel = std::ptr::null_mut();
+            self.ip_index = None;
+            self.ip_device = std::ptr::null_mut();
+            self.device = std::ptr::null_mut();
+            return;
+        }
         while let Some(bo) = self.bos.pop() {
             let _ = self.ops.bo_free(bo);
         }
         if !self.kernel.is_null() {
             let _ = self.ops.kernel_close(self.kernel);
+        }
+        if let Some(index) = self.ip_index {
+            let _ = self
+                .ops
+                .xcl_close_context(self.ip_device, &self.uuid, index);
+        }
+        if !self.ip_device.is_null() {
+            self.ops.xcl_close(self.ip_device);
         }
         if !self.device.is_null() {
             let _ = self.ops.device_close(self.device);
@@ -465,14 +754,18 @@ fn submit_with_ops<O: XrtOps>(
 
     let registers = instance_registers(config.instance)?;
     let mut session = Session::open(ops, config)?;
-    let group = ops.kernel_arg_group_id(session.kernel, config.memory_arg);
-    if group < 0 {
-        return Err(XrtTmatmulError::Xrt {
-            operation: "xrtKernelArgGroupId",
-            code: group,
-        });
-    }
-    let group = group as u32;
+    let group = if let Some(group) = config.memory_group {
+        group
+    } else {
+        let group = ops.kernel_arg_group_id(session.kernel, config.memory_arg);
+        if group < 0 {
+            return Err(XrtTmatmulError::Xrt {
+                operation: "xrtKernelArgGroupId",
+                code: group,
+            });
+        }
+        group as u32
+    };
 
     // This ordering is the four-BO ABI: matrix, input, output, then program.
     let matrix_bo = session.allocate_bo(request.matrix.len(), group, "xrtBOAlloc(matrix)")?;
@@ -490,8 +783,13 @@ fn submit_with_ops<O: XrtOps>(
         input_address,
         output_address,
     )?;
-    let program = super::cxl_tmatmul::assemble_tmatmul_program(request.assembly, &labels)
-        .map_err(|error| XrtTmatmulError::Assemble(error.to_string()))?;
+    let replay_safe_program = super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
+        request.assembly,
+        &labels,
+        config.num_vector_registers,
+    )
+    .map_err(|error| XrtTmatmulError::Assemble(error.to_string()))?;
+    let program = compact_xrt_program(&replay_safe_program)?;
     validate_program(&program)?;
     let program_bo = session.allocate_bo(program.len(), group, "xrtBOAlloc(program)")?;
     let program_address = session.bo_address(program_bo, "program")?;
@@ -500,51 +798,69 @@ fn submit_with_ops<O: XrtOps>(
     bo_write_and_sync(ops, input_bo, request.input, "input")?;
     bo_write_and_sync(ops, program_bo, &program, "program")?;
 
-    write_register(
-        ops,
-        session.kernel,
+    session.register_write(
+        registers.reset,
+        0,
+        "xrtKernelWriteRegister(RESET)",
+        "xclRegWrite(RESET)",
+    )?;
+    session.register_write(
         registers.dma_control,
         1,
         "xrtKernelWriteRegister(MM2S_DMACR)",
+        "xclRegWrite(MM2S_DMACR)",
     )?;
-    write_register(
-        ops,
-        session.kernel,
+    session.register_write(
         registers.dma_source_lo,
         program_address as u32,
         "xrtKernelWriteRegister(MM2S_SA low)",
+        "xclRegWrite(MM2S_SA low)",
     )?;
-    write_register(
-        ops,
-        session.kernel,
+    session.register_write(
         registers.dma_source_hi,
         (program_address >> 32) as u32,
         "xrtKernelWriteRegister(MM2S_SA high)",
+        "xclRegWrite(MM2S_SA high)",
     )?;
-    write_register(
-        ops,
-        session.kernel,
+    session.register_write(
         registers.dma_length,
         program.len() as u32,
         "xrtKernelWriteRegister(MM2S_LENGTH)",
+        "xclRegWrite(MM2S_LENGTH)",
     )?;
 
     let deadline = Instant::now() + Duration::from_millis(u64::from(config.timeout_ms));
-    let stall_code = loop {
-        let mut value = 0;
-        check_xrt(
-            "xrtKernelReadRegister(STALL)",
-            ops.kernel_read_register(session.kernel, registers.stall, &mut value),
-        )?;
-        if value != 0 {
-            break value;
+    let wait_result = (|| {
+        loop {
+            let mut value = 0;
+            session.register_read(
+                registers.stall,
+                &mut value,
+                "xrtKernelReadRegister(STALL)",
+                "xclRegRead(STALL)",
+            )?;
+            if value != 0 {
+                return Ok(value);
+            }
+            if Instant::now() >= deadline {
+                return Err(XrtTmatmulError::Timeout {
+                    timeout_ms: config.timeout_ms,
+                });
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
-        if Instant::now() >= deadline {
-            return Err(XrtTmatmulError::Timeout {
-                timeout_ms: config.timeout_ms,
-            });
+    })();
+    let stall_code = match wait_result {
+        Ok(value) => value,
+        Err(primary) => {
+            if let Err(cleanup) = session.quiesce_after_launch(registers, config.timeout_ms) {
+                return Err(XrtTmatmulError::Quiesce {
+                    primary: primary.to_string(),
+                    cleanup: cleanup.to_string(),
+                });
+            }
+            return Err(primary);
         }
-        std::thread::sleep(Duration::from_millis(1));
     };
 
     check_xrt(
@@ -556,12 +872,11 @@ fn submit_with_ops<O: XrtOps>(
         "xrtBORead(output)",
         ops.bo_read(output_bo, &mut completed_output),
     )?;
-    write_register(
-        ops,
-        session.kernel,
+    session.register_write(
         registers.stall,
         1,
         "xrtKernelWriteRegister(STALL)",
+        "xclRegWrite(STALL)",
     )?;
     output.copy_from_slice(&completed_output);
 
@@ -601,16 +916,6 @@ fn bo_write_and_sync<O: XrtOps>(
     )
 }
 
-fn write_register<O: XrtOps>(
-    ops: &O,
-    kernel: Handle,
-    offset: u32,
-    value: u32,
-    operation: &'static str,
-) -> Result<(), XrtTmatmulError> {
-    check_xrt(operation, ops.kernel_write_register(kernel, offset, value))
-}
-
 fn check_xrt(operation: &'static str, code: i32) -> Result<(), XrtTmatmulError> {
     if code == 0 {
         Ok(())
@@ -637,6 +942,7 @@ fn instance_registers(instance: u32) -> Result<InstanceRegisters, XrtTmatmulErro
         dma_source_hi: add(MM2S_SA + 4)?,
         dma_length: add(MM2S_LENGTH)?,
         stall: add(STALL)?,
+        reset: add(RESET)?,
     })
 }
 
@@ -656,6 +962,30 @@ fn validate_program(program: &[u8]) -> Result<(), XrtTmatmulError> {
         XrtTmatmulError::InvalidProgram("program length does not fit MM2S_LENGTH".to_string())
     })?;
     Ok(())
+}
+
+fn compact_xrt_program(replay_safe_program: &[u8]) -> Result<Vec<u8>, XrtTmatmulError> {
+    validate_program(replay_safe_program)?;
+    let terminal_offset = replay_safe_program.len() - INSTRUCTION_BYTES;
+    let padding_offset = replay_safe_program[..terminal_offset]
+        .chunks_exact(INSTRUCTION_BYTES)
+        .position(|instruction| instruction.iter().all(|byte| *byte == 0))
+        .map_or(terminal_offset, |slot| slot * INSTRUCTION_BYTES);
+    if replay_safe_program[padding_offset..terminal_offset]
+        .iter()
+        .any(|byte| *byte != 0)
+    {
+        return Err(XrtTmatmulError::InvalidProgram(
+            "replay-safe padding contains a nonzero instruction after its first zero slot"
+                .to_string(),
+        ));
+    }
+
+    let mut compact = Vec::with_capacity(padding_offset + INSTRUCTION_BYTES);
+    compact.extend_from_slice(&replay_safe_program[..padding_offset]);
+    compact.extend_from_slice(&replay_safe_program[terminal_offset..]);
+    validate_program(&compact)?;
+    Ok(compact)
 }
 
 fn bind_labels(
@@ -700,7 +1030,11 @@ mod tests {
 
     const DEVICE_HANDLE: usize = 1;
     const KERNEL_HANDLE: usize = 2;
+    const IP_DEVICE_HANDLE: usize = 3;
     const FIRST_BO_HANDLE: usize = 100;
+    const AU250_BATCH_SIZE: usize = 9;
+    const AU250_VECTOR_LENGTH: usize = 1024;
+    const AU250_VECTOR_ELEMENTS: usize = AU250_BATCH_SIZE * AU250_VECTOR_LENGTH;
     const TEST_ASSEMBLY: &str = r#"
         ldv v0, PARAM_INPUT
         tmatmul_import v0
@@ -717,6 +1051,12 @@ mod tests {
         GetUuid,
         KernelOpen(String),
         GroupId(i32),
+        XclOpen(u32),
+        IpNameToIndex(String),
+        OpenContext {
+            index: u32,
+            shared: bool,
+        },
         BoAlloc {
             bo: usize,
             size: usize,
@@ -736,12 +1076,19 @@ mod tests {
             value: u32,
         },
         RegisterRead(u32),
+        IpRegisterWrite {
+            offset: u32,
+            value: u32,
+        },
+        IpRegisterRead(u32),
         BoRead {
             bo: usize,
             size: usize,
         },
         BoFree(usize),
         KernelClose,
+        CloseContext(u32),
+        XclClose,
         DeviceClose,
     }
 
@@ -750,6 +1097,7 @@ mod tests {
         next_bo: usize,
         stall_reads: VecDeque<u32>,
         fail_register_write: Option<u32>,
+        fail_register_read: Option<u32>,
         output_pattern: u8,
     }
 
@@ -765,6 +1113,7 @@ mod tests {
                     next_bo: FIRST_BO_HANDLE,
                     stall_reads: stall_reads.into_iter().collect(),
                     fail_register_write: None,
+                    fail_register_read: None,
                     output_pattern: 0x5a,
                 }),
             }
@@ -772,6 +1121,10 @@ mod tests {
 
         fn fail_register_write(&self, offset: u32) {
             self.state.borrow_mut().fail_register_write = Some(offset);
+        }
+
+        fn fail_register_read(&self, offset: u32) {
+            self.state.borrow_mut().fail_register_read = Some(offset);
         }
 
         fn events(&self) -> Vec<Event> {
@@ -828,13 +1181,79 @@ mod tests {
         fn kernel_read_register(&self, _kernel: Handle, offset: u32, value: &mut u32) -> i32 {
             let mut state = self.state.borrow_mut();
             state.events.push(Event::RegisterRead(offset));
-            *value = state.stall_reads.pop_front().unwrap_or(0);
+            if state.fail_register_read == Some(offset) {
+                return -5;
+            }
+            *value = match offset {
+                STALL => state.stall_reads.pop_front().unwrap_or(0),
+                MM2S_DMACR => 0,
+                MM2S_DMASR => 1,
+                _ => 0,
+            };
             0
         }
 
         fn kernel_write_register(&self, _kernel: Handle, offset: u32, value: u32) -> i32 {
             let mut state = self.state.borrow_mut();
             state.events.push(Event::RegisterWrite { offset, value });
+            if state.fail_register_write == Some(offset) {
+                -5
+            } else {
+                0
+            }
+        }
+
+        fn xcl_open(&self, index: u32) -> Handle {
+            self.state.borrow_mut().events.push(Event::XclOpen(index));
+            IP_DEVICE_HANDLE as Handle
+        }
+
+        fn xcl_close(&self, _device: Handle) {
+            self.state.borrow_mut().events.push(Event::XclClose);
+        }
+
+        fn xcl_ip_name_to_index(&self, _device: Handle, name: &CStr) -> i32 {
+            self.state
+                .borrow_mut()
+                .events
+                .push(Event::IpNameToIndex(name.to_string_lossy().into_owned()));
+            0
+        }
+
+        fn xcl_open_context(&self, _device: Handle, _uuid: &Xuid, index: u32, shared: bool) -> i32 {
+            self.state
+                .borrow_mut()
+                .events
+                .push(Event::OpenContext { index, shared });
+            0
+        }
+
+        fn xcl_close_context(&self, _device: Handle, _uuid: &Xuid, index: u32) -> i32 {
+            self.state
+                .borrow_mut()
+                .events
+                .push(Event::CloseContext(index));
+            0
+        }
+
+        fn xcl_reg_read(&self, _device: Handle, _index: u32, offset: u32, value: &mut u32) -> i32 {
+            let mut state = self.state.borrow_mut();
+            state.events.push(Event::IpRegisterRead(offset));
+            if state.fail_register_read == Some(offset) {
+                return -5;
+            }
+            *value = match offset {
+                STALL => state.stall_reads.pop_front().unwrap_or(0),
+                MM2S_DMACR => 0,
+                MM2S_DMASR => 1,
+                _ => 0,
+            };
+            0
+        }
+
+        fn xcl_reg_write(&self, _device: Handle, _index: u32, offset: u32, value: u32) -> i32 {
+            let mut state = self.state.borrow_mut();
+            state.events.push(Event::IpRegisterWrite { offset, value });
             if state.fail_register_write == Some(offset) {
                 -5
             } else {
@@ -895,8 +1314,11 @@ mod tests {
             xclbin: PathBuf::from("/tmp/ternary_matmul.xclbin"),
             device_index: 0,
             kernel_name: "ternip_ip".to_string(),
+            ip_name: None,
             instance: 0,
             memory_arg: 14,
+            memory_group: None,
+            num_vector_registers: 8,
             timeout_ms,
         }
     }
@@ -912,6 +1334,49 @@ mod tests {
         }
     }
 
+    fn native_ip_config(timeout_ms: u32) -> XrtConfig {
+        XrtConfig {
+            ip_name: Some("ternip_big:ternip_big_1".to_string()),
+            memory_group: Some(0),
+            num_vector_registers: 4,
+            ..test_config(timeout_ms)
+        }
+    }
+
+    fn au250_vector_add_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut vector_a = Vec::with_capacity(AU250_VECTOR_ELEMENTS * 2);
+        let mut vector_b = Vec::with_capacity(AU250_VECTOR_ELEMENTS * 2);
+        let mut expected = Vec::with_capacity(AU250_VECTOR_ELEMENTS * 2);
+
+        for index in 0..AU250_VECTOR_ELEMENTS {
+            let a_raw = ((index % 8) as i16) * 32;
+            let b_raw = 48i16;
+            vector_a.extend_from_slice(&a_raw.to_le_bytes());
+            vector_b.extend_from_slice(&b_raw.to_le_bytes());
+            expected.extend_from_slice(&(a_raw + b_raw).to_le_bytes());
+        }
+        (vector_a, vector_b, expected)
+    }
+
+    fn au250_tmatmul_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut matrix = vec![0u8; AU250_VECTOR_LENGTH * AU250_VECTOR_LENGTH / 4];
+        matrix[..2 * AU250_VECTOR_LENGTH / 4].fill(0x55);
+
+        let mut input = vec![0u8; AU250_VECTOR_ELEMENTS * 2];
+        let mut expected = vec![0u8; AU250_VECTOR_ELEMENTS * 2];
+        for lane in 0..AU250_BATCH_SIZE {
+            for column in [lane, lane + 1] {
+                let offset = (column * AU250_BATCH_SIZE + lane) * 2;
+                input[offset..offset + 2].copy_from_slice(&32i16.to_le_bytes());
+            }
+            for row in 0..2 {
+                let offset = (row * AU250_BATCH_SIZE + lane) * 2;
+                expected[offset..offset + 2].copy_from_slice(&64i16.to_le_bytes());
+            }
+        }
+        (matrix, input, expected)
+    }
+
     #[test]
     fn instance_registers_match_ternary_matmul_contract() {
         assert_eq!(
@@ -922,9 +1387,11 @@ mod tests {
                 dma_source_hi: 0x001c,
                 dma_length: 0x0028,
                 stall: 0x1000,
+                reset: 0x2000,
             }
         );
         assert_eq!(instance_registers(2).unwrap().stall, 0x9000);
+        assert_eq!(instance_registers(2).unwrap().reset, 0xa000);
     }
 
     #[test]
@@ -964,8 +1431,11 @@ mod tests {
         assert_eq!(config.xclbin, PathBuf::from("/tmp/kernel.xclbin"));
         assert_eq!(config.device_index, 0);
         assert_eq!(config.kernel_name, "ternip_ip");
+        assert_eq!(config.ip_name, None);
         assert_eq!(config.instance, 0);
         assert_eq!(config.memory_arg, 14);
+        assert_eq!(config.memory_group, None);
+        assert_eq!(config.num_vector_registers, 8);
         assert_eq!(config.timeout_ms, 10_000);
     }
 
@@ -981,16 +1451,174 @@ mod tests {
     }
 
     #[test]
+    fn config_selects_native_ip_and_explicit_memory_group() {
+        let config = XrtConfig::from_lookup(|name| match name {
+            "HETGPU_XRT_XCLBIN" => Some("kernel.xclbin".into()),
+            "HETGPU_XRT_IP_NAME" => Some("ternip_big:ternip_big_1".into()),
+            "HETGPU_XRT_MEMORY_GROUP" => Some("0".into()),
+            "HETGPU_XRT_NUM_VECTOR_REGISTERS" => Some("4".into()),
+            _ => None,
+        })
+        .unwrap();
+
+        assert_eq!(config.ip_name.as_deref(), Some("ternip_big:ternip_big_1"));
+        assert_eq!(config.memory_group, Some(0));
+        assert_eq!(config.num_vector_registers, 4);
+    }
+
+    #[test]
+    fn native_ip_requires_explicit_memory_group() {
+        let error = XrtConfig::from_lookup(|name| match name {
+            "HETGPU_XRT_XCLBIN" => Some("kernel.xclbin".into()),
+            "HETGPU_XRT_IP_NAME" => Some("ternip_big:ternip_big_1".into()),
+            _ => None,
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("HETGPU_XRT_MEMORY_GROUP"));
+    }
+
+    #[test]
     fn xclbin_is_required() {
         let error = XrtConfig::from_lookup(|_| None).unwrap_err();
         assert!(error.to_string().contains("HETGPU_XRT_XCLBIN"));
     }
 
     #[test]
-    #[ignore = "requires an installed XRT userspace runtime"]
+    fn au250_vector_add_fixture_matches_known_good_example() {
+        let (vector_a, vector_b, expected) = au250_vector_add_fixture();
+
+        assert_eq!(vector_a.len(), 9 * 1024 * 2);
+        assert_eq!(vector_b.len(), vector_a.len());
+        assert_eq!(expected.len(), vector_a.len());
+
+        let first_a: Vec<i16> = vector_a[..16]
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        let first_b: Vec<i16> = vector_b[..16]
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        let first_expected: Vec<i16> = expected[..16]
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+
+        assert_eq!(first_a, vec![0, 32, 64, 96, 128, 160, 192, 224]);
+        assert_eq!(first_b, vec![48; 8]);
+        assert_eq!(first_expected, vec![48, 80, 112, 144, 176, 208, 240, 272]);
+    }
+
+    #[test]
+    fn xrt_compaction_matches_known_good_five_instruction_image() {
+        let labels = HashMap::from([
+            ("PARAM_MATRIX".to_string(), 0x1000),
+            ("PARAM_INPUT".to_string(), 0x2000),
+            ("PARAM_OUTPUT".to_string(), 0x3000),
+        ]);
+        let replay_safe = super::super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
+            r#"
+                ldv v0, PARAM_MATRIX
+                ldv v1, PARAM_INPUT
+                add v2, v0, v1
+                sv v2, PARAM_OUTPUT
+                stall
+            "#,
+            &labels,
+            4,
+        )
+        .unwrap();
+
+        let compact = compact_xrt_program(&replay_safe).unwrap();
+        let expected = [
+            [
+                0x00, 0x10, 0, 0, 0, 0, 0, 0, 0x20, 0x00, 0x02, 0, 0, 0, 0, 0,
+            ],
+            [
+                0x00, 0x20, 0, 0, 0, 0, 0, 0, 0xa0, 0x0a, 0x02, 0, 0, 0, 0, 0,
+            ],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x23, 0x04, 0, 0, 0, 0, 0],
+            [
+                0x00, 0x30, 0, 0, 0, 0, 0, 0, 0x40, 0x15, 0x02, 0, 0, 0, 0, 0,
+            ],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x0a, 0, 0, 0, 0, 0],
+        ]
+        .concat();
+
+        assert_eq!(compact, expected);
+        assert_eq!(compact.len(), 5 * INSTRUCTION_BYTES);
+    }
+
+    #[test]
+    fn au250_tmatmul_fixture_matches_repository_canonical_case() {
+        let (matrix, input, expected) = au250_tmatmul_fixture();
+
+        assert_eq!(matrix.len(), 1024 * 1024 / 4);
+        assert!(matrix[..512].iter().all(|byte| *byte == 0x55));
+        assert!(matrix[512..].iter().all(|byte| *byte == 0));
+        let input_raw: Vec<i16> = input
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        let expected_raw: Vec<i16> = expected
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(input_raw.iter().filter(|value| **value == 32).count(), 18);
+        for lane in 0..9 {
+            assert_eq!(input_raw[lane * AU250_BATCH_SIZE + lane], 32);
+            assert_eq!(input_raw[(lane + 1) * AU250_BATCH_SIZE + lane], 32);
+            assert_eq!(expected_raw[lane], 64);
+            assert_eq!(expected_raw[AU250_BATCH_SIZE + lane], 64);
+        }
+        assert!(
+            expected_raw[2 * AU250_BATCH_SIZE..]
+                .iter()
+                .all(|value| *value == 0)
+        );
+    }
+
+    #[test]
+    fn tmatmul_image_matches_existing_xcu250_assembler() {
+        let labels = HashMap::from([
+            ("PARAM_MATRIX".to_string(), 0x1000),
+            ("PARAM_INPUT".to_string(), 0x2000),
+            ("PARAM_OUTPUT".to_string(), 0x3000),
+        ]);
+        let replay_safe = super::super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
+            TEST_ASSEMBLY,
+            &labels,
+            4,
+        )
+        .unwrap();
+        let compact = compact_xrt_program(&replay_safe).unwrap();
+        let expected = [
+            [
+                0x00, 0x20, 0, 0, 0, 0, 0, 0, 0x20, 0x00, 0x02, 0, 0, 0, 0, 0,
+            ],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x00, 0x06, 0, 0, 0, 0, 0],
+            [
+                0x00, 0x10, 0, 0, 0, 0, 0, 0, 0x10, 0x00, 0x06, 0, 0, 0, 0, 0,
+            ],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0x98, 0x0a, 0x06, 0, 0, 0, 0, 0],
+            [
+                0x00, 0x30, 0, 0, 0, 0, 0, 0, 0xc0, 0x0a, 0x02, 0, 0, 0, 0, 0,
+            ],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x0a, 0, 0, 0, 0, 0],
+        ]
+        .concat();
+
+        assert_eq!(compact, expected);
+        assert_eq!(compact.len(), 6 * INSTRUCTION_BYTES);
+    }
+
+    #[test]
+    #[ignore = "requires the app215 XRT legacy xcl register API used by AU250"]
     fn installed_xrt_symbols_resolve() {
-        let api = RealXrt::load().unwrap();
+        let api = RealXrt::load(true).unwrap();
         assert!(!api.library.is_null());
+        assert!(!api.native_ip.as_ref().unwrap().library.is_null());
     }
 
     #[test]
@@ -1001,7 +1629,7 @@ mod tests {
         let status = submit_with_ops(&xrt, &test_config(20), test_request(), &mut output).unwrap();
 
         assert_eq!(output, [0x5a; 8]);
-        assert_eq!(status.program_bytes, 128);
+        assert_eq!(status.program_bytes, 96);
         assert_eq!(status.matrix_address, 0x1000);
         assert_eq!(status.input_address, 0x2000);
         assert_eq!(status.output_address, 0x3000);
@@ -1018,7 +1646,7 @@ mod tests {
             .collect();
         assert_eq!(
             allocations,
-            vec![(100, 4, 7), (101, 4, 7), (102, 8, 7), (103, 128, 7)]
+            vec![(100, 4, 7), (101, 4, 7), (102, 8, 7), (103, 96, 7)]
         );
 
         let program = events
@@ -1028,7 +1656,7 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(program.len(), 128);
+        assert_eq!(program.len(), 96);
         assert_eq!(
             u64::from_le_bytes(program[0..8].try_into().unwrap()),
             0x2000
@@ -1058,7 +1686,7 @@ mod tests {
             vec![
                 (100, XRT_BO_SYNC_TO_DEVICE, 4),
                 (101, XRT_BO_SYNC_TO_DEVICE, 4),
-                (103, XRT_BO_SYNC_TO_DEVICE, 128),
+                (103, XRT_BO_SYNC_TO_DEVICE, 96),
                 (102, XRT_BO_SYNC_FROM_DEVICE, 8),
             ]
         );
@@ -1073,10 +1701,11 @@ mod tests {
         assert_eq!(
             writes,
             vec![
+                (0x2000, 0),
                 (0x0000, 1),
                 (0x0018, 0x4000),
                 (0x001c, 0),
-                (0x0028, 128),
+                (0x0028, 96),
                 (0x1000, 1)
             ]
         );
@@ -1094,27 +1723,216 @@ mod tests {
     }
 
     #[test]
-    fn timeout_preserves_output_and_releases_all_handles() {
-        let xrt = FakeXrt::new([]);
-        let mut output = [0xa5; 8];
+    fn native_ip_submit_uses_xcl_registers_and_explicit_four_bo_group() {
+        let xrt = FakeXrt::new([0, 1]);
+        let mut output = [0u8; 8];
 
-        let error =
-            submit_with_ops(&xrt, &test_config(1), test_request(), &mut output).unwrap_err();
+        let status =
+            submit_with_ops(&xrt, &native_ip_config(20), test_request(), &mut output).unwrap();
 
-        assert_eq!(error, XrtTmatmulError::Timeout { timeout_ms: 1 });
-        assert_eq!(output, [0xa5; 8]);
+        assert_eq!(status.stall_code, 1);
+        assert_eq!(output, [0x5a; 8]);
         let events = xrt.events();
-        assert!(!events
+        assert!(events.contains(&Event::XclOpen(0)));
+        assert!(events.contains(&Event::IpNameToIndex("ternip_big:ternip_big_1".to_string())));
+        assert!(events.contains(&Event::OpenContext {
+            index: 0,
+            shared: false,
+        }));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            Event::KernelOpen(_) | Event::GroupId(_) | Event::KernelClose
+        )));
+
+        let allocations: Vec<_> = events
             .iter()
-            .any(|event| matches!(event, Event::BoRead { .. })));
+            .filter_map(|event| match event {
+                Event::BoAlloc { bo, size, group } => Some((*bo, *size, *group)),
+                _ => None,
+            })
+            .collect();
         assert_eq!(
-            &events[events.len() - 6..],
+            allocations,
+            vec![(100, 4, 0), (101, 4, 0), (102, 8, 0), (103, 96, 0)]
+        );
+
+        let writes: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::IpRegisterWrite { offset, value } => Some((*offset, *value)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            writes,
+            vec![
+                (0x2000, 0),
+                (0x0000, 1),
+                (0x0018, 0x4000),
+                (0x001c, 0),
+                (0x0028, 96),
+                (0x1000, 1),
+            ]
+        );
+        assert!(events.contains(&Event::IpRegisterRead(0x1000)));
+        assert_eq!(
+            &events[events.len() - 7..],
             &[
                 Event::BoFree(103),
                 Event::BoFree(102),
                 Event::BoFree(101),
                 Event::BoFree(100),
-                Event::KernelClose,
+                Event::CloseContext(0),
+                Event::XclClose,
+                Event::DeviceClose,
+            ]
+        );
+    }
+
+    #[test]
+    #[ignore = "requires HETGPU_XRT_AU250_TEST=1 and the live AU250"]
+    fn au250_vector_add_runs_when_requested() {
+        assert_eq!(
+            std::env::var("HETGPU_XRT_AU250_TEST").as_deref(),
+            Ok("1"),
+            "set HETGPU_XRT_AU250_TEST=1 only inside au250-run"
+        );
+
+        let (vector_a, vector_b, expected) = au250_vector_add_fixture();
+        let mut output = vec![0u8; expected.len()];
+        let request = XrtTmatmulRequest {
+            assembly: r#"
+                ldv v0, PARAM_MATRIX
+                ldv v1, PARAM_INPUT
+                add v2, v0, v1
+                sv v2, PARAM_OUTPUT
+                stall
+            "#,
+            matrix_label: "PARAM_MATRIX",
+            input_label: "PARAM_INPUT",
+            output_label: "PARAM_OUTPUT",
+            matrix: &vector_a,
+            input: &vector_b,
+        };
+
+        let status = submit_xrt_tmatmul(request, &mut output).unwrap();
+        if output != expected {
+            let byte = output
+                .iter()
+                .zip(&expected)
+                .position(|(actual, wanted)| actual != wanted)
+                .unwrap();
+            let element_offset = byte & !1;
+            panic!(
+                "AU250 output mismatch at element {}: got raw {}, expected raw {}",
+                byte / 2,
+                i16::from_le_bytes(
+                    output[element_offset..element_offset + 2]
+                        .try_into()
+                        .unwrap()
+                ),
+                i16::from_le_bytes(
+                    expected[element_offset..element_offset + 2]
+                        .try_into()
+                        .unwrap()
+                )
+            );
+        }
+        eprintln!(
+            "AU250 XRT vector add PASS: {} elements, program={} bytes, stall=0x{:08x}",
+            AU250_VECTOR_ELEMENTS, status.program_bytes, status.stall_code
+        );
+    }
+
+    #[test]
+    #[ignore = "requires HETGPU_XRT_AU250_TEST=1 and the live AU250"]
+    fn au250_tmatmul_runs_when_requested() {
+        assert_eq!(
+            std::env::var("HETGPU_XRT_AU250_TEST").as_deref(),
+            Ok("1"),
+            "set HETGPU_XRT_AU250_TEST=1 only inside au250-run"
+        );
+
+        let (matrix, input, expected) = au250_tmatmul_fixture();
+        let mut output = vec![0u8; expected.len()];
+        let request = XrtTmatmulRequest {
+            assembly: TEST_ASSEMBLY,
+            matrix_label: "PARAM_MATRIX",
+            input_label: "PARAM_INPUT",
+            output_label: "PARAM_OUTPUT",
+            matrix: &matrix,
+            input: &input,
+        };
+
+        let status = submit_xrt_tmatmul(request, &mut output).unwrap();
+        if output != expected {
+            let byte = output
+                .iter()
+                .zip(&expected)
+                .position(|(actual, wanted)| actual != wanted)
+                .unwrap();
+            let element_offset = byte & !1;
+            panic!(
+                "AU250 tmatmul mismatch at lane {}, element {}: got raw {}, expected raw {}",
+                byte / 2 % AU250_BATCH_SIZE,
+                byte / 2 / AU250_BATCH_SIZE,
+                i16::from_le_bytes(
+                    output[element_offset..element_offset + 2]
+                        .try_into()
+                        .unwrap()
+                ),
+                i16::from_le_bytes(
+                    expected[element_offset..element_offset + 2]
+                        .try_into()
+                        .unwrap()
+                )
+            );
+        }
+        eprintln!(
+            "AU250 XRT tmatmul PASS: {}x{} ternary matrix, {} lanes, program={} bytes, stall=0x{:08x}",
+            AU250_VECTOR_LENGTH,
+            AU250_VECTOR_LENGTH,
+            AU250_BATCH_SIZE,
+            status.program_bytes,
+            status.stall_code
+        );
+    }
+
+    #[test]
+    fn timeout_quiesces_native_ip_before_releasing_all_handles() {
+        let xrt = FakeXrt::new([]);
+        let mut output = [0xa5; 8];
+
+        let error =
+            submit_with_ops(&xrt, &native_ip_config(1), test_request(), &mut output).unwrap_err();
+
+        assert_eq!(error, XrtTmatmulError::Timeout { timeout_ms: 1 });
+        assert_eq!(output, [0xa5; 8]);
+        let events = xrt.events();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::BoRead { .. }))
+        );
+        assert_eq!(
+            &events[events.len() - 11..],
+            &[
+                Event::IpRegisterWrite {
+                    offset: RESET,
+                    value: 1,
+                },
+                Event::IpRegisterWrite {
+                    offset: MM2S_DMACR,
+                    value: 1 << 2,
+                },
+                Event::IpRegisterRead(MM2S_DMACR),
+                Event::IpRegisterRead(MM2S_DMASR),
+                Event::BoFree(103),
+                Event::BoFree(102),
+                Event::BoFree(101),
+                Event::BoFree(100),
+                Event::CloseContext(0),
+                Event::XclClose,
                 Event::DeviceClose,
             ]
         );
@@ -1148,5 +1966,31 @@ mod tests {
                 Event::DeviceClose,
             ]
         );
+    }
+
+    #[test]
+    fn unconfirmed_quiescence_retains_live_bos_and_device_handles() {
+        let xrt = FakeXrt::new([]);
+        xrt.fail_register_read(MM2S_DMACR);
+        let mut output = [0xa5; 8];
+
+        let error =
+            submit_with_ops(&xrt, &native_ip_config(1), test_request(), &mut output).unwrap_err();
+
+        assert!(matches!(error, XrtTmatmulError::Quiesce { .. }));
+        assert_eq!(output, [0xa5; 8]);
+        let events = xrt.events();
+        assert!(events.contains(&Event::IpRegisterWrite {
+            offset: RESET,
+            value: 1,
+        }));
+        assert!(events.contains(&Event::IpRegisterWrite {
+            offset: MM2S_DMACR,
+            value: DMACR_RESET,
+        }));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            Event::BoFree(_) | Event::CloseContext(_) | Event::XclClose | Event::DeviceClose
+        )));
     }
 }

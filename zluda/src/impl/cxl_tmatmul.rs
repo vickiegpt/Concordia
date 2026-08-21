@@ -970,7 +970,10 @@ pub(crate) fn encode_smoke_program() -> Vec<u8> {
     program
 }
 
-fn finalize_replay_safe_program(mut program: Vec<u8>) -> Result<Vec<u8>, CxlTmatmulError> {
+fn finalize_replay_safe_program(
+    mut program: Vec<u8>,
+    vector_register_width: u8,
+) -> Result<Vec<u8>, CxlTmatmulError> {
     if program.len() % TMATMUL_INSTRUCTION_BYTES != 0 {
         return Err(CxlTmatmulError::AssembleFailed(format!(
             "encoded program length {} is not instruction aligned",
@@ -984,7 +987,8 @@ fn finalize_replay_safe_program(mut program: Vec<u8>) -> Result<Vec<u8>, CxlTmat
         )));
     }
 
-    let stall = encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0);
+    let stall =
+        encode_instr_with_register_width(0b101, 0, 0, 0, 0, 0, 0, 0, 0, vector_register_width);
     let Some(terminal_offset) = program.len().checked_sub(TMATMUL_INSTRUCTION_BYTES) else {
         return Err(CxlTmatmulError::AssembleFailed(
             "program must end with stall".to_string(),
@@ -1014,10 +1018,30 @@ pub(crate) fn assemble_tmatmul_program(
     assembly: &str,
     labels: &HashMap<String, u64>,
 ) -> Result<Vec<u8>, CxlTmatmulError> {
+    assemble_tmatmul_program_for_vector_registers(assembly, labels, 8)
+}
+
+pub(crate) fn assemble_tmatmul_program_for_vector_registers(
+    assembly: &str,
+    labels: &HashMap<String, u64>,
+    num_vector_registers: u8,
+) -> Result<Vec<u8>, CxlTmatmulError> {
+    if !(2..=8).contains(&num_vector_registers) {
+        return Err(CxlTmatmulError::AssembleFailed(format!(
+            "NumVectorRegisters must be between 2 and 8, got {num_vector_registers}"
+        )));
+    }
+    let vector_register_width = (u8::BITS - (num_vector_registers - 1).leading_zeros()) as u8;
     let mut program = Vec::new();
 
     for (line_no, tokens) in executable_assembly_tokens(assembly) {
-        let instr = assemble_tmatmul_instruction(line_no, &tokens, labels)?;
+        let instr = assemble_tmatmul_instruction(
+            line_no,
+            &tokens,
+            labels,
+            num_vector_registers,
+            vector_register_width,
+        )?;
         program.extend_from_slice(&instr);
     }
 
@@ -1027,7 +1051,7 @@ pub(crate) fn assemble_tmatmul_program(
         ));
     }
 
-    finalize_replay_safe_program(program)
+    finalize_replay_safe_program(program, vector_register_width)
 }
 
 fn executable_assembly_tokens(assembly: &str) -> Vec<(usize, Vec<&str>)> {
@@ -1596,10 +1620,37 @@ fn encode_instr(
     rms: u8,
     addr: u64,
 ) -> [u8; 16] {
-    encode_instr_with_unused(fu, op, vy, vb, va, ls, tm, rms, addr, 0)
+    encode_instr_with_register_width(fu, op, vy, vb, va, ls, tm, rms, addr, 3)
 }
 
-fn encode_instr_with_unused(
+fn encode_instr_with_register_width(
+    fu: u8,
+    op: u8,
+    vy: u8,
+    vb: u8,
+    va: u8,
+    ls: u8,
+    tm: u8,
+    rms: u8,
+    addr: u64,
+    vector_register_width: u8,
+) -> [u8; 16] {
+    encode_instr_with_unused_and_register_width(
+        fu,
+        op,
+        vy,
+        vb,
+        va,
+        ls,
+        tm,
+        rms,
+        addr,
+        0,
+        vector_register_width,
+    )
+}
+
+fn encode_instr_with_unused_and_register_width(
     fu: u8,
     op: u8,
     vy: u8,
@@ -1610,17 +1661,25 @@ fn encode_instr_with_unused(
     rms: u8,
     addr: u64,
     unused: u64,
+    vector_register_width: u8,
 ) -> [u8; 16] {
+    let va_shift = 71;
+    let vb_shift = va_shift + vector_register_width;
+    let vy_shift = vb_shift + vector_register_width;
+    let op_shift = vy_shift + vector_register_width;
+    let fu_shift = op_shift + 4;
+    let unused_shift = fu_shift + 3;
+    let register_mask = (1u8 << vector_register_width) - 1;
     let mut word = addr as u128;
     word |= ((rms & 0x7) as u128) << 64;
     word |= ((tm & 0x3) as u128) << 67;
     word |= ((ls & 0x3) as u128) << 69;
-    word |= ((va & 0x7) as u128) << 71;
-    word |= ((vb & 0x7) as u128) << 74;
-    word |= ((vy & 0x7) as u128) << 77;
-    word |= ((op & 0xf) as u128) << 80;
-    word |= ((fu & 0x7) as u128) << 84;
-    word |= (unused as u128) << 87;
+    word |= ((va & register_mask) as u128) << va_shift;
+    word |= ((vb & register_mask) as u128) << vb_shift;
+    word |= ((vy & register_mask) as u128) << vy_shift;
+    word |= ((op & 0xf) as u128) << op_shift;
+    word |= ((fu & 0x7) as u128) << fu_shift;
+    word |= (unused as u128) << unused_shift;
     word.to_le_bytes()
 }
 
@@ -1628,21 +1687,34 @@ fn assemble_tmatmul_instruction(
     line_no: usize,
     tokens: &[&str],
     labels: &HashMap<String, u64>,
+    num_vector_registers: u8,
+    vector_register_width: u8,
 ) -> Result<[u8; 16], CxlTmatmulError> {
     let op = tokens[0].to_ascii_lowercase();
     match op.as_str() {
         "ldv" | "sv" => {
             require_arg_count(line_no, tokens, 3)?;
-            let reg = parse_vector_register(line_no, tokens[1])?;
+            let reg = parse_vector_register_for_config(line_no, tokens[1], num_vector_registers)?;
             let addr = resolve_address(line_no, tokens[2], labels)?;
             let ls = if op == "ldv" { 0b01 } else { 0b10 };
-            Ok(encode_instr(0b001, 0, reg, reg, reg, ls, 0, 0, addr))
+            Ok(encode_instr_with_register_width(
+                0b001,
+                0,
+                reg,
+                reg,
+                reg,
+                ls,
+                0,
+                0,
+                addr,
+                vector_register_width,
+            ))
         }
         "add" | "sub" | "mul" | "div" => {
             require_arg_count(line_no, tokens, 4)?;
-            let va = parse_vector_register(line_no, tokens[1])?;
-            let vy = parse_vector_register(line_no, tokens[2])?;
-            let vb = parse_vector_register(line_no, tokens[3])?;
+            let va = parse_vector_register_for_config(line_no, tokens[1], num_vector_registers)?;
+            let vy = parse_vector_register_for_config(line_no, tokens[2], num_vector_registers)?;
+            let vb = parse_vector_register_for_config(line_no, tokens[3], num_vector_registers)?;
             let op_code = match op.as_str() {
                 "add" => 0b0001,
                 "sub" => 0b0010,
@@ -1650,19 +1722,41 @@ fn assemble_tmatmul_instruction(
                 "div" => 0b0100,
                 _ => unreachable!(),
             };
-            Ok(encode_instr(0b010, op_code, vy, vb, va, 0, 0, 0, 0))
+            Ok(encode_instr_with_register_width(
+                0b010,
+                op_code,
+                vy,
+                vb,
+                va,
+                0,
+                0,
+                0,
+                0,
+                vector_register_width,
+            ))
         }
         "sig" | "csig" | "silu" => {
             require_arg_count(line_no, tokens, 3)?;
-            let va = parse_vector_register(line_no, tokens[1])?;
-            let vy_vb = parse_vector_register(line_no, tokens[2])?;
+            let va = parse_vector_register_for_config(line_no, tokens[1], num_vector_registers)?;
+            let vy_vb = parse_vector_register_for_config(line_no, tokens[2], num_vector_registers)?;
             let op_code = match op.as_str() {
                 "sig" => 0b0101,
                 "csig" => 0b0110,
                 "silu" => 0b0111,
                 _ => unreachable!(),
             };
-            Ok(encode_instr(0b010, op_code, vy_vb, vy_vb, va, 0, 0, 0, 0))
+            Ok(encode_instr_with_register_width(
+                0b010,
+                op_code,
+                vy_vb,
+                vy_vb,
+                va,
+                0,
+                0,
+                0,
+                0,
+                vector_register_width,
+            ))
         }
         "tmatmul_go" | "tmatmul_go_nvint8" => {
             let unused = if op == "tmatmul_go" {
@@ -1684,39 +1778,115 @@ fn assemble_tmatmul_instruction(
                 delta | (0b10 << 8)
             };
             let addr = resolve_address(line_no, tokens[1], labels)?;
-            Ok(encode_instr_with_unused(
-                0b011, 0, 0, 0, 0, 0, 0b10, 0, addr, unused,
+            Ok(encode_instr_with_unused_and_register_width(
+                0b011,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0b10,
+                0,
+                addr,
+                unused,
+                vector_register_width,
             ))
         }
         "tmatmul_import" | "tmatmul_export" => {
             require_arg_count(line_no, tokens, 2)?;
-            let reg = parse_vector_register(line_no, tokens[1])?;
+            let reg = parse_vector_register_for_config(line_no, tokens[1], num_vector_registers)?;
             let tm = if op == "tmatmul_import" { 0b01 } else { 0b11 };
-            Ok(encode_instr(0b011, 0, reg, reg, reg, 0, tm, 0, 0))
+            Ok(encode_instr_with_register_width(
+                0b011,
+                0,
+                reg,
+                reg,
+                reg,
+                0,
+                tm,
+                0,
+                0,
+                vector_register_width,
+            ))
         }
         "rms_clear" => {
             require_arg_count(line_no, tokens, 1)?;
-            Ok(encode_instr(0b100, 0, 0, 0, 0, 0, 0, 0b001, 0))
+            Ok(encode_instr_with_register_width(
+                0b100,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0b001,
+                0,
+                vector_register_width,
+            ))
         }
         "rms_accumulate" => {
             require_arg_count(line_no, tokens, 2)?;
-            let reg = parse_vector_register(line_no, tokens[1])?;
-            Ok(encode_instr(0b100, 0, reg, reg, reg, 0, 0, 0b010, 0))
+            let reg = parse_vector_register_for_config(line_no, tokens[1], num_vector_registers)?;
+            Ok(encode_instr_with_register_width(
+                0b100,
+                0,
+                reg,
+                reg,
+                reg,
+                0,
+                0,
+                0b010,
+                0,
+                vector_register_width,
+            ))
         }
         "rms_finish_accumulate" => {
             require_arg_count(line_no, tokens, 2)?;
             let addr = resolve_address(line_no, tokens[1], labels)?;
-            Ok(encode_instr(0b100, 0, 0, 0, 0, 0, 0, 0b011, addr))
+            Ok(encode_instr_with_register_width(
+                0b100,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0b011,
+                addr,
+                vector_register_width,
+            ))
         }
         "rms_norm" => {
             require_arg_count(line_no, tokens, 3)?;
-            let va = parse_vector_register(line_no, tokens[1])?;
-            let vy_vb = parse_vector_register(line_no, tokens[2])?;
-            Ok(encode_instr(0b100, 0, vy_vb, vy_vb, va, 0, 0, 0b100, 0))
+            let va = parse_vector_register_for_config(line_no, tokens[1], num_vector_registers)?;
+            let vy_vb = parse_vector_register_for_config(line_no, tokens[2], num_vector_registers)?;
+            Ok(encode_instr_with_register_width(
+                0b100,
+                0,
+                vy_vb,
+                vy_vb,
+                va,
+                0,
+                0,
+                0b100,
+                0,
+                vector_register_width,
+            ))
         }
         "stall" => {
             require_arg_count(line_no, tokens, 1)?;
-            Ok(encode_instr(0b101, 0, 0, 0, 0, 0, 0, 0, 0))
+            Ok(encode_instr_with_register_width(
+                0b101,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                vector_register_width,
+            ))
         }
         _ => Err(CxlTmatmulError::AssembleFailed(format!(
             "line {line_no}: unsupported instruction '{}'",
@@ -1759,6 +1929,22 @@ fn parse_vector_register(line_no: usize, token: &str) -> Result<u8, CxlTmatmulEr
     } else {
         Err(CxlTmatmulError::AssembleFailed(format!(
             "line {line_no}: vector register '{token}' exceeds AFU v0..v7 encoding"
+        )))
+    }
+}
+
+fn parse_vector_register_for_config(
+    line_no: usize,
+    token: &str,
+    num_vector_registers: u8,
+) -> Result<u8, CxlTmatmulError> {
+    let register = parse_vector_register(line_no, token)?;
+    if register < num_vector_registers {
+        Ok(register)
+    } else {
+        Err(CxlTmatmulError::AssembleFailed(format!(
+            "line {line_no}: vector register '{token}' exceeds configured v0..v{} encoding",
+            num_vector_registers - 1
         )))
     }
 }
