@@ -941,7 +941,9 @@ mod tests {
     const KERNEL_HANDLE: usize = 2;
     const IP_DEVICE_HANDLE: usize = 3;
     const FIRST_BO_HANDLE: usize = 100;
-    const AU250_VECTOR_ELEMENTS: usize = 9 * 1024;
+    const AU250_BATCH_SIZE: usize = 9;
+    const AU250_VECTOR_LENGTH: usize = 1024;
+    const AU250_VECTOR_ELEMENTS: usize = AU250_BATCH_SIZE * AU250_VECTOR_LENGTH;
     const TEST_ASSEMBLY: &str = r#"
         ldv v0, PARAM_INPUT
         tmatmul_import v0
@@ -1243,6 +1245,25 @@ mod tests {
         (vector_a, vector_b, expected)
     }
 
+    fn au250_tmatmul_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut matrix = vec![0u8; AU250_VECTOR_LENGTH * AU250_VECTOR_LENGTH / 4];
+        matrix[..2 * AU250_VECTOR_LENGTH / 4].fill(0x55);
+
+        let mut input = vec![0u8; AU250_VECTOR_ELEMENTS * 2];
+        let mut expected = vec![0u8; AU250_VECTOR_ELEMENTS * 2];
+        for lane in 0..AU250_BATCH_SIZE {
+            for column in [lane, lane + 1] {
+                let offset = (lane * AU250_VECTOR_LENGTH + column) * 2;
+                input[offset..offset + 2].copy_from_slice(&32i16.to_le_bytes());
+            }
+            for row in 0..2 {
+                let offset = (lane * AU250_VECTOR_LENGTH + row) * 2;
+                expected[offset..offset + 2].copy_from_slice(&64i16.to_le_bytes());
+            }
+        }
+        (matrix, input, expected)
+    }
+
     #[test]
     fn instance_registers_match_ternary_matmul_contract() {
         assert_eq!(
@@ -1414,6 +1435,65 @@ mod tests {
 
         assert_eq!(compact, expected);
         assert_eq!(compact.len(), 5 * INSTRUCTION_BYTES);
+    }
+
+    #[test]
+    fn au250_tmatmul_fixture_matches_repository_canonical_case() {
+        let (matrix, input, expected) = au250_tmatmul_fixture();
+
+        assert_eq!(matrix.len(), 1024 * 1024 / 4);
+        assert!(matrix[..512].iter().all(|byte| *byte == 0x55));
+        assert!(matrix[512..].iter().all(|byte| *byte == 0));
+        for lane in 0..9 {
+            let input_raw: Vec<i16> = input[lane * 2048..(lane + 1) * 2048]
+                .chunks_exact(2)
+                .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+                .collect();
+            let expected_raw: Vec<i16> = expected[lane * 2048..(lane + 1) * 2048]
+                .chunks_exact(2)
+                .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+                .collect();
+
+            assert_eq!(input_raw.iter().filter(|value| **value == 32).count(), 2);
+            assert_eq!(input_raw[lane], 32);
+            assert_eq!(input_raw[lane + 1], 32);
+            assert_eq!(&expected_raw[..2], &[64, 64]);
+            assert!(expected_raw[2..].iter().all(|value| *value == 0));
+        }
+    }
+
+    #[test]
+    fn tmatmul_image_matches_existing_xcu250_assembler() {
+        let labels = HashMap::from([
+            ("PARAM_MATRIX".to_string(), 0x1000),
+            ("PARAM_INPUT".to_string(), 0x2000),
+            ("PARAM_OUTPUT".to_string(), 0x3000),
+        ]);
+        let replay_safe = super::super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
+            TEST_ASSEMBLY,
+            &labels,
+            4,
+        )
+        .unwrap();
+        let compact = compact_xrt_program(&replay_safe).unwrap();
+        let expected = [
+            [
+                0x00, 0x20, 0, 0, 0, 0, 0, 0, 0x20, 0x00, 0x02, 0, 0, 0, 0, 0,
+            ],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x00, 0x06, 0, 0, 0, 0, 0],
+            [
+                0x00, 0x10, 0, 0, 0, 0, 0, 0, 0x10, 0x00, 0x06, 0, 0, 0, 0, 0,
+            ],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0x98, 0x0a, 0x06, 0, 0, 0, 0, 0],
+            [
+                0x00, 0x30, 0, 0, 0, 0, 0, 0, 0xc0, 0x0a, 0x02, 0, 0, 0, 0, 0,
+            ],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x0a, 0, 0, 0, 0, 0],
+        ]
+        .concat();
+
+        assert_eq!(compact, expected);
+        assert_eq!(compact.len(), 6 * INSTRUCTION_BYTES);
     }
 
     #[test]
@@ -1644,6 +1724,60 @@ mod tests {
         eprintln!(
             "AU250 XRT vector add PASS: {} elements, program={} bytes, stall=0x{:08x}",
             AU250_VECTOR_ELEMENTS, status.program_bytes, status.stall_code
+        );
+    }
+
+    #[test]
+    #[ignore = "requires HETGPU_XRT_AU250_TEST=1 and the live AU250"]
+    fn au250_tmatmul_runs_when_requested() {
+        assert_eq!(
+            std::env::var("HETGPU_XRT_AU250_TEST").as_deref(),
+            Ok("1"),
+            "set HETGPU_XRT_AU250_TEST=1 only inside au250-run"
+        );
+
+        let (matrix, input, expected) = au250_tmatmul_fixture();
+        let mut output = vec![0u8; expected.len()];
+        let request = XrtTmatmulRequest {
+            assembly: TEST_ASSEMBLY,
+            matrix_label: "PARAM_MATRIX",
+            input_label: "PARAM_INPUT",
+            output_label: "PARAM_OUTPUT",
+            matrix: &matrix,
+            input: &input,
+        };
+
+        let status = submit_xrt_tmatmul(request, &mut output).unwrap();
+        if output != expected {
+            let byte = output
+                .iter()
+                .zip(&expected)
+                .position(|(actual, wanted)| actual != wanted)
+                .unwrap();
+            let element_offset = byte & !1;
+            panic!(
+                "AU250 tmatmul mismatch at lane {}, element {}: got raw {}, expected raw {}",
+                byte / 2 / AU250_VECTOR_LENGTH,
+                byte / 2 % AU250_VECTOR_LENGTH,
+                i16::from_le_bytes(
+                    output[element_offset..element_offset + 2]
+                        .try_into()
+                        .unwrap()
+                ),
+                i16::from_le_bytes(
+                    expected[element_offset..element_offset + 2]
+                        .try_into()
+                        .unwrap()
+                )
+            );
+        }
+        eprintln!(
+            "AU250 XRT tmatmul PASS: {}x{} ternary matrix, {} lanes, program={} bytes, stall=0x{:08x}",
+            AU250_VECTOR_LENGTH,
+            AU250_VECTOR_LENGTH,
+            AU250_BATCH_SIZE,
+            status.program_bytes,
+            status.stall_code
         );
     }
 

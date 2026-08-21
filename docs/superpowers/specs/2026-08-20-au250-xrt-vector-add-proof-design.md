@@ -91,3 +91,15 @@ The work is complete only when all of the following hold:
 5. FPGA temperature remains below the wrapper guard and the post-run device state shows no fatal error.
 
 This vector-add gate proves the real Rust four-BO/XRT path, BO address encoding, instruction DMA, accelerator execution, and output readback. It does not yet prove ternary-matmul numeric correctness; that is the next program-level gate.
+
+## Ternary-Matmul Follow-on Gate
+
+After vector add passes, the same backend runs the canonical repository tmatmul case from `sw_utils/target/test_pynqvivado_basic.py` on `ternip_big_1`:
+
+- the input for each of nine lanes contains fixed-point 1.0 at columns `lane` and `lane + 1`, and zero elsewhere;
+- matrix rows 0 and 1 contain ternary `+1`, with every other row zero;
+- the matrix BO uses the repository's little-endian four-trits-per-byte format, producing 512 leading `0x55` bytes followed by zeros;
+- the exact expected result in every lane is fixed-point 2.0 in output rows 0 and 1 and zero elsewhere;
+- the existing configurable assembler emits `ldv`, `tmatmul_import`, `tmatmul_go`, `tmatmul_export`, `sv`, and `stall` as six 128-bit instructions.
+
+The follow-on wrapper `zluda/tests/run_au250_xrt_tmatmul.sh` uses the same xclbin, native-IP selector, explicit bank0 group, cached app215 toolchain, and post-run health reports. Completion requires exact equality for all 9 x 1024 signed 16-bit outputs, nonzero STALL, a GOOD firewall, and temperature below the guard.
