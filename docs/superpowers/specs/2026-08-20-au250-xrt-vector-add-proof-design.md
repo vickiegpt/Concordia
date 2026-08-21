@@ -16,6 +16,7 @@ The authoritative artifact is `/au250_xrt/example/asym9_bs9_2641toks.xclbin`, al
 - instruction DMA registers at `MM2S_DMACR=0x0000`, `MM2S_SA=0x0018`, and `MM2S_LENGTH=0x0028`;
 - completion at `STALL=0x1000` and accelerator reset release at `RESET=0x2000`;
 - vector shape `(9, 1024)` with signed little-endian 16-bit fixed point and exponent -5.
+- four architectural vector registers, so the existing configurable assembler uses two-bit vector-register fields.
 
 The xclbin has three `ternip_big` instances. This proof deliberately selects only `ternip_big_1`, matching the known-good example's bank0 placement. Multi-CU scheduling is outside this proof.
 
@@ -38,7 +39,7 @@ sv v2, PARAM_OUTPUT
 stall
 ```
 
-The existing assembler binds the three labels to the real XRT BO addresses and emits little-endian 128-bit instructions. The backend transfers the complete replay-safe program image returned by that assembler.
+The existing assembler binds the three labels to the real XRT BO addresses and emits little-endian 128-bit instructions. The XRT backend selects the xclbin's four-register layout and removes only the zero slots inserted by the CXL replay-safe eight-slot wrapper, leaving the five semantic instructions byte-identical to the repository's `xcu250_D=1024` assembler output.
 
 Before starting instruction DMA, the backend writes zero to the selected instance's reset register at offset `0x2000`. This matches the known-good Python launch. The reset write is part of the common repository accelerator contract and remains instance-relative, like STALL and the DMA registers.
 
@@ -67,6 +68,7 @@ The run procedure is:
    - `HETGPU_XRT_IP_NAME=ternip_big:ternip_big_1`
    - `HETGPU_XRT_INSTANCE=0`
    - `HETGPU_XRT_MEMORY_GROUP=0`
+   - `HETGPU_XRT_NUM_VECTOR_REGISTERS=4`
    - the hardware-test opt-in variable enabled.
 4. Run only the ignored AU250 vector-add test with exact output enabled.
 
@@ -82,7 +84,7 @@ RAII cleanup continues to release the four BOs, native-IP context and device han
 
 The work is complete only when all of the following hold:
 
-1. Unit tests verify native-IP selection, explicit memory group use, reset release before DMA start, and retain the existing four-BO, address-binding, timeout, and cleanup assertions.
+1. Unit tests verify native-IP selection, explicit memory group use, byte-identical five-instruction AU250 encoding, reset release before DMA start, and retain the existing four-BO, address-binding, timeout, and cleanup assertions.
 2. Existing `cxl_tmatmul` tests still pass.
 3. The app215-built test executable starts inside `au250-run` and resolves the container XRT library.
 4. The live test selects `ternip_big_1`, completes with a nonzero STALL code, and reports exact equality for all 9 x 1024 output elements.

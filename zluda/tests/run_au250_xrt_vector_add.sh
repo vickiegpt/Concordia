@@ -31,6 +31,7 @@ export HETGPU_XRT_XCLBIN=/au250_xrt/example/asym9_bs9_2641toks.xclbin
 export HETGPU_XRT_IP_NAME=ternip_big:ternip_big_1
 export HETGPU_XRT_INSTANCE=0
 export HETGPU_XRT_MEMORY_GROUP=0
+export HETGPU_XRT_NUM_VECTOR_REGISTERS=4
 export HETGPU_XRT_TIMEOUT_MS=10000
 
 cargo test -p zluda --features nvidia --no-default-features \

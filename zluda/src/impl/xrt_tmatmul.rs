@@ -60,6 +60,7 @@ struct XrtConfig {
     instance: u32,
     memory_arg: i32,
     memory_group: Option<u32>,
+    num_vector_registers: u8,
     timeout_ms: u32,
 }
 
@@ -130,6 +131,16 @@ impl XrtConfig {
                 "HETGPU_XRT_MEMORY_GROUP is required when HETGPU_XRT_IP_NAME is set".to_string(),
             ));
         }
+        let num_vector_registers_u32 = parse_u32(
+            "HETGPU_XRT_NUM_VECTOR_REGISTERS",
+            lookup("HETGPU_XRT_NUM_VECTOR_REGISTERS"),
+            8,
+        )?;
+        let num_vector_registers = u8::try_from(num_vector_registers_u32).map_err(|_| {
+            XrtTmatmulError::Config(
+                "HETGPU_XRT_NUM_VECTOR_REGISTERS does not fit in u8".to_string(),
+            )
+        })?;
 
         Ok(Self {
             xclbin: PathBuf::from(xclbin),
@@ -139,6 +150,7 @@ impl XrtConfig {
             instance,
             memory_arg,
             memory_group,
+            num_vector_registers,
             timeout_ms,
         })
     }
@@ -694,8 +706,13 @@ fn submit_with_ops<O: XrtOps>(
         input_address,
         output_address,
     )?;
-    let program = super::cxl_tmatmul::assemble_tmatmul_program(request.assembly, &labels)
-        .map_err(|error| XrtTmatmulError::Assemble(error.to_string()))?;
+    let replay_safe_program = super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
+        request.assembly,
+        &labels,
+        config.num_vector_registers,
+    )
+    .map_err(|error| XrtTmatmulError::Assemble(error.to_string()))?;
+    let program = compact_xrt_program(&replay_safe_program)?;
     validate_program(&program)?;
     let program_bo = session.allocate_bo(program.len(), group, "xrtBOAlloc(program)")?;
     let program_address = session.bo_address(program_bo, "program")?;
@@ -854,6 +871,30 @@ fn validate_program(program: &[u8]) -> Result<(), XrtTmatmulError> {
         XrtTmatmulError::InvalidProgram("program length does not fit MM2S_LENGTH".to_string())
     })?;
     Ok(())
+}
+
+fn compact_xrt_program(replay_safe_program: &[u8]) -> Result<Vec<u8>, XrtTmatmulError> {
+    validate_program(replay_safe_program)?;
+    let terminal_offset = replay_safe_program.len() - INSTRUCTION_BYTES;
+    let padding_offset = replay_safe_program[..terminal_offset]
+        .chunks_exact(INSTRUCTION_BYTES)
+        .position(|instruction| instruction.iter().all(|byte| *byte == 0))
+        .map_or(terminal_offset, |slot| slot * INSTRUCTION_BYTES);
+    if replay_safe_program[padding_offset..terminal_offset]
+        .iter()
+        .any(|byte| *byte != 0)
+    {
+        return Err(XrtTmatmulError::InvalidProgram(
+            "replay-safe padding contains a nonzero instruction after its first zero slot"
+                .to_string(),
+        ));
+    }
+
+    let mut compact = Vec::with_capacity(padding_offset + INSTRUCTION_BYTES);
+    compact.extend_from_slice(&replay_safe_program[..padding_offset]);
+    compact.extend_from_slice(&replay_safe_program[terminal_offset..]);
+    validate_program(&compact)?;
+    Ok(compact)
 }
 
 fn bind_labels(
@@ -1162,6 +1203,7 @@ mod tests {
             instance: 0,
             memory_arg: 14,
             memory_group: None,
+            num_vector_registers: 8,
             timeout_ms,
         }
     }
@@ -1181,6 +1223,7 @@ mod tests {
         XrtConfig {
             ip_name: Some("ternip_big:ternip_big_1".to_string()),
             memory_group: Some(0),
+            num_vector_registers: 4,
             ..test_config(timeout_ms)
         }
     }
@@ -1258,6 +1301,7 @@ mod tests {
         assert_eq!(config.instance, 0);
         assert_eq!(config.memory_arg, 14);
         assert_eq!(config.memory_group, None);
+        assert_eq!(config.num_vector_registers, 8);
         assert_eq!(config.timeout_ms, 10_000);
     }
 
@@ -1278,12 +1322,14 @@ mod tests {
             "HETGPU_XRT_XCLBIN" => Some("kernel.xclbin".into()),
             "HETGPU_XRT_IP_NAME" => Some("ternip_big:ternip_big_1".into()),
             "HETGPU_XRT_MEMORY_GROUP" => Some("0".into()),
+            "HETGPU_XRT_NUM_VECTOR_REGISTERS" => Some("4".into()),
             _ => None,
         })
         .unwrap();
 
         assert_eq!(config.ip_name.as_deref(), Some("ternip_big:ternip_big_1"));
         assert_eq!(config.memory_group, Some(0));
+        assert_eq!(config.num_vector_registers, 4);
     }
 
     #[test]
@@ -1331,6 +1377,46 @@ mod tests {
     }
 
     #[test]
+    fn xrt_compaction_matches_known_good_five_instruction_image() {
+        let labels = HashMap::from([
+            ("PARAM_MATRIX".to_string(), 0x1000),
+            ("PARAM_INPUT".to_string(), 0x2000),
+            ("PARAM_OUTPUT".to_string(), 0x3000),
+        ]);
+        let replay_safe = super::super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
+            r#"
+                ldv v0, PARAM_MATRIX
+                ldv v1, PARAM_INPUT
+                add v2, v0, v1
+                sv v2, PARAM_OUTPUT
+                stall
+            "#,
+            &labels,
+            4,
+        )
+        .unwrap();
+
+        let compact = compact_xrt_program(&replay_safe).unwrap();
+        let expected = [
+            [
+                0x00, 0x10, 0, 0, 0, 0, 0, 0, 0x20, 0x00, 0x02, 0, 0, 0, 0, 0,
+            ],
+            [
+                0x00, 0x20, 0, 0, 0, 0, 0, 0, 0xa0, 0x0a, 0x02, 0, 0, 0, 0, 0,
+            ],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x23, 0x04, 0, 0, 0, 0, 0],
+            [
+                0x00, 0x30, 0, 0, 0, 0, 0, 0, 0x40, 0x15, 0x02, 0, 0, 0, 0, 0,
+            ],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x0a, 0, 0, 0, 0, 0],
+        ]
+        .concat();
+
+        assert_eq!(compact, expected);
+        assert_eq!(compact.len(), 5 * INSTRUCTION_BYTES);
+    }
+
+    #[test]
     #[ignore = "requires an installed XRT userspace runtime"]
     fn installed_xrt_symbols_resolve() {
         let api = RealXrt::load(true).unwrap();
@@ -1346,7 +1432,7 @@ mod tests {
         let status = submit_with_ops(&xrt, &test_config(20), test_request(), &mut output).unwrap();
 
         assert_eq!(output, [0x5a; 8]);
-        assert_eq!(status.program_bytes, 128);
+        assert_eq!(status.program_bytes, 96);
         assert_eq!(status.matrix_address, 0x1000);
         assert_eq!(status.input_address, 0x2000);
         assert_eq!(status.output_address, 0x3000);
@@ -1363,7 +1449,7 @@ mod tests {
             .collect();
         assert_eq!(
             allocations,
-            vec![(100, 4, 7), (101, 4, 7), (102, 8, 7), (103, 128, 7)]
+            vec![(100, 4, 7), (101, 4, 7), (102, 8, 7), (103, 96, 7)]
         );
 
         let program = events
@@ -1373,7 +1459,7 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(program.len(), 128);
+        assert_eq!(program.len(), 96);
         assert_eq!(
             u64::from_le_bytes(program[0..8].try_into().unwrap()),
             0x2000
@@ -1403,7 +1489,7 @@ mod tests {
             vec![
                 (100, XRT_BO_SYNC_TO_DEVICE, 4),
                 (101, XRT_BO_SYNC_TO_DEVICE, 4),
-                (103, XRT_BO_SYNC_TO_DEVICE, 128),
+                (103, XRT_BO_SYNC_TO_DEVICE, 96),
                 (102, XRT_BO_SYNC_FROM_DEVICE, 8),
             ]
         );
@@ -1422,7 +1508,7 @@ mod tests {
                 (0x0000, 1),
                 (0x0018, 0x4000),
                 (0x001c, 0),
-                (0x0028, 128),
+                (0x0028, 96),
                 (0x1000, 1)
             ]
         );
@@ -1470,7 +1556,7 @@ mod tests {
             .collect();
         assert_eq!(
             allocations,
-            vec![(100, 4, 0), (101, 4, 0), (102, 8, 0), (103, 128, 0)]
+            vec![(100, 4, 0), (101, 4, 0), (102, 8, 0), (103, 96, 0)]
         );
 
         let writes: Vec<_> = events
@@ -1487,7 +1573,7 @@ mod tests {
                 (0x0000, 1),
                 (0x0018, 0x4000),
                 (0x001c, 0),
-                (0x0028, 128),
+                (0x0028, 96),
                 (0x1000, 1),
             ]
         );
