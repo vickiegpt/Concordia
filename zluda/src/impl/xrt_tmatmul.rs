@@ -6,10 +6,14 @@ use std::time::{Duration, Instant};
 
 const AXI_INSTANCE_STRIDE: u32 = 0x4000;
 const MM2S_DMACR: u32 = 0x0000;
+const MM2S_DMASR: u32 = 0x0004;
 const MM2S_SA: u32 = 0x0018;
 const MM2S_LENGTH: u32 = 0x0028;
 const STALL: u32 = 0x1000;
 const RESET: u32 = 0x2000;
+const DMACR_RESET: u32 = 1 << 2;
+const DMASR_HALTED: u32 = 1 << 0;
+const DMASR_IDLE: u32 = 1 << 1;
 const INSTRUCTION_BYTES: usize = 16;
 const XRT_BO_SYNC_TO_DEVICE: i32 = 0;
 const XRT_BO_SYNC_FROM_DEVICE: i32 = 1;
@@ -195,7 +199,7 @@ struct NativeIpApi {
 impl NativeIpApi {
     fn load() -> Result<Self, XrtTmatmulError> {
         let library = open_library(&["libxrt_core.so.2", "libxrt_core.so"])?;
-        let result = unsafe {
+        let result: Result<Self, XrtTmatmulError> = unsafe {
             Ok(Self {
                 library,
                 open: load_symbol(library, c"xclOpen")?,
@@ -212,7 +216,11 @@ impl NativeIpApi {
                 libc::dlclose(library);
             }
         }
-        result
+        result.map_err(|error| {
+            XrtTmatmulError::DynamicLoad(format!(
+                "AP_CTRL_NONE requires the app215-compatible legacy xcl register API: {error}"
+            ))
+        })
     }
 }
 
@@ -451,6 +459,7 @@ pub(crate) enum XrtTmatmulError {
     InvalidBuffer(String),
     Assemble(String),
     Timeout { timeout_ms: u32 },
+    Quiesce { primary: String, cleanup: String },
 }
 
 impl fmt::Display for XrtTmatmulError {
@@ -468,6 +477,10 @@ impl fmt::Display for XrtTmatmulError {
             Self::Timeout { timeout_ms } => {
                 write!(f, "XRT tmatmul timed out after {timeout_ms} ms")
             }
+            Self::Quiesce { primary, cleanup } => write!(
+                f,
+                "XRT tmatmul failed ({primary}) and device quiescence could not be confirmed ({cleanup}); handles were retained to protect live BOs"
+            ),
         }
     }
 }
@@ -510,6 +523,7 @@ struct Session<'a, O: XrtOps> {
     ip_index: Option<u32>,
     uuid: Xuid,
     bos: Vec<Handle>,
+    release_handles: bool,
 }
 
 impl<'a, O: XrtOps> Session<'a, O> {
@@ -526,6 +540,7 @@ impl<'a, O: XrtOps> Session<'a, O> {
             ip_index: None,
             uuid: [0; 16],
             bos: Vec::new(),
+            release_handles: true,
         };
 
         let xclbin = config.xclbin.to_str().ok_or_else(|| {
@@ -639,10 +654,72 @@ impl<'a, O: XrtOps> Session<'a, O> {
             )
         }
     }
+
+    fn quiesce_after_launch(
+        &mut self,
+        registers: InstanceRegisters,
+        timeout_ms: u32,
+    ) -> Result<(), XrtTmatmulError> {
+        // Until reset completion is observed, retaining the BO and device handles is safer
+        // than allowing an independently running engine to access released storage.
+        self.release_handles = false;
+        self.register_write(
+            registers.reset,
+            1,
+            "xrtKernelWriteRegister(RESET quiesce)",
+            "xclRegWrite(RESET quiesce)",
+        )?;
+        self.register_write(
+            registers.dma_control,
+            DMACR_RESET,
+            "xrtKernelWriteRegister(MM2S_DMACR reset)",
+            "xclRegWrite(MM2S_DMACR reset)",
+        )?;
+
+        let deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms.max(100)));
+        loop {
+            let mut control = 0;
+            self.register_read(
+                registers.dma_control,
+                &mut control,
+                "xrtKernelReadRegister(MM2S_DMACR reset)",
+                "xclRegRead(MM2S_DMACR reset)",
+            )?;
+            if control & DMACR_RESET == 0 {
+                let mut status = 0;
+                self.register_read(
+                    registers.dma_control + MM2S_DMASR,
+                    &mut status,
+                    "xrtKernelReadRegister(MM2S_DMASR quiesce)",
+                    "xclRegRead(MM2S_DMASR quiesce)",
+                )?;
+                if status & (DMASR_HALTED | DMASR_IDLE) != 0 {
+                    self.release_handles = true;
+                    return Ok(());
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(XrtTmatmulError::Timeout {
+                    timeout_ms: timeout_ms.max(100),
+                });
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 impl<O: XrtOps> Drop for Session<'_, O> {
     fn drop(&mut self) {
+        if !self.release_handles {
+            // The process/driver owns final recovery. Do not release or reuse addresses that
+            // an engine may still be accessing when quiescence could not be confirmed.
+            self.bos.clear();
+            self.kernel = std::ptr::null_mut();
+            self.ip_index = None;
+            self.ip_device = std::ptr::null_mut();
+            self.device = std::ptr::null_mut();
+            return;
+        }
         while let Some(bo) = self.bos.pop() {
             let _ = self.ops.bo_free(bo);
         }
@@ -753,23 +830,37 @@ fn submit_with_ops<O: XrtOps>(
     )?;
 
     let deadline = Instant::now() + Duration::from_millis(u64::from(config.timeout_ms));
-    let stall_code = loop {
-        let mut value = 0;
-        session.register_read(
-            registers.stall,
-            &mut value,
-            "xrtKernelReadRegister(STALL)",
-            "xclRegRead(STALL)",
-        )?;
-        if value != 0 {
-            break value;
+    let wait_result = (|| {
+        loop {
+            let mut value = 0;
+            session.register_read(
+                registers.stall,
+                &mut value,
+                "xrtKernelReadRegister(STALL)",
+                "xclRegRead(STALL)",
+            )?;
+            if value != 0 {
+                return Ok(value);
+            }
+            if Instant::now() >= deadline {
+                return Err(XrtTmatmulError::Timeout {
+                    timeout_ms: config.timeout_ms,
+                });
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
-        if Instant::now() >= deadline {
-            return Err(XrtTmatmulError::Timeout {
-                timeout_ms: config.timeout_ms,
-            });
+    })();
+    let stall_code = match wait_result {
+        Ok(value) => value,
+        Err(primary) => {
+            if let Err(cleanup) = session.quiesce_after_launch(registers, config.timeout_ms) {
+                return Err(XrtTmatmulError::Quiesce {
+                    primary: primary.to_string(),
+                    cleanup: cleanup.to_string(),
+                });
+            }
+            return Err(primary);
         }
-        std::thread::sleep(Duration::from_millis(1));
     };
 
     check_xrt(
@@ -1006,6 +1097,7 @@ mod tests {
         next_bo: usize,
         stall_reads: VecDeque<u32>,
         fail_register_write: Option<u32>,
+        fail_register_read: Option<u32>,
         output_pattern: u8,
     }
 
@@ -1021,6 +1113,7 @@ mod tests {
                     next_bo: FIRST_BO_HANDLE,
                     stall_reads: stall_reads.into_iter().collect(),
                     fail_register_write: None,
+                    fail_register_read: None,
                     output_pattern: 0x5a,
                 }),
             }
@@ -1028,6 +1121,10 @@ mod tests {
 
         fn fail_register_write(&self, offset: u32) {
             self.state.borrow_mut().fail_register_write = Some(offset);
+        }
+
+        fn fail_register_read(&self, offset: u32) {
+            self.state.borrow_mut().fail_register_read = Some(offset);
         }
 
         fn events(&self) -> Vec<Event> {
@@ -1084,7 +1181,15 @@ mod tests {
         fn kernel_read_register(&self, _kernel: Handle, offset: u32, value: &mut u32) -> i32 {
             let mut state = self.state.borrow_mut();
             state.events.push(Event::RegisterRead(offset));
-            *value = state.stall_reads.pop_front().unwrap_or(0);
+            if state.fail_register_read == Some(offset) {
+                return -5;
+            }
+            *value = match offset {
+                STALL => state.stall_reads.pop_front().unwrap_or(0),
+                MM2S_DMACR => 0,
+                MM2S_DMASR => 1,
+                _ => 0,
+            };
             0
         }
 
@@ -1134,7 +1239,15 @@ mod tests {
         fn xcl_reg_read(&self, _device: Handle, _index: u32, offset: u32, value: &mut u32) -> i32 {
             let mut state = self.state.borrow_mut();
             state.events.push(Event::IpRegisterRead(offset));
-            *value = state.stall_reads.pop_front().unwrap_or(0);
+            if state.fail_register_read == Some(offset) {
+                return -5;
+            }
+            *value = match offset {
+                STALL => state.stall_reads.pop_front().unwrap_or(0),
+                MM2S_DMACR => 0,
+                MM2S_DMASR => 1,
+                _ => 0,
+            };
             0
         }
 
@@ -1459,9 +1572,11 @@ mod tests {
             assert_eq!(expected_raw[lane], 64);
             assert_eq!(expected_raw[AU250_BATCH_SIZE + lane], 64);
         }
-        assert!(expected_raw[2 * AU250_BATCH_SIZE..]
-            .iter()
-            .all(|value| *value == 0));
+        assert!(
+            expected_raw[2 * AU250_BATCH_SIZE..]
+                .iter()
+                .all(|value| *value == 0)
+        );
     }
 
     #[test]
@@ -1499,7 +1614,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an installed XRT userspace runtime"]
+    #[ignore = "requires the app215 XRT legacy xcl register API used by AU250"]
     fn installed_xrt_symbols_resolve() {
         let api = RealXrt::load(true).unwrap();
         assert!(!api.library.is_null());
@@ -1784,27 +1899,40 @@ mod tests {
     }
 
     #[test]
-    fn timeout_preserves_output_and_releases_all_handles() {
+    fn timeout_quiesces_native_ip_before_releasing_all_handles() {
         let xrt = FakeXrt::new([]);
         let mut output = [0xa5; 8];
 
         let error =
-            submit_with_ops(&xrt, &test_config(1), test_request(), &mut output).unwrap_err();
+            submit_with_ops(&xrt, &native_ip_config(1), test_request(), &mut output).unwrap_err();
 
         assert_eq!(error, XrtTmatmulError::Timeout { timeout_ms: 1 });
         assert_eq!(output, [0xa5; 8]);
         let events = xrt.events();
-        assert!(!events
-            .iter()
-            .any(|event| matches!(event, Event::BoRead { .. })));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::BoRead { .. }))
+        );
         assert_eq!(
-            &events[events.len() - 6..],
+            &events[events.len() - 11..],
             &[
+                Event::IpRegisterWrite {
+                    offset: RESET,
+                    value: 1,
+                },
+                Event::IpRegisterWrite {
+                    offset: MM2S_DMACR,
+                    value: 1 << 2,
+                },
+                Event::IpRegisterRead(MM2S_DMACR),
+                Event::IpRegisterRead(MM2S_DMASR),
                 Event::BoFree(103),
                 Event::BoFree(102),
                 Event::BoFree(101),
                 Event::BoFree(100),
-                Event::KernelClose,
+                Event::CloseContext(0),
+                Event::XclClose,
                 Event::DeviceClose,
             ]
         );
@@ -1838,5 +1966,31 @@ mod tests {
                 Event::DeviceClose,
             ]
         );
+    }
+
+    #[test]
+    fn unconfirmed_quiescence_retains_live_bos_and_device_handles() {
+        let xrt = FakeXrt::new([]);
+        xrt.fail_register_read(MM2S_DMACR);
+        let mut output = [0xa5; 8];
+
+        let error =
+            submit_with_ops(&xrt, &native_ip_config(1), test_request(), &mut output).unwrap_err();
+
+        assert!(matches!(error, XrtTmatmulError::Quiesce { .. }));
+        assert_eq!(output, [0xa5; 8]);
+        let events = xrt.events();
+        assert!(events.contains(&Event::IpRegisterWrite {
+            offset: RESET,
+            value: 1,
+        }));
+        assert!(events.contains(&Event::IpRegisterWrite {
+            offset: MM2S_DMACR,
+            value: DMACR_RESET,
+        }));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            Event::BoFree(_) | Event::CloseContext(_) | Event::XclClose | Event::DeviceClose
+        )));
     }
 }

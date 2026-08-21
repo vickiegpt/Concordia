@@ -43,7 +43,7 @@ The existing assembler binds the three labels to the real XRT BO addresses and e
 
 Before starting instruction DMA, the backend writes zero to the selected instance's reset register at offset `0x2000`. This matches the known-good Python launch. The reset write is part of the common repository accelerator contract and remains instance-relative, like STALL and the DMA registers.
 
-The existing `xrtPLKernelOpenExclusive` path remains the default for compatible `ternip_ip` xclbins. Setting `HETGPU_XRT_IP_NAME` selects an AP_CTRL_NONE path that dynamically loads `libxrt_core.so.2`, opens the canonical IP name with `xclIPName2Index` and an exclusive `xclOpenContext`, and performs register access with `xclRegRead` and `xclRegWrite`. BO allocation, synchronization, address lookup, and program assembly remain on the existing `xrtBO*` four-BO path. AP_CTRL_NONE mode requires `HETGPU_XRT_MEMORY_GROUP`; it cannot query `xrtKernelArgGroupId` because no kernel handle exists.
+The existing `xrtPLKernelOpenExclusive` path remains the default for compatible `ternip_ip` xclbins. Setting `HETGPU_XRT_IP_NAME` selects an AP_CTRL_NONE path for the AU250 app215 runtime: it dynamically loads app215's legacy `xcl*` register ABI from `libxrt_core.so.2`, opens the canonical IP name with `xclIPName2Index` and an exclusive `xclOpenContext`, and performs register access with `xclRegRead` and `xclRegWrite`. Newer host XRT releases that hide these deprecated symbols are not supported by this selector and report an explicit app215-compatibility error. BO allocation, synchronization, address lookup, and program assembly remain on the existing `xrtBO*` four-BO path. AP_CTRL_NONE mode requires `HETGPU_XRT_MEMORY_GROUP`; it cannot query `xrtKernelArgGroupId` because no kernel handle exists.
 
 An ignored Rust hardware test is added in `xrt_tmatmul.rs`. It constructs the same values as the Python proof without depending on NumPy:
 
@@ -84,7 +84,7 @@ RAII cleanup continues to release the four BOs, native-IP context and device han
 
 The work is complete only when all of the following hold:
 
-1. Unit tests verify native-IP selection, explicit memory group use, byte-identical five-instruction AU250 encoding, reset release before DMA start, and retain the existing four-BO, address-binding, timeout, and cleanup assertions.
+1. Unit tests verify native-IP selection, explicit memory group use, byte-identical five-instruction AU250 encoding, reset release before DMA start, and retain the existing four-BO and address-binding assertions. Timeout tests require AFU reset plus AXI-DMA reset/idle confirmation before BO teardown; if quiescence cannot be confirmed, live BO and device handles are retained rather than exposing their addresses to reuse.
 2. Existing `cxl_tmatmul` tests still pass.
 3. The app215-built test executable starts inside `au250-run` and resolves the container XRT library.
 4. The live test selects `ternip_big_1`, completes with a nonzero STALL code, and reports exact equality for all 9 x 1024 output elements.

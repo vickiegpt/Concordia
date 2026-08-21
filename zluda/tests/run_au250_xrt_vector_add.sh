@@ -37,8 +37,21 @@ export HETGPU_XRT_TIMEOUT_MS=10000
 cargo test -p zluda --features nvidia --no-default-features \
     au250_vector_add_runs_when_requested -- --ignored --nocapture
 
-xbutil examine -d 0000:64:00.1 \
-    -r dynamic-regions -r error -r firewall -r thermal
+health_report=$(xbutil examine -d 0000:64:00.1 \
+    -r dynamic-regions -r error -r firewall -r thermal 2>&1)
+printf "%s\n" "$health_report"
+grep -Fq "Level 0 : 0x0 (GOOD)" <<<"$health_report" || {
+    echo "AU250 health gate failed: firewall is not GOOD" >&2
+    exit 1
+}
+grep -Eq "ternip_big:ternip_big_1.*\(DONE\)" <<<"$health_report" || {
+    echo "AU250 health gate failed: ternip_big_1 is not DONE" >&2
+    exit 1
+}
+if grep -Eiq "(^|[^[:alpha:]])fatal([^[:alpha:]]|$)" <<<"$health_report"; then
+    echo "AU250 health gate failed: fatal error reported" >&2
+    exit 1
+fi
 '
 
 au250-temp
