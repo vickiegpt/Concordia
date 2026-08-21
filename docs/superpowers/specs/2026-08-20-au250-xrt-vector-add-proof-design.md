@@ -97,6 +97,7 @@ This vector-add gate proves the real Rust four-BO/XRT path, BO address encoding,
 After vector add passes, the same backend runs the canonical repository tmatmul case from `sw_utils/target/test_pynqvivado_basic.py` on `ternip_big_1`:
 
 - the input for each of nine lanes contains fixed-point 1.0 at columns `lane` and `lane + 1`, and zero elsewhere;
+- input and output BOs use the repository's dimension-major `[D, BatchSize]` physical serialization from `instruction_vector_to_byte_array`;
 - matrix rows 0 and 1 contain ternary `+1`, with every other row zero;
 - the matrix BO uses the repository's little-endian four-trits-per-byte format, producing 512 leading `0x55` bytes followed by zeros;
 - the exact expected result in every lane is fixed-point 2.0 in output rows 0 and 1 and zero elsewhere;

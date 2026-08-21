@@ -1253,11 +1253,11 @@ mod tests {
         let mut expected = vec![0u8; AU250_VECTOR_ELEMENTS * 2];
         for lane in 0..AU250_BATCH_SIZE {
             for column in [lane, lane + 1] {
-                let offset = (lane * AU250_VECTOR_LENGTH + column) * 2;
+                let offset = (column * AU250_BATCH_SIZE + lane) * 2;
                 input[offset..offset + 2].copy_from_slice(&32i16.to_le_bytes());
             }
             for row in 0..2 {
-                let offset = (lane * AU250_VECTOR_LENGTH + row) * 2;
+                let offset = (row * AU250_BATCH_SIZE + lane) * 2;
                 expected[offset..offset + 2].copy_from_slice(&64i16.to_le_bytes());
             }
         }
@@ -1444,22 +1444,24 @@ mod tests {
         assert_eq!(matrix.len(), 1024 * 1024 / 4);
         assert!(matrix[..512].iter().all(|byte| *byte == 0x55));
         assert!(matrix[512..].iter().all(|byte| *byte == 0));
+        let input_raw: Vec<i16> = input
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        let expected_raw: Vec<i16> = expected
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(input_raw.iter().filter(|value| **value == 32).count(), 18);
         for lane in 0..9 {
-            let input_raw: Vec<i16> = input[lane * 2048..(lane + 1) * 2048]
-                .chunks_exact(2)
-                .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
-                .collect();
-            let expected_raw: Vec<i16> = expected[lane * 2048..(lane + 1) * 2048]
-                .chunks_exact(2)
-                .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
-                .collect();
-
-            assert_eq!(input_raw.iter().filter(|value| **value == 32).count(), 2);
-            assert_eq!(input_raw[lane], 32);
-            assert_eq!(input_raw[lane + 1], 32);
-            assert_eq!(&expected_raw[..2], &[64, 64]);
-            assert!(expected_raw[2..].iter().all(|value| *value == 0));
+            assert_eq!(input_raw[lane * AU250_BATCH_SIZE + lane], 32);
+            assert_eq!(input_raw[(lane + 1) * AU250_BATCH_SIZE + lane], 32);
+            assert_eq!(expected_raw[lane], 64);
+            assert_eq!(expected_raw[AU250_BATCH_SIZE + lane], 64);
         }
+        assert!(expected_raw[2 * AU250_BATCH_SIZE..]
+            .iter()
+            .all(|value| *value == 0));
     }
 
     #[test]
@@ -1757,8 +1759,8 @@ mod tests {
             let element_offset = byte & !1;
             panic!(
                 "AU250 tmatmul mismatch at lane {}, element {}: got raw {}, expected raw {}",
-                byte / 2 / AU250_VECTOR_LENGTH,
-                byte / 2 % AU250_VECTOR_LENGTH,
+                byte / 2 % AU250_BATCH_SIZE,
+                byte / 2 / AU250_BATCH_SIZE,
                 i16::from_le_bytes(
                     output[element_offset..element_offset + 2]
                         .try_into()
