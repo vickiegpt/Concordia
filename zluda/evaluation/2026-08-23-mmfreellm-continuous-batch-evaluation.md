@@ -5,7 +5,7 @@
 The MatMulFreeLM 2.7B CUDA path passed the 200 aggregate generated-token/s
 qualification. Two deterministic measured runs used four windowed batches of
 16 requests, generated exactly eight tokens per request, completed all 512
-generated tokens, and sustained 360.37 and 362.83 aggregate tok/s.
+generated tokens, and sustained 363.62 and 366.62 aggregate tok/s.
 
 This result is GPU-native BitLinear throughput. The TernIP/CXL adapter was
 disabled, `fpga_tps_reported=false`, and no throughput in this evaluation is
@@ -13,7 +13,7 @@ attributed to the Agilex FPGA. The FPGA `MAX_LANES = 4` policy was not changed.
 
 ## Evaluated system
 
-- HetGPU evaluated Git SHA: `8b4067866f84b3d3de31767584e34fb48f0f88ee`
+- HetGPU evaluated Git SHA: `3a9c4436080bf2d13de316054d687fed95c77ab8`
 - HetGPU branch: `codex/mmfreellm-continuous-batch-20260823`
 - HetGPU evaluation-relevant worktree status: clean (`git-status.txt` is empty)
 - GPU: NVIDIA RTX PRO 6000 Blackwell Server Edition
@@ -51,7 +51,7 @@ discarding unrelated user work.
 ## Batch-1 control
 
 The existing single-sequence benchmark ran three measured iterations after one
-warmup. Mean throughput was 21.9075 tok/s and median throughput was 21.9891
+warmup. Mean throughput was 21.7490 tok/s and median throughput was 21.6969
 tok/s. Its non-empty decoded output retained the prompt:
 
 ```text
@@ -70,8 +70,8 @@ each request's own enqueue, after bounded-queue backpressure where applicable.
 
 | Run | Aggregate tok/s | Aggregate elapsed (s) | Queue p50 / p95 / max (ms) | Service p50 / p95 / max (ms) | Request E2E p50 / p95 / max (ms) | Observed batches | Peak CUDA memory | Completed | Generated tokens |
 |---:|---:|---:|---:|---:|---:|:---|---:|---:|---:|
-| 1 | 360.3734 | 1.420749 | 350.241 / 372.348 / 721.008 | 349.582 / 373.147 / 373.147 | 698.775 / 721.041 / 1071.479 | 16, 16, 16, 16 | 5,784,931,840 B (5.39 GiB) | 64 | 512 |
-| 2 | 362.8324 | 1.411120 | 346.313 / 375.017 / 721.544 | 345.842 / 375.294 / 375.294 | 691.439 / 721.575 / 1066.670 | 16, 16, 16, 16 | 5,784,931,840 B (5.39 GiB) | 64 | 512 |
+| 1 | 363.6208 | 1.408060 | 346.793 / 371.295 / 371.346 | 347.479 / 371.841 / 371.841 | 692.959 / 714.355 / 714.406 | 16, 16, 16, 16 | 5,784,931,840 B (5.39 GiB) | 64 | 512 |
+| 2 | 366.6200 | 1.396541 | 346.527 / 359.386 / 359.441 | 347.231 / 359.589 / 359.589 | 697.152 / 709.384 / 709.439 | 16, 16, 16, 16 | 5,784,931,840 B (5.39 GiB) | 64 | 512 |
 
 Both runs exceeded the 200 tok/s threshold independently. Request IDs were
 complete and unique, no request failed, every decoded output retained the
@@ -92,7 +92,7 @@ batch shape.
 
 Immutable proof directory:
 
-`/home/victoryang00/hetGPU/.proof/mmfreellm-continuous-batch-20260823T234300Z`
+`/home/victoryang00/hetGPU/.proof/mmfreellm-continuous-batch-20260823T235900Z`
 
 Key artifacts:
 
@@ -104,16 +104,17 @@ Key artifacts:
 - `environment/`: GPU, packages, and external-repository before/after status
 - `source/inventory.txt`, `source/files/`: HetGPU and imported MatMulFreeLM source
 - `source/mmfreellm/`: external inventories and staged/unstaged patches
+- `hashes/mmfreellm-captured.sha256`: captured-copy hashes equal to runtime-before hashes
 - `hashes/mmfreellm-runtime-before.sha256` and `-after.sha256`: identical runtime source hashes
 - `hashes/source.sha256`: 49 verified captured source files
-- `hashes/artifacts.sha256`: 74 verified proof artifacts
+- `hashes/artifacts.sha256`: 75 verified proof artifacts
 
 Selected artifact SHA-256 values:
 
 ```text
-9e5fc34eae6e977821c62052be4fe1a445780be6fb4b156c5db471690e0c52bc  batch1/result.json
-8b0f7e95f7f95d2de949ec442a2da3bb6c5e398c23443ae9929f707b86f6d76f  batch16/result.json
-eb1188808680e6b125179790d79eaf3278f58dfcc835293fb2407cf23ec88b9c  manifest.json
+760bef4da3bdec180617400738314d73d4e94a64e5fadf704b3d088aac6bbdbc  batch1/result.json
+9a7a1597e2ae0478fcac3f8ee3682620f60659398ba9fb30dfa6e3125f887ab7  batch16/result.json
+484b2e88b6061b2d8200e678fd5286ffafae402c898927da798e846743f5b058  manifest.json
 ```
 
 Both hash manifests were independently checked with `sha256sum --check` after
