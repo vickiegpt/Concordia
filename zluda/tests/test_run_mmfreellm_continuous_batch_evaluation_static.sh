@@ -225,6 +225,18 @@ if HETGPU_MMFREELM_STATIC_TEST_MODE=1 \
 fi
 test "$(cat "${finalize_fail_dir}/qualification-status.txt")" = failed
 
+capture_fail_dir=${fixture_root}/proof-capture-fail
+if HETGPU_MMFREELM_STATIC_TEST_MODE=1 \
+   HETGPU_MMFREELM_INJECT_CAPTURE_MISMATCH=1 \
+   HETGPU_MMFREELM_BATCH1_CMD="${batch1_fixture}" \
+   HETGPU_MMFREELM_BATCH16_CMD="${batch16_pass_fixture}" \
+       "${script_dir}/run_mmfreellm_continuous_batch_evaluation.sh" \
+       "${capture_fail_dir}"; then
+    echo "external-source capture mismatch unexpectedly passed" >&2
+    exit 1
+fi
+test "$(cat "${capture_fail_dir}/qualification-status.txt")" = failed
+
 if HETGPU_MMFREELM_STATIC_TEST_MODE=1 \
    HETGPU_MMFREELM_BATCH1_CMD="${batch1_fixture}" \
    HETGPU_MMFREELM_BATCH16_CMD="${batch16_pass_fixture}" \

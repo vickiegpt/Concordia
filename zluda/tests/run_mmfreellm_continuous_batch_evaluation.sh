@@ -39,14 +39,20 @@ esac
 
 static_test_mode=${HETGPU_MMFREELM_STATIC_TEST_MODE:-0}
 inject_finalize_failure=${HETGPU_MMFREELM_INJECT_FINALIZE_FAILURE:-0}
+inject_capture_mismatch=${HETGPU_MMFREELM_INJECT_CAPTURE_MISMATCH:-0}
 batch1_override=${HETGPU_MMFREELM_BATCH1_CMD:-}
 batch16_override=${HETGPU_MMFREELM_BATCH16_CMD:-}
 [[ ${static_test_mode} == 0 || ${static_test_mode} == 1 ]] \
     || fail "HETGPU_MMFREELM_STATIC_TEST_MODE must be 0 or 1"
 [[ ${inject_finalize_failure} == 0 || ${inject_finalize_failure} == 1 ]] \
     || fail "HETGPU_MMFREELM_INJECT_FINALIZE_FAILURE must be 0 or 1"
+[[ ${inject_capture_mismatch} == 0 || ${inject_capture_mismatch} == 1 ]] \
+    || fail "HETGPU_MMFREELM_INJECT_CAPTURE_MISMATCH must be 0 or 1"
 if [[ ${inject_finalize_failure} == 1 && ${static_test_mode} != 1 ]]; then
     fail "finalization failure injection is restricted to static mode"
+fi
+if [[ ${inject_capture_mismatch} == 1 && ${static_test_mode} != 1 ]]; then
+    fail "source capture mismatch injection is restricted to static mode"
 fi
 if [[ ${static_test_mode} == 1 ]]; then
     [[ -n ${batch1_override} && -n ${batch16_override} ]] \
@@ -169,6 +175,7 @@ manifest = {
         "git_status_after": "environment/mmfreellm-git-status-after.txt",
         "runtime_hashes_before": "hashes/mmfreellm-runtime-before.sha256",
         "runtime_hashes_after": "hashes/mmfreellm-runtime-after.sha256",
+        "captured_source_hashes": "hashes/mmfreellm-captured.sha256",
     },
     "configuration": {
         "static_test_mode": static_mode == "1",
@@ -319,6 +326,18 @@ git -C "${model_repo}" diff --cached --binary -- mmfreelm \
     cd -- "${model_repo}"
     sha256sum "${model_source_files[@]}"
 ) >"${result_dir}/hashes/mmfreellm-runtime-before.sha256"
+if [[ ${inject_capture_mismatch} == 1 ]]; then
+    printf '\n# injected capture mismatch\n' \
+        >>"${result_dir}/source/files/external/matmulfreellm/${model_source_files[0]}"
+fi
+(
+    cd -- "${result_dir}/source/files/external/matmulfreellm"
+    sha256sum "${model_source_files[@]}"
+) >"${result_dir}/hashes/mmfreellm-captured.sha256"
+cmp \
+    "${result_dir}/hashes/mmfreellm-runtime-before.sha256" \
+    "${result_dir}/hashes/mmfreellm-captured.sha256" \
+    || evaluation_fail "captured MatMulFreeLM source differs from runtime source"
 (
     cd -- "${result_dir}"
     find source/files -type f -print0 | sort -z | xargs -0 sha256sum \
