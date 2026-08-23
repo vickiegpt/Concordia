@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import math
-from typing import Sequence
+from threading import Condition, Lock, Thread
+import time
+from typing import Callable, Protocol, Sequence
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,11 @@ class RunResult:
     microbatches: tuple[MicrobatchResult, ...]
 
 
+class GenerationBackend(Protocol):
+    def generate(self, requests: Sequence[RequestSpec]) -> BackendBatchResult:
+        raise NotImplementedError
+
+
 def batch_size_if_ready(
     pending_count: int,
     oldest_age_seconds: float,
@@ -115,6 +123,155 @@ def percentile(values: Sequence[float], percent: float) -> float:
     if lower == upper:
         return ordered[lower]
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
+class WindowedRequestQueue:
+    def __init__(
+        self,
+        max_batch_size: int,
+        timeout_seconds: float,
+        clock: Callable[[], float],
+    ) -> None:
+        self._max_batch_size = max_batch_size
+        self._timeout_seconds = timeout_seconds
+        self._clock = clock
+        self._pending: deque[QueuedRequest] = deque()
+        self._closed = False
+        self._condition = Condition()
+
+    def submit(self, request: QueuedRequest) -> None:
+        with self._condition:
+            if self._closed:
+                raise RuntimeError("cannot submit after producer closure")
+            self._pending.append(request)
+            self._condition.notify()
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+
+    def take_batch(self) -> tuple[QueuedRequest, ...] | None:
+        with self._condition:
+            while True:
+                while not self._pending and not self._closed:
+                    self._condition.wait()
+                if not self._pending and self._closed:
+                    return None
+                oldest_age = max(0.0, self._clock() - self._pending[0].enqueued_at)
+                count = batch_size_if_ready(
+                    len(self._pending),
+                    oldest_age,
+                    self._max_batch_size,
+                    self._timeout_seconds,
+                    self._closed,
+                )
+                if count:
+                    return tuple(self._pending.popleft() for _ in range(count))
+                remaining = max(0.0, self._timeout_seconds - oldest_age)
+                self._condition.wait(remaining)
+
+
+def run_windowed_batch(
+    run_index: int,
+    prompts: Sequence[str],
+    backend: GenerationBackend,
+    config: BenchmarkConfig,
+    clock: Callable[[], float] = time.perf_counter,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> RunResult:
+    config.validate()
+    if len(prompts) != config.request_count:
+        raise ValueError("prompt count must equal configured request count")
+
+    request_queue = WindowedRequestQueue(
+        config.max_batch_size, config.queue_timeout_ms / 1000, clock
+    )
+    results: list[RequestResult] = []
+    microbatches: list[MicrobatchResult] = []
+    errors: list[Exception] = []
+    state_lock = Lock()
+
+    def record_error(error: Exception) -> None:
+        with state_lock:
+            errors.append(error)
+        request_queue.close()
+
+    def produce() -> None:
+        try:
+            for request_id, prompt in enumerate(prompts):
+                request_queue.submit(
+                    QueuedRequest(
+                        RequestSpec(request_id, prompt, config.max_new_tokens),
+                        clock(),
+                    )
+                )
+                if request_id + 1 < len(prompts) and config.interarrival_ms:
+                    sleeper(config.interarrival_ms / 1000)
+        except Exception as error:
+            record_error(error)
+        finally:
+            request_queue.close()
+
+    def work() -> None:
+        try:
+            while True:
+                queued = request_queue.take_batch()
+                if queued is None:
+                    return
+                dispatched_at = clock()
+                batch_result = backend.generate(
+                    tuple(request.spec for request in queued)
+                )
+                completed_at = clock()
+                if len(batch_result.outputs) != len(queued):
+                    raise RuntimeError("backend output count does not match microbatch")
+                request_results = tuple(
+                    RequestResult(
+                        request_id=request.spec.request_id,
+                        prompt=request.spec.prompt,
+                        output=output.output,
+                        generated_token_ids=output.generated_token_ids,
+                        enqueued_at=request.enqueued_at,
+                        dispatched_at=dispatched_at,
+                        completed_at=completed_at,
+                    )
+                    for request, output in zip(queued, batch_result.outputs)
+                )
+                microbatch = MicrobatchResult(
+                    request_ids=tuple(
+                        request.spec.request_id for request in queued
+                    ),
+                    dispatched_at=dispatched_at,
+                    completed_at=completed_at,
+                    service_seconds=batch_result.service_seconds,
+                    peak_cuda_memory_bytes=batch_result.peak_cuda_memory_bytes,
+                )
+                with state_lock:
+                    results.extend(request_results)
+                    microbatches.append(microbatch)
+        except Exception as error:
+            record_error(error)
+
+    producer = Thread(target=produce, name=f"mmfreelm-producer-{run_index}")
+    worker = Thread(target=work, name=f"mmfreelm-worker-{run_index}")
+    producer.start()
+    worker.start()
+    producer.join()
+    worker.join()
+
+    if errors:
+        raise errors[0]
+    ordered_results = tuple(sorted(results, key=lambda result: result.request_id))
+    run = RunResult(
+        run_index=run_index,
+        first_enqueued_at=min(result.enqueued_at for result in ordered_results),
+        last_completed_at=max(result.completed_at for result in ordered_results),
+        requests=ordered_results,
+        microbatches=tuple(microbatches),
+    )
+    validate_run(run, config)
+    return run
 
 
 def _finite_ordered(*values: float) -> bool:

@@ -3,12 +3,15 @@ import math
 import unittest
 
 from mmfreellm_continuous_batch import (
+    BackendBatchResult,
     BenchmarkConfig,
+    GeneratedOutput,
     MicrobatchResult,
     RequestResult,
     RunResult,
     batch_size_if_ready,
     percentile,
+    run_windowed_batch,
     summarize_run,
     validate_run,
 )
@@ -138,6 +141,76 @@ class CoreContractTests(unittest.TestCase):
     def test_non_finite_threshold_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "acceptance"):
             BenchmarkConfig(min_aggregate_tps=math.nan).validate()
+
+
+class RecordingBackend:
+    def __init__(self):
+        self.batches = []
+        self.active = False
+
+    def generate(self, requests):
+        if self.active:
+            raise AssertionError("backend called concurrently")
+        self.active = True
+        try:
+            self.batches.append([request.request_id for request in requests])
+            return BackendBatchResult(
+                outputs=tuple(
+                    GeneratedOutput(request.prompt + " jumps", (10, 11))
+                    for request in requests
+                ),
+                service_seconds=0.01,
+                peak_cuda_memory_bytes=2048,
+            )
+        finally:
+            self.active = False
+
+
+class SchedulerTests(unittest.TestCase):
+    def test_full_then_closed_partial_is_fifo(self):
+        backend = RecordingBackend()
+        config = BenchmarkConfig(
+            request_count=6,
+            max_batch_size=4,
+            max_new_tokens=2,
+            queue_timeout_ms=1000,
+        )
+
+        result = run_windowed_batch(
+            1, ["The quick brown fox"] * 6, backend, config
+        )
+
+        self.assertEqual(backend.batches, [[0, 1, 2, 3], [4, 5]])
+        self.assertEqual(
+            [request.request_id for request in result.requests], list(range(6))
+        )
+
+    def test_timeout_flushes_a_slow_arrival(self):
+        backend = RecordingBackend()
+        config = BenchmarkConfig(
+            request_count=3,
+            max_batch_size=16,
+            max_new_tokens=2,
+            queue_timeout_ms=2,
+            interarrival_ms=15,
+        )
+
+        run_windowed_batch(1, ["The quick brown fox"] * 3, backend, config)
+
+        self.assertEqual(backend.batches, [[0], [1], [2]])
+
+    def test_worker_exception_reaches_caller(self):
+        class BrokenBackend:
+            def generate(self, requests):
+                raise RuntimeError("injected backend failure")
+
+        with self.assertRaisesRegex(RuntimeError, "injected backend failure"):
+            run_windowed_batch(
+                1,
+                ["The quick brown fox"],
+                BrokenBackend(),
+                BenchmarkConfig(request_count=1, max_batch_size=1, max_new_tokens=2),
+            )
 
 
 if __name__ == "__main__":
