@@ -75,6 +75,19 @@ class MatMulFreeLMBenchmarkTests(unittest.TestCase):
         self.assertEqual(payload["output"], "The quick brown fox jumps")
         self.assertEqual(payload["mean_tokens_per_second"], 8.0)
 
+    def test_generated_token_ids_are_extracted_exactly(self):
+        benchmark = load_benchmark()
+
+        token_ids = benchmark.extract_generated_token_ids(
+            [[1, 2, 3, 10, 11]], prompt_tokens=3, max_new_tokens=2
+        )
+
+        self.assertEqual(token_ids, [10, 11])
+        with self.assertRaisesRegex(RuntimeError, "generated-token count"):
+            benchmark.extract_generated_token_ids(
+                [[1, 2, 3, 10]], prompt_tokens=3, max_new_tokens=2
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

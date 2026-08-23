@@ -81,6 +81,20 @@ def format_json_record(summary: dict) -> str:
     )
 
 
+def extract_generated_token_ids(
+    output_ids, *, prompt_tokens: int, max_new_tokens: int
+) -> list[int]:
+    generated = output_ids[0][prompt_tokens:]
+    if hasattr(generated, "detach"):
+        generated = generated.detach().cpu().tolist()
+    token_ids = [int(token_id) for token_id in generated]
+    if len(token_ids) != max_new_tokens:
+        raise RuntimeError(
+            "generated-token count does not match requested max_new_tokens"
+        )
+    return token_ids
+
+
 def parse_args(arguments=None):
     parser = argparse.ArgumentParser(
         description="Benchmark real MatMulFreeLLM 2.7B generation without model-load time"
@@ -169,6 +183,11 @@ def run_benchmark(args) -> tuple[list[MeasuredRun], dict]:
 
     assert output_ids is not None
     output = tokenizer.batch_decode(output_ids.detach().cpu(), skip_special_tokens=True)[0]
+    generated_token_ids = extract_generated_token_ids(
+        output_ids,
+        prompt_tokens=prompt_tokens,
+        max_new_tokens=args.max_new_tokens,
+    )
     summary = summarize_runs(measurements, parameter_count=parameter_count)
     summary.update(
         {
@@ -177,6 +196,7 @@ def run_benchmark(args) -> tuple[list[MeasuredRun], dict]:
             "dtype": args.dtype,
             "prompt": args.prompt,
             "output": output,
+            "generated_token_ids": generated_token_ids,
             "max_new_tokens": args.max_new_tokens,
             "warmup_runs": args.warmup_runs,
             "bitlinear_backend": os.environ.get("MMFREELM_BITLINEAR_BACKEND", "default"),
