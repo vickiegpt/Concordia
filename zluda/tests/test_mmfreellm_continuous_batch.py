@@ -13,7 +13,6 @@ from mmfreellm_continuous_batch import (
     BenchmarkConfig,
     GeneratedOutput,
     MicrobatchResult,
-    QueuedRequest,
     RequestResult,
     RequestSpec,
     RunResult,
@@ -179,9 +178,7 @@ class SchedulerTests(unittest.TestCase):
     def test_queue_timeout_uses_injected_clock(self):
         now = [10.0]
         request_queue = WindowedRequestQueue(16, 0.002, lambda: now[0])
-        request_queue.submit(
-            QueuedRequest(RequestSpec(0, "The quick brown fox", 2), 10.0)
-        )
+        request_queue.submit(RequestSpec(0, "The quick brown fox", 2))
         now[0] = 10.003
 
         batch = request_queue.take_batch()
@@ -189,16 +186,18 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual([request.spec.request_id for request in batch], [0])
 
     def test_queue_blocks_producer_until_capacity_is_released(self):
-        request_queue = WindowedRequestQueue(1, 10.0, lambda: 1.0)
-        first = QueuedRequest(RequestSpec(0, "The quick brown fox", 2), 1.0)
-        second = QueuedRequest(RequestSpec(1, "The quick brown fox", 2), 1.0)
+        now = [1.0]
+        request_queue = WindowedRequestQueue(1, 10.0, lambda: now[0])
+        first = RequestSpec(0, "The quick brown fox", 2)
+        second = RequestSpec(1, "The quick brown fox", 2)
         request_queue.submit(first)
         submit_started = Event()
         submit_finished = Event()
+        admitted = []
 
         def submit_second():
             submit_started.set()
-            request_queue.submit(second)
+            admitted.append(request_queue.submit(second))
             submit_finished.set()
 
         producer = Thread(target=submit_second)
@@ -206,6 +205,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(submit_started.wait(1.0))
         self.assertFalse(submit_finished.wait(0.02))
 
+        now[0] = 5.0
         first_batch = request_queue.take_batch()
 
         self.assertTrue(submit_finished.wait(1.0))
@@ -214,6 +214,7 @@ class SchedulerTests(unittest.TestCase):
         producer.join()
         self.assertEqual([item.spec.request_id for item in first_batch], [0])
         self.assertEqual([item.spec.request_id for item in second_batch], [1])
+        self.assertEqual(admitted[0].enqueued_at, 5.0)
 
     def test_full_then_closed_partial_is_fifo(self):
         backend = RecordingBackend()

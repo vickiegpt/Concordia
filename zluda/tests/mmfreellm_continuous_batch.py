@@ -139,14 +139,16 @@ class WindowedRequestQueue:
         self._closed = False
         self._condition = Condition()
 
-    def submit(self, request: QueuedRequest) -> None:
+    def submit(self, request: RequestSpec) -> QueuedRequest:
         with self._condition:
             while len(self._pending) >= self._max_batch_size and not self._closed:
                 self._condition.wait()
             if self._closed:
                 raise RuntimeError("cannot submit after producer closure")
-            self._pending.append(request)
+            queued = QueuedRequest(request, self._clock())
+            self._pending.append(queued)
             self._condition.notify()
+            return queued
 
     def close(self) -> None:
         with self._condition:
@@ -205,10 +207,7 @@ def run_windowed_batch(
         try:
             for request_id, prompt in enumerate(prompts):
                 request_queue.submit(
-                    QueuedRequest(
-                        RequestSpec(request_id, prompt, config.max_new_tokens),
-                        clock(),
-                    )
+                    RequestSpec(request_id, prompt, config.max_new_tokens)
                 )
                 if request_id + 1 < len(prompts) and config.interarrival_ms:
                     sleeper(config.interarrival_ms / 1000)
