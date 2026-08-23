@@ -141,6 +141,8 @@ class WindowedRequestQueue:
 
     def submit(self, request: QueuedRequest) -> None:
         with self._condition:
+            while len(self._pending) >= self._max_batch_size and not self._closed:
+                self._condition.wait()
             if self._closed:
                 raise RuntimeError("cannot submit after producer closure")
             self._pending.append(request)
@@ -167,7 +169,9 @@ class WindowedRequestQueue:
                     self._closed,
                 )
                 if count:
-                    return tuple(self._pending.popleft() for _ in range(count))
+                    batch = tuple(self._pending.popleft() for _ in range(count))
+                    self._condition.notify_all()
+                    return batch
                 remaining = max(0.0, self._timeout_seconds - oldest_age)
                 self._condition.wait(remaining)
 
