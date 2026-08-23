@@ -38,10 +38,16 @@ esac
     || fail "result directory already exists; refusing to overwrite: ${result_dir}"
 
 static_test_mode=${HETGPU_MMFREELM_STATIC_TEST_MODE:-0}
+inject_finalize_failure=${HETGPU_MMFREELM_INJECT_FINALIZE_FAILURE:-0}
 batch1_override=${HETGPU_MMFREELM_BATCH1_CMD:-}
 batch16_override=${HETGPU_MMFREELM_BATCH16_CMD:-}
 [[ ${static_test_mode} == 0 || ${static_test_mode} == 1 ]] \
     || fail "HETGPU_MMFREELM_STATIC_TEST_MODE must be 0 or 1"
+[[ ${inject_finalize_failure} == 0 || ${inject_finalize_failure} == 1 ]] \
+    || fail "HETGPU_MMFREELM_INJECT_FINALIZE_FAILURE must be 0 or 1"
+if [[ ${inject_finalize_failure} == 1 && ${static_test_mode} != 1 ]]; then
+    fail "finalization failure injection is restricted to static mode"
+fi
 if [[ ${static_test_mode} == 1 ]]; then
     [[ -n ${batch1_override} && -n ${batch16_override} ]] \
         || fail "static mode requires both benchmark command overrides"
@@ -64,6 +70,19 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
 
+model_repo=${HETGPU_MMFREELM_REPO_ROOT:-/root/matmulfreellm}
+if [[ -n ${HETGPU_MMFREELM_REPO_ROOT:-} && ${static_test_mode} != 1 ]]; then
+    fail "HETGPU_MMFREELM_REPO_ROOT override is restricted to static mode"
+fi
+model_repo=$(realpath -e -- "${model_repo}") \
+    || fail "MatMulFreeLM repository does not exist"
+git -C "${model_repo}" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || fail "MatMulFreeLM repository is not a Git worktree: ${model_repo}"
+[[ -d ${model_repo}/mmfreelm ]] \
+    || fail "MatMulFreeLM Python package is missing: ${model_repo}/mmfreelm"
+model_repo_sha=$(git -C "${model_repo}" rev-parse HEAD)
+model_repo_branch=$(git -C "${model_repo}" branch --show-current)
+
 started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 git_sha=$(git -C "${repo_root}" rev-parse HEAD)
 git_branch=$(git -C "${repo_root}" branch --show-current)
@@ -72,6 +91,7 @@ batch16_exit=-1
 cross_batch_token_ids_equal=false
 failure_reason=
 finalizing=0
+model_source_file_count=0
 
 mkdir -m 700 -- "${result_dir}"
 mkdir -p -m 700 -- \
@@ -81,26 +101,32 @@ mkdir -p -m 700 -- \
     "${result_dir}/environment" \
     "${result_dir}/hashes" \
     "${result_dir}/logs" \
-    "${result_dir}/source/files"
+    "${result_dir}/source/files" \
+    "${result_dir}/source/mmfreellm"
 
 finalize() {
     local qualification=$1
     local exit_code=$2
+    local effective_qualification=${qualification}
+    local finalization_failed=0
+    local status=failed
     finalizing=1
     trap - ERR
     set +e
-    if [[ ${qualification} == true ]]; then
-        printf 'pass\n' >"${result_dir}/qualification-status.txt"
-    else
-        printf 'failed\n' >"${result_dir}/qualification-status.txt"
+    if [[ ${inject_finalize_failure} == 1 ]]; then
+        finalization_failed=1
+        effective_qualification=false
+        failure_reason="injected finalization failure"
     fi
     ended_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    python3 - \
+    if ! python3 - \
         "${result_dir}/manifest.json" \
         "${started_utc}" "${ended_utc}" "${repo_root}" \
         "${git_sha}" "${git_branch}" "${static_test_mode}" \
-        "${batch1_exit}" "${batch16_exit}" "${qualification}" \
-        "${cross_batch_token_ids_equal}" "${failure_reason}" <<'PY'
+        "${batch1_exit}" "${batch16_exit}" "${effective_qualification}" \
+        "${cross_batch_token_ids_equal}" "${failure_reason}" \
+        "${model_repo}" "${model_repo_sha}" "${model_repo_branch}" \
+        "${model_source_file_count}" <<'PY'
 import json
 import pathlib
 import sys
@@ -118,6 +144,10 @@ import sys
     qualified,
     cross_batch_equal,
     failure_reason,
+    model_repo,
+    model_repo_sha,
+    model_repo_branch,
+    model_source_file_count,
 ) = sys.argv[1:]
 manifest = {
     "schema": "matmulfreellm-continuous-batch-evaluation-v1",
@@ -130,6 +160,16 @@ manifest = {
     "qualification_passed": qualified == "true",
     "failure_reason": failure_reason or None,
     "cross_batch_token_ids_equal": cross_batch_equal == "true",
+    "external_model_repository": {
+        "path": model_repo,
+        "git_sha": model_repo_sha,
+        "git_branch": model_repo_branch,
+        "source_file_count": int(model_source_file_count),
+        "git_status_before": "environment/mmfreellm-git-status-before.txt",
+        "git_status_after": "environment/mmfreellm-git-status-after.txt",
+        "runtime_hashes_before": "hashes/mmfreellm-runtime-before.sha256",
+        "runtime_hashes_after": "hashes/mmfreellm-runtime-after.sha256",
+    },
     "configuration": {
         "static_test_mode": static_mode == "1",
         "request_count": 64,
@@ -150,18 +190,43 @@ manifest = {
         "batch16_json": "batch16/result.json",
         "source_hashes": "hashes/source.sha256",
         "artifact_hashes": "hashes/artifacts.sha256",
+        "external_source_inventory": "source/mmfreellm/inventory-before.txt",
     },
 }
 with pathlib.Path(output).open("x", encoding="utf-8") as stream:
     json.dump(manifest, stream, indent=2, sort_keys=True)
     stream.write("\n")
 PY
-    (
+    then
+        finalization_failed=1
+        effective_qualification=false
+    fi
+    if ! (
         cd -- "${result_dir}"
-        find . -type f ! -path './hashes/artifacts.sha256' -print0 \
+        find . -type f \
+            ! -path './hashes/artifacts.sha256' \
+            ! -path './hashes/artifacts.sha256.pending' \
+            ! -path './qualification-status.txt' \
+            -print0 \
             | sort -z \
-            | xargs -0 sha256sum >hashes/artifacts.sha256
-    )
+            | xargs -0 sha256sum >hashes/artifacts.sha256.pending \
+            && mv -- hashes/artifacts.sha256.pending hashes/artifacts.sha256 \
+            && sha256sum --check hashes/artifacts.sha256 >/dev/null
+    ); then
+        finalization_failed=1
+        effective_qualification=false
+    fi
+    if [[ ${finalization_failed} == 0 \
+          && ${effective_qualification} == true \
+          && ${exit_code} == 0 ]]; then
+        status=pass
+    fi
+    if ! printf '%s\n' "${status}" >"${result_dir}/qualification-status.txt"; then
+        exit 1
+    fi
+    if [[ ${finalization_failed} != 0 ]]; then
+        exit 1
+    fi
     exit "${exit_code}"
 }
 
@@ -227,6 +292,33 @@ for relative_path in "${source_files[@]}"; do
     cp -- "${repo_root}/${relative_path}" \
         "${result_dir}/source/files/${relative_path}"
 done
+
+mapfile -d '' model_source_files < <(
+    cd -- "${model_repo}"
+    find mmfreelm -type f -name '*.py' -print0 | sort -z
+)
+model_source_file_count=${#model_source_files[@]}
+[[ ${model_source_file_count} -gt 0 ]] \
+    || evaluation_fail "MatMulFreeLM source inventory is empty"
+printf '%s\n' "${model_source_files[@]}" \
+    >"${result_dir}/source/mmfreellm/inventory-before.txt"
+for relative_path in "${model_source_files[@]}"; do
+    destination=${result_dir}/source/files/external/matmulfreellm/${relative_path}
+    mkdir -p -- "$(dirname -- "${destination}")"
+    cp -- "${model_repo}/${relative_path}" "${destination}"
+    printf 'external/matmulfreellm/%s\n' "${relative_path}" \
+        >>"${result_dir}/source/inventory.txt"
+done
+git -C "${model_repo}" status --short \
+    >"${result_dir}/environment/mmfreellm-git-status-before.txt"
+git -C "${model_repo}" diff --binary -- mmfreelm \
+    >"${result_dir}/source/mmfreellm/unstaged.patch"
+git -C "${model_repo}" diff --cached --binary -- mmfreelm \
+    >"${result_dir}/source/mmfreellm/staged.patch"
+(
+    cd -- "${model_repo}"
+    sha256sum "${model_source_files[@]}"
+) >"${result_dir}/hashes/mmfreellm-runtime-before.sha256"
 (
     cd -- "${result_dir}"
     find source/files -type f -print0 | sort -z | xargs -0 sha256sum \
@@ -235,10 +327,12 @@ done
 
 batch1_command=(
     python3 "${script_dir}/run_mmfreellm_2p7b_benchmark.py"
+    --repo-root "${model_repo}"
     --device cuda --dtype half --max-new-tokens 8 --warmup-runs 1 --runs 3
 )
 batch16_command=(
     python3 "${script_dir}/run_mmfreellm_continuous_batch_benchmark.py"
+    --repo-root "${model_repo}"
     --device cuda --dtype half --request-count 64 --max-batch-size 16
     --max-new-tokens 8 --queue-timeout-ms 2 --interarrival-ms 0
     --warmup-runs 1 --runs 2 --min-aggregate-tps 200
@@ -308,8 +402,22 @@ record = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert record.get("validated") is True, "batch-1 result is not validated"
 assert record.get("device") == "cuda", "batch-1 result is not CUDA"
 assert record.get("max_new_tokens") == 8, "batch-1 token count is not eight"
-assert str(record.get("output", "")).strip(), "batch-1 output is empty"
-assert len(record.get("generated_token_ids", [])) == 8, "batch-1 IDs are not eight"
+prompt = str(record.get("prompt", ""))
+output = str(record.get("output", ""))
+assert prompt.strip(), "batch-1 prompt is empty"
+assert output.startswith(prompt), "batch-1 output does not retain prompt"
+token_ids = record.get("generated_token_ids", [])
+assert len(token_ids) == 8, "batch-1 IDs are not eight"
+assert all(isinstance(token_id, int) and not isinstance(token_id, bool)
+           for token_id in token_ids), "batch-1 IDs are not integers"
+runs = record.get("runs", [])
+assert len(runs) == record.get("total_runs"), "batch-1 run accounting mismatch"
+assert all(run.get("generated_tokens") == 8 for run in runs), (
+    "batch-1 measured run token count mismatch"
+)
+assert record.get("total_generated_tokens") == 8 * len(runs), (
+    "batch-1 total generated-token accounting mismatch"
+)
 PY
 
 trap - ERR
@@ -379,5 +487,30 @@ assert token_maps[0] == token_maps[1]
 print(str(tuple(batch1["generated_token_ids"]) == token_maps[0][0]).lower())
 PY
 )
+
+mapfile -d '' model_source_files_after < <(
+    cd -- "${model_repo}"
+    find mmfreelm -type f -name '*.py' -print0 | sort -z
+)
+printf '%s\n' "${model_source_files_after[@]}" \
+    >"${result_dir}/source/mmfreellm/inventory-after.txt"
+cmp \
+    "${result_dir}/source/mmfreellm/inventory-before.txt" \
+    "${result_dir}/source/mmfreellm/inventory-after.txt" \
+    || evaluation_fail "MatMulFreeLM source inventory changed during evaluation"
+(
+    cd -- "${model_repo}"
+    sha256sum "${model_source_files_after[@]}"
+) >"${result_dir}/hashes/mmfreellm-runtime-after.sha256"
+cmp \
+    "${result_dir}/hashes/mmfreellm-runtime-before.sha256" \
+    "${result_dir}/hashes/mmfreellm-runtime-after.sha256" \
+    || evaluation_fail "MatMulFreeLM source hashes changed during evaluation"
+git -C "${model_repo}" status --short \
+    >"${result_dir}/environment/mmfreellm-git-status-after.txt"
+cmp \
+    "${result_dir}/environment/mmfreellm-git-status-before.txt" \
+    "${result_dir}/environment/mmfreellm-git-status-after.txt" \
+    || evaluation_fail "MatMulFreeLM Git status changed during evaluation"
 
 finalize true 0

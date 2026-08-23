@@ -6,6 +6,7 @@ fixture_root=$(mktemp -d /tmp/mmfreellm-continuous-eval-test.XXXXXX)
 trap 'rm -rf -- "${fixture_root}"' EXIT
 
 batch1_fixture=${fixture_root}/batch1-pass
+batch1_bad_fixture=${fixture_root}/batch1-bad-output
 batch16_pass_fixture=${fixture_root}/batch16-pass
 batch16_fail_fixture=${fixture_root}/batch16-fail
 
@@ -19,8 +20,34 @@ record = {
     "device": "cuda",
     "dtype": "half",
     "max_new_tokens": 8,
+    "prompt": "The quick brown fox",
     "output": "The quick brown fox jumps",
     "generated_token_ids": list(range(10, 18)),
+    "total_runs": 3,
+    "total_generated_tokens": 24,
+    "runs": [{"generated_tokens": 8} for _ in range(3)],
+    "mean_tokens_per_second": 20.0,
+    "median_tokens_per_second": 20.0,
+}
+print("MMFREELM_BENCHMARK_JSON=" + json.dumps(record, sort_keys=True))
+PY
+
+cat >"${batch1_bad_fixture}" <<'PY'
+#!/usr/bin/env python3
+import json
+
+record = {
+    "schema": "matmulfreellm-generation-benchmark-v1",
+    "validated": True,
+    "device": "cuda",
+    "dtype": "half",
+    "max_new_tokens": 8,
+    "prompt": "The quick brown fox",
+    "output": "semantic mismatch",
+    "generated_token_ids": list(range(10, 18)),
+    "total_runs": 3,
+    "total_generated_tokens": 24,
+    "runs": [{"generated_tokens": 8} for _ in range(3)],
     "mean_tokens_per_second": 20.0,
     "median_tokens_per_second": 20.0,
 }
@@ -119,7 +146,9 @@ record = {
 print("MMFREELM_CONTINUOUS_BATCH_JSON=" + json.dumps(record, sort_keys=True))
 raise SystemExit(1)
 PY
-chmod 700 "${batch1_fixture}" "${batch16_pass_fixture}" "${batch16_fail_fixture}"
+chmod 700 \
+    "${batch1_fixture}" "${batch1_bad_fixture}" \
+    "${batch16_pass_fixture}" "${batch16_fail_fixture}"
 
 pass_dir=${fixture_root}/proof-pass
 HETGPU_MMFREELM_STATIC_TEST_MODE=1 \
@@ -140,9 +169,18 @@ manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert manifest["qualification_passed"] is True
 assert manifest["cross_batch_token_ids_equal"] is True
 assert manifest["configuration"]["fpga_tps_reported"] is False
+external = manifest["external_model_repository"]
+assert external["path"] == "/root/matmulfreellm"
+assert len(external["git_sha"]) == 40
+assert external["source_file_count"] > 0
 PY
-(cd "${pass_dir}" && sha256sum --check hashes/source.sha256)
-(cd "${pass_dir}" && sha256sum --check hashes/artifacts.sha256)
+test -f "${pass_dir}/environment/mmfreellm-git-status-before.txt"
+test -s "${pass_dir}/hashes/mmfreellm-runtime-before.sha256"
+cmp \
+    "${pass_dir}/hashes/mmfreellm-runtime-before.sha256" \
+    "${pass_dir}/hashes/mmfreellm-runtime-after.sha256"
+(cd "${pass_dir}" && sha256sum --check hashes/source.sha256 >/dev/null)
+(cd "${pass_dir}" && sha256sum --check hashes/artifacts.sha256 >/dev/null)
 
 fail_dir=${fixture_root}/proof-fail
 if HETGPU_MMFREELM_STATIC_TEST_MODE=1 \
@@ -163,6 +201,29 @@ if [[ ! -s ${fail_dir}/batch16/result.json ]]; then
     fi
     exit 1
 fi
+
+bad_control_dir=${fixture_root}/proof-bad-control
+if HETGPU_MMFREELM_STATIC_TEST_MODE=1 \
+   HETGPU_MMFREELM_BATCH1_CMD="${batch1_bad_fixture}" \
+   HETGPU_MMFREELM_BATCH16_CMD="${batch16_pass_fixture}" \
+       "${script_dir}/run_mmfreellm_continuous_batch_evaluation.sh" \
+       "${bad_control_dir}"; then
+    echo "semantically invalid batch-1 control unexpectedly passed" >&2
+    exit 1
+fi
+test "$(cat "${bad_control_dir}/qualification-status.txt")" = failed
+
+finalize_fail_dir=${fixture_root}/proof-finalize-fail
+if HETGPU_MMFREELM_STATIC_TEST_MODE=1 \
+   HETGPU_MMFREELM_INJECT_FINALIZE_FAILURE=1 \
+   HETGPU_MMFREELM_BATCH1_CMD="${batch1_fixture}" \
+   HETGPU_MMFREELM_BATCH16_CMD="${batch16_pass_fixture}" \
+       "${script_dir}/run_mmfreellm_continuous_batch_evaluation.sh" \
+       "${finalize_fail_dir}"; then
+    echo "injected finalization failure unexpectedly passed" >&2
+    exit 1
+fi
+test "$(cat "${finalize_fail_dir}/qualification-status.txt")" = failed
 
 if HETGPU_MMFREELM_STATIC_TEST_MODE=1 \
    HETGPU_MMFREELM_BATCH1_CMD="${batch1_fixture}" \
