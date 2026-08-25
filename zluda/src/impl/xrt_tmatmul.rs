@@ -1,7 +1,9 @@
-use std::collections::HashMap;
+use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const AXI_INSTANCE_STRIDE: u32 = 0x4000;
@@ -17,6 +19,9 @@ const DMASR_IDLE: u32 = 1 << 1;
 const INSTRUCTION_BYTES: usize = 16;
 const XRT_BO_SYNC_TO_DEVICE: i32 = 0;
 const XRT_BO_SYNC_FROM_DEVICE: i32 = 1;
+const AU250_DIM: usize = 1024;
+const AU250_MATRIX_BYTES: usize = AU250_DIM * AU250_DIM / 4;
+const AU250_TMATMUL_ASSEMBLY: &str = "ldv v0, PARAM_INPUT\ntmatmul_import v0\ntmatmul_go PARAM_MATRIX\ntmatmul_export v1\nsv v1, PARAM_OUTPUT\nstall\n";
 
 type Handle = *mut libc::c_void;
 type Xuid = [u8; 16];
@@ -504,6 +509,595 @@ pub(crate) struct XrtTmatmulStatus {
     pub(crate) input_address: u64,
     pub(crate) output_address: u64,
     pub(crate) program_address: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct XrtCuTarget {
+    pub(crate) ip_name: String,
+    pub(crate) memory_group: u32,
+    pub(crate) lanes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct XrtWaveJob {
+    pub(crate) request_id: u64,
+    pub(crate) cu_index: usize,
+    pub(crate) matrix: Arc<[u8]>,
+    pub(crate) input: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct XrtWaveCompletion {
+    pub(crate) request_id: u64,
+    pub(crate) cu_index: usize,
+    pub(crate) stall_code: u32,
+    pub(crate) output: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct XrtPoolConfig {
+    xclbin: PathBuf,
+    device_index: u32,
+    targets: Vec<XrtCuTarget>,
+    num_vector_registers: u8,
+    timeout_ms: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct XrtCuTable {
+    version: u32,
+    cus: Vec<XrtCuTarget>,
+}
+
+impl XrtPoolConfig {
+    fn maxcores_targets() -> Vec<XrtCuTarget> {
+        vec![
+            XrtCuTarget {
+                ip_name: "ternip_big:ternip_big_1".to_string(),
+                memory_group: 0,
+                lanes: 9,
+            },
+            XrtCuTarget {
+                ip_name: "ternip_big:ternip_big_2".to_string(),
+                memory_group: 3,
+                lanes: 9,
+            },
+            XrtCuTarget {
+                ip_name: "ternip_big:ternip_big_3".to_string(),
+                memory_group: 2,
+                lanes: 9,
+            },
+            XrtCuTarget {
+                ip_name: "ternip_small:ternip_small_1".to_string(),
+                memory_group: 1,
+                lanes: 6,
+            },
+        ]
+    }
+
+    fn parse_cu_table(json: &str) -> Result<Vec<XrtCuTarget>, XrtTmatmulError> {
+        let table: XrtCuTable = serde_json::from_str(json).map_err(|error| {
+            XrtTmatmulError::Config(format!("HETGPU_XRT_CU_CONFIG is not valid JSON: {error}"))
+        })?;
+        if table.version != 1 {
+            return Err(XrtTmatmulError::Config(format!(
+                "unsupported HETGPU_XRT_CU_CONFIG version {}, expected 1",
+                table.version
+            )));
+        }
+        Self::validate_targets(&table.cus)?;
+        Ok(table.cus)
+    }
+
+    fn validate_targets(targets: &[XrtCuTarget]) -> Result<(), XrtTmatmulError> {
+        if targets.is_empty() || targets.len() > 4 {
+            return Err(XrtTmatmulError::Config(format!(
+                "XRT CU table must contain between 1 and 4 CUs, got {}",
+                targets.len()
+            )));
+        }
+        let mut names = HashSet::new();
+        let mut groups = HashSet::new();
+        for target in targets {
+            if target.ip_name.trim().is_empty() || target.ip_name.as_bytes().contains(&0) {
+                return Err(XrtTmatmulError::Config(
+                    "XRT CU IP names must not be empty or contain NUL".to_string(),
+                ));
+            }
+            if !names.insert(target.ip_name.as_str()) {
+                return Err(XrtTmatmulError::Config(format!(
+                    "duplicate XRT CU IP name {:?}",
+                    target.ip_name
+                )));
+            }
+            if !groups.insert(target.memory_group) {
+                return Err(XrtTmatmulError::Config(format!(
+                    "duplicate XRT CU memory group {}",
+                    target.memory_group
+                )));
+            }
+            if !matches!(target.lanes, 6 | 9) {
+                return Err(XrtTmatmulError::Config(format!(
+                    "XRT CU {:?} has {} lanes; expected 6 or 9",
+                    target.ip_name, target.lanes
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn from_env() -> Result<Self, XrtTmatmulError> {
+        fn parse_u32(name: &'static str, default: u32) -> Result<u32, XrtTmatmulError> {
+            std::env::var(name).map_or(Ok(default), |text| {
+                text.parse::<u32>()
+                    .map_err(|error| XrtTmatmulError::Config(format!("{name}={text:?}: {error}")))
+            })
+        }
+
+        let xclbin = std::env::var("HETGPU_XRT_XCLBIN")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| XrtTmatmulError::Config("HETGPU_XRT_XCLBIN is required".to_string()))?;
+        let device_index = parse_u32("HETGPU_XRT_DEVICE_INDEX", 0)?;
+        let timeout_ms = parse_u32("HETGPU_XRT_TIMEOUT_MS", 10_000)?;
+        if timeout_ms == 0 {
+            return Err(XrtTmatmulError::Config(
+                "HETGPU_XRT_TIMEOUT_MS must be nonzero".to_string(),
+            ));
+        }
+        let num_vector_registers = u8::try_from(parse_u32("HETGPU_XRT_NUM_VECTOR_REGISTERS", 4)?)
+            .map_err(|_| {
+            XrtTmatmulError::Config(
+                "HETGPU_XRT_NUM_VECTOR_REGISTERS does not fit in u8".to_string(),
+            )
+        })?;
+        let targets = match std::env::var("HETGPU_XRT_CU_CONFIG") {
+            Ok(json) if !json.trim().is_empty() => Self::parse_cu_table(&json)?,
+            _ => Self::maxcores_targets(),
+        };
+        Self::validate_targets(&targets)?;
+        Ok(Self {
+            xclbin: PathBuf::from(xclbin),
+            device_index,
+            targets,
+            num_vector_registers,
+            timeout_ms,
+        })
+    }
+}
+
+fn expected_vector_bytes(lanes: usize) -> usize {
+    AU250_DIM * lanes * 2
+}
+
+fn validate_wave_job(target: &XrtCuTarget, job: &XrtWaveJob) -> Result<(), XrtTmatmulError> {
+    if job.matrix.len() != AU250_MATRIX_BYTES {
+        return Err(XrtTmatmulError::InvalidBuffer(format!(
+            "matrix has {} bytes, expected {AU250_MATRIX_BYTES}",
+            job.matrix.len()
+        )));
+    }
+    let expected = expected_vector_bytes(target.lanes);
+    if job.input.len() != expected {
+        return Err(XrtTmatmulError::InvalidBuffer(format!(
+            "input has {} bytes, expected {expected}",
+            job.input.len()
+        )));
+    }
+    Ok(())
+}
+
+struct ReusableCu {
+    target: XrtCuTarget,
+    ip_device: Handle,
+    ip_index: u32,
+    matrix_bo: Handle,
+    input_bo: Handle,
+    output_bo: Handle,
+    program_bo: Handle,
+    program_address: u64,
+    program_bytes: usize,
+    release_handles: bool,
+}
+
+struct Pool<O: XrtOps> {
+    ops: O,
+    device: Handle,
+    uuid: Xuid,
+    cus: Vec<ReusableCu>,
+    timeout_ms: u32,
+    poisoned: bool,
+    release_device: bool,
+}
+
+pub(crate) struct XrtTmatmulPool {
+    inner: Pool<RealXrt>,
+}
+
+// SAFETY: every raw XRT handle is exclusively owned by this pool, all access is
+// serialized by the IQ1_S executor's process-global mutex, and destruction is
+// performed only by the owning pool. Raw-handle owners deliberately are not Sync.
+unsafe impl Send for XrtTmatmulPool {}
+
+impl XrtTmatmulPool {
+    pub(crate) fn open_from_env() -> Result<Self, XrtTmatmulError> {
+        let config = XrtPoolConfig::from_env()?;
+        let ops = RealXrt::load(true)?;
+        Ok(Self {
+            inner: Pool::open_with_ops(ops, config)?,
+        })
+    }
+
+    pub(crate) fn lane_capacities(&self) -> Vec<usize> {
+        self.inner.cus.iter().map(|cu| cu.target.lanes).collect()
+    }
+
+    pub(crate) fn run_wave(
+        &mut self,
+        jobs: Vec<XrtWaveJob>,
+    ) -> Result<Vec<XrtWaveCompletion>, XrtTmatmulError> {
+        self.inner.run_wave(jobs)
+    }
+}
+
+impl<O: XrtOps> Pool<O> {
+    fn open_with_ops(ops: O, config: XrtPoolConfig) -> Result<Self, XrtTmatmulError> {
+        XrtPoolConfig::validate_targets(&config.targets)?;
+        let device = ops.device_open(config.device_index);
+        if device.is_null() {
+            return Err(XrtTmatmulError::NullHandle("xrtDeviceOpen"));
+        }
+        let mut pool = Self {
+            ops,
+            device,
+            uuid: [0; 16],
+            cus: Vec::with_capacity(config.targets.len()),
+            timeout_ms: config.timeout_ms,
+            poisoned: false,
+            release_device: true,
+        };
+
+        let xclbin = config.xclbin.to_str().ok_or_else(|| {
+            XrtTmatmulError::Config("HETGPU_XRT_XCLBIN must be valid UTF-8".to_string())
+        })?;
+        let xclbin = CString::new(xclbin).map_err(|_| {
+            XrtTmatmulError::Config("HETGPU_XRT_XCLBIN contains a NUL byte".to_string())
+        })?;
+        check_xrt(
+            "xrtDeviceLoadXclbinFile",
+            pool.ops.load_xclbin_file(pool.device, &xclbin),
+        )?;
+        check_xrt(
+            "xrtDeviceGetXclbinUUID",
+            pool.ops.get_xclbin_uuid(pool.device, &mut pool.uuid),
+        )?;
+
+        for target in config.targets {
+            let ip_device = pool.ops.xcl_open(config.device_index);
+            if ip_device.is_null() {
+                return Err(XrtTmatmulError::NullHandle("xclOpen"));
+            }
+            let ip_name = CString::new(target.ip_name.as_str()).map_err(|_| {
+                XrtTmatmulError::Config("XRT CU IP name contains a NUL byte".to_string())
+            })?;
+            let raw_index = pool.ops.xcl_ip_name_to_index(ip_device, &ip_name);
+            if raw_index < 0 {
+                pool.ops.xcl_close(ip_device);
+                return Err(XrtTmatmulError::Xrt {
+                    operation: "xclIPName2Index",
+                    code: raw_index,
+                });
+            }
+            let ip_index = raw_index as u32;
+            if let Err(error) = check_xrt(
+                "xclOpenContext",
+                pool.ops
+                    .xcl_open_context(ip_device, &pool.uuid, ip_index, false),
+            ) {
+                pool.ops.xcl_close(ip_device);
+                return Err(error);
+            }
+
+            pool.cus.push(ReusableCu {
+                target,
+                ip_device,
+                ip_index,
+                matrix_bo: std::ptr::null_mut(),
+                input_bo: std::ptr::null_mut(),
+                output_bo: std::ptr::null_mut(),
+                program_bo: std::ptr::null_mut(),
+                program_address: 0,
+                program_bytes: 0,
+                release_handles: true,
+            });
+            let cu_index = pool.cus.len() - 1;
+            let group = pool.cus[cu_index].target.memory_group;
+            let vector_bytes = expected_vector_bytes(pool.cus[cu_index].target.lanes);
+
+            // This ordering is the persistent form of the four-BO ABI.
+            let matrix_bo = pool.allocate_bo(AU250_MATRIX_BYTES, group, "xrtBOAlloc(matrix)")?;
+            pool.cus[cu_index].matrix_bo = matrix_bo;
+            let input_bo = pool.allocate_bo(vector_bytes, group, "xrtBOAlloc(input)")?;
+            pool.cus[cu_index].input_bo = input_bo;
+            let output_bo = pool.allocate_bo(vector_bytes, group, "xrtBOAlloc(output)")?;
+            pool.cus[cu_index].output_bo = output_bo;
+
+            let matrix_address = pool.bo_address(matrix_bo, "matrix")?;
+            let input_address = pool.bo_address(input_bo, "input")?;
+            let output_address = pool.bo_address(output_bo, "output")?;
+            let labels = bind_labels(
+                "PARAM_MATRIX",
+                "PARAM_INPUT",
+                "PARAM_OUTPUT",
+                matrix_address,
+                input_address,
+                output_address,
+            )?;
+            let replay_safe_program =
+                super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
+                    AU250_TMATMUL_ASSEMBLY,
+                    &labels,
+                    config.num_vector_registers,
+                )
+                .map_err(|error| XrtTmatmulError::Assemble(error.to_string()))?;
+            let program = compact_xrt_program(&replay_safe_program)?;
+            validate_program(&program)?;
+            let program_bo = pool.allocate_bo(program.len(), group, "xrtBOAlloc(program)")?;
+            pool.cus[cu_index].program_bo = program_bo;
+            pool.cus[cu_index].program_address = pool.bo_address(program_bo, "program")?;
+            pool.cus[cu_index].program_bytes = program.len();
+            bo_write_and_sync(&pool.ops, program_bo, &program, "program")?;
+        }
+
+        Ok(pool)
+    }
+
+    fn allocate_bo(
+        &self,
+        size: usize,
+        group: u32,
+        operation: &'static str,
+    ) -> Result<Handle, XrtTmatmulError> {
+        let bo = self.ops.bo_alloc(self.device, size, 0, group);
+        if bo.is_null() {
+            Err(XrtTmatmulError::NullHandle(operation))
+        } else {
+            Ok(bo)
+        }
+    }
+
+    fn bo_address(&self, bo: Handle, name: &'static str) -> Result<u64, XrtTmatmulError> {
+        let address = self.ops.bo_address(bo);
+        if address == 0 || address == u64::MAX {
+            Err(XrtTmatmulError::InvalidBuffer(format!(
+                "xrtBOAddress returned 0x{address:016x} for {name}"
+            )))
+        } else {
+            Ok(address)
+        }
+    }
+
+    fn register_read(&self, cu_index: usize, offset: u32) -> Result<u32, XrtTmatmulError> {
+        let cu = &self.cus[cu_index];
+        let mut value = 0;
+        check_xrt(
+            "xclRegRead",
+            self.ops
+                .xcl_reg_read(cu.ip_device, cu.ip_index, offset, &mut value),
+        )?;
+        Ok(value)
+    }
+
+    fn register_write(
+        &self,
+        cu_index: usize,
+        offset: u32,
+        value: u32,
+    ) -> Result<(), XrtTmatmulError> {
+        let cu = &self.cus[cu_index];
+        check_xrt(
+            "xclRegWrite",
+            self.ops
+                .xcl_reg_write(cu.ip_device, cu.ip_index, offset, value),
+        )
+    }
+
+    fn run_wave(
+        &mut self,
+        jobs: Vec<XrtWaveJob>,
+    ) -> Result<Vec<XrtWaveCompletion>, XrtTmatmulError> {
+        if self.poisoned {
+            return Err(XrtTmatmulError::Config(
+                "persistent XRT pool is poisoned after failed quiescence".to_string(),
+            ));
+        }
+        let mut seen_cus = HashSet::new();
+        let mut seen_requests = HashSet::new();
+        for job in &jobs {
+            let target = self.cus.get(job.cu_index).ok_or_else(|| {
+                XrtTmatmulError::Config(format!(
+                    "wave job {} selects missing CU {}",
+                    job.request_id, job.cu_index
+                ))
+            })?;
+            if !seen_cus.insert(job.cu_index) {
+                return Err(XrtTmatmulError::Config(format!(
+                    "wave contains more than one job for CU {}",
+                    job.cu_index
+                )));
+            }
+            if !seen_requests.insert(job.request_id) {
+                return Err(XrtTmatmulError::Config(format!(
+                    "wave contains duplicate request id {}",
+                    job.request_id
+                )));
+            }
+            validate_wave_job(&target.target, job)?;
+        }
+
+        for job in &jobs {
+            let cu = &self.cus[job.cu_index];
+            bo_write_and_sync(&self.ops, cu.matrix_bo, &job.matrix, "matrix")?;
+            bo_write_and_sync(&self.ops, cu.input_bo, &job.input, "input")?;
+        }
+
+        let registers = instance_registers(0)?;
+        let mut launched = Vec::with_capacity(jobs.len());
+        for job in &jobs {
+            launched.push(job.cu_index);
+            let cu = &self.cus[job.cu_index];
+            let start_result = (|| {
+                self.register_write(job.cu_index, registers.reset, 0)?;
+                self.register_write(job.cu_index, registers.dma_control, 1)?;
+                self.register_write(
+                    job.cu_index,
+                    registers.dma_source_lo,
+                    cu.program_address as u32,
+                )?;
+                self.register_write(
+                    job.cu_index,
+                    registers.dma_source_hi,
+                    (cu.program_address >> 32) as u32,
+                )?;
+                self.register_write(job.cu_index, registers.dma_length, cu.program_bytes as u32)
+            })();
+            if let Err(error) = start_result {
+                return self.fail_wave(error, &launched);
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(u64::from(self.timeout_ms));
+        let mut stalls = vec![None; jobs.len()];
+        let mut pending = jobs.len();
+        while pending != 0 {
+            for (job_index, job) in jobs.iter().enumerate() {
+                if stalls[job_index].is_some() {
+                    continue;
+                }
+                match self.register_read(job.cu_index, registers.stall) {
+                    Ok(0) => {}
+                    Ok(value) => {
+                        stalls[job_index] = Some(value);
+                        pending -= 1;
+                    }
+                    Err(error) => return self.fail_wave(error, &launched),
+                }
+            }
+            if pending != 0 {
+                if Instant::now() >= deadline {
+                    return self.fail_wave(
+                        XrtTmatmulError::Timeout {
+                            timeout_ms: self.timeout_ms,
+                        },
+                        &launched,
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        let mut completions = Vec::with_capacity(jobs.len());
+        for (job_index, job) in jobs.iter().enumerate() {
+            let cu = &self.cus[job.cu_index];
+            let mut output = vec![0u8; expected_vector_bytes(cu.target.lanes)];
+            let finish_result = (|| {
+                check_xrt(
+                    "xrtBOSync(output, from-device)",
+                    self.ops
+                        .bo_sync(cu.output_bo, XRT_BO_SYNC_FROM_DEVICE, output.len(), 0),
+                )?;
+                check_xrt(
+                    "xrtBORead(output)",
+                    self.ops.bo_read(cu.output_bo, &mut output),
+                )?;
+                self.register_write(job.cu_index, registers.stall, 1)
+            })();
+            if let Err(error) = finish_result {
+                return self.fail_wave(error, &launched);
+            }
+            completions.push(XrtWaveCompletion {
+                request_id: job.request_id,
+                cu_index: job.cu_index,
+                stall_code: stalls[job_index].expect("all wave jobs completed"),
+                output,
+            });
+        }
+        Ok(completions)
+    }
+
+    fn fail_wave<T>(
+        &mut self,
+        primary: XrtTmatmulError,
+        launched: &[usize],
+    ) -> Result<T, XrtTmatmulError> {
+        let mut cleanup_errors = Vec::new();
+        let mut seen = HashSet::new();
+        for &cu_index in launched {
+            if seen.insert(cu_index) {
+                if let Err(error) = self.quiesce_cu(cu_index) {
+                    self.cus[cu_index].release_handles = false;
+                    self.release_device = false;
+                    cleanup_errors.push(format!("CU {cu_index}: {error}"));
+                }
+            }
+        }
+        if cleanup_errors.is_empty() {
+            Err(primary)
+        } else {
+            self.poisoned = true;
+            Err(XrtTmatmulError::Quiesce {
+                primary: primary.to_string(),
+                cleanup: cleanup_errors.join("; "),
+            })
+        }
+    }
+
+    fn quiesce_cu(&self, cu_index: usize) -> Result<(), XrtTmatmulError> {
+        let registers = instance_registers(0)?;
+        self.register_write(cu_index, registers.reset, 1)?;
+        self.register_write(cu_index, registers.dma_control, DMACR_RESET)?;
+        let timeout_ms = self.timeout_ms.max(100);
+        let deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms));
+        loop {
+            let control = self.register_read(cu_index, registers.dma_control)?;
+            if control & DMACR_RESET == 0 {
+                let status = self.register_read(cu_index, registers.dma_control + MM2S_DMASR)?;
+                if status & (DMASR_HALTED | DMASR_IDLE) != 0 {
+                    return Ok(());
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(XrtTmatmulError::Timeout { timeout_ms });
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+impl<O: XrtOps> Drop for Pool<O> {
+    fn drop(&mut self) {
+        for cu in self.cus.iter_mut().rev() {
+            if !cu.release_handles {
+                continue;
+            }
+            for bo in [cu.program_bo, cu.output_bo, cu.input_bo, cu.matrix_bo] {
+                if !bo.is_null() {
+                    let _ = self.ops.bo_free(bo);
+                }
+            }
+            let _ = self
+                .ops
+                .xcl_close_context(cu.ip_device, &self.uuid, cu.ip_index);
+            if !cu.ip_device.is_null() {
+                self.ops.xcl_close(cu.ip_device);
+            }
+        }
+        if self.release_device && !self.device.is_null() {
+            let _ = self.ops.device_close(self.device);
+        }
+    }
 }
 
 pub(crate) fn submit_xrt_tmatmul(
@@ -1027,6 +1621,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::VecDeque;
+    use std::sync::Arc;
 
     const DEVICE_HANDLE: usize = 1;
     const KERNEL_HANDLE: usize = 2;
@@ -1096,6 +1691,7 @@ mod tests {
         events: Vec<Event>,
         next_bo: usize,
         stall_reads: VecDeque<u32>,
+        stall_reads_by_ip: HashMap<u32, VecDeque<u32>>,
         fail_register_write: Option<u32>,
         fail_register_read: Option<u32>,
         output_pattern: u8,
@@ -1112,11 +1708,22 @@ mod tests {
                     events: Vec::new(),
                     next_bo: FIRST_BO_HANDLE,
                     stall_reads: stall_reads.into_iter().collect(),
+                    stall_reads_by_ip: HashMap::new(),
                     fail_register_write: None,
                     fail_register_read: None,
                     output_pattern: 0x5a,
                 }),
             }
+        }
+
+        fn with_per_ip_stalls(stalls: Vec<Vec<u32>>) -> Self {
+            let xrt = Self::new([]);
+            xrt.state.borrow_mut().stall_reads_by_ip = stalls
+                .into_iter()
+                .enumerate()
+                .map(|(index, values)| (index as u32, values.into_iter().collect()))
+                .collect();
+            xrt
         }
 
         fn fail_register_write(&self, offset: u32) {
@@ -1213,11 +1820,22 @@ mod tests {
         }
 
         fn xcl_ip_name_to_index(&self, _device: Handle, name: &CStr) -> i32 {
+            let name = name.to_string_lossy().into_owned();
             self.state
                 .borrow_mut()
                 .events
-                .push(Event::IpNameToIndex(name.to_string_lossy().into_owned()));
-            0
+                .push(Event::IpNameToIndex(name.clone()));
+            if name.ends_with("big_1") {
+                0
+            } else if name.ends_with("big_2") {
+                1
+            } else if name.ends_with("big_3") {
+                2
+            } else if name.ends_with("small_1") {
+                3
+            } else {
+                -1
+            }
         }
 
         fn xcl_open_context(&self, _device: Handle, _uuid: &Xuid, index: u32, shared: bool) -> i32 {
@@ -1236,14 +1854,20 @@ mod tests {
             0
         }
 
-        fn xcl_reg_read(&self, _device: Handle, _index: u32, offset: u32, value: &mut u32) -> i32 {
+        fn xcl_reg_read(&self, _device: Handle, index: u32, offset: u32, value: &mut u32) -> i32 {
             let mut state = self.state.borrow_mut();
             state.events.push(Event::IpRegisterRead(offset));
             if state.fail_register_read == Some(offset) {
                 return -5;
             }
             *value = match offset {
-                STALL => state.stall_reads.pop_front().unwrap_or(0),
+                STALL => {
+                    if let Some(reads) = state.stall_reads_by_ip.get_mut(&index) {
+                        reads.pop_front().unwrap_or(0)
+                    } else {
+                        state.stall_reads.pop_front().unwrap_or(0)
+                    }
+                }
                 MM2S_DMACR => 0,
                 MM2S_DMASR => 1,
                 _ => 0,
@@ -1341,6 +1965,136 @@ mod tests {
             num_vector_registers: 4,
             ..test_config(timeout_ms)
         }
+    }
+
+    fn test_wave_jobs() -> Vec<XrtWaveJob> {
+        XrtPoolConfig::maxcores_targets()
+            .into_iter()
+            .enumerate()
+            .map(|(cu_index, target)| XrtWaveJob {
+                request_id: 10 + cu_index as u64,
+                cu_index,
+                matrix: Arc::from(vec![0_u8; AU250_MATRIX_BYTES]),
+                input: vec![0_u8; expected_vector_bytes(target.lanes)],
+            })
+            .collect()
+    }
+
+    fn pool_test_config() -> XrtPoolConfig {
+        XrtPoolConfig {
+            xclbin: PathBuf::from("/tmp/MaxCores_370M.xclbin"),
+            device_index: 0,
+            targets: XrtPoolConfig::maxcores_targets(),
+            num_vector_registers: 4,
+            timeout_ms: 20,
+        }
+    }
+
+    #[test]
+    fn maxcores_targets_match_xclbin_layout() {
+        assert_eq!(
+            XrtPoolConfig::maxcores_targets(),
+            vec![
+                XrtCuTarget {
+                    ip_name: "ternip_big:ternip_big_1".into(),
+                    memory_group: 0,
+                    lanes: 9,
+                },
+                XrtCuTarget {
+                    ip_name: "ternip_big:ternip_big_2".into(),
+                    memory_group: 3,
+                    lanes: 9,
+                },
+                XrtCuTarget {
+                    ip_name: "ternip_big:ternip_big_3".into(),
+                    memory_group: 2,
+                    lanes: 9,
+                },
+                XrtCuTarget {
+                    ip_name: "ternip_small:ternip_small_1".into(),
+                    memory_group: 1,
+                    lanes: 6,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn cu_table_override_is_one_versioned_atomic_value() {
+        let json = r#"{"version":1,"cus":[{"ip_name":"ternip_big:ternip_big_1","memory_group":0,"lanes":9}]}"#;
+        let parsed = XrtPoolConfig::parse_cu_table(json).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert!(XrtPoolConfig::parse_cu_table(r#"{"version":2,"cus":[]}"#).is_err());
+        assert!(XrtPoolConfig::parse_cu_table(r#"{"version":1,"cus":[]}"#).is_err());
+    }
+
+    #[test]
+    fn pool_loads_xclbin_once_and_allocates_four_bos_per_cu() {
+        let xrt = FakeXrt::new([1, 1, 1, 1]);
+        let pool = Pool::open_with_ops(xrt, pool_test_config()).unwrap();
+        assert_eq!(
+            pool.ops
+                .events()
+                .iter()
+                .filter(|event| matches!(event, Event::LoadXclbin(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            pool.ops
+                .events()
+                .iter()
+                .filter(|event| matches!(event, Event::BoAlloc { .. }))
+                .count(),
+            16
+        );
+    }
+
+    #[test]
+    fn wave_returns_request_order_after_out_of_order_stalls() {
+        let xrt =
+            FakeXrt::with_per_ip_stalls(vec![vec![0, 0, 1], vec![1], vec![0, 0, 0, 1], vec![0, 1]]);
+        let mut pool = Pool::open_with_ops(xrt, pool_test_config()).unwrap();
+        let completions = pool.run_wave(test_wave_jobs()).unwrap();
+        assert_eq!(
+            completions
+                .iter()
+                .map(|completion| completion.request_id)
+                .collect::<Vec<_>>(),
+            vec![10, 11, 12, 13]
+        );
+    }
+
+    #[test]
+    fn wave_rejects_wrong_payload_sizes_before_register_writes() {
+        let xrt = FakeXrt::new([1]);
+        let mut pool = Pool::open_with_ops(xrt, pool_test_config()).unwrap();
+        let mut jobs = test_wave_jobs();
+        jobs.truncate(1);
+        jobs[0].input.pop();
+
+        let error = pool.run_wave(jobs).unwrap_err();
+        assert!(error.to_string().contains("input has"), "{error}");
+        assert!(!pool.ops.events().iter().any(|event| matches!(
+            event,
+            Event::IpRegisterWrite { .. } | Event::IpRegisterRead(_)
+        )));
+    }
+
+    #[test]
+    fn failed_quiescence_poisons_pool_and_retains_uncertain_cu() {
+        let xrt = FakeXrt::new([1]);
+        let mut pool = Pool::open_with_ops(xrt, pool_test_config()).unwrap();
+        pool.ops.fail_register_write(RESET);
+        let mut jobs = test_wave_jobs();
+        jobs.truncate(1);
+
+        let error = pool.run_wave(jobs.clone()).unwrap_err();
+        assert!(matches!(error, XrtTmatmulError::Quiesce { .. }));
+        let retry = pool.run_wave(jobs).unwrap_err();
+        assert!(retry.to_string().contains("poisoned"), "{retry}");
+        assert!(!pool.cus[0].release_handles);
+        assert!(!pool.release_device);
     }
 
     fn au250_vector_add_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
