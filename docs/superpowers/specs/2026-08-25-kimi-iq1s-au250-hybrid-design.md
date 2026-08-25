@@ -36,10 +36,14 @@ The live platform was revalidated after the 2026-08-25 reboot:
 - The canonical 1024x1024 ternary matmul passes exactly through the Rust
   four-BO XRT backend: nine lanes, 96 program bytes, and terminal STALL 1.
 
-The host tools report XRT 2.21.75 while `au250-run` supplies the compatible
-2.15 application runtime. Production and live tests therefore execute inside
-`au250-run`; ordinary host processes must not bind against the incompatible
-host XRT stack.
+The host tools report XRT 2.21.75 while the app215 image used by `au250-run`
+supplies the compatible 2.15 application runtime. The stock helper exposes the
+Xilinx devices but not the NVIDIA runtime, CUDA 13 tree, BitNet checkout, or
+Kimi shards. Production therefore uses a repository-owned hybrid wrapper with
+the same app215 image, temperature guard, Xilinx device flags, and XRT setup,
+plus `--gpus all` and read-only CUDA/model/source mounts. Ordinary host
+processes must not bind against the incompatible host XRT stack, and the
+external `/au250_xrt/env.sh` is not modified.
 
 ## Existing Interfaces Preserved
 
@@ -118,10 +122,11 @@ are stored directly as signed `i16` raw values. Because only 32 values are
 active, each raw grid or delta dot is bounded by:
 
 ```text
--4096 <= dot <= 4064
+-4096 <= dot <= 4096
 ```
 
-This is exactly representable in signed `i16`. The fixed-point exponent does
+The positive edge comes from `(-1) * (-128)` in all 32 positions. This range is
+exactly representable in signed `i16`. The fixed-point exponent does
 not alter the integer primitive: the path reads the raw output bits and does
 not convert the dot through floating-point fixed-point interpretation.
 
@@ -157,7 +162,8 @@ the duration of the hybrid run:
 3. open exclusive native-IP contexts for all configured CUs;
 4. allocate one reusable four-BO set in each CU's connected DDR bank;
 5. bind stable BO addresses and assemble the tmatmul program once per CU;
-6. run one worker per CU, synchronizing only that CU's BOs and registers;
+6. maintain one logical worker per CU; a serialized coordinator starts every
+   CU in a wave and polls their independent BOs and registers concurrently;
 7. return tagged results to a deterministic reconstruction coordinator;
 8. quiesce all active CUs before releasing any BO or device address.
 
@@ -176,9 +182,11 @@ batch, and group identifiers so out-of-order CU completion cannot corrupt
 logical accumulation order.
 
 Matrix materializations are cached by the existing matrix identity, content
-hash, tile coordinates, and component kind. BO contents may be reused only
-when all identity fields match. Activation/input BOs and output BOs are updated
-for every scheduled submission.
+hash, tile coordinates, and component kind. The cache is byte-bounded with LRU
+eviction (default 512 MiB) so expanded ternary components from the full model
+cannot consume unbounded host memory. BO contents may be reused only when all
+identity fields match. Activation/input BOs and output BOs are updated for
+every scheduled submission.
 
 ## Configuration
 
