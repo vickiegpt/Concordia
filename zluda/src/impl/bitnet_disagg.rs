@@ -72,6 +72,61 @@ impl BitnetRoute {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TmatmulBackend {
+    Cxl,
+    Xrt,
+}
+
+impl TmatmulBackend {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Cxl => "cxl",
+            Self::Xrt => "xrt",
+        }
+    }
+}
+
+pub(crate) fn tmatmul_backend_from_env() -> Result<Option<TmatmulBackend>, String> {
+    match std::env::var("HETGPU_TMATMUL_BACKEND")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") => Ok(None),
+        Some("cxl") => Ok(Some(TmatmulBackend::Cxl)),
+        Some("xrt") => Ok(Some(TmatmulBackend::Xrt)),
+        Some(value) => Err(format!(
+            "unsupported HETGPU_TMATMUL_BACKEND={value:?}; expected cxl or xrt"
+        )),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RouteHardware {
+    pub(crate) backend: Option<TmatmulBackend>,
+    pub(crate) enabled: bool,
+    pub(crate) hardware_matmul_enabled: bool,
+}
+
+impl RouteHardware {
+    pub(crate) fn xrt(hardware_matmul_enabled: bool) -> Self {
+        Self {
+            backend: Some(TmatmulBackend::Xrt),
+            enabled: true,
+            hardware_matmul_enabled,
+        }
+    }
+
+    pub(crate) fn cxl(enabled: bool, hardware_matmul_enabled: bool) -> Self {
+        Self {
+            backend: Some(TmatmulBackend::Cxl),
+            enabled,
+            hardware_matmul_enabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BitnetRouteSource {
     Disabled,
     ExplicitGpuEnv,
@@ -422,8 +477,7 @@ fn classify_manifest(
 
 pub(crate) fn append_route_log_from_env(
     decision: &BitnetRouteDecision,
-    cxl_enabled: bool,
-    hardware_matmul_enabled: bool,
+    hardware: RouteHardware,
 ) -> Result<(), String> {
     let Ok(path) = std::env::var("HETGPU_BITNET_ROUTE_LOG") else {
         return Ok(());
@@ -431,20 +485,16 @@ pub(crate) fn append_route_log_from_env(
     if path.trim().is_empty() {
         return Ok(());
     }
-    append_route_log(
-        Path::new(path.trim()),
-        decision,
-        cxl_enabled,
-        hardware_matmul_enabled,
-    )
+    append_route_log(Path::new(path.trim()), decision, hardware)
 }
 
 pub(crate) fn append_route_log(
     path: &Path,
     decision: &BitnetRouteDecision,
-    cxl_enabled: bool,
-    hardware_matmul_enabled: bool,
+    hardware: RouteHardware,
 ) -> Result<(), String> {
+    let cxl_enabled = hardware.backend == Some(TmatmulBackend::Cxl) && hardware.enabled;
+    let xrt_enabled = hardware.backend == Some(TmatmulBackend::Xrt) && hardware.enabled;
     let record = serde_json::json!({
         "kernel": decision.kernel.as_str(),
         "route": decision.route.as_str(),
@@ -452,8 +502,10 @@ pub(crate) fn append_route_log(
         "matched": decision.matched.as_deref(),
         "reason": decision.reason.as_deref(),
         "strict": decision.strict,
+        "backend": hardware.backend.map(TmatmulBackend::as_str),
         "cxl_enabled": cxl_enabled,
-        "hardware_matmul_enabled": hardware_matmul_enabled,
+        "xrt_enabled": xrt_enabled,
+        "hardware_matmul_enabled": hardware.hardware_matmul_enabled,
     });
     let mut line = serde_json::to_string(&record)
         .map_err(|err| format!("serialize route log {}: {err}", path.display()))?;
@@ -527,6 +579,7 @@ mod tests {
         "HETGPU_BITNET_GPU_KERNELS",
         "HETGPU_BITNET_ROUTE_MANIFEST",
         "HETGPU_BITNET_ROUTE_LOG",
+        "HETGPU_TMATMUL_BACKEND",
     ];
 
     struct EnvGuard {
@@ -973,7 +1026,7 @@ mod tests {
             strict: false,
         };
 
-        append_route_log(&path, &decision, true, true).unwrap();
+        append_route_log(&path, &decision, RouteHardware::cxl(true, true)).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
         assert_eq!(value["kernel"], "layer_0_ffn_gate_mul_mat");
@@ -993,7 +1046,7 @@ mod tests {
             reason: None,
             strict: true,
         };
-        append_route_log(&path, &fallback, false, false).unwrap();
+        append_route_log(&path, &fallback, RouteHardware::cxl(false, false)).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let values = text
             .lines()
@@ -1004,6 +1057,34 @@ mod tests {
         assert!(values[1]["reason"].is_null());
         assert_eq!(values[1]["strict"], true);
         assert_eq!(values[1]["hardware_matmul_enabled"], false);
+    }
+
+    #[test]
+    fn backend_env_selects_xrt_without_enabling_cxl() {
+        let _guard = EnvGuard::set(&[("HETGPU_TMATMUL_BACKEND", Some("xrt"))]);
+        assert_eq!(
+            tmatmul_backend_from_env().unwrap(),
+            Some(TmatmulBackend::Xrt)
+        );
+    }
+
+    #[test]
+    fn backend_env_rejects_unknown_values() {
+        let _guard = EnvGuard::set(&[("HETGPU_TMATMUL_BACKEND", Some("cuda"))]);
+        assert!(tmatmul_backend_from_env().unwrap_err().contains("cuda"));
+    }
+
+    #[test]
+    fn xrt_route_log_preserves_logical_route_and_records_physical_backend() {
+        let path = tempfile::NamedTempFile::new().unwrap();
+        let decision = classify_kernel_name("ffn_mul_mat_q", &config(true));
+        append_route_log(path.path(), &decision, RouteHardware::xrt(true)).unwrap();
+        let text = std::fs::read_to_string(path.path()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(value["route"], "cxl_tmatmul");
+        assert_eq!(value["backend"], "xrt");
+        assert_eq!(value["xrt_enabled"], true);
+        assert_eq!(value["cxl_enabled"], false);
     }
 
     #[test]

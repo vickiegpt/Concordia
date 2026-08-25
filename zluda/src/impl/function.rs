@@ -3667,8 +3667,10 @@ unsafe fn execute_kernel_name_fallback(
         let cxl_enabled = super::cxl_tmatmul::cxl_tmatmul_enabled();
         if let Err(err) = super::bitnet_disagg::append_route_log_from_env(
             &decision,
-            cxl_enabled,
-            tmatmul_hardware_matmul_enabled(),
+            super::bitnet_disagg::RouteHardware::cxl(
+                cxl_enabled,
+                tmatmul_hardware_matmul_enabled(),
+            ),
         ) {
             eprintln!(
                 "[BitNet Disagg] route log failed for '{}': {}",
@@ -3714,9 +3716,10 @@ unsafe fn execute_kernel_name_fallback(
             let route_config = super::bitnet_disagg::config_from_env();
             let decision = super::bitnet_disagg::classify_kernel_name(kernel_name, &route_config);
             let cxl_enabled = super::cxl_tmatmul::cxl_tmatmul_enabled();
-            if let Err(err) =
-                super::bitnet_disagg::append_route_log_from_env(&decision, cxl_enabled, true)
-            {
+            if let Err(err) = super::bitnet_disagg::append_route_log_from_env(
+                &decision,
+                super::bitnet_disagg::RouteHardware::cxl(cxl_enabled, true),
+            ) {
                 eprintln!(
                     "[BitNet Disagg] route log failed for '{}': {}",
                     kernel_name, err
@@ -8111,19 +8114,26 @@ fn nvidia_log_bitnet_route_for_native_launch(kernel_name: &str) {
 
     let route_config = super::bitnet_disagg::config_from_env();
     let decision = super::bitnet_disagg::classify_kernel_name(kernel_name, &route_config);
-    let cxl_enabled =
-        nvidia_env_truthy("HETGPU_CXL_TMATMUL") || nvidia_env_truthy("HETGPU_TMATMUL_CXL");
-
     // The NVIDIA backend currently observes the BitNet split while forwarding
     // launches to native CUDA. The Intel/tmatmul backend owns actual CXL
     // matmul diversion, so keep this field false here to avoid claiming a
     // hardware matmul submit happened in the NVIDIA pass-through path.
     let hardware_matmul_enabled = false;
-    if let Err(err) = super::bitnet_disagg::append_route_log_from_env(
-        &decision,
-        cxl_enabled,
-        hardware_matmul_enabled,
-    ) {
+    let hardware = match super::bitnet_disagg::tmatmul_backend_from_env() {
+        Ok(Some(super::bitnet_disagg::TmatmulBackend::Xrt)) => {
+            super::bitnet_disagg::RouteHardware::xrt(hardware_matmul_enabled)
+        }
+        Ok(Some(super::bitnet_disagg::TmatmulBackend::Cxl)) | Ok(None) => {
+            let cxl_enabled =
+                nvidia_env_truthy("HETGPU_CXL_TMATMUL") || nvidia_env_truthy("HETGPU_TMATMUL_CXL");
+            super::bitnet_disagg::RouteHardware::cxl(cxl_enabled, hardware_matmul_enabled)
+        }
+        Err(err) => {
+            eprintln!("[BitNet Disagg][NVIDIA] invalid tmatmul backend: {err}");
+            return;
+        }
+    };
+    if let Err(err) = super::bitnet_disagg::append_route_log_from_env(&decision, hardware) {
         eprintln!(
             "[BitNet Disagg][NVIDIA] route log failed for '{}': {}",
             kernel_name, err
@@ -8888,7 +8898,17 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
 ) -> Option<Result<(), String>> {
     if !super::bitnet_disagg::enabled_from_env()
         || !nvidia_env_truthy("HETGPU_TMATMUL_HARDWARE_MATMUL")
-        || !super::cxl_tmatmul::cxl_tmatmul_enabled()
+    {
+        return None;
+    }
+
+    let backend = match super::bitnet_disagg::tmatmul_backend_from_env() {
+        Ok(Some(backend)) => backend,
+        Ok(None) => super::bitnet_disagg::TmatmulBackend::Cxl,
+        Err(err) => return Some(Err(err)),
+    };
+    if backend == super::bitnet_disagg::TmatmulBackend::Cxl
+        && !super::cxl_tmatmul::cxl_tmatmul_enabled()
     {
         return None;
     }
@@ -8908,7 +8928,13 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
         super::bitnet_disagg::BitnetRoute::CxlTmatmul => {}
     }
 
-    if let Err(err) = super::bitnet_disagg::append_route_log_from_env(&decision, true, true) {
+    let hardware = match backend {
+        super::bitnet_disagg::TmatmulBackend::Cxl => {
+            super::bitnet_disagg::RouteHardware::cxl(true, true)
+        }
+        super::bitnet_disagg::TmatmulBackend::Xrt => super::bitnet_disagg::RouteHardware::xrt(true),
+    };
+    if let Err(err) = super::bitnet_disagg::append_route_log_from_env(&decision, hardware) {
         eprintln!(
             "[BitNet Disagg][NVIDIA CXL] route log failed for '{}': {}",
             kernel_name, err
@@ -8916,6 +8942,12 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
         if decision.strict {
             return Some(Err(format!("route log failed: {err}")));
         }
+    }
+
+    if backend == super::bitnet_disagg::TmatmulBackend::Xrt {
+        return Some(Err(format!(
+            "XRT backend selected for '{kernel_name}', but the IQ1_S XRT executor is not initialized"
+        )));
     }
 
     if !super::cxl_tmatmul::matrix_stage_cuda_dax_enabled() {
@@ -9345,6 +9377,59 @@ mod nvidia_bitnet_route_tests {
         let logged = std::fs::read_to_string(&route_log).unwrap();
         assert!(logged.contains(r#""route":"cxl_tmatmul""#));
         assert!(logged.contains(r#""hardware_matmul_enabled":true"#));
+    }
+
+    #[test]
+    fn nvidia_named_xrt_candidate_is_selected_without_cxl_staging() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let route_log = dir.path().join("routes.jsonl");
+        let route_log_text = route_log.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_CXL_KERNELS", Some("mul_mat_q")),
+            ("HETGPU_BITNET_ROUTE_LOG", Some(&route_log_text)),
+            ("HETGPU_TMATMUL_BACKEND", Some("xrt")),
+            ("HETGPU_CXL_TMATMUL", None),
+            ("HETGPU_TMATMUL_CXL", None),
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_MATRIX_STAGE", None),
+            ("HETGPU_TMATMUL_IO_STAGE", None),
+        ]);
+
+        let result = unsafe {
+            super::nvidia_try_launch_named_cxl_tmatmul(
+                "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
+                std::ptr::null_mut(),
+            )
+        }
+        .expect("selected XRT route must be consumed")
+        .expect_err("XRT executor is intentionally not initialized in this task");
+
+        assert!(result.contains("XRT backend selected"), "{result}");
+        let logged = std::fs::read_to_string(&route_log).unwrap();
+        assert!(logged.contains(r#""route":"cxl_tmatmul""#));
+        assert!(logged.contains(r#""backend":"xrt""#));
+        assert!(logged.contains(r#""xrt_enabled":true"#));
+        assert!(logged.contains(r#""cxl_enabled":false"#));
+    }
+
+    #[test]
+    fn nvidia_named_route_rejects_invalid_physical_backend() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_BACKEND", Some("cuda")),
+            ("HETGPU_CXL_TMATMUL", None),
+        ]);
+
+        let error = unsafe {
+            super::nvidia_try_launch_named_cxl_tmatmul("ffn_mul_mat_q", std::ptr::null_mut())
+        }
+        .expect("invalid backend must be consumed")
+        .expect_err("invalid backend must fail closed");
+        assert!(error.contains("cuda"), "{error}");
     }
 
     #[test]
