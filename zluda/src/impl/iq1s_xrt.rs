@@ -56,6 +56,7 @@ pub(crate) struct XrtIq1sEvidence {
     pub(crate) k_tiles: usize,
     pub(crate) submission_count: u64,
     pub(crate) per_cu_submissions: Vec<u64>,
+    pub(crate) stall_codes: Vec<u32>,
     pub(crate) raw_min: i16,
     pub(crate) raw_max: i16,
     pub(crate) reference_checked_components: u64,
@@ -477,6 +478,7 @@ pub(crate) fn execute_captured_with(
     let mut raw_slots = vec![None::<i16>; slot_count];
     let mut submission_count = 0u64;
     let mut per_cu_submissions = vec![0u64; lane_capacities.len()];
+    let mut stall_codes = Vec::new();
     let mut raw_min = None::<i16>;
     let mut raw_max = None::<i16>;
 
@@ -555,6 +557,7 @@ pub(crate) fn execute_captured_with(
                     completion.request_id
                 ));
             }
+            stall_codes.push(completion.stall_code);
             let expected_bytes = AU250_DIM
                 .checked_mul(lane_capacities[completion.cu_index])
                 .and_then(|value| value.checked_mul(2))
@@ -705,6 +708,7 @@ pub(crate) fn execute_captured_with(
             k_tiles: columns.div_ceil(AU250_DIM),
             submission_count,
             per_cu_submissions,
+            stall_codes,
             raw_min: raw_min.ok_or("AU250 execution produced no raw components")?,
             raw_max: raw_max.ok_or("AU250 execution produced no raw components")?,
             reference_checked_components,
@@ -1096,6 +1100,7 @@ mod tests {
             k_tiles: 1,
             submission_count: 2,
             per_cu_submissions: vec![1, 1],
+            stall_codes: vec![1, 1],
             raw_min: -3,
             raw_max: 4,
             reference_checked_components: 16,
@@ -1106,6 +1111,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
         assert_eq!(value["event"], "au250_xrt_iq1s_completed");
         assert_eq!(value["evidence"]["backend"], "xrt");
+        assert_eq!(value["evidence"]["stall_codes"], serde_json::json!([1, 1]));
         let directory = tempfile::tempdir().unwrap();
         assert!(append_execution_log(directory.path(), &evidence).is_err());
     }
