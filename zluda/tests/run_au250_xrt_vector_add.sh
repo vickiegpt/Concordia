@@ -27,7 +27,7 @@ if [[ ! -x "$CARGO_HOME/bin/cargo" ]]; then
 fi
 
 export HETGPU_XRT_AU250_TEST=1
-export HETGPU_XRT_XCLBIN=/au250_xrt/example/asym9_bs9_2641toks.xclbin
+export HETGPU_XRT_XCLBIN=/au250_xrt/example/MaxCores_370M.xclbin
 export HETGPU_XRT_IP_NAME=ternip_big:ternip_big_1
 export HETGPU_XRT_INSTANCE=0
 export HETGPU_XRT_MEMORY_GROUP=0

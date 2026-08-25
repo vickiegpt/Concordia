@@ -935,6 +935,50 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires HETGPU_XRT_AU250_IQ1S_TEST=1 and live MaxCores AU250"]
+    fn au250_iq1s_two_by_two_tiles_match_reference() {
+        assert_eq!(
+            std::env::var("HETGPU_XRT_AU250_IQ1S_TEST").as_deref(),
+            Ok("1"),
+            "set HETGPU_XRT_AU250_IQ1S_TEST=1 only inside the guarded AU250 wrapper"
+        );
+        let captured = two_k_tile_two_row_tile_fixture();
+        let expected = software_reference(&captured).unwrap();
+        let actual = execute_captured(&captured).unwrap();
+        assert_eq!(
+            actual
+                .outputs
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            actual
+                .evidence
+                .per_cu_submissions
+                .iter()
+                .filter(|submissions| **submissions > 0)
+                .count()
+                >= 2,
+            "tiled proof must exercise at least two physical CUs: {:?}",
+            actual.evidence.per_cu_submissions
+        );
+        eprintln!(
+            "AU250 XRT IQ1_S PASS: rows={} columns={} row_tiles={} k_tiles={} submissions={} per_cu={:?}",
+            captured.launch.signature.ne0,
+            captured.launch.signature.ne00,
+            actual.evidence.row_tiles,
+            actual.evidence.k_tiles,
+            actual.evidence.submission_count,
+            actual.evidence.per_cu_submissions,
+        );
+    }
+
+    #[test]
     fn executor_preserves_batch_two_output_order() {
         let captured = captured_fixture(1024, 3, 2);
         let expected = software_reference(&captured).unwrap();
@@ -1096,7 +1140,7 @@ mod tests {
         }
         let records = usize::try_from((ne00 / 128 - 1) * batch + batch).unwrap();
         let mut activations = vec![0_u8; records * Q8_1_MMQ_BYTES];
-        for record in activations.chunks_exact_mut(Q8_1_MMQ_BYTES) {
+        for (record_index, record) in activations.chunks_exact_mut(Q8_1_MMQ_BYTES).enumerate() {
             for pair in 0..4 {
                 record[pair * 4..pair * 4 + 2].copy_from_slice(&0x3c00_u16.to_le_bytes());
                 record[pair * 4 + 2..pair * 4 + 4].copy_from_slice(&0x3c00_u16.to_le_bytes());
@@ -1104,7 +1148,10 @@ mod tests {
                     .iter_mut()
                     .enumerate()
                 {
-                    *value = (index as i16 - 16) as i8 as u8;
+                    *value = record_index
+                        .wrapping_mul(131)
+                        .wrapping_add(pair * 37)
+                        .wrapping_add(index * 17) as u8;
                 }
             }
         }
