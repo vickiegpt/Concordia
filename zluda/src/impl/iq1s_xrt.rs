@@ -1,7 +1,16 @@
 //! AU250 D=1024 planning and execution for captured IQ1_S launches.
 
-use super::iq1s_tmatmul::{ComponentKind, GgmlType19Signature, MatrixSource, Q8_1Block};
-use std::collections::HashSet;
+use super::iq1s_tmatmul::{
+    checked_output_element_count, reconstruct_from_raw, CapturedLaunch, ComponentKind,
+    GgmlType19Signature, MatrixCacheIdentity, MatrixSource, Q8_1Block,
+};
+use super::xrt_tmatmul::{XrtTmatmulPool, XrtWaveCompletion, XrtWaveJob};
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub(crate) const AU250_DIM: usize = 1024;
 pub(crate) const AU250_GROUP_VALUES: usize = 32;
@@ -37,6 +46,179 @@ pub(crate) struct PlannedAu250Job {
     pub(crate) cu_index: usize,
     pub(crate) matrix_key: Au250MatrixKey,
     pub(crate) assignments: Vec<LaneAssignment>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct XrtIq1sEvidence {
+    pub(crate) backend: &'static str,
+    pub(crate) logical_batch: usize,
+    pub(crate) row_tiles: usize,
+    pub(crate) k_tiles: usize,
+    pub(crate) submission_count: u64,
+    pub(crate) per_cu_submissions: Vec<u64>,
+    pub(crate) raw_min: i16,
+    pub(crate) raw_max: i16,
+    pub(crate) reference_checked_components: u64,
+    pub(crate) comparison_status: &'static str,
+}
+
+#[derive(Debug)]
+pub(crate) struct XrtIq1sResult {
+    pub(crate) outputs: Vec<f32>,
+    pub(crate) evidence: XrtIq1sEvidence,
+}
+
+pub(crate) trait Au250WaveExecutor {
+    fn lane_capacities(&self) -> Vec<usize>;
+    fn run_wave(&mut self, jobs: Vec<XrtWaveJob>) -> Result<Vec<XrtWaveCompletion>, String>;
+}
+
+impl Au250WaveExecutor for XrtTmatmulPool {
+    fn lane_capacities(&self) -> Vec<usize> {
+        XrtTmatmulPool::lane_capacities(self)
+    }
+
+    fn run_wave(&mut self, jobs: Vec<XrtWaveJob>) -> Result<Vec<XrtWaveCompletion>, String> {
+        XrtTmatmulPool::run_wave(self, jobs).map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PackedMatrixKey {
+    identity: MatrixCacheIdentity,
+    tile: Au250MatrixKey,
+}
+
+struct PackedMatrixEntry {
+    value: Arc<[u8]>,
+    last_used: u64,
+}
+
+struct PackedMatrixCache {
+    capacity_bytes: usize,
+    resident_bytes: usize,
+    clock: u64,
+    entries: HashMap<PackedMatrixKey, PackedMatrixEntry>,
+}
+
+impl PackedMatrixCache {
+    fn from_env() -> Result<Self, String> {
+        let configured = match std::env::var("HETGPU_XRT_MATRIX_CACHE_BYTES") {
+            Ok(text) => Some(text),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(error) => return Err(format!("read HETGPU_XRT_MATRIX_CACHE_BYTES: {error}")),
+        };
+        let capacity_bytes = parse_matrix_cache_capacity(configured.as_deref())?;
+        Ok(Self {
+            capacity_bytes,
+            resident_bytes: 0,
+            clock: 0,
+            entries: HashMap::new(),
+        })
+    }
+
+    fn get_or_insert(
+        &mut self,
+        key: PackedMatrixKey,
+        build: impl FnOnce() -> Result<Vec<u8>, String>,
+    ) -> Result<Arc<[u8]>, String> {
+        self.clock = self
+            .clock
+            .checked_add(1)
+            .ok_or("AU250 matrix cache clock overflow")?;
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.last_used = self.clock;
+            return Ok(entry.value.clone());
+        }
+
+        let built = build()?;
+        if built.len() > self.capacity_bytes {
+            return Err(format!(
+                "packed AU250 matrix requires {} bytes, exceeding cache capacity {}",
+                built.len(),
+                self.capacity_bytes
+            ));
+        }
+        while self
+            .resident_bytes
+            .checked_add(built.len())
+            .ok_or("AU250 matrix cache byte count overflow")?
+            > self.capacity_bytes
+        {
+            let evict_key = self
+                .entries
+                .iter()
+                .filter(|(_, entry)| Arc::strong_count(&entry.value) == 1)
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+                .ok_or("AU250 matrix cache is full of in-flight values")?;
+            let evicted = self
+                .entries
+                .remove(&evict_key)
+                .expect("selected cache entry exists");
+            self.resident_bytes = self
+                .resident_bytes
+                .checked_sub(evicted.value.len())
+                .ok_or("AU250 matrix cache accounting underflow")?;
+        }
+        let value: Arc<[u8]> = Arc::from(built);
+        self.resident_bytes = self
+            .resident_bytes
+            .checked_add(value.len())
+            .ok_or("AU250 matrix cache byte count overflow")?;
+        self.entries.insert(
+            key,
+            PackedMatrixEntry {
+                value: value.clone(),
+                last_used: self.clock,
+            },
+        );
+        Ok(value)
+    }
+}
+
+fn parse_matrix_cache_capacity(configured: Option<&str>) -> Result<usize, String> {
+    const DEFAULT_BYTES: u64 = 512 * 1024 * 1024;
+    let capacity_u64 = match configured {
+        Some(text) => text
+            .parse::<u64>()
+            .map_err(|error| format!("HETGPU_XRT_MATRIX_CACHE_BYTES={text:?}: {error}"))?,
+        None => DEFAULT_BYTES,
+    };
+    if capacity_u64 == 0 {
+        return Err("HETGPU_XRT_MATRIX_CACHE_BYTES must be nonzero".to_string());
+    }
+    usize::try_from(capacity_u64)
+        .map_err(|_| "HETGPU_XRT_MATRIX_CACHE_BYTES does not fit usize".to_string())
+}
+
+fn packed_matrix_for(
+    captured: &CapturedLaunch,
+    tile: Au250Tile,
+    key: Au250MatrixKey,
+) -> Result<Arc<[u8]>, String> {
+    static CACHE: OnceLock<Mutex<Result<PackedMatrixCache, String>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(PackedMatrixCache::from_env()));
+    let mut guard = cache
+        .lock()
+        .map_err(|_| "AU250 matrix cache mutex poisoned".to_string())?;
+    let cache = match &mut *guard {
+        Ok(cache) => cache,
+        Err(error) => return Err(error.clone()),
+    };
+    let identity = MatrixCacheIdentity {
+        matrix_ptr: captured.launch.matrix_ptr,
+        signature: captured.launch.signature.clone(),
+        allocation_generation: captured.launch.allocation_generation,
+        content_hash: captured.launch.content_hash,
+    };
+    cache.get_or_insert(
+        PackedMatrixKey {
+            identity,
+            tile: key,
+        },
+        || pack_component_matrix(&captured.matrix, tile, key.kind),
+    )
 }
 
 pub(crate) fn plan_au250_tiles(signature: &GgmlType19Signature) -> Result<Vec<Au250Tile>, String> {
@@ -264,9 +446,346 @@ fn validate_planned_wave(
     Ok(())
 }
 
+pub(crate) fn execute_captured_with(
+    captured: &CapturedLaunch,
+    backend: &mut impl Au250WaveExecutor,
+) -> Result<XrtIq1sResult, String> {
+    captured.launch.signature.validate()?;
+    let signature = &captured.launch.signature;
+    let batch = usize::try_from(signature.ne11).map_err(|_| "batch count does not fit usize")?;
+    let rows = usize::try_from(signature.ne0).map_err(|_| "row count does not fit usize")?;
+    let columns = usize::try_from(signature.ne00).map_err(|_| "column count does not fit usize")?;
+    let groups = columns / AU250_GROUP_VALUES;
+    let output_elements = checked_output_element_count(signature)?;
+    let lane_capacities = backend.lane_capacities();
+    if lane_capacities.is_empty() || lane_capacities.iter().any(|lanes| *lanes == 0) {
+        return Err("AU250 backend returned invalid lane capacities".to_string());
+    }
+
+    let tiles = plan_au250_tiles(signature)?;
+    let tile_by_coordinate = tiles
+        .iter()
+        .copied()
+        .map(|tile| ((tile.row_tile, tile.k_tile), tile))
+        .collect::<HashMap<_, _>>();
+    let planned_waves = plan_au250_jobs(signature, &lane_capacities)?;
+    let slot_count = 2usize
+        .checked_mul(batch)
+        .and_then(|value| value.checked_mul(rows))
+        .and_then(|value| value.checked_mul(groups))
+        .ok_or("AU250 raw component slot count overflow")?;
+    let mut raw_slots = vec![None::<i16>; slot_count];
+    let mut submission_count = 0u64;
+    let mut per_cu_submissions = vec![0u64; lane_capacities.len()];
+    let mut raw_min = None::<i16>;
+    let mut raw_max = None::<i16>;
+
+    for planned_wave in planned_waves {
+        let mut xrt_jobs = Vec::with_capacity(planned_wave.len());
+        for planned in &planned_wave {
+            let tile = *tile_by_coordinate
+                .get(&(planned.matrix_key.row_tile, planned.matrix_key.k_tile))
+                .ok_or("planned AU250 job refers to unknown tile")?;
+            let matrix = packed_matrix_for(captured, tile, planned.matrix_key)?;
+            let lanes = *lane_capacities
+                .get(planned.cu_index)
+                .ok_or("planned AU250 job refers to unknown CU")?;
+            let group_start = tile
+                .k_tile
+                .checked_mul(AU250_GROUPS_PER_K_TILE)
+                .ok_or("AU250 group start overflow")?;
+            let mut q8_assignments = Vec::with_capacity(planned.assignments.len());
+            for assignment in &planned.assignments {
+                let group_slot = assignment
+                    .global_group
+                    .checked_sub(group_start)
+                    .ok_or("AU250 assignment group precedes its K tile")?;
+                let q8 = captured.q8_group(assignment.batch_index, assignment.global_group)?;
+                q8_assignments.push((assignment.lane, group_slot, q8));
+            }
+            xrt_jobs.push(XrtWaveJob {
+                request_id: planned.request_id,
+                cu_index: planned.cu_index,
+                matrix,
+                input: pack_lane_input(lanes, &q8_assignments)?,
+            });
+        }
+
+        let completions = backend.run_wave(xrt_jobs)?;
+        if completions.len() != planned_wave.len() {
+            return Err(format!(
+                "AU250 completion count {} does not match planned count {}",
+                completions.len(),
+                planned_wave.len()
+            ));
+        }
+        let planned_by_request = planned_wave
+            .iter()
+            .enumerate()
+            .map(|(index, job)| (job.request_id, index))
+            .collect::<HashMap<_, _>>();
+        let mut completion_indices = Vec::with_capacity(completions.len());
+        let mut seen = vec![false; planned_wave.len()];
+        for completion in &completions {
+            let planned_index =
+                *planned_by_request
+                    .get(&completion.request_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "AU250 completion has unknown request id {}",
+                            completion.request_id
+                        )
+                    })?;
+            if std::mem::replace(&mut seen[planned_index], true) {
+                return Err(format!(
+                    "AU250 completion duplicated request id {}",
+                    completion.request_id
+                ));
+            }
+            let planned = &planned_wave[planned_index];
+            if completion.cu_index != planned.cu_index {
+                return Err(format!(
+                    "AU250 completion request {} returned CU {}, expected {}",
+                    completion.request_id, completion.cu_index, planned.cu_index
+                ));
+            }
+            if completion.stall_code == 0 {
+                return Err(format!(
+                    "AU250 completion request {} has zero STALL code",
+                    completion.request_id
+                ));
+            }
+            let expected_bytes = AU250_DIM
+                .checked_mul(lane_capacities[completion.cu_index])
+                .and_then(|value| value.checked_mul(2))
+                .ok_or("AU250 completion size overflow")?;
+            if completion.output.len() != expected_bytes {
+                return Err(format!(
+                    "AU250 completion request {} has {} output bytes, expected {}",
+                    completion.request_id,
+                    completion.output.len(),
+                    expected_bytes
+                ));
+            }
+            completion_indices.push(planned_index);
+        }
+        if let Some(missing) = seen.iter().position(|present| !present) {
+            return Err(format!(
+                "AU250 completion missing request id {}",
+                planned_wave[missing].request_id
+            ));
+        }
+
+        for (completion, planned_index) in completions.iter().zip(completion_indices) {
+            let planned = &planned_wave[planned_index];
+            let tile =
+                tile_by_coordinate[&(planned.matrix_key.row_tile, planned.matrix_key.k_tile)];
+            let lanes = lane_capacities[planned.cu_index];
+            let assignment_by_lane = planned
+                .assignments
+                .iter()
+                .map(|assignment| (assignment.lane, assignment))
+                .collect::<HashMap<_, _>>();
+            for local_row in 0..AU250_DIM {
+                for lane in 0..lanes {
+                    let offset = (local_row * lanes + lane) * 2;
+                    let raw = i16::from_le_bytes(
+                        completion.output[offset..offset + 2]
+                            .try_into()
+                            .expect("validated output chunk"),
+                    );
+                    let Some(assignment) = assignment_by_lane.get(&lane).copied() else {
+                        if raw != 0 {
+                            return Err(format!(
+                                "AU250 completion request {} has nonzero lane padding at row {local_row}, lane {lane}",
+                                completion.request_id
+                            ));
+                        }
+                        continue;
+                    };
+                    if local_row >= tile.valid_out {
+                        if raw != 0 {
+                            return Err(format!(
+                                "AU250 completion request {} has nonzero row padding at row {local_row}, lane {lane}",
+                                completion.request_id
+                            ));
+                        }
+                        continue;
+                    }
+                    let (minimum, maximum) = raw_dot_bounds();
+                    if raw < minimum || raw > maximum {
+                        return Err(format!(
+                            "AU250 raw component {raw} is outside [{minimum}, {maximum}]"
+                        ));
+                    }
+                    let global_row = tile
+                        .row_tile
+                        .checked_mul(AU250_DIM)
+                        .and_then(|base| base.checked_add(local_row))
+                        .ok_or("AU250 global row overflow")?;
+                    let component = match planned.matrix_key.kind {
+                        ComponentKind::Grid => 0,
+                        ComponentKind::Delta => 1,
+                    };
+                    let slot = raw_slot_index(
+                        component,
+                        assignment.batch_index,
+                        global_row,
+                        assignment.global_group,
+                        batch,
+                        rows,
+                        groups,
+                    )?;
+                    if raw_slots[slot].replace(raw).is_some() {
+                        return Err(format!(
+                            "duplicate AU250 raw component for batch {}, row {}, group {}",
+                            assignment.batch_index, global_row, assignment.global_group
+                        ));
+                    }
+                    raw_min = Some(raw_min.map_or(raw, |current| current.min(raw)));
+                    raw_max = Some(raw_max.map_or(raw, |current| current.max(raw)));
+                }
+            }
+            submission_count = submission_count
+                .checked_add(1)
+                .ok_or("AU250 submission count overflow")?;
+            per_cu_submissions[planned.cu_index] = per_cu_submissions[planned.cu_index]
+                .checked_add(1)
+                .ok_or("AU250 per-CU submission count overflow")?;
+        }
+    }
+
+    if let Some(missing) = raw_slots.iter().position(Option::is_none) {
+        return Err(format!("missing AU250 raw component slot {missing}"));
+    }
+    let mut outputs = vec![0f32; output_elements];
+    let mut reference_checked_components = 0u64;
+    for batch_index in 0..batch {
+        for row in 0..rows {
+            for global_group in 0..groups {
+                let grid_slot =
+                    raw_slot_index(0, batch_index, row, global_group, batch, rows, groups)?;
+                let delta_slot =
+                    raw_slot_index(1, batch_index, row, global_group, batch, rows, groups)?;
+                let grid_raw = raw_slots[grid_slot].expect("all raw slots checked");
+                let delta_raw = raw_slots[delta_slot].expect("all raw slots checked");
+                let q8 = captured.q8_group(batch_index, global_group)?;
+                let (iq1s_d, group) = captured.matrix.group(row, global_group)?;
+                let contribution = reconstruct_from_raw(
+                    &group,
+                    iq1s_d,
+                    &q8,
+                    i64::from(grid_raw) << 8,
+                    i64::from(delta_raw) << 8,
+                )?;
+                let output = &mut outputs[batch_index * rows + row];
+                *output = (*output + contribution) as f32;
+                reference_checked_components = reference_checked_components
+                    .checked_add(2)
+                    .ok_or("AU250 reference-check count overflow")?;
+            }
+        }
+    }
+    if usize::try_from(reference_checked_components)
+        .map_err(|_| "AU250 reference-check count does not fit usize")?
+        != slot_count
+    {
+        return Err("not every AU250 component was reference checked".to_string());
+    }
+    if outputs.iter().any(|value| !value.is_finite()) {
+        return Err("AU250 reconstructed output contains a non-finite value".to_string());
+    }
+
+    Ok(XrtIq1sResult {
+        outputs,
+        evidence: XrtIq1sEvidence {
+            backend: "xrt",
+            logical_batch: batch,
+            row_tiles: rows.div_ceil(AU250_DIM),
+            k_tiles: columns.div_ceil(AU250_DIM),
+            submission_count,
+            per_cu_submissions,
+            raw_min: raw_min.ok_or("AU250 execution produced no raw components")?,
+            raw_max: raw_max.ok_or("AU250 execution produced no raw components")?,
+            reference_checked_components,
+            comparison_status: "pass",
+        },
+    })
+}
+
+fn raw_slot_index(
+    component: usize,
+    batch_index: usize,
+    row: usize,
+    global_group: usize,
+    batch: usize,
+    rows: usize,
+    groups: usize,
+) -> Result<usize, String> {
+    if component >= 2 || batch_index >= batch || row >= rows || global_group >= groups {
+        return Err("AU250 raw component coordinate is out of range".to_string());
+    }
+    component
+        .checked_mul(batch)
+        .and_then(|value| value.checked_add(batch_index))
+        .and_then(|value| value.checked_mul(rows))
+        .and_then(|value| value.checked_add(row))
+        .and_then(|value| value.checked_mul(groups))
+        .and_then(|value| value.checked_add(global_group))
+        .ok_or("AU250 raw component index overflow".to_string())
+}
+
+pub(crate) fn execute_captured(captured: &CapturedLaunch) -> Result<XrtIq1sResult, String> {
+    static POOL: OnceLock<Mutex<Result<XrtTmatmulPool, String>>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| {
+        Mutex::new(XrtTmatmulPool::open_from_env().map_err(|error| error.to_string()))
+    });
+    let mut guard = pool
+        .lock()
+        .map_err(|_| "AU250 XRT pool mutex poisoned".to_string())?;
+    let pool = match &mut *guard {
+        Ok(pool) => pool,
+        Err(error) => return Err(error.clone()),
+    };
+    let result = execute_captured_with(captured, pool)?;
+    append_execution_log_from_env(&result.evidence)?;
+    Ok(result)
+}
+
+fn append_execution_log_from_env(evidence: &XrtIq1sEvidence) -> Result<(), String> {
+    let Ok(path) = std::env::var("HETGPU_XRT_EXECUTION_LOG") else {
+        return Ok(());
+    };
+    if path.trim().is_empty() {
+        return Ok(());
+    }
+    append_execution_log(Path::new(path.trim()), evidence)
+}
+
+fn append_execution_log(path: &Path, evidence: &XrtIq1sEvidence) -> Result<(), String> {
+    let record = serde_json::json!({
+        "event": "au250_xrt_iq1s_completed",
+        "evidence": evidence,
+    });
+    let mut line = serde_json::to_string(&record)
+        .map_err(|error| format!("serialize XRT execution log {}: {error}", path.display()))?;
+    line.push('\n');
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("open XRT execution log {}: {error}", path.display()))?;
+    file.write_all(line.as_bytes())
+        .map_err(|error| format!("write XRT execution log {}: {error}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::iq1s_tmatmul::{ComponentKind, GridTable, MatrixSource};
+    use super::super::iq1s_tmatmul::{
+        capture_from_host, raw_component_dots, reconstruct_from_raw, ComponentKind, GridTable,
+        LogicalLaunch, MatrixSource, GRID_ENTRIES, IQ1S_BLOCK_BYTES, Q8_1_MMQ_BYTES,
+    };
+    use super::super::xrt_tmatmul::{XrtWaveCompletion, XrtWaveJob};
     use super::*;
     use std::sync::Arc;
 
@@ -386,6 +905,399 @@ mod tests {
             1 => 1,
             3 => -1,
             code => panic!("invalid ternary code {code}"),
+        }
+    }
+
+    #[test]
+    fn executor_demultiplexes_grid_delta_and_matches_reference_bits() {
+        let captured = two_k_tile_two_row_tile_fixture();
+        let expected = software_reference(&captured).unwrap();
+        let mut backend = CpuDotWaveExecutor::new(vec![9, 9, 9, 6]);
+        let result = execute_captured_with(&captured, &mut backend).unwrap();
+        assert_eq!(
+            result
+                .outputs
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+        assert!(result.evidence.submission_count > 4);
+        assert_eq!(result.evidence.backend, "xrt");
+        assert_eq!(result.evidence.comparison_status, "pass");
+        assert_eq!(
+            result.evidence.reference_checked_components,
+            2 * 1030 * (2048 / 32)
+        );
+    }
+
+    #[test]
+    fn executor_preserves_batch_two_output_order() {
+        let captured = captured_fixture(1024, 3, 2);
+        let expected = software_reference(&captured).unwrap();
+        let mut backend = CpuDotWaveExecutor::new(vec![9, 9, 9, 6]);
+        let result = execute_captured_with(&captured, &mut backend).unwrap();
+        assert_eq!(result.outputs.len(), 6);
+        assert_eq!(
+            result
+                .outputs
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(result.evidence.logical_batch, 2);
+    }
+
+    #[test]
+    fn missing_or_duplicate_completion_fails_before_output_copy() {
+        let captured = small_fixture();
+        for mode in [CompletionFault::Missing, CompletionFault::Duplicate] {
+            let mut backend = FaultingWaveExecutor::new(mode);
+            assert!(execute_captured_with(&captured, &mut backend)
+                .unwrap_err()
+                .contains("completion"));
+        }
+    }
+
+    #[test]
+    fn nonzero_padding_is_rejected() {
+        let captured = small_fixture();
+        let mut backend = PaddingWaveExecutor::new();
+        assert!(execute_captured_with(&captured, &mut backend)
+            .unwrap_err()
+            .contains("padding"));
+    }
+
+    #[test]
+    fn backend_error_is_propagated_without_a_result() {
+        let captured = small_fixture();
+        let mut backend = ErrorWaveExecutor;
+        let error = execute_captured_with(&captured, &mut backend).unwrap_err();
+        assert!(error.contains("stall timeout"), "{error}");
+    }
+
+    #[test]
+    fn matrix_cache_does_not_evict_an_inflight_arc() {
+        let captured = small_fixture();
+        let identity = MatrixCacheIdentity {
+            matrix_ptr: captured.launch.matrix_ptr,
+            signature: captured.launch.signature.clone(),
+            allocation_generation: captured.launch.allocation_generation,
+            content_hash: captured.launch.content_hash,
+        };
+        let first_key = PackedMatrixKey {
+            identity: identity.clone(),
+            tile: Au250MatrixKey {
+                row_tile: 0,
+                k_tile: 0,
+                kind: ComponentKind::Grid,
+            },
+        };
+        let second_key = PackedMatrixKey {
+            identity,
+            tile: Au250MatrixKey {
+                row_tile: 0,
+                k_tile: 0,
+                kind: ComponentKind::Delta,
+            },
+        };
+        let mut cache = PackedMatrixCache {
+            capacity_bytes: 8,
+            resident_bytes: 0,
+            clock: 0,
+            entries: HashMap::new(),
+        };
+        let in_flight = cache
+            .get_or_insert(first_key.clone(), || Ok(vec![1_u8; 8]))
+            .unwrap();
+        assert!(cache
+            .get_or_insert(second_key.clone(), || Ok(vec![2_u8; 8]))
+            .unwrap_err()
+            .contains("in-flight"));
+        drop(in_flight);
+        let second = cache
+            .get_or_insert(second_key.clone(), || Ok(vec![2_u8; 8]))
+            .unwrap();
+        assert_eq!(&*second, &[2_u8; 8]);
+        assert!(!cache.entries.contains_key(&first_key));
+        assert!(cache.entries.contains_key(&second_key));
+        assert_eq!(cache.resident_bytes, 8);
+    }
+
+    #[test]
+    fn matrix_cache_capacity_is_bounded_and_rejects_zero() {
+        assert_eq!(
+            parse_matrix_cache_capacity(None).unwrap(),
+            512 * 1024 * 1024
+        );
+        assert_eq!(parse_matrix_cache_capacity(Some("262144")).unwrap(), 262144);
+        assert!(parse_matrix_cache_capacity(Some("0")).is_err());
+        assert!(parse_matrix_cache_capacity(Some("not-a-size")).is_err());
+    }
+
+    #[test]
+    fn execution_log_is_jsonl_and_open_failures_are_strict() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let evidence = XrtIq1sEvidence {
+            backend: "xrt",
+            logical_batch: 1,
+            row_tiles: 1,
+            k_tiles: 1,
+            submission_count: 2,
+            per_cu_submissions: vec![1, 1],
+            raw_min: -3,
+            raw_max: 4,
+            reference_checked_components: 16,
+            comparison_status: "pass",
+        };
+        append_execution_log(file.path(), &evidence).unwrap();
+        let text = std::fs::read_to_string(file.path()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(value["event"], "au250_xrt_iq1s_completed");
+        assert_eq!(value["evidence"]["backend"], "xrt");
+        let directory = tempfile::tempdir().unwrap();
+        assert!(append_execution_log(directory.path(), &evidence).is_err());
+    }
+
+    fn captured_fixture(ne00: u64, ne01: u64, batch: u64) -> CapturedLaunch {
+        assert!(ne00.is_multiple_of(256));
+        let blocks_per_row = usize::try_from(ne00 / 256).unwrap();
+        let signature = GgmlType19Signature {
+            kernel: "mul_mat_q".into(),
+            ne00,
+            ne01,
+            stride01: blocks_per_row as u64,
+            ne10: ne00,
+            ne11: batch,
+            stride11: batch,
+            ne0: ne01,
+        };
+        let mut grid = [[0_i8; 8]; GRID_ENTRIES];
+        for (index, values) in grid.iter_mut().enumerate() {
+            for (column, value) in values.iter_mut().enumerate() {
+                *value = [-1, 0, 1][(index + column) % 3];
+            }
+        }
+        let mut one_block = [0_u8; IQ1S_BLOCK_BYTES];
+        one_block[..2].copy_from_slice(&0x3c00_u16.to_le_bytes());
+        let mut matrix = Vec::with_capacity(ne01 as usize * blocks_per_row * IQ1S_BLOCK_BYTES);
+        for row in 0..ne01 as usize {
+            for block in 0..blocks_per_row {
+                one_block[2] = ((row + block) & 0xff) as u8;
+                matrix.extend_from_slice(&one_block);
+            }
+        }
+        let records = usize::try_from((ne00 / 128 - 1) * batch + batch).unwrap();
+        let mut activations = vec![0_u8; records * Q8_1_MMQ_BYTES];
+        for record in activations.chunks_exact_mut(Q8_1_MMQ_BYTES) {
+            for pair in 0..4 {
+                record[pair * 4..pair * 4 + 2].copy_from_slice(&0x3c00_u16.to_le_bytes());
+                record[pair * 4 + 2..pair * 4 + 4].copy_from_slice(&0x3c00_u16.to_le_bytes());
+                for (index, value) in record[16 + pair * 32..16 + (pair + 1) * 32]
+                    .iter_mut()
+                    .enumerate()
+                {
+                    *value = (index as i16 - 16) as i8 as u8;
+                }
+            }
+        }
+        capture_from_host(
+            LogicalLaunch {
+                matrix_ptr: 0x1000,
+                activation_ptr: 0x2000,
+                output_ptr: 0x3000,
+                allocation_generation: 1,
+                content_hash: [0x5a; 32],
+                signature,
+            },
+            &matrix,
+            &activations,
+            &grid,
+        )
+        .unwrap()
+    }
+
+    fn small_fixture() -> CapturedLaunch {
+        captured_fixture(256, 1, 1)
+    }
+
+    fn two_k_tile_two_row_tile_fixture() -> CapturedLaunch {
+        captured_fixture(2048, 1030, 1)
+    }
+
+    fn software_reference(captured: &CapturedLaunch) -> Result<Vec<f32>, String> {
+        let batch =
+            usize::try_from(captured.launch.signature.ne11).map_err(|_| "batch overflow")?;
+        let rows = usize::try_from(captured.launch.signature.ne0).map_err(|_| "row overflow")?;
+        let groups =
+            usize::try_from(captured.launch.signature.ne00 / 32).map_err(|_| "group overflow")?;
+        let mut outputs = vec![0_f32; batch.checked_mul(rows).ok_or("output overflow")?];
+        for batch_index in 0..batch {
+            for row in 0..rows {
+                for global_group in 0..groups {
+                    let q8 = captured.q8_group(batch_index, global_group)?;
+                    let (d, group) = captured.matrix.group(row, global_group)?;
+                    let (grid, delta) = raw_component_dots(&group, &q8);
+                    let contribution = reconstruct_from_raw(&group, d, &q8, grid << 8, delta << 8)?;
+                    let output = &mut outputs[batch_index * rows + row];
+                    *output = (*output + contribution) as f32;
+                }
+            }
+        }
+        Ok(outputs)
+    }
+
+    struct CpuDotWaveExecutor {
+        capacities: Vec<usize>,
+    }
+
+    impl CpuDotWaveExecutor {
+        fn new(capacities: Vec<usize>) -> Self {
+            Self { capacities }
+        }
+    }
+
+    impl Au250WaveExecutor for CpuDotWaveExecutor {
+        fn lane_capacities(&self) -> Vec<usize> {
+            self.capacities.clone()
+        }
+
+        fn run_wave(&mut self, jobs: Vec<XrtWaveJob>) -> Result<Vec<XrtWaveCompletion>, String> {
+            let mut completions = Vec::with_capacity(jobs.len());
+            for job in jobs {
+                let lanes = *self
+                    .capacities
+                    .get(job.cu_index)
+                    .ok_or("mock job selects unknown CU")?;
+                if job.matrix.len() != AU250_MATRIX_BYTES
+                    || job.input.len() != AU250_DIM * lanes * 2
+                {
+                    return Err("mock job has invalid payload length".to_string());
+                }
+                let mut sparse = vec![Vec::<(usize, i16)>::new(); lanes];
+                for dimension in 0..AU250_DIM {
+                    for lane in 0..lanes {
+                        let offset = (dimension * lanes + lane) * 2;
+                        let quant =
+                            i16::from_le_bytes(job.input[offset..offset + 2].try_into().unwrap());
+                        if quant != 0 {
+                            sparse[lane].push((dimension, quant));
+                        }
+                    }
+                }
+                let mut output = vec![0_u8; AU250_DIM * lanes * 2];
+                for row in 0..AU250_DIM {
+                    for (lane, nonzero) in sparse.iter().enumerate() {
+                        let mut dot = 0i32;
+                        for &(dimension, quant) in nonzero {
+                            dot += i32::from(decode_trit(&job.matrix, row * AU250_DIM + dimension))
+                                * i32::from(quant);
+                        }
+                        let raw = i16::try_from(dot).map_err(|_| "mock raw dot overflow")?;
+                        let offset = (row * lanes + lane) * 2;
+                        output[offset..offset + 2].copy_from_slice(&raw.to_le_bytes());
+                    }
+                }
+                completions.push(XrtWaveCompletion {
+                    request_id: job.request_id,
+                    cu_index: job.cu_index,
+                    stall_code: 1,
+                    output,
+                });
+            }
+            completions.reverse();
+            Ok(completions)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum CompletionFault {
+        Missing,
+        Duplicate,
+    }
+
+    struct FaultingWaveExecutor {
+        inner: CpuDotWaveExecutor,
+        mode: CompletionFault,
+    }
+
+    impl FaultingWaveExecutor {
+        fn new(mode: CompletionFault) -> Self {
+            Self {
+                inner: CpuDotWaveExecutor::new(vec![9, 9, 9, 6]),
+                mode,
+            }
+        }
+    }
+
+    impl Au250WaveExecutor for FaultingWaveExecutor {
+        fn lane_capacities(&self) -> Vec<usize> {
+            self.inner.lane_capacities()
+        }
+
+        fn run_wave(&mut self, jobs: Vec<XrtWaveJob>) -> Result<Vec<XrtWaveCompletion>, String> {
+            let mut completions = self.inner.run_wave(jobs)?;
+            match self.mode {
+                CompletionFault::Missing => {
+                    completions.pop();
+                }
+                CompletionFault::Duplicate => {
+                    let duplicate = completions
+                        .first()
+                        .cloned()
+                        .ok_or("no completion to duplicate")?;
+                    completions.push(duplicate);
+                }
+            }
+            Ok(completions)
+        }
+    }
+
+    struct PaddingWaveExecutor {
+        inner: CpuDotWaveExecutor,
+    }
+
+    impl PaddingWaveExecutor {
+        fn new() -> Self {
+            Self {
+                inner: CpuDotWaveExecutor::new(vec![9, 9, 9, 6]),
+            }
+        }
+    }
+
+    impl Au250WaveExecutor for PaddingWaveExecutor {
+        fn lane_capacities(&self) -> Vec<usize> {
+            self.inner.lane_capacities()
+        }
+
+        fn run_wave(&mut self, jobs: Vec<XrtWaveJob>) -> Result<Vec<XrtWaveCompletion>, String> {
+            let mut completions = self.inner.run_wave(jobs)?;
+            let output = &mut completions
+                .first_mut()
+                .ok_or("no completion for padding fault")?
+                .output;
+            let last = output.len() - 2;
+            output[last..].copy_from_slice(&1_i16.to_le_bytes());
+            Ok(completions)
+        }
+    }
+
+    struct ErrorWaveExecutor;
+
+    impl Au250WaveExecutor for ErrorWaveExecutor {
+        fn lane_capacities(&self) -> Vec<usize> {
+            vec![9, 9, 9, 6]
+        }
+
+        fn run_wave(&mut self, _jobs: Vec<XrtWaveJob>) -> Result<Vec<XrtWaveCompletion>, String> {
+            Err("stall timeout from poisoned backend".to_string())
         }
     }
 }
