@@ -855,7 +855,9 @@ pub(crate) struct LogicalLaunch {
     pub(crate) signature: GgmlType19Signature,
 }
 
-fn checked_output_element_count(signature: &GgmlType19Signature) -> Result<usize, String> {
+pub(crate) fn checked_output_element_count(
+    signature: &GgmlType19Signature,
+) -> Result<usize, String> {
     let logical_batch = u32::try_from(signature.ne11).map_err(|_| {
         format!(
             "ne11={} is outside the u32 scheduler batch domain",
@@ -902,7 +904,11 @@ impl CapturedLaunch {
         iter_q8_1_mmq(&self.launch.signature, &self.packed_activations)
     }
 
-    fn q8_group(&self, batch_index: usize, global_group: usize) -> Result<Q8_1Block, String> {
+    pub(crate) fn q8_group(
+        &self,
+        batch_index: usize,
+        global_group: usize,
+    ) -> Result<Q8_1Block, String> {
         let layout = self.launch.signature.q8_mmq_layout()?;
         if batch_index >= layout.active_batch_count {
             return Err("Q8 batch index is outside the captured activation".into());
