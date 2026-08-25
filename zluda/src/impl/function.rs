@@ -8681,8 +8681,7 @@ fn nvidia_iq1s_post_execution_route(
 ) -> Option<Result<(), String>> {
     match execution {
         Ok(execution) => {
-            let evidence =
-                nvidia_iq1s_completed_evidence(kernel_name, logical_batch, &execution);
+            let evidence = nvidia_iq1s_completed_evidence(kernel_name, logical_batch, &execution);
             let record = nvidia_iq1s_completed_evidence_json(evidence);
             emit_completed(&record);
             Some(Ok(()))
@@ -8892,23 +8891,216 @@ unsafe fn nvidia_try_launch_iq1s_vec_cxl_tmatmul(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
-pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
+#[derive(Clone, Copy)]
+enum NvidiaIq1sXrtKernel {
+    Mmq,
+    Mmvq,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_iq1s_xrt_kernel(kernel_name: &str) -> Option<NvidiaIq1sXrtKernel> {
+    let name = kernel_name.to_ascii_lowercase();
+    if !name.contains("ggml_type19") || name.contains("stream_k_fixup") {
+        return None;
+    }
+    if name.contains("mul_mat_vec_q") {
+        Some(NvidiaIq1sXrtKernel::Mmvq)
+    } else if name.contains("mul_mat_q") {
+        Some(NvidiaIq1sXrtKernel::Mmq)
+    } else {
+        None
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_xrt_route_failure(
+    kernel_name: &str,
+    strict: bool,
+    error: impl Into<String>,
+) -> Option<Result<(), String>> {
+    let message = format!(
+        "kernel '{kernel_name}' IQ1_S AU250 XRT execution failed: {}",
+        error.into()
+    );
+    if strict {
+        Some(Err(message))
+    } else {
+        eprintln!("[XRT TMatmul][NVIDIA] {message}; continuing native");
+        None
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_xrt_post_execution_route(
+    kernel_name: &str,
+    strict: bool,
+    execution: Result<super::iq1s_xrt::XrtIq1sResult, String>,
+    mut on_success: impl FnMut(&super::iq1s_xrt::XrtIq1sResult),
+) -> Option<Result<(), String>> {
+    match execution {
+        Ok(execution) => {
+            on_success(&execution);
+            Some(Ok(()))
+        }
+        Err(error) => nvidia_xrt_route_failure(kernel_name, strict, error),
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_xrt_compare_max_launches() -> Result<u64, String> {
+    match std::env::var("HETGPU_XRT_COMPARE_MAX_LAUNCHES") {
+        Ok(text) => text.parse::<u64>().map_err(|error| {
+            format!(
+                "HETGPU_XRT_COMPARE_MAX_LAUNCHES={text:?} is not a nonnegative integer: {error}"
+            )
+        }),
+        Err(std::env::VarError::NotPresent) => Ok(0),
+        Err(error) => Err(format!("read HETGPU_XRT_COMPARE_MAX_LAUNCHES: {error}")),
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_xrt_output_hash(outputs: &[f32]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    outputs.len().hash(&mut hasher);
+    for value in outputs {
+        value.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_xrt_emit_success_records(
+    kernel_name: &str,
+    result: &super::iq1s_xrt::XrtIq1sResult,
+    compare_max_launches: u64,
+) {
+    let completed = serde_json::json!({
+        "event": "au250_xrt_iq1s_completed",
+        "kernel": kernel_name,
+        "evidence": &result.evidence,
+    });
+    eprintln!("{completed}");
+
+    static SUCCESSFUL_XRT_LAUNCHES: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    let ordinal = SUCCESSFUL_XRT_LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if ordinal < compare_max_launches {
+        let comparison = serde_json::json!({
+            "event": "captured_layer_comparison",
+            "backend": "xrt",
+            "kernel": kernel_name,
+            "launch_ordinal": ordinal,
+            "output_hash": format!("{:016x}", nvidia_xrt_output_hash(&result.outputs)),
+            "reference_checked_components": result.evidence.reference_checked_components,
+            "comparison_status": "pass",
+        });
+        eprintln!("{comparison}");
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_capture_iq1s_xrt_mmq(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Result<super::iq1s_tmatmul::CapturedLaunch, String> {
+    let shape = nvidia_cxl_read_mmq_shape(kernel_params, kernel_name)?;
+    let signature = nvidia_iq1s_signature(kernel_name, shape)?;
+    let matrix_ptr = nvidia_cxl_read_pointer_param(kernel_params, 0, kernel_name)?;
+    let activation_ptr = nvidia_cxl_read_pointer_param(kernel_params, 1, kernel_name)?;
+    let output_ptr = nvidia_cxl_read_pointer_param(kernel_params, 2, kernel_name)?;
+    super::iq1s_tmatmul::capture_launch(super::iq1s_tmatmul::LogicalLaunch {
+        matrix_ptr,
+        activation_ptr,
+        output_ptr,
+        allocation_generation: nvidia_env_u64_any(&[
+            "HETGPU_TMATMUL_ALLOCATION_GENERATION",
+            "HETGPU_XRT_TMATMUL_ALLOCATION_GENERATION",
+        ])
+        .unwrap_or(0),
+        content_hash: [0; 32],
+        signature,
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_capture_iq1s_xrt_mmvq(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Result<super::iq1s_tmatmul::CapturedLaunch, String> {
+    let shape = nvidia_cxl_read_mmvq_shape(kernel_params, kernel_name)?;
+    let signature = nvidia_iq1s_vec_signature(kernel_name, shape)?;
+    let matrix_ptr = nvidia_cxl_read_pointer_param(kernel_params, 0, kernel_name)?;
+    let activation_ptr = nvidia_cxl_read_pointer_param(kernel_params, 1, kernel_name)?;
+    let output_ptr = nvidia_cxl_read_pointer_param(kernel_params, 2, kernel_name)?;
+    super::iq1s_tmatmul::capture_vec_launch(
+        matrix_ptr,
+        activation_ptr,
+        output_ptr,
+        nvidia_env_u64_any(&[
+            "HETGPU_TMATMUL_ALLOCATION_GENERATION",
+            "HETGPU_XRT_TMATMUL_ALLOCATION_GENERATION",
+        ])
+        .unwrap_or(0),
+        [0; 32],
+        signature,
+    )
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) unsafe fn nvidia_try_launch_named_xrt_tmatmul(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
 ) -> Option<Result<(), String>> {
+    let kernel_kind = nvidia_iq1s_xrt_kernel(kernel_name)?;
     if !super::bitnet_disagg::enabled_from_env()
         || !nvidia_env_truthy("HETGPU_TMATMUL_HARDWARE_MATMUL")
-    {
-        return None;
-    }
-
-    let backend = match super::bitnet_disagg::tmatmul_backend_from_env() {
-        Ok(Some(backend)) => backend,
-        Ok(None) => super::bitnet_disagg::TmatmulBackend::Cxl,
-        Err(err) => return Some(Err(err)),
-    };
-    if backend == super::bitnet_disagg::TmatmulBackend::Cxl
-        && !super::cxl_tmatmul::cxl_tmatmul_enabled()
     {
         return None;
     }
@@ -8927,14 +9119,80 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
         }
         super::bitnet_disagg::BitnetRoute::CxlTmatmul => {}
     }
-
-    let hardware = match backend {
-        super::bitnet_disagg::TmatmulBackend::Cxl => {
-            super::bitnet_disagg::RouteHardware::cxl(true, true)
+    if let Err(error) = super::bitnet_disagg::append_route_log_from_env(
+        &decision,
+        super::bitnet_disagg::RouteHardware::xrt(true),
+    ) {
+        eprintln!("[BitNet Disagg][NVIDIA XRT] route log failed for '{kernel_name}': {error}");
+        if decision.strict {
+            return Some(Err(format!("route log failed: {error}")));
         }
-        super::bitnet_disagg::TmatmulBackend::Xrt => super::bitnet_disagg::RouteHardware::xrt(true),
+    }
+
+    let captured = match kernel_kind {
+        NvidiaIq1sXrtKernel::Mmq => nvidia_capture_iq1s_xrt_mmq(kernel_name, kernel_params),
+        NvidiaIq1sXrtKernel::Mmvq => nvidia_capture_iq1s_xrt_mmvq(kernel_name, kernel_params),
     };
-    if let Err(err) = super::bitnet_disagg::append_route_log_from_env(&decision, hardware) {
+    let captured = match captured {
+        Ok(captured) => captured,
+        Err(error) => return nvidia_xrt_route_failure(kernel_name, decision.strict, error),
+    };
+    eprintln!(
+        "[XRT TMatmul][NVIDIA] launching IQ1_S '{}' on the persistent AU250 four-CU pool",
+        kernel_name
+    );
+    let compare_max_launches = match nvidia_xrt_compare_max_launches() {
+        Ok(value) => value,
+        Err(error) => return nvidia_xrt_route_failure(kernel_name, decision.strict, error),
+    };
+    let execution = super::iq1s_xrt::execute_captured(&captured).and_then(|result| {
+        super::iq1s_tmatmul::copy_outputs_to_cuda(&captured, &result.outputs)?;
+        Ok(result)
+    });
+    nvidia_xrt_post_execution_route(kernel_name, decision.strict, execution, |result| {
+        nvidia_xrt_emit_success_records(kernel_name, result, compare_max_launches)
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<Result<(), String>> {
+    if !super::bitnet_disagg::enabled_from_env()
+        || !nvidia_env_truthy("HETGPU_TMATMUL_HARDWARE_MATMUL")
+    {
+        return None;
+    }
+
+    if !super::cxl_tmatmul::cxl_tmatmul_enabled() {
+        return None;
+    }
+
+    let route_config = super::bitnet_disagg::config_from_env();
+    let decision = super::bitnet_disagg::classify_kernel_name(kernel_name, &route_config);
+    match decision.route {
+        super::bitnet_disagg::BitnetRoute::GpuNative
+        | super::bitnet_disagg::BitnetRoute::Fallback => return None,
+        super::bitnet_disagg::BitnetRoute::Reject => {
+            return Some(Err(format!(
+                "strict route rejected '{}' via {}",
+                kernel_name,
+                decision.source.as_str()
+            )));
+        }
+        super::bitnet_disagg::BitnetRoute::CxlTmatmul => {}
+    }
+
+    if let Err(err) = super::bitnet_disagg::append_route_log_from_env(
+        &decision,
+        super::bitnet_disagg::RouteHardware::cxl(true, true),
+    ) {
         eprintln!(
             "[BitNet Disagg][NVIDIA CXL] route log failed for '{}': {}",
             kernel_name, err
@@ -8942,12 +9200,6 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
         if decision.strict {
             return Some(Err(format!("route log failed: {err}")));
         }
-    }
-
-    if backend == super::bitnet_disagg::TmatmulBackend::Xrt {
-        return Some(Err(format!(
-            "XRT backend selected for '{kernel_name}', but the IQ1_S XRT executor is not initialized"
-        )));
     }
 
     if !super::cxl_tmatmul::matrix_stage_cuda_dax_enabled() {
@@ -9119,6 +9371,36 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+pub(crate) unsafe fn nvidia_try_launch_named_tmatmul(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<Result<(), String>> {
+    if !super::bitnet_disagg::enabled_from_env()
+        || !nvidia_env_truthy("HETGPU_TMATMUL_HARDWARE_MATMUL")
+    {
+        return None;
+    }
+    let backend = match super::bitnet_disagg::tmatmul_backend_from_env() {
+        Ok(Some(backend)) => backend,
+        Ok(None) => super::bitnet_disagg::TmatmulBackend::Cxl,
+        Err(error) => return Some(Err(error)),
+    };
+    match backend {
+        super::bitnet_disagg::TmatmulBackend::Cxl => {
+            nvidia_try_launch_named_cxl_tmatmul(kernel_name, kernel_params)
+        }
+        super::bitnet_disagg::TmatmulBackend::Xrt => {
+            nvidia_try_launch_named_xrt_tmatmul(kernel_name, kernel_params)
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 unsafe fn nvidia_try_launch_tmatmul_before_native(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
@@ -9135,9 +9417,9 @@ unsafe fn nvidia_try_launch_tmatmul_before_native(
         }));
     }
 
-    if let Some(result) = nvidia_try_launch_named_cxl_tmatmul(kernel_name, kernel_params) {
+    if let Some(result) = nvidia_try_launch_named_tmatmul(kernel_name, kernel_params) {
         return Some(result.map_err(|err| {
-            eprintln!("[CXL TMatmul][NVIDIA] named launch failed: {err}");
+            eprintln!("[TMatmul][NVIDIA] named launch failed: {err}");
             CUerror::UNKNOWN
         }));
     }
@@ -9387,6 +9669,7 @@ mod nvidia_bitnet_route_tests {
         let route_log_text = route_log.to_string_lossy().to_string();
         let _guard = EnvGuard::set(&[
             ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
             ("HETGPU_BITNET_CXL_KERNELS", Some("mul_mat_q")),
             ("HETGPU_BITNET_ROUTE_LOG", Some(&route_log_text)),
             ("HETGPU_TMATMUL_BACKEND", Some("xrt")),
@@ -9398,15 +9681,18 @@ mod nvidia_bitnet_route_tests {
         ]);
 
         let result = unsafe {
-            super::nvidia_try_launch_named_cxl_tmatmul(
+            super::nvidia_try_launch_named_tmatmul(
                 "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
                 std::ptr::null_mut(),
             )
         }
         .expect("selected XRT route must be consumed")
-        .expect_err("XRT executor is intentionally not initialized in this task");
+        .expect_err("null launch parameters must fail before XRT execution");
 
-        assert!(result.contains("XRT backend selected"), "{result}");
+        assert!(
+            result.contains("PARAM_4") || result.contains("IQ1_S"),
+            "{result}"
+        );
         let logged = std::fs::read_to_string(&route_log).unwrap();
         assert!(logged.contains(r#""route":"cxl_tmatmul""#));
         assert!(logged.contains(r#""backend":"xrt""#));
@@ -9425,11 +9711,65 @@ mod nvidia_bitnet_route_tests {
         ]);
 
         let error = unsafe {
-            super::nvidia_try_launch_named_cxl_tmatmul("ffn_mul_mat_q", std::ptr::null_mut())
+            super::nvidia_try_launch_named_tmatmul("ffn_mul_mat_q", std::ptr::null_mut())
         }
         .expect("invalid backend must be consumed")
         .expect_err("invalid backend must fail closed");
         assert!(error.contains("cuda"), "{error}");
+    }
+
+    #[test]
+    fn nvidia_named_xrt_does_not_claim_attention_or_non_iq1s_kernels() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
+            ("HETGPU_BITNET_CXL_KERNELS", Some("mul_mat_q,flash_attn")),
+            ("HETGPU_TMATMUL_BACKEND", Some("xrt")),
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+        ]);
+
+        let attention = unsafe {
+            super::nvidia_try_launch_named_tmatmul("flash_attn_fwd", std::ptr::null_mut())
+        };
+        let q4 = unsafe {
+            super::nvidia_try_launch_named_tmatmul(
+                "_Z9mul_mat_qIL9ggml_type12ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
+                std::ptr::null_mut(),
+            )
+        };
+
+        assert!(attention.is_none(), "attention must remain on the GPU");
+        assert!(q4.is_none(), "only exact IQ1_S matmul may use XRT");
+    }
+
+    #[test]
+    fn nvidia_xrt_strict_execution_failure_is_consumed() {
+        let mut copied = false;
+        let result = super::nvidia_xrt_post_execution_route(
+            "qualified_iq1s_kernel",
+            true,
+            Err("AU250 completion missing request id 7".to_string()),
+            |_| copied = true,
+        );
+
+        let error = result
+            .expect("strict XRT failure must be consumed")
+            .expect_err("strict XRT failure must not launch the native kernel");
+        assert!(error.contains("missing request id 7"), "{error}");
+        assert!(!copied, "failed execution must not copy an output to CUDA");
+    }
+
+    #[test]
+    fn nvidia_xrt_compare_limit_accepts_nonnegative_u64_and_rejects_negative() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::set(&[("HETGPU_XRT_COMPARE_MAX_LAUNCHES", Some("7"))]);
+        assert_eq!(super::nvidia_xrt_compare_max_launches().unwrap(), 7);
+        drop(_guard);
+
+        let _guard = EnvGuard::set(&[("HETGPU_XRT_COMPARE_MAX_LAUNCHES", Some("-1"))]);
+        let error = super::nvidia_xrt_compare_max_launches().unwrap_err();
+        assert!(error.contains("nonnegative integer"), "{error}");
     }
 
     #[test]
@@ -9617,11 +9957,9 @@ mod nvidia_bitnet_route_tests {
             completed(42, 3, 3, 300),
             completed(42, 4, 0, 400),
         ];
-        let scheduler = crate::r#impl::batch_scheduler::SchedulerReport::from_completions(
-            &completions,
-            4,
-        )
-        .unwrap();
+        let scheduler =
+            crate::r#impl::batch_scheduler::SchedulerReport::from_completions(&completions, 4)
+                .unwrap();
         crate::r#impl::iq1s_tmatmul::ExecutionResult {
             outputs: Vec::new(),
             physical: Vec::new(),
