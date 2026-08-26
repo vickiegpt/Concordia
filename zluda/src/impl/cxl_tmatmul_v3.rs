@@ -1,16 +1,19 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::mem::size_of;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) const V3_VERSION: u32 = 3;
-pub(crate) const REQUIRED_CAPABILITIES: u64 = 0x7b;
 pub(crate) const CAP_DAX_RANGES: u64 = 1 << 0;
 pub(crate) const CAP_DIRECT_DESCRIPTOR: u64 = 1 << 6;
-pub(crate) const REQUIRED_CAPABILITIES_WITHOUT_DAX: u64 =
-    REQUIRED_CAPABILITIES & !CAP_DAX_RANGES;
+pub(crate) const REQUIRED_HARDWARE_CAPABILITIES: u64 = 0x7a;
+pub(crate) const CAP_DAX_FD_BIND_REQUIRED: u64 = 1 << 7;
+pub(crate) const REQUIRED_PRE_BIND: u64 =
+    REQUIRED_HARDWARE_CAPABILITIES | CAP_DAX_FD_BIND_REQUIRED;
+pub(crate) const REQUIRED_POST_BIND: u64 = REQUIRED_PRE_BIND | CAP_DAX_RANGES;
 pub(crate) const LANE_ANY: u32 = u32::MAX;
 /// Matches the loaded driver's `TMATMUL_V3_MAX_LANES` wave limit.
 pub(crate) const MAX_LANES: u32 = 4;
@@ -23,6 +26,7 @@ pub(crate) const BUFFER_MATRIX: u32 = 1 << 2;
 
 const EXPECTED_DIM_D: u32 = 2048;
 const EXPECTED_DDR_BITS: u32 = 512;
+const EXPECTED_DAX_HPA: u64 = 0x0c10_0000_0000;
 const EXPECTED_DAX_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 const REQUIRED_LANE_MASK: u64 = (1_u64 << MAX_LANES) - 1;
 const EXPECTED_CLOCK_HZ: u64 = 400_000_000;
@@ -61,6 +65,8 @@ pub(crate) const UNREGISTER_BUFFER_V3: u64 = 0x4040_CE12;
 pub(crate) const COMMIT_BUFFER_V3: u64 = 0xC040_CE13;
 pub(crate) const SUBMIT_V3: u64 = 0xC040_CE14;
 pub(crate) const WAIT_V3: u64 = 0xC040_CE15;
+pub(crate) const BIND_DAX_V3: u64 = 0xC048_CE16;
+pub(crate) const UNBIND_DAX_V3: u64 = 0x4040_CE17;
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +86,28 @@ pub(crate) struct CapsV3 {
     pub(crate) per_lane_counter_mask: u64,
     pub(crate) accelerator_clock_hz: u64,
     reserved: [u64; 7],
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BindDaxV3 {
+    pub(crate) size: u32,
+    pub(crate) flags: u32,
+    pub(crate) dax_fd: i32,
+    reserved0: u32,
+    pub(crate) hpa_start: u64,
+    pub(crate) dax_bytes: u64,
+    pub(crate) generation: u64,
+    reserved: [u64; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UnbindDaxV3 {
+    pub(crate) size: u32,
+    pub(crate) flags: u32,
+    pub(crate) generation: u64,
+    reserved: [u64; 6],
 }
 
 #[repr(C)]
@@ -209,6 +237,8 @@ pub(crate) struct WaitV3 {
 }
 
 const _: [(); 128] = [(); size_of::<CapsV3>()];
+const _: [(); 72] = [(); size_of::<BindDaxV3>()];
+const _: [(); 64] = [(); size_of::<UnbindDaxV3>()];
 const _: [(); 64] = [(); size_of::<BufferV3>()];
 const _: [(); 64] = [(); size_of::<CommitV3>()];
 const _: [(); 128] = [(); size_of::<TaskV3>()];
@@ -218,6 +248,12 @@ const _: [(); 64] = [(); size_of::<WaitV3>()];
 
 pub(crate) trait IoctlOps {
     fn query_caps(&mut self, caps: &mut CapsV3) -> Result<(), String>;
+    fn bind_dax(&mut self, _bind: &mut BindDaxV3) -> Result<(), String> {
+        Err("BIND_DAX is not implemented by this test backend".into())
+    }
+    fn unbind_dax(&mut self, _unbind: &mut UnbindDaxV3) -> Result<(), String> {
+        Err("UNBIND_DAX is not implemented by this test backend".into())
+    }
     fn register_buffer(&mut self, buffer: &mut BufferV3) -> Result<(), String>;
     fn unregister_buffer(&mut self, buffer: &mut BufferV3) -> Result<(), String>;
     fn commit_buffer(&mut self, commit: &mut CommitV3) -> Result<(), String>;
@@ -228,6 +264,12 @@ pub(crate) trait IoctlOps {
 impl<T: IoctlOps + ?Sized> IoctlOps for &mut T {
     fn query_caps(&mut self, caps: &mut CapsV3) -> Result<(), String> {
         (**self).query_caps(caps)
+    }
+    fn bind_dax(&mut self, bind: &mut BindDaxV3) -> Result<(), String> {
+        (**self).bind_dax(bind)
+    }
+    fn unbind_dax(&mut self, unbind: &mut UnbindDaxV3) -> Result<(), String> {
+        (**self).unbind_dax(unbind)
     }
     fn register_buffer(&mut self, buffer: &mut BufferV3) -> Result<(), String> {
         (**self).register_buffer(buffer)
@@ -256,6 +298,7 @@ impl LinuxIoctl {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
+            .custom_flags(libc::O_CLOEXEC)
             .open(path)
             .map_err(|error| format!("open {}: {error}", path.display()))?;
         Ok(Self { file })
@@ -283,6 +326,12 @@ impl LinuxIoctl {
 impl IoctlOps for LinuxIoctl {
     fn query_caps(&mut self, caps: &mut CapsV3) -> Result<(), String> {
         self.call(QUERY_CAPS_V3, caps)
+    }
+    fn bind_dax(&mut self, bind: &mut BindDaxV3) -> Result<(), String> {
+        self.call(BIND_DAX_V3, bind)
+    }
+    fn unbind_dax(&mut self, unbind: &mut UnbindDaxV3) -> Result<(), String> {
+        self.call(UNBIND_DAX_V3, unbind)
     }
     fn register_buffer(&mut self, buffer: &mut BufferV3) -> Result<(), String> {
         self.call(REGISTER_BUFFER_V3, buffer)
@@ -337,37 +386,121 @@ pub(crate) struct V3Session<I: IoctlOps> {
     buffers: HashMap<u32, BufferState>,
     used_request_ids: HashSet<u64>,
     poisoned: bool,
+    bound_generation: Option<u64>,
+}
+
+#[derive(Debug)]
+pub(crate) struct BoundDaxFile {
+    file: File,
+    length: u64,
+    generation: u64,
+}
+
+impl BoundDaxFile {
+    pub(crate) fn length(&self) -> u64 {
+        self.length
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_only(file: File, length: u64) -> Self {
+        Self {
+            file,
+            length,
+            generation: 1,
+        }
+    }
+}
+
+impl AsRawFd for BoundDaxFile {
+    fn as_raw_fd(&self) -> RawFd {
+        self.file.as_raw_fd()
+    }
 }
 
 impl V3Session<LinuxIoctl> {
-    pub(crate) fn open(path: impl AsRef<Path>) -> Result<Self, String> {
-        Self::with_io(LinuxIoctl::open(path.as_ref())?)
-    }
-
-    pub(crate) fn open_without_dax(path: impl AsRef<Path>) -> Result<Self, String> {
-        Self::with_io_without_dax(LinuxIoctl::open(path.as_ref())?)
+    pub(crate) fn open(
+        control_path: impl AsRef<Path>,
+        dax_path: impl AsRef<Path>,
+    ) -> Result<(Self, BoundDaxFile), String> {
+        let io = LinuxIoctl::open(control_path.as_ref())?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_SYNC | libc::O_CLOEXEC)
+            .open(dax_path.as_ref())
+            .map_err(|error| format!("open DAX {}: {error}", dax_path.as_ref().display()))?;
+        let session = Self::with_bound_io(io, file.as_raw_fd())?;
+        let bound = BoundDaxFile {
+            length: session.caps.dax_bytes,
+            generation: session
+                .bound_generation
+                .ok_or("bound session lost its DAX generation")?,
+            file,
+        };
+        Ok((session, bound))
     }
 }
 
 impl<I: IoctlOps> V3Session<I> {
-    pub(crate) fn with_io(io: I) -> Result<Self, String> {
-        Self::with_io_required_capabilities(io, REQUIRED_CAPABILITIES)
-    }
-
-    pub(crate) fn with_io_without_dax(io: I) -> Result<Self, String> {
-        Self::with_io_required_capabilities(io, REQUIRED_CAPABILITIES_WITHOUT_DAX)
-    }
-
-    fn with_io_required_capabilities(
-        mut io: I,
-        required_capabilities: u64,
-    ) -> Result<Self, String> {
+    /// Test constructor for a backend whose DAX range is already bound.
+    #[cfg(test)]
+    pub(crate) fn with_io(mut io: I) -> Result<Self, String> {
         let mut caps = CapsV3 {
             size: size_of::<CapsV3>() as u32,
             ..CapsV3::default()
         };
         io.query_caps(&mut caps)?;
-        validate_caps(&caps, required_capabilities)?;
+        validate_caps(&caps, CapsPhase::PostBind)?;
+        Self::from_validated_caps(io, caps, None)
+    }
+
+    pub(crate) fn with_bound_io(mut io: I, dax_fd: RawFd) -> Result<Self, String> {
+        let mut pre = CapsV3 {
+            size: size_of::<CapsV3>() as u32,
+            ..CapsV3::default()
+        };
+        io.query_caps(&mut pre)?;
+        validate_caps(&pre, CapsPhase::PreBind)?;
+
+        let mut bind = BindDaxV3 {
+            size: size_of::<BindDaxV3>() as u32,
+            dax_fd,
+            ..BindDaxV3::default()
+        };
+        io.bind_dax(&mut bind)?;
+        validate_bind_result(&bind)?;
+
+        let mut post = CapsV3 {
+            size: size_of::<CapsV3>() as u32,
+            ..CapsV3::default()
+        };
+        io.query_caps(&mut post)?;
+        if let Err(error) = validate_caps(&post, CapsPhase::PostBind) {
+            let mut unbind = UnbindDaxV3 {
+                size: size_of::<UnbindDaxV3>() as u32,
+                generation: bind.generation,
+                ..UnbindDaxV3::default()
+            };
+            let cleanup = io.unbind_dax(&mut unbind);
+            return match cleanup {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!(
+                    "{error}; unbind after failed post-bind validation: {cleanup}"
+                )),
+            };
+        }
+        Self::from_validated_caps(io, post, Some(bind.generation))
+    }
+
+    fn from_validated_caps(
+        io: I,
+        caps: CapsV3,
+        bound_generation: Option<u64>,
+    ) -> Result<Self, String> {
         let timeout_ms = DEFAULT_TIMEOUT_MS.min(caps.max_timeout_ms);
         let owner = NEXT_SESSION_OWNER.fetch_add(1, Ordering::Relaxed);
         if owner == 0 {
@@ -382,6 +515,7 @@ impl<I: IoctlOps> V3Session<I> {
             buffers: HashMap::new(),
             used_request_ids: HashSet::new(),
             poisoned: false,
+            bound_generation,
         })
     }
 
@@ -1014,6 +1148,22 @@ impl<I: IoctlOps> V3Session<I> {
     }
 }
 
+impl<I: IoctlOps> Drop for V3Session<I> {
+    fn drop(&mut self) {
+        let Some(generation) = self.bound_generation.take() else {
+            return;
+        };
+        let mut unbind = UnbindDaxV3 {
+            size: size_of::<UnbindDaxV3>() as u32,
+            generation,
+            ..UnbindDaxV3::default()
+        };
+        if let Err(error) = self.io.unbind_dax(&mut unbind) {
+            eprintln!("[CXL TMatmul] UNBIND_DAX generation={generation} failed: {error}");
+        }
+    }
+}
+
 fn completion_minimum_bytes(dim_d: u32, batch: u32) -> Result<(u64, u64, u64), String> {
     let dim_d = u64::from(dim_d);
     let batch = u64::from(batch);
@@ -1033,24 +1183,33 @@ fn completion_minimum_bytes(dim_d: u32, batch: u32) -> Result<(u64, u64, u64), S
     Ok((matrix, input, output))
 }
 
-fn validate_caps(caps: &CapsV3, required_capabilities: u64) -> Result<(), String> {
+#[derive(Debug, Clone, Copy)]
+enum CapsPhase {
+    PreBind,
+    PostBind,
+}
+
+fn validate_caps(caps: &CapsV3, phase: CapsPhase) -> Result<(), String> {
     if caps.size != size_of::<CapsV3>() as u32 {
         return Err(format!("caps size {} is not 128", caps.size));
     }
     if caps.version != V3_VERSION {
         return Err(format!("caps version {} is not 3", caps.version));
     }
-    if caps.capabilities & required_capabilities != required_capabilities {
+    let (phase_name, expected_capabilities, expected_dax_bytes) = match phase {
+        CapsPhase::PreBind => ("pre-bind", REQUIRED_PRE_BIND, 0),
+        CapsPhase::PostBind => ("post-bind", REQUIRED_POST_BIND, EXPECTED_DAX_BYTES),
+    };
+    if caps.capabilities != expected_capabilities {
         return Err(format!(
-            "caps capabilities 0x{:x} lack 0x{required_capabilities:x}",
-            caps.capabilities
+            "{phase_name} capabilities 0x{:x} are not exactly 0x{expected_capabilities:x}",
+            caps.capabilities,
         ));
     }
-    if caps.num_instances < MAX_LANES || caps.num_instances > u64::BITS {
+    if caps.num_instances != MAX_LANES {
         return Err(format!(
-            "caps num_instances {} is outside {MAX_LANES}..={}",
-            caps.num_instances,
-            u64::BITS
+            "caps num_instances {} is not exactly {MAX_LANES}",
+            caps.num_instances
         ));
     }
     if caps.dim_d != EXPECTED_DIM_D {
@@ -1089,12 +1248,15 @@ fn validate_caps(caps: &CapsV3, required_capabilities: u64) -> Result<(), String
             caps.dax_alignment_bytes
         ));
     }
-    if caps.dax_bytes != EXPECTED_DAX_BYTES {
-        return Err(format!("caps dax bytes {} is not 32 GiB", caps.dax_bytes));
-    }
-    if caps.per_lane_counter_mask & REQUIRED_LANE_MASK != REQUIRED_LANE_MASK {
+    if caps.dax_bytes != expected_dax_bytes {
         return Err(format!(
-            "caps lane_mask 0x{:x} does not expose required mask 0x{REQUIRED_LANE_MASK:x}",
+            "{phase_name} DAX bytes {} are not {}",
+            caps.dax_bytes, expected_dax_bytes
+        ));
+    }
+    if caps.per_lane_counter_mask != REQUIRED_LANE_MASK {
+        return Err(format!(
+            "caps lane_mask 0x{:x} is not exactly 0x{REQUIRED_LANE_MASK:x}",
             caps.per_lane_counter_mask,
         ));
     }
@@ -1106,6 +1268,25 @@ fn validate_caps(caps: &CapsV3, required_capabilities: u64) -> Result<(), String
     }
     if caps.reserved != [0; 7] {
         return Err("caps reserved fields are nonzero".into());
+    }
+    Ok(())
+}
+
+fn validate_bind_result(bind: &BindDaxV3) -> Result<(), String> {
+    if bind.hpa_start != EXPECTED_DAX_HPA {
+        return Err(format!(
+            "bound HPA 0x{:x} is not 0x{EXPECTED_DAX_HPA:x}",
+            bind.hpa_start
+        ));
+    }
+    if bind.dax_bytes != EXPECTED_DAX_BYTES {
+        return Err(format!(
+            "bound size 0x{:x} is not 0x{EXPECTED_DAX_BYTES:x}",
+            bind.dax_bytes
+        ));
+    }
+    if bind.generation == 0 {
+        return Err("bound DAX generation is zero".into());
     }
     Ok(())
 }
@@ -1201,6 +1382,10 @@ mod tests {
     #[derive(Debug, Default)]
     struct FakeIoctl {
         caps: CapsV3,
+        post_bind_caps: Option<CapsV3>,
+        bind_hpa: u64,
+        bind_bytes: u64,
+        bind_generation: u64,
         calls: Vec<String>,
         next_handle: u32,
         next_generation: u64,
@@ -1227,6 +1412,10 @@ mod tests {
         fn valid() -> Self {
             Self {
                 caps: valid_caps(),
+                post_bind_caps: None,
+                bind_hpa: EXPECTED_DAX_HPA,
+                bind_bytes: EXPECTED_DAX_BYTES,
+                bind_generation: 19,
                 calls: Vec::new(),
                 next_handle: 1,
                 next_generation: 1,
@@ -1242,6 +1431,14 @@ mod tests {
             }
         }
 
+        fn pre_bind() -> Self {
+            let mut io = Self::valid();
+            io.caps.capabilities = REQUIRED_PRE_BIND;
+            io.caps.dax_bytes = 0;
+            io.post_bind_caps = Some(valid_caps());
+            io
+        }
+
         fn with_waits(waits: Vec<Vec<CompletionV3>>) -> Self {
             let mut io = Self::valid();
             io.waits = waits.into_iter().map(Ok).collect();
@@ -1253,6 +1450,22 @@ mod tests {
         fn query_caps(&mut self, caps: &mut CapsV3) -> Result<(), String> {
             self.calls.push("query".into());
             *caps = self.caps;
+            Ok(())
+        }
+
+        fn bind_dax(&mut self, bind: &mut BindDaxV3) -> Result<(), String> {
+            self.calls.push(format!("bind:{}", bind.dax_fd));
+            bind.hpa_start = self.bind_hpa;
+            bind.dax_bytes = self.bind_bytes;
+            bind.generation = self.bind_generation;
+            if let Some(caps) = self.post_bind_caps.take() {
+                self.caps = caps;
+            }
+            Ok(())
+        }
+
+        fn unbind_dax(&mut self, unbind: &mut UnbindDaxV3) -> Result<(), String> {
+            self.calls.push(format!("unbind:{}", unbind.generation));
             Ok(())
         }
 
@@ -1317,8 +1530,8 @@ mod tests {
         CapsV3 {
             size: size_of::<CapsV3>() as u32,
             version: V3_VERSION,
-            capabilities: REQUIRED_CAPABILITIES,
-            num_instances: 16,
+            capabilities: REQUIRED_POST_BIND,
+            num_instances: MAX_LANES,
             dim_d: 2048,
             max_batch: 64,
             max_descriptors: 2,
@@ -1327,7 +1540,7 @@ mod tests {
             ddr_data_width_bits: 512,
             dax_alignment_bytes: 4096,
             dax_bytes: 32 * 1024 * 1024 * 1024,
-            per_lane_counter_mask: 0xffff,
+            per_lane_counter_mask: REQUIRED_LANE_MASK,
             accelerator_clock_hz: 400_000_000,
             ..CapsV3::default()
         }
@@ -1416,18 +1629,76 @@ mod tests {
         assert_eq!(size_of::<SubmitV3>(), 64);
         assert_eq!(size_of::<CompletionV3>(), 80);
         assert_eq!(size_of::<WaitV3>(), 64);
+        assert_eq!(size_of::<BindDaxV3>(), 72);
+        assert_eq!(size_of::<UnbindDaxV3>(), 64);
         assert_eq!(QUERY_CAPS_V3, 0xC080_CE10);
         assert_eq!(REGISTER_BUFFER_V3, 0xC040_CE11);
         assert_eq!(UNREGISTER_BUFFER_V3, 0x4040_CE12);
         assert_eq!(COMMIT_BUFFER_V3, 0xC040_CE13);
         assert_eq!(SUBMIT_V3, 0xC040_CE14);
         assert_eq!(WAIT_V3, 0xC040_CE15);
+        assert_eq!(BIND_DAX_V3, 0xC048_CE16);
+        assert_eq!(UNBIND_DAX_V3, 0x4040_CE17);
         assert_eq!(QUERY_CAPS_V3, iowr::<CapsV3>(0xCE, 0x10));
         assert_eq!(REGISTER_BUFFER_V3, iowr::<BufferV3>(0xCE, 0x11));
         assert_eq!(UNREGISTER_BUFFER_V3, iow::<BufferV3>(0xCE, 0x12));
         assert_eq!(COMMIT_BUFFER_V3, iowr::<CommitV3>(0xCE, 0x13));
         assert_eq!(SUBMIT_V3, iowr::<SubmitV3>(0xCE, 0x14));
         assert_eq!(WAIT_V3, iowr::<WaitV3>(0xCE, 0x15));
+        assert_eq!(BIND_DAX_V3, iowr::<BindDaxV3>(0xCE, 0x16));
+        assert_eq!(UNBIND_DAX_V3, iow::<UnbindDaxV3>(0xCE, 0x17));
+    }
+
+    #[test]
+    fn devdax_binding_is_pre_bind_bind_post_bind_in_that_order() {
+        let session = V3Session::with_bound_io(FakeIoctl::pre_bind(), 17)
+            .expect("bind one devdax fd");
+        assert_eq!(session.caps().capabilities, REQUIRED_POST_BIND);
+        assert_eq!(session.caps().dax_bytes, EXPECTED_DAX_BYTES);
+        assert_eq!(session.io().calls, ["query", "bind:17", "query"]);
+    }
+
+    #[test]
+    fn devdax_binding_fails_closed_at_each_phase() {
+        let mut cases = Vec::new();
+
+        let mut missing_bind = FakeIoctl::pre_bind();
+        missing_bind.caps.capabilities &= !CAP_DAX_FD_BIND_REQUIRED;
+        cases.push(("pre-bind capabilities", missing_bind));
+
+        let mut premature_dax = FakeIoctl::pre_bind();
+        premature_dax.caps.capabilities |= CAP_DAX_RANGES;
+        cases.push(("pre-bind capabilities", premature_dax));
+
+        let mut premature_size = FakeIoctl::pre_bind();
+        premature_size.caps.dax_bytes = EXPECTED_DAX_BYTES;
+        cases.push(("pre-bind DAX bytes", premature_size));
+
+        let mut zero_generation = FakeIoctl::pre_bind();
+        zero_generation.bind_generation = 0;
+        cases.push(("generation", zero_generation));
+
+        let mut wrong_hpa = FakeIoctl::pre_bind();
+        wrong_hpa.bind_hpa += 4096;
+        cases.push(("HPA", wrong_hpa));
+
+        let mut wrong_size = FakeIoctl::pre_bind();
+        wrong_size.bind_bytes /= 2;
+        cases.push(("size", wrong_size));
+
+        let mut missing_post_dax = FakeIoctl::pre_bind();
+        missing_post_dax.post_bind_caps.as_mut().unwrap().capabilities &= !CAP_DAX_RANGES;
+        cases.push(("post-bind capabilities", missing_post_dax));
+
+        let mut post_regression = FakeIoctl::pre_bind();
+        post_regression.post_bind_caps.as_mut().unwrap().capabilities &=
+            !CAP_DIRECT_DESCRIPTOR;
+        cases.push(("post-bind capabilities", post_regression));
+
+        for (label, io) in cases {
+            let error = V3Session::with_bound_io(io, 17).unwrap_err();
+            assert!(error.contains(label), "{label}: {error}");
+        }
     }
 
     #[test]
@@ -1444,7 +1715,7 @@ mod tests {
             ("max_timeout", |c: &mut CapsV3| c.max_timeout_ms = 0),
             ("ddr", |c: &mut CapsV3| c.ddr_data_width_bits = 256),
             ("alignment", |c: &mut CapsV3| c.dax_alignment_bytes = 0),
-            ("dax", |c: &mut CapsV3| c.dax_bytes -= 1),
+            ("DAX", |c: &mut CapsV3| c.dax_bytes -= 1),
             ("lane_mask", |c: &mut CapsV3| c.per_lane_counter_mask = 0x7),
             ("clock", |c: &mut CapsV3| {
                 c.accelerator_clock_hz = 399_000_000
@@ -1464,32 +1735,6 @@ mod tests {
         assert!(V3Session::with_io(io)
             .unwrap_err()
             .contains("max_descriptors"));
-    }
-
-    #[test]
-    fn ioctl_memory_session_waives_only_the_dax_range_capability() {
-        let mut ioctl_memory = FakeIoctl::valid();
-        ioctl_memory.caps.capabilities &= !CAP_DAX_RANGES;
-        V3Session::with_io_without_dax(ioctl_memory)
-            .expect("ioctl memory session should not require a DAX range");
-
-        let mut missing_direct_descriptor = FakeIoctl::valid();
-        missing_direct_descriptor.caps.capabilities &=
-            !(CAP_DAX_RANGES | CAP_DIRECT_DESCRIPTOR);
-        let error = V3Session::with_io_without_dax(missing_direct_descriptor).unwrap_err();
-        assert!(error.contains("capabilities"));
-        assert!(error.contains("0x7a"));
-    }
-
-    #[test]
-    #[ignore = "requires the live software-control TMM1 node"]
-    fn live_ioctl_memory_session_rejects_missing_execution_capabilities() {
-        let device = std::env::var("HETGPU_CXL_TMATMUL_DEVICE")
-            .expect("set HETGPU_CXL_TMATMUL_DEVICE to the live control node");
-        let error = V3Session::open_without_dax(device)
-            .expect_err("the current TMM1 image must not qualify as V3 execution hardware");
-        assert!(error.contains("capabilities 0x10"), "{error}");
-        assert!(error.contains("lack 0x7a"), "{error}");
     }
 
     #[test]

@@ -3,16 +3,15 @@
 use crate::r#impl::batch_scheduler::{BatchSchedulerConfig, SchedulerReport};
 use crate::r#impl::cxl_tmatmul::{copy_cuda_to_host, copy_host_to_cuda};
 use crate::r#impl::cxl_tmatmul_v3::{
-    BufferLease, CompletedTaskV3, IoctlOps, TaskV3, V3Session, BUFFER_MATRIX, BUFFER_Q8_8_S16,
-    BUFFER_RAW_S64, BUFFER_READ, BUFFER_TERNARY2, BUFFER_WRITE, LANE_ANY, MAX_LANES,
+    BoundDaxFile, BufferLease, CompletedTaskV3, IoctlOps, TaskV3, V3Session, BUFFER_MATRIX,
+    BUFFER_Q8_8_S16, BUFFER_RAW_S64, BUFFER_READ, BUFFER_TERNARY2, BUFFER_WRITE, LANE_ANY,
+    MAX_LANES,
 };
 use serde::Serialize;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1096,203 +1095,13 @@ pub(crate) trait DaxAccess {
     fn read(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, String>;
 }
 
-const MEM_IO_MAX_BYTES: usize = 1 << 20;
-const MEM_IO_ALIGNMENT: u64 = 4;
-const CXL_TYPE2_MEM_REQ_READ: u32 = 0;
-const CXL_TYPE2_MEM_REQ_WRITE: u32 = 1;
-const CXL_TYPE2_MEM_IO: u64 = crate::r#impl::cxl_tmatmul_v3::iowr::<MemRequest>(0xce, 0x02);
-const TMATMUL_HPA_BASE: u64 = 0x0c10_0000_0000;
-const MEM_IO_ADDRESSABLE_BYTES: u64 = 1_u64 << 32;
-const TMATMUL_HPA_SIZE: u64 = MEM_IO_ADDRESSABLE_BYTES;
-
-#[repr(C)]
-#[derive(Debug, Default)]
-struct MemRequest {
-    hpa_base: u64,
-    hpa_size: u64,
-    offset: u64,
-    user_ptr: u64,
-    size: u32,
-    op: u32,
-    flags: u32,
-    reserved0: u32,
-    reserved1: [u64; 4],
-}
-
-const _: [(); 80] = [(); std::mem::size_of::<MemRequest>()];
-
-trait MemIoOps: Send {
-    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), String>;
-    fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), String>;
-}
-
-#[derive(Debug)]
-struct LinuxMemIo {
-    file: File,
-}
-
-impl LinuxMemIo {
-    fn open(path: &Path) -> Result<Self, String> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_CLOEXEC)
-            .open(path)
-            .map_err(|error| format!("open CXL memory control {}: {error}", path.display()))?;
-        Ok(Self { file })
-    }
-
-    fn call(&mut self, offset: u64, bytes: *mut u8, size: usize, op: u32) -> Result<(), String> {
-        let size =
-            u32::try_from(size).map_err(|_| format!("CXL memory request exceeds u32: {size}"))?;
-        let mut request = MemRequest {
-            hpa_base: TMATMUL_HPA_BASE,
-            hpa_size: TMATMUL_HPA_SIZE,
-            offset,
-            user_ptr: bytes as u64,
-            size,
-            op,
-            ..MemRequest::default()
-        };
-        let result = unsafe {
-            libc::ioctl(
-                self.file.as_raw_fd(),
-                CXL_TYPE2_MEM_IO as libc::c_ulong,
-                &mut request,
-            )
-        };
-        if result < 0 {
-            Err(format!(
-                "CXL_TYPE2_MEM_IO op={} offset=0x{offset:x} size={size}: {}",
-                if op == CXL_TYPE2_MEM_REQ_WRITE {
-                    "write"
-                } else {
-                    "read"
-                },
-                std::io::Error::last_os_error()
-            ))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl MemIoOps for LinuxMemIo {
-    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), String> {
-        self.call(
-            offset,
-            bytes.as_ptr().cast_mut(),
-            bytes.len(),
-            CXL_TYPE2_MEM_REQ_WRITE,
-        )
-    }
-
-    fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), String> {
-        self.call(
-            offset,
-            bytes.as_mut_ptr(),
-            bytes.len(),
-            CXL_TYPE2_MEM_REQ_READ,
-        )
-    }
-}
-
-struct IoctlDaxAccess<I: MemIoOps = LinuxMemIo> {
-    io: Mutex<I>,
-    length: u64,
-}
-
-impl IoctlDaxAccess<LinuxMemIo> {
-    fn open(path: &Path, length: u64) -> Result<Self, String> {
-        Self::with_io(LinuxMemIo::open(path)?, length)
-    }
-}
-
-impl<I: MemIoOps> IoctlDaxAccess<I> {
-    fn with_io(io: I, length: u64) -> Result<Self, String> {
-        if length == 0 {
-            return Err("CXL memory request aperture is zero".into());
-        }
-        Ok(Self {
-            io: Mutex::new(io),
-            length,
-        })
-    }
-
-    fn checked_range(&self, offset: u64, length: usize) -> Result<(), String> {
-        let length = u64::try_from(length).map_err(|_| "CXL memory length does not fit u64")?;
-        let end = offset
-            .checked_add(length)
-            .ok_or("CXL memory request range overflow")?;
-        if end > self.length {
-            return Err(format!(
-                "CXL memory request range 0x{offset:x}..0x{end:x} exceeds aperture 0x{:x}",
-                self.length
-            ));
-        }
-        if !offset.is_multiple_of(MEM_IO_ALIGNMENT) || !length.is_multiple_of(MEM_IO_ALIGNMENT) {
-            return Err(format!(
-                "CXL memory request offset and length must be {MEM_IO_ALIGNMENT}-byte aligned"
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl<I: MemIoOps> DaxAccess for IoctlDaxAccess<I> {
-    fn write(&self, offset: u64, bytes: &[u8]) -> Result<usize, String> {
-        self.checked_range(offset, bytes.len())?;
-        let mut io = self
-            .io
-            .lock()
-            .map_err(|_| "CXL memory request lock poisoned")?;
-        for (index, chunk) in bytes.chunks(MEM_IO_MAX_BYTES).enumerate() {
-            let chunk_offset = offset
-                .checked_add((index * MEM_IO_MAX_BYTES) as u64)
-                .ok_or("CXL memory write offset overflow")?;
-            io.write(chunk_offset, chunk)?;
-        }
-        Ok(bytes.len())
-    }
-
-    fn read(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, String> {
-        self.checked_range(offset, bytes.len())?;
-        let mut io = self
-            .io
-            .lock()
-            .map_err(|_| "CXL memory request lock poisoned")?;
-        for (index, chunk) in bytes.chunks_mut(MEM_IO_MAX_BYTES).enumerate() {
-            let chunk_offset = offset
-                .checked_add((index * MEM_IO_MAX_BYTES) as u64)
-                .ok_or("CXL memory read offset overflow")?;
-            io.read(chunk_offset, chunk)?;
-        }
-        Ok(bytes.len())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum V3MemoryBackend {
-    Dax,
-    Ioctl,
-}
-
-fn parse_v3_memory_backend(value: Option<&str>) -> Result<V3MemoryBackend, String> {
-    match value.unwrap_or("dax").trim().to_ascii_lowercase().as_str() {
-        "" | "dax" | "mmap" => Ok(V3MemoryBackend::Dax),
-        "ioctl" | "inline" | "mem_io" | "mem-io" => Ok(V3MemoryBackend::Ioctl),
-        other => Err(format!(
-            "invalid HETGPU_CXL_TMATMUL_V3_MEMORY={other:?}, expected dax or ioctl"
+fn validate_v3_memory_setting(value: Option<&str>) -> Result<(), String> {
+    match value.map(str::trim) {
+        None | Some("") | Some("dax") => Ok(()),
+        Some(other) => Err(format!(
+            "unsupported HETGPU_CXL_TMATMUL_V3_MEMORY={other:?}; only dax is allowed"
         )),
     }
-}
-
-fn v3_memory_backend_from_env() -> Result<V3MemoryBackend, String> {
-    parse_v3_memory_backend(
-        std::env::var("HETGPU_CXL_TMATMUL_V3_MEMORY")
-            .ok()
-            .as_deref(),
-    )
 }
 
 pub(crate) struct FileDaxAccess {
@@ -1302,37 +1111,31 @@ pub(crate) struct FileDaxAccess {
 }
 
 impl FileDaxAccess {
-    pub(crate) fn open(path: &Path, length: u64) -> Result<Self, String> {
-        let length = usize::try_from(length)
-            .map_err(|_| format!("DAX mapping length does not fit usize: {length}"))?;
+    pub(crate) fn map(bound: &BoundDaxFile) -> Result<Self, String> {
+        let length = usize::try_from(bound.length())
+            .map_err(|_| format!("DAX mapping length does not fit usize: {}", bound.length()))?;
         if length == 0 || length > isize::MAX as usize {
             return Err(format!("invalid DAX mapping length: {length}"));
         }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_SYNC | libc::O_CLOEXEC)
-            .open(path)
-            .map_err(|error| format!("open DAX {}: {error}", path.display()))?;
         let mapped = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
                 length,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
-                file.as_raw_fd(),
+                bound.as_raw_fd(),
                 0,
             )
         };
         if mapped == libc::MAP_FAILED {
             return Err(format!(
-                "mmap DAX {} length=0x{length:x}: {}",
-                path.display(),
+                "mmap bound DAX generation={} length=0x{length:x}: {}",
+                bound.generation(),
                 std::io::Error::last_os_error()
             ));
         }
         let mapping = NonNull::new(mapped.cast::<u8>())
-            .ok_or_else(|| format!("mmap DAX {} returned null", path.display()))?;
+            .ok_or_else(|| "mmap bound DAX returned null".to_string())?;
         Ok(Self {
             mapping,
             length,
@@ -1896,28 +1699,14 @@ pub(crate) unsafe fn execute_captured(
     dax_path: &Path,
     base_dpa: u64,
 ) -> Result<ExecutionResult, String> {
-    let memory_backend = v3_memory_backend_from_env()?;
-    let mut session = match memory_backend {
-        V3MemoryBackend::Dax => V3Session::open(control_path)?,
-        V3MemoryBackend::Ioctl => V3Session::open_without_dax(control_path)?,
-    };
-    match memory_backend {
-        V3MemoryBackend::Dax => {
-            let dax = FileDaxAccess::open(dax_path, session.caps().dax_bytes)?;
-            execute_captured_with(captured, &mut session, &dax, &CudaOutputCopier, base_dpa)
-        }
-        V3MemoryBackend::Ioctl => {
-            let memory = IoctlDaxAccess::open(
-                control_path,
-                session.caps().dax_bytes.min(MEM_IO_ADDRESSABLE_BYTES),
-            )?;
-            eprintln!(
-                "[CXL TMatmul] using inline CXL_TYPE2_MEM_IO staging through {}",
-                control_path.display()
-            );
-            execute_captured_with(captured, &mut session, &memory, &CudaOutputCopier, base_dpa)
-        }
-    }
+    validate_v3_memory_setting(
+        std::env::var("HETGPU_CXL_TMATMUL_V3_MEMORY")
+            .ok()
+            .as_deref(),
+    )?;
+    let (mut session, bound_dax) = V3Session::open(control_path, dax_path)?;
+    let dax = FileDaxAccess::map(&bound_dax)?;
+    execute_captured_with(captured, &mut session, &dax, &CudaOutputCopier, base_dpa)
 }
 
 #[derive(Serialize)]
@@ -2890,7 +2679,11 @@ mod tests {
         file.as_file()
             .set_len(4096)
             .expect("size mapped DAX fixture");
-        let dax = FileDaxAccess::open(file.path(), 4096).expect("map DAX fixture");
+        let bound = BoundDaxFile::test_only(
+            file.as_file().try_clone().expect("clone DAX fixture fd"),
+            4096,
+        );
+        let dax = FileDaxAccess::map(&bound).expect("map bound DAX fixture");
 
         assert_eq!(dax.write(64, &[1, 2, 3, 4]).unwrap(), 4);
         let mut readback = [0_u8; 4];
@@ -2907,138 +2700,13 @@ mod tests {
         assert_eq!(&bytes[64..68], &[1, 2, 3, 4]);
     }
 
-    #[derive(Clone)]
-    struct MemoryIoctl {
-        bytes: Arc<Mutex<Vec<u8>>>,
-        writes: Arc<Mutex<Vec<(u64, usize)>>>,
-        reads: Arc<Mutex<Vec<(u64, usize)>>>,
-    }
-
-    impl MemoryIoctl {
-        fn new(bytes: usize) -> Self {
-            Self {
-                bytes: Arc::new(Mutex::new(vec![0; bytes])),
-                writes: Arc::new(Mutex::new(Vec::new())),
-                reads: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-    }
-
-    impl MemIoOps for MemoryIoctl {
-        fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), String> {
-            let offset = usize::try_from(offset).unwrap();
-            self.bytes.lock().unwrap()[offset..offset + bytes.len()].copy_from_slice(bytes);
-            self.writes
-                .lock()
-                .unwrap()
-                .push((offset as u64, bytes.len()));
-            Ok(())
-        }
-
-        fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), String> {
-            let offset = usize::try_from(offset).unwrap();
-            bytes.copy_from_slice(&self.bytes.lock().unwrap()[offset..offset + bytes.len()]);
-            self.reads
-                .lock()
-                .unwrap()
-                .push((offset as u64, bytes.len()));
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn ioctl_memory_access_chunks_and_round_trips_without_dax() {
-        let io = MemoryIoctl::new(2 * MEM_IO_MAX_BYTES + 64);
-        let writes = io.writes.clone();
-        let reads = io.reads.clone();
-        let access = IoctlDaxAccess::with_io(io, (2 * MEM_IO_MAX_BYTES + 64) as u64).unwrap();
-        let payload = (0..2 * MEM_IO_MAX_BYTES + 32)
-            .map(|index| (index.wrapping_mul(37) & 0xff) as u8)
-            .collect::<Vec<_>>();
-
-        assert_eq!(access.write(16, &payload).unwrap(), payload.len());
-        let mut observed = vec![0_u8; payload.len()];
-        assert_eq!(access.read(16, &mut observed).unwrap(), payload.len());
-        assert_eq!(observed, payload);
-        assert_eq!(
-            *writes.lock().unwrap(),
-            vec![
-                (16, MEM_IO_MAX_BYTES),
-                (16 + MEM_IO_MAX_BYTES as u64, MEM_IO_MAX_BYTES),
-                (16 + 2 * MEM_IO_MAX_BYTES as u64, 32)
-            ]
-        );
-        assert_eq!(*reads.lock().unwrap(), *writes.lock().unwrap());
-    }
-
-    #[test]
-    fn ioctl_memory_access_rejects_unaligned_or_out_of_range_requests() {
-        let access = IoctlDaxAccess::with_io(MemoryIoctl::new(4096), 4096).unwrap();
-        assert!(access.write(1, &[0; 4]).unwrap_err().contains("aligned"));
-        assert!(access.write(4, &[0; 3]).unwrap_err().contains("aligned"));
-        assert!(
-            access
-                .read(4092, &mut [0_u8; 8])
-                .unwrap_err()
-                .contains("range")
-        );
-    }
-
     #[test]
     fn v3_memory_backend_parser_is_explicit_and_fail_closed() {
-        assert_eq!(parse_v3_memory_backend(None).unwrap(), V3MemoryBackend::Dax);
-        assert_eq!(
-            parse_v3_memory_backend(Some("ioctl")).unwrap(),
-            V3MemoryBackend::Ioctl
-        );
-        assert_eq!(
-            parse_v3_memory_backend(Some("inline")).unwrap(),
-            V3MemoryBackend::Ioctl
-        );
-        assert!(parse_v3_memory_backend(Some("auto")).is_err());
-    }
-
-    #[test]
-    #[ignore = "requires a live TMM1 control node and temporarily writes 64 FPGA DDR bytes"]
-    fn live_ioctl_memory_access_retains_and_restores_fpga_ddr() {
-        let device = std::env::var("HETGPU_CXL_TMATMUL_DEVICE")
-            .expect("set HETGPU_CXL_TMATMUL_DEVICE to the live control node");
-        let offset = std::env::var("HETGPU_CXL_TMATMUL_MEM_TEST_OFFSET")
-            .ok()
-            .map(|value| {
-                let value = value.trim();
-                u64::from_str_radix(value.strip_prefix("0x").unwrap_or(value), 16)
-                    .expect("HETGPU_CXL_TMATMUL_MEM_TEST_OFFSET must be hexadecimal")
-            })
-            .unwrap_or(0x010f_f000);
-        let access = IoctlDaxAccess::open(Path::new(&device), TMATMUL_HPA_SIZE)
-            .expect("open live ioctl CXL memory backend");
-        let mut original = [0_u8; 64];
-        access
-            .read(offset, &mut original)
-            .expect("save original FPGA DDR bytes");
-        let pattern = std::array::from_fn::<_, 64, _>(|index| {
-            (index as u8).wrapping_mul(37).wrapping_add(0x5a)
-        });
-        let operation = (|| {
-            access.write(offset, &pattern)?;
-            let mut observed = [0_u8; 64];
-            access.read(offset, &mut observed)?;
-            if observed != pattern {
-                return Err("live FPGA DDR pattern readback mismatch".to_string());
-            }
-            Ok(())
-        })();
-        let restore = access.write(offset, &original).and_then(|_| {
-            let mut observed = [0_u8; 64];
-            access.read(offset, &mut observed)?;
-            if observed != original {
-                return Err("live FPGA DDR restore readback mismatch".to_string());
-            }
-            Ok(())
-        });
-        restore.expect("restore original FPGA DDR bytes");
-        operation.expect("round-trip live FPGA DDR bytes");
+        validate_v3_memory_setting(None).unwrap();
+        validate_v3_memory_setting(Some("dax")).unwrap();
+        assert!(validate_v3_memory_setting(Some("ioctl")).is_err());
+        assert!(validate_v3_memory_setting(Some("inline")).is_err());
+        assert!(validate_v3_memory_setting(Some("mmap")).is_err());
     }
 
     impl DaxAccess for MemoryDax {
@@ -3089,8 +2757,8 @@ mod tests {
     impl IoctlOps for FakeV3 {
         fn query_caps(&mut self, caps: &mut CapsV3) -> Result<(), String> {
             caps.version = 3;
-            caps.capabilities = 0x7b;
-            caps.num_instances = 16;
+            caps.capabilities = 0xfb;
+            caps.num_instances = MAX_LANES;
             caps.dim_d = 2048;
             caps.max_batch = self.max_batch;
             caps.max_descriptors = 1024;
@@ -3099,7 +2767,7 @@ mod tests {
             caps.ddr_data_width_bits = 512;
             caps.dax_alignment_bytes = 4096;
             caps.dax_bytes = 32 * 1024 * 1024 * 1024;
-            caps.per_lane_counter_mask = 0xffff;
+            caps.per_lane_counter_mask = 0x0f;
             caps.accelerator_clock_hz = 400_000_000;
             Ok(())
         }
@@ -3611,10 +3279,11 @@ mod tests {
             .expect("load the validated local libggml IQ1_S grid");
         let captured = capture_from_host(launch, &matrix, &activations, &oracle)
             .expect("capture host IQ1_S batch fixture");
-        let mut session = V3Session::open(Path::new(&control_path)).expect("open live v3 session");
+        let (mut session, bound_dax) =
+            V3Session::open(Path::new(&control_path), Path::new(&dax_path))
+                .expect("bind live devdax to the v3 session");
         let caps = session.caps();
-        let dax = FileDaxAccess::open(Path::new(&dax_path), caps.dax_bytes)
-            .expect("mmap live DAX device");
+        let dax = FileDaxAccess::map(&bound_dax).expect("mmap bound live DAX device");
         assert_eq!(caps.version, 3, "live fixture requires QUERY_CAPS_V3");
         assert!(
             caps.num_instances >= MAX_LANES,
