@@ -35,6 +35,7 @@ cmp -s "${record_only_result}/hashes/source.sha256" \
     "${record_only_result}/hashes/source.final.sha256"
 test "$(cat "${record_only_result}/status/source_tree_stability.status")" -eq 0
 test -s "${record_only_result}/hashes/final-artifacts.sha256"
+test -s "${record_only_result}/source/artifact-inventory.txt"
 test "$(cat "${record_only_result}/evaluated-git-head.txt")" = "$(git -C "${repo_root}" rev-parse HEAD)"
 required_inventory=(
     Cargo.lock
@@ -59,11 +60,32 @@ for expected_path in "${required_inventory[@]}"; do
     grep -Fq "  ${expected_path}" "${record_only_result}/hashes/source.sha256"
     test -f "${record_only_result}/source/files/${expected_path}"
 done
+validator=/root/.config/superpowers/worktrees/ternary_matmul/kernel7-real-cxl-mem-20260825/synth/intel_ia780i/sw/validate_cxl_devdax_binding.py
+grep -Fxq "${validator}" \
+    "${record_only_result}/source/evaluation-source-inventory.txt"
+grep -Fq "  ${validator}" "${record_only_result}/hashes/source.sha256"
+test -f \
+    "${record_only_result}/source/files/external/validate_cxl_devdax_binding.py"
 while IFS= read -r dirty_path; do
     [[ -n ${dirty_path} ]] || continue
     grep -Fxq "${dirty_path}" \
         "${record_only_result}/source/evaluation-source-inventory.txt"
 done <"${record_only_result}/source/dirty-build-inputs.txt"
+
+python3 -c '
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+assert text.index("run_gate cxl_devdax_binding") < text.index("run_rust_test_gate live_batch_fixture")
+for required in (
+    "--negative-fd --output",
+    "bind_dax_v3 = 0xC048CE16",
+    "unbind_dax_v3 = 0x4040CE17",
+    "expected_caps = 0xFA if phase == \"pre_bind\" else 0xFB",
+    "values[3] != 4 or values[12] != 0x0F",
+    "cxl-devdax-binding.json",
+):
+    assert required in text, required
+' "${harness}"
 
 zero_result=${test_root}/zero-tests
 set +e

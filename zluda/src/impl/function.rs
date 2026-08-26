@@ -8690,6 +8690,82 @@ fn nvidia_iq1s_completed_evidence_json(evidence: NvidiaIq1sCompletedEvidence<'_>
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+#[derive(serde::Serialize)]
+struct GpuAttentionCompletedEvidence<'a> {
+    event: &'static str,
+    status: &'static str,
+    kernel: &'a str,
+    launch_count: u64,
+    device: &'static str,
+    cpu_fallback: bool,
+    emulator_fallback: bool,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_gpu_attention_completed_evidence<'a>(
+    kernel: &'a str,
+    config: &super::bitnet_disagg::BitnetRouteConfig,
+) -> Option<GpuAttentionCompletedEvidence<'a>> {
+    let decision = super::bitnet_disagg::classify_kernel_name(kernel, config);
+    if decision.route != super::bitnet_disagg::BitnetRoute::GpuNative {
+        return None;
+    }
+    let matched = decision.matched.as_deref()?.to_ascii_lowercase();
+    if !["attention", "attn", "flash"]
+        .iter()
+        .any(|marker| matched.contains(marker))
+    {
+        return None;
+    }
+    Some(GpuAttentionCompletedEvidence {
+        event: "hetgpu_gpu_attention_execution",
+        status: "completed",
+        kernel,
+        launch_count: 1,
+        device: "cuda",
+        cpu_fallback: false,
+        emulator_fallback: false,
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_gpu_attention_completed_evidence_json(
+    evidence: GpuAttentionCompletedEvidence<'_>,
+) -> String {
+    serde_json::to_string(&evidence)
+        .expect("primitive GPU attention evidence must serialize as JSON")
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_emit_gpu_attention_completed(kernel: &str) {
+    let config = super::bitnet_disagg::config_from_env();
+    let Some(evidence) = nvidia_gpu_attention_completed_evidence(kernel, &config) else {
+        return;
+    };
+    eprintln!("{}", nvidia_gpu_attention_completed_evidence_json(evidence));
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 fn nvidia_iq1s_post_execution_route(
     kernel_name: &str,
     logical_batch: u64,
@@ -9522,6 +9598,7 @@ pub(crate) fn launch_kernel(
         );
         return Err(CUerror::UNKNOWN);
     }
+    nvidia_emit_gpu_attention_completed(&f.function_name);
     super::kimi_concordia::observe_kernel_launch(&f.function_name, h_stream, &concordia_ptrs);
     Ok(())
 }
@@ -9574,6 +9651,7 @@ pub(crate) fn launch_kernel_ex(
         );
         return Err(CUerror::UNKNOWN);
     }
+    nvidia_emit_gpu_attention_completed(&f.function_name);
     super::kimi_concordia::observe_kernel_launch(&f.function_name, config.hStream, &concordia_ptrs);
     Ok(())
 }
@@ -9992,6 +10070,50 @@ mod nvidia_bitnet_route_tests {
             r#"{"event":"ternip_v3_iq1s_execution","status":"completed","kernel":"qualified_iq1s_kernel","logical_batch":4,"descriptor_count":4,"unique_submission_count":2,"lane_mask":11,"per_lane_completion_counts":[2,1,0,1],"total_accelerator_cycles":12345,"total_matrix_bytes_read":4096,"total_input_bytes_read":512,"total_output_bytes_written":256}"#
         );
         assert!(!record.contains('\n'));
+    }
+
+    #[test]
+    fn nvidia_iq1s_completed_gpu_attention_evidence_is_native_cuda_only() {
+        let evidence = super::GpuAttentionCompletedEvidence {
+            event: "hetgpu_gpu_attention_execution",
+            status: "completed",
+            kernel: "flash_attn_fwd",
+            launch_count: 1,
+            device: "cuda",
+            cpu_fallback: false,
+            emulator_fallback: false,
+        };
+        let record = super::nvidia_gpu_attention_completed_evidence_json(evidence);
+        assert_eq!(
+            record,
+            r#"{"event":"hetgpu_gpu_attention_execution","status":"completed","kernel":"flash_attn_fwd","launch_count":1,"device":"cuda","cpu_fallback":false,"emulator_fallback":false}"#
+        );
+        assert!(!record.contains('\n'));
+
+        let mut config = crate::r#impl::bitnet_disagg::BitnetRouteConfig::default();
+        config.enabled = true;
+        assert!(super::nvidia_gpu_attention_completed_evidence(
+            "flash_attn_fwd",
+            &config
+        )
+        .is_some());
+        assert!(super::nvidia_gpu_attention_completed_evidence(
+            "layer_3_attention",
+            &config
+        )
+        .is_some());
+        assert!(super::nvidia_gpu_attention_completed_evidence(
+            "layer_3_ffn_gate_mul_mat",
+            &config
+        )
+        .is_none());
+
+        config.cxl_markers = vec!["flash_attn".to_string()];
+        assert!(super::nvidia_gpu_attention_completed_evidence(
+            "flash_attn_fwd",
+            &config
+        )
+        .is_none());
     }
 
     fn nvidia_iq1s_test_execution_result() -> crate::r#impl::iq1s_tmatmul::ExecutionResult {

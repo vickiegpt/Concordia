@@ -86,6 +86,7 @@ fi
 
 control_device=${HETGPU_CXL_TMATMUL_DEVICE:-/dev/cxl_tmatmul3b001}
 dax_device=${HETGPU_CXL_TMATMUL_DAX:-/dev/dax6.0}
+devdax_validator=${HETGPU_CXL_DEVDAX_VALIDATOR:-/root/.config/superpowers/worktrees/ternary_matmul/kernel7-real-cxl-mem-20260825/synth/intel_ia780i/sw/validate_cxl_devdax_binding.py}
 base_dpa=${HETGPU_CXL_TMATMUL_V3_BASE_DPA:-0x01000000}
 started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 git_sha=$(git -C "${repo_root}" rev-parse HEAD)
@@ -96,6 +97,9 @@ mkdir -m 700 -- "${result_dir}/commands" "${result_dir}/logs" \
     "${result_dir}/status" "${result_dir}/timing" "${result_dir}/test-counts" \
     "${result_dir}/patches" "${result_dir}/source" "${result_dir}/hashes"
 mkdir -m 700 -- "${result_dir}/source/files"
+[[ -f ${devdax_validator} && ! -L ${devdax_validator} ]] \
+    || fail "CXL devdax validator is missing or not a regular file: ${devdax_validator}"
+devdax_validator=$(realpath -e -- "${devdax_validator}")
 git -C "${repo_root}" status --short >"${result_dir}/git-status.txt"
 printf '%s\n' "${git_sha}" >"${result_dir}/evaluated-git-head.txt"
 
@@ -181,7 +185,10 @@ for relative_path in "${evaluation_files[@]}"; do
         cp -- "${repo_root}/${relative_path}" "${result_dir}/source/files/${relative_path}"
     fi
 done
-source_hash_files=("${evaluation_files[@]}")
+mkdir -p -- "${result_dir}/source/files/external"
+cp -- "${devdax_validator}" \
+    "${result_dir}/source/files/external/validate_cxl_devdax_binding.py"
+source_hash_files=("${evaluation_files[@]}" "${devdax_validator}")
 if [[ -n ${extra_source_file} ]]; then
     source_hash_files+=("${extra_source_file}")
 fi
@@ -213,7 +220,7 @@ python3 -c "${source_hash_python}" "${repo_root}" \
 
 python3 -c '
 import json, sys
-path, started, repo, sha, branch, status_path, live, live_workload, commands_selected, control, dax, base, batch_limit, fixture_limit, timing_kind, baseline, enabled = sys.argv[1:]
+path, started, repo, sha, branch, status_path, live, live_workload, commands_selected, control, dax, validator, base, batch_limit, fixture_limit, timing_kind, baseline, enabled = sys.argv[1:]
 manifest = {
     "schema": "hetgpu-v3-batch-evaluation-v1",
     "started_utc": started,
@@ -227,6 +234,7 @@ manifest = {
         "workload_commands_selected": commands_selected == "1",
         "control_device": control,
         "dax_device": dax,
+        "devdax_validator": validator,
         "base_dpa": base,
         "configured_batch_limit": batch_limit or None,
         "live_fixture_batch_limit": int(fixture_limit),
@@ -240,7 +248,8 @@ with open(path, "x", encoding="utf-8") as stream:
     stream.write("\n")
 ' "${result_dir}/manifest.json" "${started_utc}" "${repo_root}" "${git_sha}" \
     "${git_branch}" "git-status.txt" "${run_live}" "${run_live_workload}" \
-    "${workloads_selected}" "${control_device}" "${dax_device}" "${base_dpa}" \
+    "${workloads_selected}" "${control_device}" "${dax_device}" \
+    "${devdax_validator}" "${base_dpa}" \
     "${HETGPU_FPGA_BATCH_LIMIT:-}" "${fixture_batch_limit}" "${workload_timing_kind}" \
     "${baseline_command}" "${enabled_command}"
 
@@ -347,6 +356,10 @@ if [[ ${run_live} == 1 ]]; then
         [[ -c \$2 ]] || { echo \"not a character device: \$2\" >&2; exit 3; }
     " _ "${control_device}" "${dax_device}"
 
+    run_gate cxl_devdax_binding python3 "${devdax_validator}" \
+        --control "${control_device}" --dax "${dax_device}" \
+        --negative-fd --output "${result_dir}/cxl-devdax-binding.json"
+
     query_caps_python='
 import datetime
 import fcntl
@@ -355,56 +368,103 @@ import os
 import struct
 import sys
 
-device, output_path = sys.argv[1:]
+control_device, dax_device, output_path = sys.argv[1:]
 query_caps_v3 = 0xC080CE10
-layout = struct.Struct("<IIQ8I3Q7Q")
-buffer = bytearray(layout.size)
-struct.pack_into("<I", buffer, 0, layout.size)
-fd = os.open(device, os.O_RDWR | os.O_CLOEXEC)
-try:
+bind_dax_v3 = 0xC048CE16
+unbind_dax_v3 = 0x4040CE17
+caps_layout = struct.Struct("<IIQ8I3Q7Q")
+bind_layout = struct.Struct("<IIiI3Q4Q")
+unbind_layout = struct.Struct("<IIQ6Q")
+expected_hpa = 0x0C1000000000
+expected_bytes = 0x800000000
+
+def query(fd):
+    buffer = bytearray(caps_layout.pack(caps_layout.size, *([0] * 20)))
     fcntl.ioctl(fd, query_caps_v3, buffer, True)
+    return caps_layout.unpack(buffer)
+
+def validate(values, phase):
+    expected_caps = 0xFA if phase == "pre_bind" else 0xFB
+    expected_dax = 0 if phase == "pre_bind" else expected_bytes
+    if values[0] != caps_layout.size or values[1] != 3:
+        raise SystemExit(f"{phase} QUERY_CAPS_V3 returned invalid size/version")
+    if values[2] != expected_caps:
+        raise SystemExit(f"{phase} capabilities {values[2]:#x} != {expected_caps:#x}")
+    if values[3] != 4 or values[12] != 0x0F:
+        raise SystemExit(f"{phase} does not expose exactly lanes 0 through 3")
+    if values[11] != expected_dax:
+        raise SystemExit(f"{phase} DAX bytes {values[11]:#x} != {expected_dax:#x}")
+    if values[5] < 2:
+        raise SystemExit(f"{phase} max_batch is incompatible with batch-2 slices")
+    return {
+        "phase": phase,
+        "size": values[0],
+        "version": values[1],
+        "capabilities": values[2],
+        "num_instances": values[3],
+        "dim_d": values[4],
+        "max_batch": values[5],
+        "max_descriptors": values[6],
+        "max_inflight_submissions": values[7],
+        "max_timeout_ms": values[8],
+        "ddr_data_width_bits": values[9],
+        "dax_alignment_bytes": values[10],
+        "dax_bytes": values[11],
+        "per_lane_counter_mask": values[12],
+        "accelerator_clock_hz": values[13],
+        "reserved": list(values[14:]),
+    }
+
+control_fd = os.open(control_device, os.O_RDWR | os.O_CLOEXEC)
+dax_fd = -1
+generation = 0
+try:
+    pre = validate(query(control_fd), "pre_bind")
+    dax_fd = os.open(dax_device, os.O_RDWR | os.O_SYNC | os.O_CLOEXEC)
+    bind = bytearray(
+        bind_layout.pack(bind_layout.size, 0, dax_fd, 0, *([0] * 7))
+    )
+    fcntl.ioctl(control_fd, bind_dax_v3, bind, True)
+    bound = bind_layout.unpack(bind)
+    hpa, length, generation = bound[4], bound[5], bound[6]
+    if hpa != expected_hpa or length != expected_bytes or generation == 0:
+        raise SystemExit(
+            f"BIND_DAX returned hpa={hpa:#x} bytes={length:#x} generation={generation}"
+        )
+    post = validate(query(control_fd), "post_bind")
 finally:
-    os.close(fd)
-values = layout.unpack(buffer)
+    if generation:
+        unbind = bytearray(
+            unbind_layout.pack(unbind_layout.size, 0, generation, *([0] * 6))
+        )
+        fcntl.ioctl(control_fd, unbind_dax_v3, unbind, True)
+    if dax_fd >= 0:
+        os.close(dax_fd)
+    os.close(control_fd)
+
 caps = {
-    "size": values[0],
-    "version": values[1],
-    "capabilities": values[2],
-    "num_instances": values[3],
-    "max_lanes": 4,
-    "dim_d": values[4],
-    "max_batch": values[5],
-    "max_descriptors": values[6],
-    "max_inflight_submissions": values[7],
-    "max_timeout_ms": values[8],
-    "ddr_data_width_bits": values[9],
-    "dax_alignment_bytes": values[10],
-    "dax_bytes": values[11],
-    "per_lane_counter_mask": values[12],
-    "accelerator_clock_hz": values[13],
-    "reserved": list(values[14:]),
-    "control_device": device,
+    "schema": "hetgpu-v3-bound-caps/v1",
+    "validated": True,
+    "control_device": control_device,
+    "dax_device": dax_device,
     "query_caps_v3_ioctl": query_caps_v3,
     "query_caps_v3_ioctl_hex": hex(query_caps_v3),
+    "bind_dax_v3_ioctl": bind_dax_v3,
+    "unbind_dax_v3_ioctl": unbind_dax_v3,
+    "bound_hpa": hpa,
+    "bound_bytes": length,
+    "generation": generation,
+    "pre_bind": pre,
+    "post_bind": post,
     "queried_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
 }
 with open(output_path, "x", encoding="utf-8") as stream:
     json.dump(caps, stream, indent=2, sort_keys=True)
     stream.write("\n")
 print(json.dumps(caps, sort_keys=True))
-if caps["size"] != 128:
-    raise SystemExit("QUERY_CAPS_V3 returned size other than 128")
-if caps["version"] != 3:
-    raise SystemExit("QUERY_CAPS_V3 did not return v3")
-if caps["num_instances"] < caps["max_lanes"]:
-    raise SystemExit("QUERY_CAPS_V3 reports fewer than four usable lanes")
-if caps["per_lane_counter_mask"] & 0xf != 0xf:
-    raise SystemExit("QUERY_CAPS_V3 lane mask does not expose lanes 0 through 3")
-if caps["max_batch"] < 2:
-    raise SystemExit("QUERY_CAPS_V3 max_batch is incompatible with required batch-2 slices")
 '
     run_gate query_caps_v3 python3 -c "${query_caps_python}" \
-        "${control_device}" "${result_dir}/capabilities-v3.json"
+        "${control_device}" "${dax_device}" "${result_dir}/capabilities-v3.json"
     run_rust_test_gate live_batch_fixture 1 env CARGO_INCREMENTAL=0 \
         HETGPU_RUN_LIVE_V3_BATCH=1 \
         HETGPU_FPGA_BATCH_LIMIT="${fixture_batch_limit}" \
@@ -515,6 +575,12 @@ with open(path, "x", encoding="utf-8") as stream:
 ' "${result_dir}/summary.json" "${completed_utc}" "${run_live}" \
     "${workloads_selected}" "${run_live_workload}" "${workloads_executed}"
 printf 'completed\n' >"${result_dir}/STATUS"
+(
+    cd -- "${result_dir}"
+    find . -type f ! -path './hashes/final-artifacts.sha256' \
+        ! -path './source/artifact-inventory.txt' -print \
+        | sort
+) >"${result_dir}/source/artifact-inventory.txt"
 (
     cd -- "${result_dir}"
     find . -type f ! -path './hashes/final-artifacts.sha256' -print0 \

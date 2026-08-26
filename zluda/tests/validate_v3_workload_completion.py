@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import re
 from pathlib import Path
 
 
 EVENT = "ternip_v3_iq1s_execution"
+ATTENTION_EVENT = "hetgpu_gpu_attention_execution"
 STATUS = "completed"
 EXPECTED_LANES = 4
 COUNTER_FIELDS = (
@@ -46,6 +48,8 @@ def validate_record(record: dict) -> dict:
         raise ValueError("unique_submission_count exceeds descriptor_count")
 
     lane_mask = require_integer(record, "lane_mask", positive=True)
+    if lane_mask & ~0x0F:
+        raise ValueError("lane_mask contains a lane outside 0x0f")
     per_lane = record.get("per_lane_completion_counts")
     if not isinstance(per_lane, list) or len(per_lane) != EXPECTED_LANES:
         raise ValueError(
@@ -72,16 +76,80 @@ def validate_record(record: dict) -> dict:
 
     for field in COUNTER_FIELDS:
         require_integer(record, field)
+
+    completion_statuses = record.get("completion_statuses", [])
+    if not isinstance(completion_statuses, list):
+        raise ValueError("completion_statuses must be a list when present")
+    for index, value in enumerate(completion_statuses):
+        if isinstance(value, bool) or not isinstance(value, int) or value != 0:
+            raise ValueError(f"completion_statuses[{index}] must be zero")
     return record
+
+
+def validate_attention_record(record: dict) -> dict:
+    if not isinstance(record, dict):
+        raise ValueError("attention record must be a JSON object")
+    if record.get("event") != ATTENTION_EVENT:
+        raise ValueError(f"event must be {ATTENTION_EVENT}")
+    if record.get("status") != STATUS:
+        raise ValueError(f"attention status must be {STATUS}")
+    kernel = record.get("kernel")
+    if not isinstance(kernel, str) or not kernel.strip():
+        raise ValueError("attention kernel must be a nonempty string")
+    kernel_lower = kernel.lower()
+    if not any(marker in kernel_lower for marker in ("attention", "attn", "flash")):
+        raise ValueError("attention kernel was not classified as attention/attn/flash")
+    if require_integer(record, "launch_count", positive=True) != 1:
+        raise ValueError("attention launch_count must be exactly one")
+    if record.get("device") != "cuda":
+        raise ValueError("attention device must be cuda")
+    if record.get("cpu_fallback") is not False:
+        raise ValueError("attention cpu_fallback must be false")
+    if record.get("emulator_fallback") is not False:
+        raise ValueError("attention emulator_fallback must be false")
+    return record
+
+
+def _reject_failure_fields(value, source: Path, line_number: int) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_lower = str(key).lower()
+            if "fallback" in key_lower and child is True:
+                raise ValueError(
+                    f"fallback flag {key} is true in {source}:{line_number}"
+                )
+            if key_lower in {
+                "completion_status",
+                "completion_statuses",
+                "request_status",
+                "request_statuses",
+            }:
+                statuses = child if isinstance(child, list) else [child]
+                if any(
+                    isinstance(status, bool)
+                    or not isinstance(status, int)
+                    or status != 0
+                    for status in statuses
+                ):
+                    raise ValueError(
+                        f"nonzero completion/request status in {source}:{line_number}"
+                    )
+            _reject_failure_fields(child, source, line_number)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_failure_fields(child, source, line_number)
 
 
 def extract_validated_records(log_paths, output_path: Path) -> int:
     records = []
+    fpga_records = 0
+    attention_records = 0
     for log_path in log_paths:
         source = Path(log_path)
-        for line_number, raw in enumerate(
-            source.read_text(encoding="utf-8", errors="replace").splitlines(), 1
-        ):
+        text = source.read_text(encoding="utf-8", errors="replace")
+        if re.search(r"\bEIO\b|(?<!\d)-5(?!\d)", text, re.IGNORECASE):
+            raise ValueError(f"EIO/-5 found in enabled log {source}")
+        for line_number, raw in enumerate(text.splitlines(), 1):
             line = raw.strip()
             if not line.startswith("{"):
                 continue
@@ -89,17 +157,32 @@ def extract_validated_records(log_paths, output_path: Path) -> int:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if not isinstance(record, dict) or record.get("event") != EVENT:
+            if not isinstance(record, dict):
                 continue
-            try:
-                validate_record(record)
-            except ValueError as error:
-                raise ValueError(
-                    f"malformed {EVENT} record in {source}:{line_number}: {error}"
-                ) from error
-            records.append(record)
-    if not records:
+            _reject_failure_fields(record, source, line_number)
+            event = record.get("event")
+            if event == EVENT:
+                try:
+                    validate_record(record)
+                except ValueError as error:
+                    raise ValueError(
+                        f"malformed {EVENT} record in {source}:{line_number}: {error}"
+                    ) from error
+                records.append(record)
+                fpga_records += 1
+            elif event == ATTENTION_EVENT:
+                try:
+                    validate_attention_record(record)
+                except ValueError as error:
+                    raise ValueError(
+                        f"malformed {ATTENTION_EVENT} record in {source}:{line_number}: {error}"
+                    ) from error
+                records.append(record)
+                attention_records += 1
+    if not fpga_records:
         raise ValueError("live workload produced no validated TernIP v3 IQ1_S record")
+    if not attention_records:
+        raise ValueError("live workload produced no validated CUDA attention record")
 
     output_path = Path(output_path)
     with output_path.open("x", encoding="utf-8") as stream:
