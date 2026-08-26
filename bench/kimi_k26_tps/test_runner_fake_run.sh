@@ -22,12 +22,13 @@ printf 'nvint4=%s bitlinear=%s fallback=%s route=%s\n' \
   "${HETGPU_NVINT4_BITLINEAR_HOOK:-unset}" \
   "${HETGPU_NVINT4_GPU_FALLBACK:-unset}" \
   "${HETGPU_NVINT4_ROUTE_LOG:-unset}" >&2
-printf 'cocotb=%s asm_dir=%s staging=%s matrix_stage=%s io_stage=%s output_dtype=%s cxl=%s tmatmul_cxl=%s bitnet_disagg=%s pre_jit=%s hw_matmul=%s\n' \
+printf 'cocotb=%s asm_dir=%s staging=%s matrix_stage=%s io_stage=%s v3_memory=%s output_dtype=%s cxl=%s tmatmul_cxl=%s bitnet_disagg=%s pre_jit=%s hw_matmul=%s\n' \
   "${HETGPU_TMATMUL_COCOTB:-unset}" \
   "${HETGPU_TMATMUL_ASM_DIR:-unset}" \
   "${HETGPU_CXL_TMATMUL_STAGING:-unset}" \
   "${HETGPU_TMATMUL_MATRIX_STAGE:-unset}" \
   "${HETGPU_TMATMUL_IO_STAGE:-unset}" \
+  "${HETGPU_CXL_TMATMUL_V3_MEMORY:-unset}" \
   "${HETGPU_TMATMUL_OUTPUT_DTYPE:-unset}" \
   "${HETGPU_CXL_TMATMUL:-unset}" \
   "${HETGPU_TMATMUL_CXL:-unset}" \
@@ -60,7 +61,7 @@ grep -q '"status": "pass"' "${jsonl}"
 grep -q '"tps": 50' "${jsonl}"
 grep -q '"tokens": 25' "${jsonl}"
 grep -q 'nvint4=1 bitlinear=1 fallback=1 route=' "${tmp}/work/logs/baseline.stderr"
-grep -q 'cocotb=1 asm_dir=/tmp/tmatmul-asm staging=mmap matrix_stage=host io_stage=host output_dtype=f32 cxl=0 tmatmul_cxl=0 bitnet_disagg=1 pre_jit=1 hw_matmul=1' "${tmp}/work/logs/baseline.stderr"
+grep -q 'cocotb=1 asm_dir=/tmp/tmatmul-asm staging=mmap matrix_stage=host io_stage=host v3_memory=unset output_dtype=f32 cxl=0 tmatmul_cxl=0 bitnet_disagg=1 pre_jit=1 hw_matmul=1' "${tmp}/work/logs/baseline.stderr"
 
 KIMI_TPS_WORKDIR="${tmp}/work_fpga" \
 BITNET_LLAMA_CLI="${runner}" \
@@ -75,6 +76,21 @@ KIMI_TMATMUL_FPGA=1 \
 bash "${root}/run_kimi_k26_tps.sh"
 
 grep -q 'nvint4=1 bitlinear=1 fallback=1 route=' "${tmp}/work_fpga/logs/baseline.stderr"
-grep -q 'cocotb=unset asm_dir=/tmp/tmatmul-asm staging=mmap matrix_stage=cuda_dax io_stage=cuda_dax output_dtype=f32 cxl=1 tmatmul_cxl=1 bitnet_disagg=1 pre_jit=1 hw_matmul=1' "${tmp}/work_fpga/logs/baseline.stderr"
+grep -q 'cocotb=unset asm_dir=/tmp/tmatmul-asm staging=mmap matrix_stage=cuda_dax io_stage=cuda_dax v3_memory=unset output_dtype=f32 cxl=1 tmatmul_cxl=1 bitnet_disagg=1 pre_jit=1 hw_matmul=1' "${tmp}/work_fpga/logs/baseline.stderr"
+
+KIMI_TPS_WORKDIR="${tmp}/work_inline" \
+BITNET_LLAMA_CLI="${runner}" \
+MODEL_DIR="${model_dir}" \
+MODEL_PREFIX="${model_prefix}" \
+KIMI_TPS_CASES="baseline" \
+KIMI_TPS_BUILD_ZLUDA=0 \
+KIMI_TPS_BASELINE_WITH_SHIM=0 \
+KIMI_TPS_REQUIRE_RUN=1 \
+KIMI_BITLINEAR_TMATMUL=1 \
+KIMI_TMATMUL_FPGA=1 \
+KIMI_TMATMUL_INLINE=1 \
+bash "${root}/run_kimi_k26_tps.sh"
+
+grep -q 'cocotb=unset asm_dir=/tmp/tmatmul-asm staging=ioctl matrix_stage=cuda_host io_stage=cuda_host v3_memory=ioctl output_dtype=f32 cxl=1 tmatmul_cxl=1 bitnet_disagg=1 pre_jit=1 hw_matmul=1' "${tmp}/work_inline/logs/baseline.stderr"
 
 echo "runner fake-run test passed"

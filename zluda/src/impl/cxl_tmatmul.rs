@@ -76,6 +76,16 @@ const NVINT4_EXPECTED_TM_READ_BEATS: u32 = 16_384;
 const CXL_TYPE2_TMATMUL_RESULT_STALLED: u32 = 1 << 0;
 const CXL_TYPE2_TMATMUL_RESULT_DMA_ERROR: u32 = 1 << 2;
 #[cfg(unix)]
+const CXL_TYPE2_MEM_REQ_MAX_BYTES: usize = 1 << 20;
+#[cfg(unix)]
+const CXL_TYPE2_MEM_REQ_READ: u32 = 0;
+#[cfg(unix)]
+const CXL_TYPE2_MEM_REQ_WRITE: u32 = 1;
+#[cfg(unix)]
+const CXL_TYPE2_MEM_HPA_BASE: u64 = 0x0c10_0000_0000;
+#[cfg(unix)]
+const CXL_TYPE2_MEM_HPA_SIZE: u64 = 1_u64 << 32;
+#[cfg(unix)]
 const CUDA_IPC_HANDLE_BYTES: usize = 64;
 #[cfg(unix)]
 const CUDA_HOST_REGISTER_MAPPED: u32 = 0x02;
@@ -559,9 +569,28 @@ struct CxlType2TmatmulCsrRun {
 }
 
 #[cfg(unix)]
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+struct CxlType2MemReq {
+    hpa_base: u64,
+    hpa_size: u64,
+    offset: u64,
+    user_ptr: u64,
+    size: u32,
+    op: u32,
+    flags: u32,
+    reserved0: u32,
+    reserved1: [u64; 4],
+}
+
+#[cfg(unix)]
+const _: [(); 80] = [(); std::mem::size_of::<CxlType2MemReq>()];
+
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StagingBackend {
     Mmap,
+    Ioctl,
     CsrProbe,
     NumaMemcpy,
 }
@@ -586,6 +615,7 @@ fn program_stage_backend(bar_run: bool) -> ProgramStageBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MatrixStageMode {
     Host,
+    CudaHost,
     CudaDax,
 }
 
@@ -593,6 +623,7 @@ pub(crate) enum MatrixStageMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IoStageMode {
     Host,
+    CudaHost,
     CudaDax,
 }
 
@@ -671,10 +702,11 @@ impl From<&CxlType2TmatmulCsrRun> for CxlTmatmulRunStatus {
 fn parse_staging_backend(value: Option<&str>) -> Result<StagingBackend, CxlTmatmulError> {
     match value.unwrap_or("mmap") {
         "" | "mmap" | "dax" | "hpa" => Ok(StagingBackend::Mmap),
+        "ioctl" | "inline" | "mem_io" | "mem-io" => Ok(StagingBackend::Ioctl),
         "csr" | "csr_probe" | "probe" => Ok(StagingBackend::CsrProbe),
         "numa" | "numa_memcpy" | "numa-memcpy" => Ok(StagingBackend::NumaMemcpy),
         other => Err(CxlTmatmulError::Io(format!(
-            "invalid HETGPU_CXL_TMATMUL_STAGING={other:?}, expected mmap, csr_probe, or numa_memcpy"
+            "invalid HETGPU_CXL_TMATMUL_STAGING={other:?}, expected mmap, ioctl, csr_probe, or numa_memcpy"
         ))),
     }
 }
@@ -695,9 +727,10 @@ pub(crate) fn parse_matrix_stage_mode(
 ) -> Result<MatrixStageMode, CxlTmatmulError> {
     match value.unwrap_or("host").trim().to_ascii_lowercase().as_str() {
         "" | "host" | "cpu" | "mmap" | "dax" => Ok(MatrixStageMode::Host),
+        "cuda_host" | "cuda-host" | "cuda_ioctl" | "cuda-ioctl" => Ok(MatrixStageMode::CudaHost),
         "cuda_dax" | "cuda-dax" | "nvgpu_dax" | "nvgpu-dax" => Ok(MatrixStageMode::CudaDax),
         other => Err(CxlTmatmulError::Io(format!(
-            "invalid HETGPU_TMATMUL_MATRIX_STAGE={other:?}, expected host or cuda_dax"
+            "invalid HETGPU_TMATMUL_MATRIX_STAGE={other:?}, expected host, cuda_host, or cuda_dax"
         ))),
     }
 }
@@ -721,9 +754,10 @@ pub(crate) fn matrix_stage_cuda_dax_enabled() -> bool {
 pub(crate) fn parse_io_stage_mode(value: Option<&str>) -> Result<IoStageMode, CxlTmatmulError> {
     match value.unwrap_or("host").trim().to_ascii_lowercase().as_str() {
         "" | "host" | "cpu" | "mmap" | "dax" => Ok(IoStageMode::Host),
+        "cuda_host" | "cuda-host" | "cuda_ioctl" | "cuda-ioctl" => Ok(IoStageMode::CudaHost),
         "cuda_dax" | "cuda-dax" | "nvgpu_dax" | "nvgpu-dax" => Ok(IoStageMode::CudaDax),
         other => Err(CxlTmatmulError::Io(format!(
-            "invalid HETGPU_TMATMUL_IO_STAGE={other:?}, expected host or cuda_dax"
+            "invalid HETGPU_TMATMUL_IO_STAGE={other:?}, expected host, cuda_host, or cuda_dax"
         ))),
     }
 }
@@ -1216,45 +1250,37 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
     let matrix_stage_mode = matrix_stage_mode()?;
     let io_stage_mode = io_stage_mode()?;
     validate_fixed_layout_at_offsets(matrix_offset, matrix_len, vector_len, program.len())?;
-    match (matrix_stage_mode, io_stage_mode) {
-        (MatrixStageMode::Host, IoStageMode::Host) => {
+    if matrix_stage_mode == MatrixStageMode::Host {
+        require_allocation("matrix", matrix_alloc, matrix_len)?;
+    } else if matrix_alloc != usize::MAX {
+        require_allocation("matrix", matrix_alloc, matrix_len)?;
+    }
+    if io_stage_mode == IoStageMode::Host {
+        require_allocation("input", input_alloc, vector_len)?;
+        require_allocation("output", output_alloc, vector_len)?;
+    } else {
+        if input_alloc != usize::MAX {
             require_allocation("input", input_alloc, vector_len)?;
+        }
+        if output_alloc != usize::MAX {
             require_allocation("output", output_alloc, vector_len)?;
-            require_allocation("matrix", matrix_alloc, matrix_len)?;
-        }
-        (MatrixStageMode::CudaDax, IoStageMode::Host) => {
-            require_allocation("input", input_alloc, vector_len)?;
-            require_allocation("output", output_alloc, vector_len)?;
-            if matrix_alloc != usize::MAX {
-                require_allocation("matrix", matrix_alloc, matrix_len)?;
-            }
-        }
-        (MatrixStageMode::Host, IoStageMode::CudaDax) => {
-            require_allocation("matrix", matrix_alloc, matrix_len)?;
-            if input_alloc != usize::MAX {
-                require_allocation("input", input_alloc, vector_len)?;
-            }
-            if output_alloc != usize::MAX {
-                require_allocation("output", output_alloc, vector_len)?;
-            }
-        }
-        (MatrixStageMode::CudaDax, IoStageMode::CudaDax) => {
-            if matrix_alloc != usize::MAX {
-                require_allocation("matrix", matrix_alloc, matrix_len)?;
-            }
-            if input_alloc != usize::MAX {
-                require_allocation("input", input_alloc, vector_len)?;
-            }
-            if output_alloc != usize::MAX {
-                require_allocation("output", output_alloc, vector_len)?;
-            }
         }
     }
 
+    let matrix_host = if matrix_stage_mode == MatrixStageMode::CudaHost {
+        Some(copy_cuda_to_host(matrix_ptr as usize, matrix_len)?)
+    } else {
+        None
+    };
     let matrix_stage = match matrix_stage_mode {
         MatrixStageMode::Host => {
             MatrixStage::Host(std::slice::from_raw_parts(matrix_ptr, matrix_len))
         }
+        MatrixStageMode::CudaHost => MatrixStage::Host(
+            matrix_host
+                .as_deref()
+                .ok_or_else(|| CxlTmatmulError::Device("missing staged CUDA matrix".into()))?,
+        ),
         MatrixStageMode::CudaDax => MatrixStage::CudaDax(cuda_dax_matrix_stage(
             matrix_ptr as usize,
             matrix_len,
@@ -1273,6 +1299,22 @@ pub(crate) unsafe fn submit_hardware_matmul_from_ptrs(
             timeout_ms,
             info.dim_d,
         );
+    }
+
+    if io_stage_mode == IoStageMode::CudaHost {
+        let input = copy_cuda_to_host(input_ptr as usize, vector_len)?;
+        let mut output = vec![0_u8; vector_len];
+        let status = submit_prepared_hardware_matmul(
+            &device,
+            &program,
+            matrix_stage,
+            &input,
+            &mut output,
+            timeout_ms,
+            info.dim_d,
+        )?;
+        copy_host_to_cuda(output_ptr as usize, &output)?;
+        return Ok(status);
     }
 
     let input = std::slice::from_raw_parts(input_ptr, vector_len);
@@ -2948,6 +2990,9 @@ impl Nvint4DataStage {
                 let layout = staging.runtime_layout()?;
                 Ok((Self::NumaMemcpy(staging), layout))
             }
+            StagingBackend::Ioctl => Err(CxlTmatmulError::Device(
+                "NVINT4 bulk staging does not yet support ioctl memory requests".to_string(),
+            )),
             StagingBackend::CsrProbe => Err(CxlTmatmulError::Device(
                 "NVINT4 bulk staging does not support csr_probe".to_string(),
             )),
@@ -3013,6 +3058,10 @@ enum StagingMap {
         map_len: usize,
         csr_base: u32,
     },
+    Ioctl {
+        device: File,
+        length: usize,
+    },
 }
 
 #[cfg(unix)]
@@ -3023,12 +3072,14 @@ impl StagingMap {
     ) -> Result<Self, CxlTmatmulError> {
         match matrix_stage {
             MatrixStageMode::Host => Self::open(used_len),
+            MatrixStageMode::CudaHost => Self::open(used_len),
             MatrixStageMode::CudaDax => Self::open_cuda_dax(used_len),
         }
     }
 
     fn open(used_len: usize) -> Result<Self, CxlTmatmulError> {
         match cxl_tmatmul_staging_backend()? {
+            StagingBackend::Ioctl => return Self::open_ioctl(used_len),
             StagingBackend::CsrProbe => return Self::open_csr_probe(used_len),
             StagingBackend::NumaMemcpy => {
                 return Err(CxlTmatmulError::Device(
@@ -3068,6 +3119,11 @@ impl StagingMap {
     fn open_cuda_dax(used_len: usize) -> Result<Self, CxlTmatmulError> {
         match cxl_tmatmul_staging_backend()? {
             StagingBackend::Mmap => {}
+            StagingBackend::Ioctl => {
+                return Err(CxlTmatmulError::Device(
+                    "cuda_dax staging requires DAX mmap staging, not ioctl".to_string(),
+                ));
+            }
             StagingBackend::CsrProbe => {
                 return Err(CxlTmatmulError::Device(
                     "cuda_dax matrix staging requires DAX mmap staging, not csr_probe".to_string(),
@@ -3117,7 +3173,7 @@ impl StagingMap {
                 map_ptr,
                 map_len,
             }),
-            Self::CsrProbe { .. } => unreachable!(),
+            Self::CsrProbe { .. } | Self::Ioctl { .. } => unreachable!(),
         }
     }
 
@@ -3240,6 +3296,34 @@ impl StagingMap {
         Ok(map)
     }
 
+    fn open_ioctl(used_len: usize) -> Result<Self, CxlTmatmulError> {
+        if used_len == 0 || used_len > u32::MAX as usize {
+            return Err(CxlTmatmulError::AllocationTooSmall {
+                name: "ioctl CXL memory aperture",
+                have: u32::MAX as usize,
+                need: used_len,
+            });
+        }
+        let device_path = cxl_tmatmul_device_path();
+        let device = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_CLOEXEC)
+            .open(&device_path)
+            .map_err(|error| CxlTmatmulError::Io(format!("open {device_path}: {error}")))?;
+        let info = get_info(&device)?;
+        if info.version != CXL_TYPE2_TMATMUL_UAPI_VERSION || info.dev_id != TMATMUL_CSR_DEV_ID {
+            return Err(CxlTmatmulError::Device(format!(
+                "{device_path} is not a supported TMM1 control node: version={} dev_id=0x{:08x}",
+                info.version, info.dev_id
+            )));
+        }
+        Ok(Self::Ioctl {
+            device,
+            length: used_len,
+        })
+    }
+
     fn stage_bytes(&mut self, offset: u64, data: &[u8]) -> Result<(), CxlTmatmulError> {
         match self {
             Self::Mmap { ptr, .. } => {
@@ -3251,6 +3335,7 @@ impl StagingMap {
                 Ok(())
             }
             Self::CsrProbe { .. } => self.csr_write_bytes(offset, data),
+            Self::Ioctl { .. } => self.ioctl_mem_write(offset, data),
         }
     }
 
@@ -3282,6 +3367,9 @@ impl StagingMap {
             }
             Self::CsrProbe { .. } => Err(CxlTmatmulError::Device(
                 "cuda_dax staging cannot target csr_probe staging".to_string(),
+            )),
+            Self::Ioctl { .. } => Err(CxlTmatmulError::Device(
+                "cuda_dax staging cannot target ioctl staging".to_string(),
             )),
         }
     }
@@ -3338,6 +3426,9 @@ impl StagingMap {
             Self::CsrProbe { .. } => Err(CxlTmatmulError::Device(
                 "cuda_dax output copy cannot target csr_probe staging".to_string(),
             )),
+            Self::Ioctl { .. } => Err(CxlTmatmulError::Device(
+                "cuda_dax output copy cannot target ioctl staging".to_string(),
+            )),
         }
     }
 
@@ -3370,6 +3461,9 @@ impl StagingMap {
             }
             Self::CsrProbe { .. } => Err(CxlTmatmulError::Device(
                 "cuda_dax output copy cannot target csr_probe staging".to_string(),
+            )),
+            Self::Ioctl { .. } => Err(CxlTmatmulError::Device(
+                "cuda_dax output copy cannot target ioctl staging".to_string(),
             )),
         }
     }
@@ -3426,6 +3520,9 @@ impl StagingMap {
             Self::CsrProbe { .. } => Err(CxlTmatmulError::Device(
                 "cuda_dax output conversion cannot target csr_probe staging".to_string(),
             )),
+            Self::Ioctl { .. } => Err(CxlTmatmulError::Device(
+                "cuda_dax output conversion cannot target ioctl staging".to_string(),
+            )),
         }
     }
 
@@ -3440,6 +3537,18 @@ impl StagingMap {
                 Ok(())
             }
             Self::CsrProbe { .. } => self.csr_fill_bytes(offset, value, len),
+            Self::Ioctl { .. } => {
+                require_csr_word_aligned(offset, len, "fill")?;
+                let chunk_len = CXL_TYPE2_MEM_REQ_MAX_BYTES.min(len.max(4));
+                let chunk = vec![value; chunk_len];
+                let mut written = 0usize;
+                while written < len {
+                    let count = (len - written).min(chunk.len());
+                    self.ioctl_mem_write(offset + written as u64, &chunk[..count])?;
+                    written += count;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -3454,7 +3563,86 @@ impl StagingMap {
                 Ok(())
             }
             Self::CsrProbe { .. } => self.csr_read_bytes(offset, out),
+            Self::Ioctl { .. } => self.ioctl_mem_read(offset, out),
         }
+    }
+
+    fn ioctl_mem_call(
+        &self,
+        offset: u64,
+        bytes: *mut u8,
+        size: usize,
+        op: u32,
+    ) -> Result<(), CxlTmatmulError> {
+        require_csr_word_aligned(offset, size, "ioctl")?;
+        let end = usize::try_from(offset)
+            .map_err(|_| CxlTmatmulError::SizeOverflow)?
+            .checked_add(size)
+            .ok_or(CxlTmatmulError::SizeOverflow)?;
+        let (device, length) = match self {
+            Self::Ioctl { device, length } => (device, *length),
+            _ => {
+                return Err(CxlTmatmulError::Device(
+                    "CXL memory ioctl requested without ioctl staging".to_string(),
+                ));
+            }
+        };
+        if end > length {
+            return Err(CxlTmatmulError::AllocationTooSmall {
+                name: "ioctl CXL memory aperture",
+                have: length,
+                need: end,
+            });
+        }
+        let size = u32::try_from(size).map_err(|_| CxlTmatmulError::SizeOverflow)?;
+        let mut request = CxlType2MemReq {
+            hpa_base: CXL_TYPE2_MEM_HPA_BASE,
+            hpa_size: CXL_TYPE2_MEM_HPA_SIZE,
+            offset,
+            user_ptr: bytes as u64,
+            size,
+            op,
+            ..CxlType2MemReq::default()
+        };
+        let rc = unsafe { libc::ioctl(device.as_raw_fd(), cxl_type2_mem_io_ioctl(), &mut request) };
+        if rc != 0 {
+            return Err(CxlTmatmulError::Io(format!(
+                "CXL_TYPE2_MEM_IO op={} offset=0x{offset:x} size={size}: {}",
+                if op == CXL_TYPE2_MEM_REQ_WRITE {
+                    "write"
+                } else {
+                    "read"
+                },
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(())
+    }
+
+    fn ioctl_mem_write(&self, offset: u64, data: &[u8]) -> Result<(), CxlTmatmulError> {
+        require_csr_word_aligned(offset, data.len(), "write")?;
+        for (index, chunk) in data.chunks(CXL_TYPE2_MEM_REQ_MAX_BYTES).enumerate() {
+            self.ioctl_mem_call(
+                offset + (index * CXL_TYPE2_MEM_REQ_MAX_BYTES) as u64,
+                chunk.as_ptr().cast_mut(),
+                chunk.len(),
+                CXL_TYPE2_MEM_REQ_WRITE,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn ioctl_mem_read(&self, offset: u64, out: &mut [u8]) -> Result<(), CxlTmatmulError> {
+        require_csr_word_aligned(offset, out.len(), "read")?;
+        for (index, chunk) in out.chunks_mut(CXL_TYPE2_MEM_REQ_MAX_BYTES).enumerate() {
+            self.ioctl_mem_call(
+                offset + (index * CXL_TYPE2_MEM_REQ_MAX_BYTES) as u64,
+                chunk.as_mut_ptr(),
+                chunk.len(),
+                CXL_TYPE2_MEM_REQ_READ,
+            )?;
+        }
+        Ok(())
     }
 
     fn csr_write_bytes(&self, offset: u64, data: &[u8]) -> Result<(), CxlTmatmulError> {
@@ -3543,6 +3731,9 @@ impl StagingMap {
             Self::Mmap { .. } => Err(CxlTmatmulError::Device(
                 "CSR probe access requested for mmap staging".to_string(),
             )),
+            Self::Ioctl { .. } => Err(CxlTmatmulError::Device(
+                "CSR probe MMIO requested for ioctl staging".to_string(),
+            )),
         }
     }
 
@@ -3556,6 +3747,9 @@ impl StagingMap {
             }
             Self::Mmap { .. } => Err(CxlTmatmulError::Device(
                 "CSR probe access requested for mmap staging".to_string(),
+            )),
+            Self::Ioctl { .. } => Err(CxlTmatmulError::Device(
+                "CSR probe MMIO requested for ioctl staging".to_string(),
             )),
         }
     }
@@ -4060,6 +4254,7 @@ impl Drop for StagingMap {
                 Self::CsrProbe { bar, map_len, .. } => {
                     libc::munmap((*bar).cast(), *map_len);
                 }
+                Self::Ioctl { .. } => {}
             }
         }
     }
@@ -4560,6 +4755,18 @@ fn cxl_type2_tmatmul_get_info_ioctl() -> libc::c_ulong {
         0xCE,
         0x00,
         std::mem::size_of::<CxlType2TmatmulInfo>() as u64,
+    )
+}
+
+#[cfg(unix)]
+fn cxl_type2_mem_io_ioctl() -> libc::c_ulong {
+    const IOC_READ: u64 = 2;
+    const IOC_WRITE: u64 = 1;
+    ioctl_request(
+        IOC_READ | IOC_WRITE,
+        0xCE,
+        0x02,
+        std::mem::size_of::<CxlType2MemReq>() as u64,
     )
 }
 
@@ -5281,6 +5488,10 @@ mod tests {
             MatrixStageMode::Host
         );
         assert_eq!(
+            parse_matrix_stage_mode(Some("cuda_host")).unwrap(),
+            MatrixStageMode::CudaHost
+        );
+        assert_eq!(
             parse_matrix_stage_mode(None).unwrap(),
             MatrixStageMode::Host
         );
@@ -5296,6 +5507,10 @@ mod tests {
         assert_eq!(
             parse_io_stage_mode(Some("host")).unwrap(),
             IoStageMode::Host
+        );
+        assert_eq!(
+            parse_io_stage_mode(Some("cuda_host")).unwrap(),
+            IoStageMode::CudaHost
         );
         assert_eq!(parse_io_stage_mode(None).unwrap(), IoStageMode::Host);
         assert!(parse_io_stage_mode(Some("bogus")).is_err());
@@ -5472,6 +5687,14 @@ mod tests {
     #[test]
     fn staging_backend_parser_accepts_csr_probe_mode() {
         assert_eq!(parse_staging_backend(None).unwrap(), StagingBackend::Mmap);
+        assert_eq!(
+            parse_staging_backend(Some("ioctl")).unwrap(),
+            StagingBackend::Ioctl
+        );
+        assert_eq!(
+            parse_staging_backend(Some("inline")).unwrap(),
+            StagingBackend::Ioctl
+        );
         assert_eq!(
             parse_staging_backend(Some("csr_probe")).unwrap(),
             StagingBackend::CsrProbe

@@ -8107,6 +8107,24 @@ pub(crate) fn get_attribute(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+pub(crate) fn set_attribute(
+    hfunc: &super::module::NvidiaKernel,
+    attrib: cuda_types::cuda::CUfunction_attribute,
+    value: ::core::ffi::c_int,
+) -> CUresult {
+    let result = nvidia_runtime_sys::cuFuncSetAttribute(hfunc.cuda_function, attrib, value);
+    if result != 0 {
+        return Err(CUerror::UNKNOWN);
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 fn nvidia_log_bitnet_route_for_native_launch(kernel_name: &str) {
     if !super::bitnet_disagg::enabled_from_env() {
         return;
@@ -9202,18 +9220,31 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
         }
     }
 
-    if !super::cxl_tmatmul::matrix_stage_cuda_dax_enabled() {
-        let msg = "NVIDIA CXL named matmul requires HETGPU_TMATMUL_MATRIX_STAGE=cuda_dax";
-        if decision.strict {
-            return Some(Err(msg.to_string()));
+    match super::cxl_tmatmul::matrix_stage_mode() {
+        Ok(super::cxl_tmatmul::MatrixStageMode::CudaDax)
+        | Ok(super::cxl_tmatmul::MatrixStageMode::CudaHost) => {}
+        Ok(_) => {
+            let msg = "NVIDIA CXL named matmul requires HETGPU_TMATMUL_MATRIX_STAGE=cuda_dax or cuda_host";
+            if decision.strict {
+                return Some(Err(msg.to_string()));
+            }
+            eprintln!("[CXL TMatmul][NVIDIA] {msg}; continuing native for '{kernel_name}'");
+            return None;
         }
-        eprintln!("[CXL TMatmul][NVIDIA] {msg}; continuing native for '{kernel_name}'");
-        return None;
+        Err(err) => {
+            if decision.strict {
+                return Some(Err(err.to_string()));
+            }
+            eprintln!("[CXL TMatmul][NVIDIA] {err}; continuing native for '{kernel_name}'");
+            return None;
+        }
     }
     match super::cxl_tmatmul::io_stage_mode() {
-        Ok(super::cxl_tmatmul::IoStageMode::CudaDax) => {}
+        Ok(super::cxl_tmatmul::IoStageMode::CudaDax)
+        | Ok(super::cxl_tmatmul::IoStageMode::CudaHost) => {}
         Ok(_) => {
-            let msg = "NVIDIA CXL named matmul requires HETGPU_TMATMUL_IO_STAGE=cuda_dax";
+            let msg =
+                "NVIDIA CXL named matmul requires HETGPU_TMATMUL_IO_STAGE=cuda_dax or cuda_host";
             if decision.strict {
                 return Some(Err(msg.to_string()));
             }
@@ -9659,6 +9690,40 @@ mod nvidia_bitnet_route_tests {
         let logged = std::fs::read_to_string(&route_log).unwrap();
         assert!(logged.contains(r#""route":"cxl_tmatmul""#));
         assert!(logged.contains(r#""hardware_matmul_enabled":true"#));
+    }
+
+    #[test]
+    fn nvidia_named_cxl_candidate_accepts_cuda_host_ioctl_staging() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let route_log = dir.path().join("routes.jsonl");
+        let route_log_text = route_log.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
+            ("HETGPU_BITNET_CXL_KERNELS", Some("mul_mat_q")),
+            ("HETGPU_BITNET_ROUTE_LOG", Some(&route_log_text)),
+            ("HETGPU_CXL_TMATMUL", Some("1")),
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+            ("HETGPU_TMATMUL_MATRIX_STAGE", Some("cuda_host")),
+            ("HETGPU_TMATMUL_IO_STAGE", Some("cuda_host")),
+            ("HETGPU_CXL_TMATMUL_STAGING", Some("ioctl")),
+        ]);
+
+        let error = unsafe {
+            super::nvidia_try_launch_named_cxl_tmatmul(
+                "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
+                std::ptr::null_mut(),
+            )
+        }
+        .expect("strict CXL route must be consumed")
+        .expect_err("null IQ1_S parameters must fail after staging selection");
+
+        assert!(!error.contains("requires HETGPU_TMATMUL_MATRIX_STAGE"));
+        assert!(!error.contains("requires HETGPU_TMATMUL_IO_STAGE"));
+        assert!(error.contains("IQ1_S") || error.contains("kernel_params"));
+        let logged = std::fs::read_to_string(&route_log).unwrap();
+        assert!(logged.contains(r#""route":"cxl_tmatmul""#));
     }
 
     #[test]

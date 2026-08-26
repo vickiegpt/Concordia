@@ -7,6 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) const V3_VERSION: u32 = 3;
 pub(crate) const REQUIRED_CAPABILITIES: u64 = 0x7b;
+pub(crate) const CAP_DAX_RANGES: u64 = 1 << 0;
+pub(crate) const CAP_DIRECT_DESCRIPTOR: u64 = 1 << 6;
+pub(crate) const REQUIRED_CAPABILITIES_WITHOUT_DAX: u64 =
+    REQUIRED_CAPABILITIES & !CAP_DAX_RANGES;
 pub(crate) const LANE_ANY: u32 = u32::MAX;
 /// Matches the loaded driver's `TMATMUL_V3_MAX_LANES` wave limit.
 pub(crate) const MAX_LANES: u32 = 4;
@@ -339,16 +343,31 @@ impl V3Session<LinuxIoctl> {
     pub(crate) fn open(path: impl AsRef<Path>) -> Result<Self, String> {
         Self::with_io(LinuxIoctl::open(path.as_ref())?)
     }
+
+    pub(crate) fn open_without_dax(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::with_io_without_dax(LinuxIoctl::open(path.as_ref())?)
+    }
 }
 
 impl<I: IoctlOps> V3Session<I> {
-    pub(crate) fn with_io(mut io: I) -> Result<Self, String> {
+    pub(crate) fn with_io(io: I) -> Result<Self, String> {
+        Self::with_io_required_capabilities(io, REQUIRED_CAPABILITIES)
+    }
+
+    pub(crate) fn with_io_without_dax(io: I) -> Result<Self, String> {
+        Self::with_io_required_capabilities(io, REQUIRED_CAPABILITIES_WITHOUT_DAX)
+    }
+
+    fn with_io_required_capabilities(
+        mut io: I,
+        required_capabilities: u64,
+    ) -> Result<Self, String> {
         let mut caps = CapsV3 {
             size: size_of::<CapsV3>() as u32,
             ..CapsV3::default()
         };
         io.query_caps(&mut caps)?;
-        validate_caps(&caps)?;
+        validate_caps(&caps, required_capabilities)?;
         let timeout_ms = DEFAULT_TIMEOUT_MS.min(caps.max_timeout_ms);
         let owner = NEXT_SESSION_OWNER.fetch_add(1, Ordering::Relaxed);
         if owner == 0 {
@@ -1014,16 +1033,16 @@ fn completion_minimum_bytes(dim_d: u32, batch: u32) -> Result<(u64, u64, u64), S
     Ok((matrix, input, output))
 }
 
-fn validate_caps(caps: &CapsV3) -> Result<(), String> {
+fn validate_caps(caps: &CapsV3, required_capabilities: u64) -> Result<(), String> {
     if caps.size != size_of::<CapsV3>() as u32 {
         return Err(format!("caps size {} is not 128", caps.size));
     }
     if caps.version != V3_VERSION {
         return Err(format!("caps version {} is not 3", caps.version));
     }
-    if caps.capabilities & REQUIRED_CAPABILITIES != REQUIRED_CAPABILITIES {
+    if caps.capabilities & required_capabilities != required_capabilities {
         return Err(format!(
-            "caps capabilities 0x{:x} lack 0x{REQUIRED_CAPABILITIES:x}",
+            "caps capabilities 0x{:x} lack 0x{required_capabilities:x}",
             caps.capabilities
         ));
     }
@@ -1445,6 +1464,32 @@ mod tests {
         assert!(V3Session::with_io(io)
             .unwrap_err()
             .contains("max_descriptors"));
+    }
+
+    #[test]
+    fn ioctl_memory_session_waives_only_the_dax_range_capability() {
+        let mut ioctl_memory = FakeIoctl::valid();
+        ioctl_memory.caps.capabilities &= !CAP_DAX_RANGES;
+        V3Session::with_io_without_dax(ioctl_memory)
+            .expect("ioctl memory session should not require a DAX range");
+
+        let mut missing_direct_descriptor = FakeIoctl::valid();
+        missing_direct_descriptor.caps.capabilities &=
+            !(CAP_DAX_RANGES | CAP_DIRECT_DESCRIPTOR);
+        let error = V3Session::with_io_without_dax(missing_direct_descriptor).unwrap_err();
+        assert!(error.contains("capabilities"));
+        assert!(error.contains("0x7a"));
+    }
+
+    #[test]
+    #[ignore = "requires the live software-control TMM1 node"]
+    fn live_ioctl_memory_session_rejects_missing_execution_capabilities() {
+        let device = std::env::var("HETGPU_CXL_TMATMUL_DEVICE")
+            .expect("set HETGPU_CXL_TMATMUL_DEVICE to the live control node");
+        let error = V3Session::open_without_dax(device)
+            .expect_err("the current TMM1 image must not qualify as V3 execution hardware");
+        assert!(error.contains("capabilities 0x10"), "{error}");
+        assert!(error.contains("lack 0x7a"), "{error}");
     }
 
     #[test]
