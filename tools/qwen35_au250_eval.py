@@ -668,7 +668,8 @@ def run(args):
     command = [
         str(server), "--model", str(model), "--ctx-size", "512", "--n-gpu-layers", "999",
         "--threads", str(args.threads), "--host", "127.0.0.1", "--port", str(args.port),
-        "--seed", "42", "--parallel", "1", "--reasoning", "off", "--verbosity", "4", "--no-webui",
+        "--seed", "42", "--parallel", "1", "--reasoning", "off", "--verbosity", "4",
+        "--no-warmup", "--no-webui",
     ]
     (proof_dir / "command.json").write_text(json.dumps(command, indent=2) + "\n", encoding="utf-8")
     server_environment = os.environ.copy()

@@ -233,6 +233,9 @@ def test_fake_server_preserves_identical_requests_and_fixed_counts(tmp_path):
     assert cuda["generated_token_ids"] == hybrid["generated_token_ids"] == list(range(1000, 1032))
     assert cuda["semantic"] == hybrid["semantic"] == {"text": "OK", "token_ids": [777]}
     assert cuda["placement"] == {"all_layers_on_gpu": True, "cpu_layers": 0}
+    for mode in ("cuda", "hybrid"):
+        command = json.loads((tmp_path / mode / "command.json").read_text(encoding="utf-8"))
+        assert "--no-warmup" in command
 
     records = [json.loads(line) for line in requests.read_text().splitlines()]
     assert len(records) == 14  # semantic + warm-up + five measured, for each mode
