@@ -55,7 +55,10 @@ pub(crate) struct XrtIq1sEvidence {
     pub(crate) row_tiles: usize,
     pub(crate) k_tiles: usize,
     pub(crate) submission_count: u64,
+    pub(crate) completion_count: u64,
     pub(crate) per_cu_submissions: Vec<u64>,
+    pub(crate) per_cu_completions: Vec<u64>,
+    pub(crate) request_ids: Vec<u64>,
     pub(crate) stall_codes: Vec<u32>,
     pub(crate) raw_min: i16,
     pub(crate) raw_max: i16,
@@ -477,7 +480,11 @@ pub(crate) fn execute_captured_with(
         .ok_or("AU250 raw component slot count overflow")?;
     let mut raw_slots = vec![None::<i16>; slot_count];
     let mut submission_count = 0u64;
+    let mut completion_count = 0u64;
     let mut per_cu_submissions = vec![0u64; lane_capacities.len()];
+    let mut per_cu_completions = vec![0u64; lane_capacities.len()];
+    let mut request_ids = Vec::new();
+    let mut all_request_ids = HashSet::new();
     let mut stall_codes = Vec::new();
     let mut raw_min = None::<i16>;
     let mut raw_max = None::<i16>;
@@ -513,6 +520,17 @@ pub(crate) fn execute_captured_with(
             });
         }
 
+        submission_count = submission_count
+            .checked_add(
+                u64::try_from(planned_wave.len())
+                    .map_err(|_| "AU250 wave size does not fit u64")?,
+            )
+            .ok_or("AU250 submission count overflow")?;
+        for planned in &planned_wave {
+            per_cu_submissions[planned.cu_index] = per_cu_submissions[planned.cu_index]
+                .checked_add(1)
+                .ok_or("AU250 per-CU submission count overflow")?;
+        }
         let completions = backend.run_wave(xrt_jobs)?;
         if completions.len() != planned_wave.len() {
             return Err(format!(
@@ -570,6 +588,19 @@ pub(crate) fn execute_captured_with(
                     expected_bytes
                 ));
             }
+            if !all_request_ids.insert(completion.request_id) {
+                return Err(format!(
+                    "AU250 completion duplicated request id {}",
+                    completion.request_id
+                ));
+            }
+            completion_count = completion_count
+                .checked_add(1)
+                .ok_or("AU250 completion count overflow")?;
+            per_cu_completions[completion.cu_index] = per_cu_completions[completion.cu_index]
+                .checked_add(1)
+                .ok_or("AU250 per-CU completion count overflow")?;
+            request_ids.push(completion.request_id);
             completion_indices.push(planned_index);
         }
         if let Some(missing) = seen.iter().position(|present| !present) {
@@ -649,13 +680,18 @@ pub(crate) fn execute_captured_with(
                     raw_max = Some(raw_max.map_or(raw, |current| current.max(raw)));
                 }
             }
-            submission_count = submission_count
-                .checked_add(1)
-                .ok_or("AU250 submission count overflow")?;
-            per_cu_submissions[planned.cu_index] = per_cu_submissions[planned.cu_index]
-                .checked_add(1)
-                .ok_or("AU250 per-CU submission count overflow")?;
         }
+    }
+
+    if submission_count != completion_count {
+        return Err(format!(
+            "AU250 validated completion count {completion_count} does not match submission count {submission_count}"
+        ));
+    }
+    if per_cu_submissions != per_cu_completions {
+        return Err(format!(
+            "AU250 per-CU completions {per_cu_completions:?} do not match submissions {per_cu_submissions:?}"
+        ));
     }
 
     if let Some(missing) = raw_slots.iter().position(Option::is_none) {
@@ -707,7 +743,10 @@ pub(crate) fn execute_captured_with(
             row_tiles: rows.div_ceil(AU250_DIM),
             k_tiles: columns.div_ceil(AU250_DIM),
             submission_count,
+            completion_count,
             per_cu_submissions,
+            per_cu_completions,
+            request_ids,
             stall_codes,
             raw_min: raw_min.ok_or("AU250 execution produced no raw components")?,
             raw_max: raw_max.ok_or("AU250 execution produced no raw components")?,
@@ -740,9 +779,8 @@ fn raw_slot_index(
 }
 
 pub(crate) fn execute_captured(captured: &CapturedLaunch) -> Result<XrtIq1sResult, String> {
-    let result = super::xrt_tmatmul::with_persistent_pool(|pool| {
-        execute_captured_with(captured, pool)
-    })?;
+    let result =
+        super::xrt_tmatmul::with_persistent_pool(|pool| execute_captured_with(captured, pool))?;
     append_execution_log_from_env(&result.evidence)?;
     Ok(result)
 }
@@ -995,14 +1033,53 @@ mod tests {
     }
 
     #[test]
+    fn executor_evidence_accounts_for_reordered_physical_completions() {
+        let captured = captured_fixture(1024, 1, 1);
+        let mut backend = CpuDotWaveExecutor::new(vec![9, 9, 9, 6]);
+        let result = execute_captured_with(&captured, &mut backend).unwrap();
+        assert_eq!(result.evidence.submission_count, 8);
+        assert_eq!(result.evidence.completion_count, 8);
+        assert_eq!(result.evidence.per_cu_submissions, vec![2, 2, 2, 2]);
+        assert_eq!(result.evidence.per_cu_completions, vec![2, 2, 2, 2]);
+        assert_eq!(result.evidence.request_ids.len(), 8);
+        assert_eq!(
+            result
+                .evidence
+                .request_ids
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+                .len(),
+            8
+        );
+        assert_eq!(
+            result.evidence.stall_codes.len(),
+            result.evidence.completion_count as usize
+        );
+    }
+
+    #[test]
     fn missing_or_duplicate_completion_fails_before_output_copy() {
         let captured = small_fixture();
-        for mode in [CompletionFault::Missing, CompletionFault::Duplicate] {
-            let mut backend = FaultingWaveExecutor::new(mode);
-            assert!(execute_captured_with(&captured, &mut backend)
-                .unwrap_err()
-                .contains("completion"));
-        }
+        let mut missing = FaultingWaveExecutor::new(CompletionFault::Missing);
+        assert!(execute_captured_with(&captured, &mut missing)
+            .unwrap_err()
+            .contains("completion"));
+
+        let captured = captured_fixture(1024, 1, 1);
+        let mut duplicate = FaultingWaveExecutor::new(CompletionFault::Duplicate);
+        assert!(execute_captured_with(&captured, &mut duplicate)
+            .unwrap_err()
+            .contains("duplicated request id"));
+    }
+
+    #[test]
+    fn wrong_cu_completion_fails_before_output_copy() {
+        let captured = small_fixture();
+        let mut backend = FaultingWaveExecutor::new(CompletionFault::WrongCu);
+        assert!(execute_captured_with(&captured, &mut backend)
+            .unwrap_err()
+            .contains("returned CU"));
     }
 
     #[test]
@@ -1090,7 +1167,10 @@ mod tests {
             row_tiles: 1,
             k_tiles: 1,
             submission_count: 2,
+            completion_count: 2,
             per_cu_submissions: vec![1, 1],
+            per_cu_completions: vec![1, 1],
+            request_ids: vec![0, 1],
             stall_codes: vec![1, 1],
             raw_min: -3,
             raw_max: 4,
@@ -1267,6 +1347,7 @@ mod tests {
     enum CompletionFault {
         Missing,
         Duplicate,
+        WrongCu,
     }
 
     struct FaultingWaveExecutor {
@@ -1299,7 +1380,16 @@ mod tests {
                         .first()
                         .cloned()
                         .ok_or("no completion to duplicate")?;
-                    completions.push(duplicate);
+                    let second = completions
+                        .get_mut(1)
+                        .ok_or("duplicate fault requires two completions")?;
+                    *second = duplicate;
+                }
+                CompletionFault::WrongCu => {
+                    let completion = completions
+                        .first_mut()
+                        .ok_or("no completion for CU fault")?;
+                    completion.cu_index = (completion.cu_index + 1) % 4;
                 }
             }
             Ok(completions)
