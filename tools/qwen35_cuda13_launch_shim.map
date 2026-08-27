@@ -1,0 +1,9 @@
+libcudart.so.13 {
+  global:
+    __cudaRegisterFunction;
+    __cudaLaunchKernel;
+    cudaLaunchKernel;
+    cudaLaunchKernelExC;
+  local:
+    *;
+};

@@ -53,21 +53,29 @@ c++ -O2 -std=c++17 \
     -lggml-cpu -lggml-base -lggml -lpthread -ldl -lm \
     -o /qwen-build/tq1_upstream_reference
 
-HETGPU_CUDART_ABI_MAJOR=13 cargo build -p zluda --release --no-default-features \
+cargo build -p zluda --release --no-default-features \
     --features nvidia,embed_cudart,evaluation \
     --manifest-path "${repo_root}/Cargo.toml"
 
 llama_server="${llama_build}/bin/llama-server"
 llama_cli="${llama_build}/bin/llama-cli"
 nvcuda="${rust_target}/release/libnvcuda.so"
-cudart_shim="${rust_target}/release/libhetgpu_cuda_shim.so"
+cuda13_launch_shim="${rust_target}/release/libqwen35_cuda13_launch_shim.so"
 upstream_oracle=/qwen-build/tq1_upstream_reference
+cc -O2 -fPIC -shared -Wall -Wextra -Werror \
+    "${repo_root}/tools/qwen35_cuda13_launch_shim.c" \
+    -Wl,--version-script="${repo_root}/tools/qwen35_cuda13_launch_shim.map" \
+    -ldl -lpthread -o "${cuda13_launch_shim}"
 test -x "${llama_server}"
 test -x "${llama_cli}"
 test -s "${nvcuda}"
-test -s "${cudart_shim}"
-objdump -T "${cudart_shim}" | grep -Eq 'libcudart\.so\.13[[:space:]]+cudaLaunchKernelExC$' || {
-    echo "CUDA runtime shim does not export the CUDA 13 launch ABI" >&2
+test -s "${cuda13_launch_shim}"
+objdump -T "${cuda13_launch_shim}" | grep -Eq 'libcudart\.so\.13[[:space:]]+cudaLaunchKernelExC$' || {
+    echo "Qwen launch shim does not export the CUDA 13 launch ABI" >&2
+    exit 1
+}
+objdump -T "${cuda13_launch_shim}" | grep -Eq 'libcudart\.so\.13[[:space:]]+__cudaRegisterFunction$' || {
+    echo "Qwen launch shim does not intercept CUDA 13 function registration" >&2
     exit 1
 }
 test -x "${upstream_oracle}"
@@ -104,7 +112,7 @@ CUDA_MATH_HEADER_SHA256="${cuda_math_header_sha256}" \
 LLAMA_SERVER="${llama_server}" \
 LLAMA_CLI="${llama_cli}" \
 NVCUDA="${nvcuda}" \
-CUDART_SHIM="${cudart_shim}" \
+CUDA13_LAUNCH_SHIM="${cuda13_launch_shim}" \
 UPSTREAM_ORACLE="${upstream_oracle}" \
 python3 - <<'PY'
 import hashlib
@@ -151,9 +159,9 @@ manifest = {
             "path": os.environ["NVCUDA"],
             "sha256": sha256(os.environ["NVCUDA"]),
         },
-        "cudart_shim": {
-            "path": os.environ["CUDART_SHIM"],
-            "sha256": sha256(os.environ["CUDART_SHIM"]),
+        "cuda13_launch_shim": {
+            "path": os.environ["CUDA13_LAUNCH_SHIM"],
+            "sha256": sha256(os.environ["CUDA13_LAUNCH_SHIM"]),
         },
         "tq1_upstream_reference": {
             "path": os.environ["UPSTREAM_ORACLE"],

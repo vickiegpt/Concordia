@@ -9736,6 +9736,50 @@ mod nvidia_bitnet_route_tests {
     }
 
     #[test]
+    fn nvidia_named_cuda13_attention_launch_logs_gpu_route_and_passes_through() {
+        let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let route_log = dir.path().join("routes.jsonl");
+        let route_log_text = route_log.to_string_lossy().to_string();
+        let _guard = EnvGuard::set(&[
+            ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
+            ("HETGPU_BITNET_CXL_KERNELS", Some("ggml_type19")),
+            ("HETGPU_BITNET_GPU_KERNELS", Some("flash,attn,attention")),
+            ("HETGPU_BITNET_ROUTE_MANIFEST", None),
+            ("HETGPU_BITNET_ROUTE_LOG", Some(&route_log_text)),
+            ("HETGPU_TMATMUL_BACKEND", Some("xrt")),
+            ("HETGPU_CXL_TMATMUL", None),
+            ("HETGPU_TMATMUL_CXL", None),
+            ("HETGPU_TMATMUL_HARDWARE_MATMUL", Some("1")),
+        ]);
+        let kernel_name = std::ffi::CString::new("flash_attn_fwd").unwrap();
+
+        let result = unsafe {
+            super::launch_named_kernel_c(
+                kernel_name.as_ptr(),
+                1,
+                1,
+                1,
+                32,
+                1,
+                1,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(result, 1, "attention must continue through native CUDA");
+        let logged = std::fs::read_to_string(&route_log).unwrap();
+        assert!(logged.contains(r#""kernel":"flash_attn_fwd""#));
+        assert!(logged.contains(r#""route":"gpu""#));
+        assert!(logged.contains(r#""backend":"xrt""#));
+        assert!(logged.contains(r#""hardware_matmul_enabled":false"#));
+    }
+
+    #[test]
     fn nvidia_named_cxl_candidate_rejects_before_native_when_strict() {
         let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -10899,6 +10943,15 @@ pub(crate) unsafe fn launch_named_kernel_c(
             Err(_) => 999,
         };
     }
+
+    #[cfg(all(
+        feature = "nvidia",
+        not(feature = "amd"),
+        not(feature = "intel"),
+        not(feature = "tenstorrent"),
+        not(feature = "tmatmul")
+    ))]
+    nvidia_log_bitnet_route_for_native_launch(kernel_name);
 
     #[cfg(feature = "sifive")]
     {

@@ -17,7 +17,7 @@ if [[ "${1:-}" == "--inside" ]]; then
     manifest=/qwen-build/manifest.json
     llama_server=/qwen-build/llama-build/bin/llama-server
     libnvcuda=/qwen-build/hetgpu-target/release/libnvcuda.so
-    cudart_shim=/qwen-build/hetgpu-target/release/libhetgpu_cuda_shim.so
+    cuda13_launch_shim=/qwen-build/hetgpu-target/release/libqwen35_cuda13_launch_shim.so
     oracle=/qwen-build/tq1_upstream_reference
     evaluator=/work/tools/qwen35_au250_eval.py
     auditor=/work/tools/qwen35_gguf_audit.py
@@ -31,7 +31,7 @@ if [[ "${1:-}" == "--inside" ]]; then
     cu_config='{"version":1,"cus":[{"ip_name":"ternip_big:ternip_big_1","memory_group":0,"lanes":9},{"ip_name":"ternip_big:ternip_big_2","memory_group":3,"lanes":9},{"ip_name":"ternip_big:ternip_big_3","memory_group":2,"lanes":9},{"ip_name":"ternip_small:ternip_small_1","memory_group":1,"lanes":6}]}'
 
     for required in \
-        "${model}" "${manifest}" "${llama_server}" "${libnvcuda}" "${cudart_shim}" "${oracle}" \
+        "${model}" "${manifest}" "${llama_server}" "${libnvcuda}" "${cuda13_launch_shim}" "${oracle}" \
         "${evaluator}" "${auditor}" "${route_manifest}" "${prompt_seed}" \
         "${xclbin}" "${iq1s_validator}"; do
         [[ -f "${required}" ]] || { echo "missing Qwen IQ1_S evaluation input ${required}" >&2; exit 1; }
@@ -67,7 +67,8 @@ PY
         --model-verification "${proof_dir}/model-verification.json" \
         --output "${proof_dir}/model-tensor-audit.json"
 
-    LLAMA_SERVER="${llama_server}" LIBNVCUDA="${libnvcuda}" CUDART_SHIM="${cudart_shim}" \
+    LLAMA_SERVER="${llama_server}" LIBNVCUDA="${libnvcuda}" \
+    CUDA13_LAUNCH_SHIM="${cuda13_launch_shim}" \
     ORACLE="${oracle}" \
     MANIFEST="${manifest}" LLAMA_REVISION="${llama_revision}" python3 - <<'PY'
 import hashlib
@@ -84,14 +85,14 @@ def digest(path):
 manifest = json.load(open(os.environ["MANIFEST"], encoding="utf-8"))
 if manifest.get("schema_version") != 1 or manifest.get("llama_revision") != os.environ["LLAMA_REVISION"]:
     raise SystemExit("build manifest revision/schema mismatch")
-for name, variable in (("llama_server", "LLAMA_SERVER"), ("libnvcuda", "LIBNVCUDA"), ("cudart_shim", "CUDART_SHIM"), ("tq1_upstream_reference", "ORACLE")):
+for name, variable in (("llama_server", "LLAMA_SERVER"), ("libnvcuda", "LIBNVCUDA"), ("cuda13_launch_shim", "CUDA13_LAUNCH_SHIM"), ("tq1_upstream_reference", "ORACLE")):
     artifact = manifest.get("artifacts", {}).get(name, {})
     if artifact.get("path") != os.environ[variable] or artifact.get("sha256") != digest(os.environ[variable]):
         raise SystemExit(f"build manifest artifact mismatch: {name}")
 PY
     server_sha256="$(sha256sum "${llama_server}" | awk '{print $1}')"
     libnvcuda_sha256="$(sha256sum "${libnvcuda}" | awk '{print $1}')"
-    cudart_shim_sha256="$(sha256sum "${cudart_shim}" | awk '{print $1}')"
+    cuda13_launch_shim_sha256="$(sha256sum "${cuda13_launch_shim}" | awk '{print $1}')"
     xclbin_sha256="$(sha256sum "${xclbin}" | awk '{print $1}')"
 
     xclbin_info="$(xclbinutil --info --input "${xclbin}" 2>&1)"
@@ -134,7 +135,7 @@ PY
         printf 'model_sha256=%s\n' "${actual_model_sha}"
         printf 'llama_server_sha256=%s\n' "${server_sha256}"
         printf 'libnvcuda_sha256=%s\n' "${libnvcuda_sha256}"
-        printf 'cudart_shim_sha256=%s\n' "${cudart_shim_sha256}"
+        printf 'cuda13_launch_shim_sha256=%s\n' "${cuda13_launch_shim_sha256}"
         printf 'xclbin_sha256=%s\n' "${xclbin_sha256}"
         printf 'llama_revision=%s\n' "${llama_revision}"
         printf 'threads=%s\n' "${QWEN35_THREADS:-$(nproc)}"
@@ -167,7 +168,7 @@ PY
         unset HETGPU_BITNET_GPU_KERNELS HETGPU_BITNET_CXL_KERNELS HETGPU_TQ1_EVIDENCE_LOG
         python3 "${evaluator}" \
             --mode cuda --evidence-kind iq1s \
-            --server "${llama_server}" --server-preload "${cudart_shim}:${libnvcuda}" \
+            --server "${llama_server}" --server-preload "${cuda13_launch_shim}:${libnvcuda}" \
             --model "${model}" --prompt-seed "${prompt_seed}" \
             --model-verification "${proof_dir}/model-verification.json" \
             --model-audit "${proof_dir}/model-tensor-audit.json" \
@@ -203,7 +204,7 @@ PY
         unset HETGPU_TQ1_EVIDENCE_LOG
         python3 "${evaluator}" \
             --mode hybrid --evidence-kind iq1s \
-            --server "${llama_server}" --server-preload "${cudart_shim}:${libnvcuda}" \
+            --server "${llama_server}" --server-preload "${cuda13_launch_shim}:${libnvcuda}" \
             --model "${model}" --prompt-seed "${prompt_seed}" \
             --model-verification "${proof_dir}/model-verification.json" \
             --model-audit "${proof_dir}/model-tensor-audit.json" \

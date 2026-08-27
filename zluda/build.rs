@@ -45,27 +45,10 @@ fn main() {
         });
         let version_script = profile_dir.join("hetgpu_cuda_shim.map");
         if !is_macos {
-            println!("cargo:rerun-if-env-changed=HETGPU_CUDART_ABI_MAJOR");
-            let cudart_abi_major =
-                std::env::var("HETGPU_CUDART_ABI_MAJOR").unwrap_or_else(|_| "12".to_string());
-            assert!(
-                matches!(cudart_abi_major.as_str(), "12" | "13"),
-                "HETGPU_CUDART_ABI_MAJOR must be 12 or 13"
-            );
             let mut combined_version_script = String::new();
-            let cudart_version_script = std::fs::read_to_string(&cudart_map)
-                .expect("failed to read CUDA runtime shim version map");
-            let cudart_version_script = cudart_version_script.replacen(
-                "libcudart.so.12 {",
-                &format!("libcudart.so.{cudart_abi_major} {{"),
-                1,
-            );
-            combined_version_script.push_str(&cudart_version_script);
-            combined_version_script.push('\n');
-            for map in [&cublas_map, &cublaslt_map] {
+            for map in [&cudart_map, &cublas_map, &cublaslt_map] {
                 combined_version_script.push_str(
-                    &std::fs::read_to_string(map)
-                        .expect("failed to read CUDA BLAS shim version map"),
+                    &std::fs::read_to_string(map).expect("failed to read CUDA shim version map"),
                 );
                 combined_version_script.push('\n');
             }
