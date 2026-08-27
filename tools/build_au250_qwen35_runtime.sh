@@ -53,17 +53,23 @@ c++ -O2 -std=c++17 \
     -lggml-cpu -lggml-base -lggml -lpthread -ldl -lm \
     -o /qwen-build/tq1_upstream_reference
 
-cargo build -p zluda --release --no-default-features \
+HETGPU_CUDART_ABI_MAJOR=13 cargo build -p zluda --release --no-default-features \
     --features nvidia,embed_cudart,evaluation \
     --manifest-path "${repo_root}/Cargo.toml"
 
 llama_server="${llama_build}/bin/llama-server"
 llama_cli="${llama_build}/bin/llama-cli"
 nvcuda="${rust_target}/release/libnvcuda.so"
+cudart_shim="${rust_target}/release/libhetgpu_cuda_shim.so"
 upstream_oracle=/qwen-build/tq1_upstream_reference
 test -x "${llama_server}"
 test -x "${llama_cli}"
 test -s "${nvcuda}"
+test -s "${cudart_shim}"
+objdump -T "${cudart_shim}" | grep -Eq 'libcudart\.so\.13[[:space:]]+cudaLaunchKernelExC$' || {
+    echo "CUDA runtime shim does not export the CUDA 13 launch ABI" >&2
+    exit 1
+}
 test -x "${upstream_oracle}"
 symbols="$(nm -D "${nvcuda}" | awk '$3 ~ /^hetgpu_tq1_(evaluate_raw|register_tensor|try_mul_mat_id)_v1$/ { print $3 }' | LC_ALL=C sort -u)"
 test "${symbols}" = $'hetgpu_tq1_evaluate_raw_v1\nhetgpu_tq1_register_tensor_v1\nhetgpu_tq1_try_mul_mat_id_v1' || {
@@ -98,6 +104,7 @@ CUDA_MATH_HEADER_SHA256="${cuda_math_header_sha256}" \
 LLAMA_SERVER="${llama_server}" \
 LLAMA_CLI="${llama_cli}" \
 NVCUDA="${nvcuda}" \
+CUDART_SHIM="${cudart_shim}" \
 UPSTREAM_ORACLE="${upstream_oracle}" \
 python3 - <<'PY'
 import hashlib
@@ -143,6 +150,10 @@ manifest = {
         "libnvcuda": {
             "path": os.environ["NVCUDA"],
             "sha256": sha256(os.environ["NVCUDA"]),
+        },
+        "cudart_shim": {
+            "path": os.environ["CUDART_SHIM"],
+            "sha256": sha256(os.environ["CUDART_SHIM"]),
         },
         "tq1_upstream_reference": {
             "path": os.environ["UPSTREAM_ORACLE"],
