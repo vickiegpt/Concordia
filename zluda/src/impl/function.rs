@@ -8999,7 +8999,10 @@ enum NvidiaIq1sXrtKernel {
 ))]
 fn nvidia_iq1s_xrt_kernel(kernel_name: &str) -> Option<NvidiaIq1sXrtKernel> {
     let name = kernel_name.to_ascii_lowercase();
-    if !name.contains("ggml_type19") || name.contains("stream_k_fixup") {
+    if !name.contains("ggml_type19")
+        || name.contains("stream_k_fixup")
+        || name.contains("mul_mat_vec_q_moe")
+    {
         return None;
     }
     if name.contains("mul_mat_vec_q") {
@@ -9928,6 +9931,13 @@ mod nvidia_bitnet_route_tests {
 
         assert!(attention.is_none(), "attention must remain on the GPU");
         assert!(q4.is_none(), "only exact IQ1_S matmul may use XRT");
+        assert!(
+            super::nvidia_iq1s_xrt_kernel(
+                "_Z17mul_mat_vec_q_moeIL9ggml_type19ELi2EEvPKvS2_PKiPf"
+            )
+            .is_none(),
+            "the multi-token MoE kernel has a distinct, unqualified launch ABI"
+        );
     }
 
     #[test]
