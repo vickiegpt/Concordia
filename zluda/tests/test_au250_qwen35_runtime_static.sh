@@ -61,6 +61,8 @@ grep -Fq '/qwen-build/manifest.json' "${builder}"
 
 grep -Fq -- '--ctx-size", "512"' "${evaluator}"
 grep -Fq -- '--n-gpu-layers", "999"' "${evaluator}"
+grep -Fq -- '--verbosity", "4"' "${evaluator}"
+grep -Fq -- '--parallel", "1"' "${evaluator}"
 grep -Fq '"n_predict": 32' "${evaluator}"
 grep -Fq '"temperature": 0.0' "${evaluator}"
 grep -Fq '"seed": 42' "${evaluator}"

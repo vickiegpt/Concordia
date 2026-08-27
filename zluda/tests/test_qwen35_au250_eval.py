@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import hashlib
+import math
 import os
 import socket
 import stat
@@ -9,9 +10,18 @@ import sys
 from pathlib import Path
 
 import pytest
+import importlib.util
 
 
 EVALUATOR = Path(__file__).parents[2] / "tools" / "qwen35_au250_eval.py"
+
+
+def load_evaluator():
+    spec = importlib.util.spec_from_file_location("qwen35_eval", EVALUATOR)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 FAKE_SERVER = r'''#!/usr/bin/env python3
@@ -65,6 +75,11 @@ class Handler(BaseHTTPRequestHandler):
             assert body["tokens"] == list(range(256))
             self.send_json({"content": "roundtrip-256"})
             return
+        if self.path == "/apply-template":
+            assert body["messages"] == [{"role": "user", "content": "Reply with exactly OK and no other text."}]
+            assert body["chat_template_kwargs"] == {"enable_thinking": False}
+            self.send_json({"prompt": "templated semantic prompt"})
+            return
         if self.path != "/completion":
             self.send_error(404)
             return
@@ -76,6 +91,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
+        for processed in (0, 128, 256):
+            progress = {
+                "content": "",
+                "tokens": [0],
+                "stop": False,
+                "tokens_predicted": 0,
+                "tokens_evaluated": 2 if semantic else 256,
+                "prompt_progress": {"total": 256, "cache": 0, "processed": processed, "time_ms": processed},
+            }
+            self.wfile.write(("data: " + json.dumps(progress) + "\n\n").encode())
         for index, (token, piece) in enumerate(zip(tokens, pieces)):
             payload = {
                 "content": piece,
@@ -185,3 +210,63 @@ def test_rejects_non_roundtripping_prompt(tmp_path):
     evaluator_source = EVALUATOR.read_text(encoding="utf-8")
     assert "retoken" in evaluator_source.lower()
     assert "exactly 256" in evaluator_source.lower()
+
+
+def metric(median, minimum, maximum, stdev):
+    return {
+        "median": median,
+        "min": minimum,
+        "max": maximum,
+        "population_stdev": stdev,
+        "cv": stdev / median,
+    }
+
+
+def test_render_report_uses_only_validated_metrics_and_cu_counts(tmp_path):
+    evaluator = load_evaluator()
+    cuda_metrics = {
+        "prompt_tokens_per_second": metric(20.0, 19.0, 21.0, 0.5),
+        "generation_tokens_per_second": metric(5.0, 4.5, 5.5, 0.2),
+        "ttft_ms": metric(100.0, 90.0, 110.0, 4.0),
+        "end_to_end_ms": metric(7000.0, 6900.0, 7100.0, 50.0),
+        "model_load_ms": metric(1000.0, 1000.0, 1000.0, 0.0),
+    }
+    hybrid_metrics = {
+        "prompt_tokens_per_second": metric(10.0, 9.0, 11.0, 0.4),
+        "generation_tokens_per_second": metric(4.0, 3.5, 4.5, 0.1),
+        "ttft_ms": metric(200.0, 190.0, 210.0, 5.0),
+        "end_to_end_ms": metric(8000.0, 7900.0, 8100.0, 60.0),
+        "model_load_ms": metric(1000.0, 1000.0, 1000.0, 0.0),
+    }
+    normalized = {
+        "schema_version": 1,
+        "status": "pass",
+        "token_ids_match": True,
+        "eligible_route_coverage": 1.0,
+        "all_cus_active": True,
+        "modes": {
+            "cuda": {"measurements": 5, "metrics": cuda_metrics},
+            "hybrid": {
+                "measurements": 5,
+                "metrics": hybrid_metrics,
+                "routes": {"eligible": 8, "handled": 8, "fallback": 0, "error": 0},
+                "xrt": {"per_cu_completions": [4, 3, 2, 1]},
+            },
+        },
+    }
+    report = evaluator.render_report(normalized, tmp_path / "proof")
+    assert "Active CUs: 4/4" in report
+    assert "| Prompt tokens/s | 20 | 10 | 0.5 |" in report
+    assert "| Time to first token (ms) | 100 | 200 | 2 |" in report
+    assert "Eligible expert operations handled by AU250: 100%" in report
+    table_rows = [line for line in report.splitlines() if line.startswith("| ")][2:]
+    assert len(table_rows) == 4
+    for row in table_rows:
+        numeric_cells = [cell.strip() for cell in row.split("|")[2:5]]
+        assert all(math.isfinite(float(cell)) for cell in numeric_cells)
+
+
+def test_render_report_refuses_nonpassing_proof():
+    evaluator = load_evaluator()
+    with pytest.raises(evaluator.EvaluationError):
+        evaluator.render_report({"status": "fail"}, Path("proof"))

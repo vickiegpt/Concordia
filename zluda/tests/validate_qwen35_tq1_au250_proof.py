@@ -169,7 +169,17 @@ def _validate_xrt(mode, record, hybrid):
             _fail("hybrid.xrt must complete work on all four CUs")
     elif any((submissions, completions, *per_submit, *per_complete)) or request_ids or stalls or raw_min != 0 or raw_max != 0:
         _fail("cuda.xrt must contain only zero accounting")
-    return all(value > 0 for value in per_complete) if hybrid else False
+    normalized_xrt = {
+        "submission_count": submissions,
+        "completion_count": completions,
+        "per_cu_submissions": per_submit,
+        "per_cu_completions": per_complete,
+        "request_ids": request_ids,
+        "stall_codes": stalls,
+        "raw_min": raw_min,
+        "raw_max": raw_max,
+    }
+    return (all(value > 0 for value in per_complete) if hybrid else False), normalized_xrt
 
 
 def _validate_mode(mode, record):
@@ -245,13 +255,15 @@ def _validate_mode(mode, record):
     elif any(route_values.values()):
         _fail("cuda routes must all be zero")
 
+    all_cus_active, xrt = _validate_xrt(mode, record, hybrid)
     return {
         "binary_sha256": binary_sha,
         "prompt_token_ids": prompt_ids,
         "generated_token_ids": generated_ids,
         "semantic_token_ids": semantic_ids,
         "routes": route_values,
-        "all_cus_active": _validate_xrt(mode, record, hybrid),
+        "all_cus_active": all_cus_active,
+        "xrt": xrt,
         "metrics": _summarize_measurements(mode, record["measurements"]),
     }
 
@@ -291,8 +303,18 @@ def validate_proof(proof_root):
         "schema_version": 1,
         "status": "pass",
         "modes": {
-            "cuda": {"measurements": MEASUREMENT_COUNT, "metrics": cuda["metrics"]},
-            "hybrid": {"measurements": MEASUREMENT_COUNT, "metrics": hybrid["metrics"]},
+            "cuda": {
+                "measurements": MEASUREMENT_COUNT,
+                "metrics": cuda["metrics"],
+                "routes": cuda["routes"],
+                "xrt": cuda["xrt"],
+            },
+            "hybrid": {
+                "measurements": MEASUREMENT_COUNT,
+                "metrics": hybrid["metrics"],
+                "routes": hybrid["routes"],
+                "xrt": hybrid["xrt"],
+            },
         },
         "token_ids_match": True,
         "eligible_route_coverage": handled / eligible,

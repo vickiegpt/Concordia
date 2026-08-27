@@ -35,6 +35,24 @@ if [[ "${1:-}" == "--inside" ]]; then
     [[ "${actual_size}" == "${model_size}" ]] || { echo "Qwen model size mismatch" >&2; exit 1; }
     actual_model_sha="$(sha256sum "${model}" | awk '{print $1}')"
     [[ "${actual_model_sha}" == "${model_sha256}" ]] || { echo "Qwen model SHA-256 mismatch" >&2; exit 1; }
+    MODEL="${model}" MODEL_SHA256="${model_sha256}" OUTPUT="${proof_dir}/model-verification.json" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["MODEL"])
+stat = path.stat()
+record = {
+    "path": str(path),
+    "size": stat.st_size,
+    "device": stat.st_dev,
+    "inode": stat.st_ino,
+    "mtime_ns": stat.st_mtime_ns,
+    "ctime_ns": stat.st_ctime_ns,
+    "sha256": os.environ["MODEL_SHA256"],
+}
+Path(os.environ["OUTPUT"]).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+PY
 
     LLAMA_SERVER="${llama_server}" LIBNVCUDA="${libnvcuda}" ORACLE="${oracle}" \
     MANIFEST="${manifest}" LLAMA_REVISION="${llama_revision}" python3 - <<'PY'
@@ -128,6 +146,7 @@ PY
         python3 "${evaluator}" \
             --mode cuda --server "${llama_server}" --server-preload "${libnvcuda}" \
             --model "${model}" --prompt-seed "${prompt_seed}" \
+            --model-verification "${proof_dir}/model-verification.json" \
             --proof-dir "${proof_dir}/cuda-mode" --port 18080 --threads "${threads}" \
             --model-size "${model_size}" --model-sha256 "${model_sha256}" \
             --llama-revision "${llama_revision}" --binary-sha256 "${server_sha256}" \
@@ -151,6 +170,7 @@ PY
         python3 "${evaluator}" \
             --mode hybrid --server "${llama_server}" --server-preload "${libnvcuda}" \
             --model "${model}" --prompt-seed "${prompt_seed}" \
+            --model-verification "${proof_dir}/model-verification.json" \
             --proof-dir "${proof_dir}/hybrid-mode" --port 18081 --threads "${threads}" \
             --model-size "${model_size}" --model-sha256 "${model_sha256}" \
             --llama-revision "${llama_revision}" --binary-sha256 "${server_sha256}" \

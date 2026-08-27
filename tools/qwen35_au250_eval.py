@@ -38,6 +38,31 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def verify_model(path, expected_size, expected_sha256, verification_path=None):
+    stat = path.stat()
+    if stat.st_size != expected_size:
+        raise EvaluationError("model byte count mismatch")
+    if verification_path is None:
+        if sha256(path) != expected_sha256:
+            raise EvaluationError("model SHA-256 mismatch")
+        return
+    try:
+        verification = json.loads(Path(verification_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise EvaluationError(f"cannot read model verification record: {error}") from error
+    required = {
+        "path": str(path),
+        "size": stat.st_size,
+        "device": stat.st_dev,
+        "inode": stat.st_ino,
+        "mtime_ns": stat.st_mtime_ns,
+        "ctime_ns": stat.st_ctime_ns,
+        "sha256": expected_sha256,
+    }
+    if verification != required:
+        raise EvaluationError("model changed after the independently hashed preflight")
+
+
 def atomic_json(path, value):
     path = Path(path)
     temporary = path.with_suffix(path.suffix + ".partial")
@@ -104,7 +129,8 @@ def stream_completion(base_url, body, timeout):
                 events.append(event)
                 content = event.get("content", "")
                 tokens = event.get("tokens", [])
-                if content or tokens:
+                is_prompt_progress = "prompt_progress" in event
+                if not is_prompt_progress and (content or tokens):
                     if first_token is None:
                         first_token = time.monotonic()
                     if not isinstance(content, str) or not isinstance(tokens, list):
@@ -169,6 +195,22 @@ def completion_request(prompt):
         "timings_per_token": True,
         "return_progress": True,
     }
+
+
+def templated_semantic_prompt(base_url, timeout):
+    response = post_json(
+        base_url,
+        "/apply-template",
+        {
+            "messages": [{"role": "user", "content": SEMANTIC_PROMPT}],
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+        timeout,
+    )
+    prompt = response.get("prompt")
+    if not isinstance(prompt, str) or not prompt:
+        raise EvaluationError("apply-template omitted the semantic prompt")
+    return prompt
 
 
 def parse_health(text):
@@ -329,10 +371,7 @@ def run(args):
     proof_dir.mkdir(parents=True, exist_ok=False)
     model = Path(args.model)
     server = Path(args.server)
-    if model.stat().st_size != args.model_size:
-        raise EvaluationError("model byte count mismatch")
-    if sha256(model) != args.model_sha256:
-        raise EvaluationError("model SHA-256 mismatch")
+    verify_model(model, args.model_size, args.model_sha256, args.model_verification)
     if sha256(server) != args.binary_sha256:
         raise EvaluationError("llama-server SHA-256 mismatch")
 
@@ -340,7 +379,7 @@ def run(args):
     command = [
         str(server), "--model", str(model), "--ctx-size", "512", "--n-gpu-layers", "999",
         "--threads", str(args.threads), "--host", "127.0.0.1", "--port", str(args.port),
-        "--seed", "42", "--no-webui",
+        "--seed", "42", "--parallel", "1", "--reasoning", "off", "--verbosity", "4", "--no-webui",
     ]
     (proof_dir / "command.json").write_text(json.dumps(command, indent=2) + "\n", encoding="utf-8")
     server_environment = os.environ.copy()
@@ -364,7 +403,7 @@ def run(args):
 
             semantic_result = stream_completion(
                 base_url,
-                completion_request(SEMANTIC_PROMPT),
+                completion_request(templated_semantic_prompt(base_url, args.request_timeout)),
                 args.request_timeout,
             )
             semantic_text = semantic_result["text"].strip()
@@ -427,6 +466,127 @@ def run(args):
     return record
 
 
+def render_report(normalized, proof_path):
+    if not isinstance(normalized, dict) or normalized.get("status") != "pass":
+        raise EvaluationError("report generation requires a passing normalized proof")
+    try:
+        cuda = normalized["modes"]["cuda"]["metrics"]
+        hybrid_mode = normalized["modes"]["hybrid"]
+        hybrid = hybrid_mode["metrics"]
+        routes = hybrid_mode["routes"]
+        xrt = hybrid_mode["xrt"]
+    except (KeyError, TypeError) as error:
+        raise EvaluationError(f"normalized proof omitted report evidence: {error}") from error
+    if normalized.get("token_ids_match") is not True or normalized.get("all_cus_active") is not True:
+        raise EvaluationError("normalized proof did not validate tokens and all four CUs")
+    if normalized.get("eligible_route_coverage") != 1.0:
+        raise EvaluationError("normalized proof route coverage is not 100%")
+    if routes.get("eligible", 0) <= 0 or routes.get("handled") != routes.get("eligible") or routes.get("fallback") or routes.get("error"):
+        raise EvaluationError("normalized proof routing is not strict and complete")
+    per_cu = xrt.get("per_cu_completions")
+    if not isinstance(per_cu, list) or len(per_cu) != 4 or not all(isinstance(value, int) and value > 0 for value in per_cu):
+        raise EvaluationError("normalized proof does not contain four active CUs")
+
+    metric_specs = (
+        ("Prompt tokens/s", "prompt_tokens_per_second"),
+        ("Generation tokens/s", "generation_tokens_per_second"),
+        ("Time to first token (ms)", "ttft_ms"),
+        ("End-to-end latency (ms)", "end_to_end_ms"),
+    )
+    rows = []
+    for label, key in metric_specs:
+        try:
+            cuda_metric = cuda[key]
+            hybrid_metric = hybrid[key]
+            values = [
+                float(cuda_metric[field])
+                for field in ("median", "min", "max", "population_stdev")
+            ] + [
+                float(hybrid_metric[field])
+                for field in ("median", "min", "max", "population_stdev")
+            ]
+        except (KeyError, TypeError, ValueError) as error:
+            raise EvaluationError(f"normalized proof has invalid {key}: {error}") from error
+        if not all(math.isfinite(value) and value >= 0.0 for value in values):
+            raise EvaluationError(f"normalized proof has non-finite or negative {key}")
+        cuda_median, cuda_minimum, cuda_maximum, cuda_stdev = values[:4]
+        hybrid_median, hybrid_minimum, hybrid_maximum, hybrid_stdev = values[4:]
+        if cuda_median == 0.0:
+            raise EvaluationError(f"normalized proof has zero CUDA median for {key}")
+        ratio = hybrid_median / cuda_median
+        rows.append(
+            f"| {label} | {cuda_median:.6g} | {hybrid_median:.6g} | {ratio:.6g} | "
+            f"{cuda_minimum:.6g}-{cuda_maximum:.6g} / {hybrid_minimum:.6g}-{hybrid_maximum:.6g} | "
+            f"{cuda_stdev:.6g} / {hybrid_stdev:.6g} |"
+        )
+
+    return "\n".join(
+        [
+            "# Qwen3.5-397B-A17B TQ1_0 CUDA vs AU250 Hybrid Evaluation",
+            "",
+            "## Qualification result",
+            "",
+            "- Proof status: PASS",
+            "- Model: Qwen3.5-397B-A17B-UD-TQ1_0.gguf",
+            f"- Model SHA-256: {MODEL_SHA256}",
+            f"- llama.cpp revision: {LLAMA_REVISION}",
+            "- Token IDs identical: yes",
+            "- Eligible expert operations handled by AU250: 100%",
+            f"- Active CUs: {sum(value > 0 for value in per_cu)}/4",
+            "",
+            "## Method",
+            "",
+            "Both modes used the same binary, fully CUDA-resident model, 512-token context, "
+            "greedy sampling, exact 256-token timed prompt, and 32 generated tokens. Each "
+            "mode used one warm-up and five measured requests in a fresh process while "
+            "retaining the model across requests. Hybrid changed only strict TQ1_0 routed-"
+            "expert `mul_mat_id` dispatch; attention, linear attention, routing, shared "
+            "experts, normalization, KV/state work, and sampling remained on CUDA.",
+            "",
+            "## Performance",
+            "",
+            "| Metric | CUDA-only median | Hybrid median | Hybrid/CUDA | CUDA / hybrid min-max | CUDA / hybrid population stdev |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+            *rows,
+            "",
+            "## Offload evidence",
+            "",
+            f"Per-CU completions: `{per_cu}`. The validated proof, including raw-output "
+            f"bounds, unique request IDs, STALL codes, and pre/post device telemetry, is `{Path(proof_path)}`.",
+            "",
+            "## Limitations",
+            "",
+            "This is batch-size-one text generation on one host and one selected checkpoint. "
+            "It does not measure vision, multi-user serving, speculative decoding, attention "
+            "offload, or a CPU-expert baseline.",
+            "",
+        ]
+    )
+
+
+def render_report_command(arguments):
+    report_parser = argparse.ArgumentParser(prog="qwen35_au250_eval.py render-report")
+    report_parser.add_argument("--normalized", required=True)
+    report_parser.add_argument("--proof-path", required=True)
+    report_parser.add_argument("--output", required=True)
+    args = report_parser.parse_args(arguments)
+    try:
+        normalized = json.loads(Path(args.normalized).read_text(encoding="utf-8"))
+        report = render_report(normalized, Path(args.proof_path))
+        repository = Path(__file__).resolve().parents[1]
+        evaluation_root = (repository / "zluda" / "evaluation").resolve()
+        output = Path(args.output).resolve()
+        if output.parent != evaluation_root:
+            raise EvaluationError(f"report output must be directly beneath {evaluation_root}")
+        temporary = output.with_suffix(output.suffix + ".partial")
+        temporary.write_text(report, encoding="utf-8")
+        os.replace(temporary, output)
+    except (EvaluationError, OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        print(f"QWEN_TQ1_REPORT_FAILED: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def parser():
     result = argparse.ArgumentParser()
     result.add_argument("--mode", choices=("cuda", "hybrid"), required=True)
@@ -438,6 +598,7 @@ def parser():
     result.add_argument("--threads", required=True, type=int)
     result.add_argument("--model-size", type=int, default=MODEL_SIZE)
     result.add_argument("--model-sha256", default=MODEL_SHA256)
+    result.add_argument("--model-verification")
     result.add_argument("--llama-revision", default=LLAMA_REVISION)
     result.add_argument("--binary-sha256", required=True)
     result.add_argument("--server-preload")
@@ -451,7 +612,10 @@ def parser():
 
 
 def main(argv=None):
-    args = parser().parse_args(argv)
+    arguments = sys.argv[1:] if argv is None else list(argv)
+    if arguments and arguments[0] == "render-report":
+        return render_report_command(arguments[1:])
+    args = parser().parse_args(arguments)
     try:
         result = run(args)
     except (EvaluationError, OSError, ValueError, TypeError) as error:
