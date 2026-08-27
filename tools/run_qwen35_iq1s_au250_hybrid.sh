@@ -147,6 +147,7 @@ PY
     export HETGPU_XRT_TIMEOUT_MS=10000
     export HETGPU_XRT_CLOCK_HZ=300000000
     export HETGPU_XRT_CU_CONFIG="${cu_config}"
+    export HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB=49152
     threads="${QWEN35_THREADS:-$(nproc)}"
 
     nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv \

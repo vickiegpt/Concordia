@@ -10,10 +10,11 @@ index 2456f7d..9c7835c 100644
  
  #include <algorithm>
  #include <array>
-@@ -78,6 +79,7 @@
+@@ -78,6 +79,8 @@
  #include <condition_variable>
  #include <cstddef>
  #include <cstdint>
++#include <cerrno>
 +#include <cstring>
  #include <cfloat>
  #include <initializer_list>
@@ -65,6 +66,37 @@ index 2456f7d..9c7835c 100644
  #define GGML_LOG_WARN_ONCE(str) \
      { static std::once_flag warn_flag; std::call_once(warn_flag, []() { GGML_LOG_WARN(str); }); }
  
+@@ -885,2 +925,20 @@ static bool ggml_backend_buft_is_cuda(ggml_backend_buffer_type_t buft) {
+     return buft->iface.get_name == ggml_backend_cuda_buffer_type_get_name;
+ }
++
++static size_t hetgpu_qwen35_cuda_buffer_max_size(ggml_backend_buffer_type_t buft) {
++    const char * value = getenv("HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB");
++    if (value == nullptr) {
++        return SIZE_MAX;
++    }
++    char * end = nullptr;
++    errno = 0;
++    const unsigned long long mib = strtoull(value, &end, 10);
++    constexpr size_t bytes_per_mib = 1024ULL*1024ULL;
++    if (errno != 0 || end == value || *end != '\0' || mib < 1024 || mib > SIZE_MAX/bytes_per_mib) {
++        GGML_ABORT("HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB must be an integer from 1024 through SIZE_MAX/MiB");
++    }
++    GGML_LOG_INFO("%s: limiting CUDA model buffers to %llu MiB\n", __func__, mib);
++    return static_cast<size_t>(mib)*bytes_per_mib;
++
++    GGML_UNUSED(buft);
++}
+@@ -929,7 +988,7 @@ static const ggml_backend_buffer_type_i ggml_backend_cuda_buffer_type_interface
+     /* .get_name         = */ ggml_backend_cuda_buffer_type_get_name,
+     /* .alloc_buffer     = */ ggml_backend_cuda_buffer_type_alloc_buffer,
+     /* .get_alignment    = */ ggml_backend_cuda_buffer_type_get_alignment,
+-    /* .get_max_size     = */ NULL, // defaults to SIZE_MAX
++    /* .get_max_size     = */ hetgpu_qwen35_cuda_buffer_max_size,
+     /* .get_alloc_size   = */ ggml_backend_cuda_buffer_type_get_alloc_size,
+     /* .is_host          = */ NULL,
+ };
+
 @@ -1905,6 +1945,48 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
      const ggml_tensor * src1 = dst->src[1];
      const ggml_tensor * ids  = dst->src[2];
@@ -312,4 +344,3 @@ index 9b22cb0..32a80ca 100644
      fver = (enum llama_fver) gguf_get_version(metadata);
  
      LLAMA_LOG_INFO("%s: loaded meta data with %d key-value pairs and %d tensors from %s (version %s)\n",
-

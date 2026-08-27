@@ -41,6 +41,8 @@ HETGPU_TEST_LLAMA_REVISION="${fixture_revision}" \
 
 grep -Fq 'hetgpu_tq1_register_tensor_v1' "${overlay}/src/llama-model-loader.cpp"
 grep -Fq 'hetgpu_tq1_try_mul_mat_id_v1' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'hetgpu_qwen35_cuda_buffer_max_size' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
 grep -Fq 'const std::string & path() const' "${overlay}/src/llama-mmap.h"
 grep -Fq 'HETGPU_TQ1_ABI_VERSION' "${overlay}/tools/qwen35-tq1-bridge.h"
 grep -Fq '925e1179947ea0c0ebfb0032df18af3a729822be' "${prepare}"

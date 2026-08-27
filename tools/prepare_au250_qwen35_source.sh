@@ -67,6 +67,7 @@ verify_overlay() {
     local root="$1"
     grep -Fq 'hetgpu_tq1_register_tensor_v1' "${root}/src/llama-model-loader.cpp"
     grep -Fq 'hetgpu_tq1_try_mul_mat_id_v1' "${root}/ggml/src/ggml-cuda/ggml-cuda.cu"
+    grep -Fq 'hetgpu_qwen35_cuda_buffer_max_size' "${root}/ggml/src/ggml-cuda/ggml-cuda.cu"
     grep -Fq 'const std::string & path() const' "${root}/src/llama-mmap.h"
     grep -Fq 'HETGPU_TQ1_ABI_VERSION' "${root}/tools/qwen35-tq1-bridge.h"
     test "$(cat "${root}/${marker_name}")" = "${expected_marker}"
