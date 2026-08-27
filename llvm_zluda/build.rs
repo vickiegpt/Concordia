@@ -353,4 +353,10 @@ fn link_llvm_components(components: String) {
         println!("cargo:rustc-link-lib={component}");
     }
     println!("cargo:rustc-link-lib=LLVMTarget");
+    // LLVM's static libraries contain C++ RTTI and exception-handling symbols.
+    // Rust's cdylib linker does not add the C++ runtime automatically, which
+    // leaves libnvcuda.so unloadable on Linux (notably riscv64).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
 }

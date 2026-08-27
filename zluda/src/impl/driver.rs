@@ -918,7 +918,8 @@ pub(crate) fn global_state() -> Result<&'static GlobalState, CUerror> {
                 }
 
                 // Get device name
-                let mut name_buf = [0i8; 256];
+                // c_char is unsigned on riscv64 Linux, unlike x86 Linux.
+                let mut name_buf = [0 as c_char; 256];
                 let name_result =
                     nvidia_runtime_sys::cuDeviceGetName(name_buf.as_mut_ptr(), 256, cuda_device);
                 let device_name = if name_result == 0 {

@@ -1022,3 +1022,42 @@ int hetgpu_pacc_submit_gemm_staged_on(
     if (!next) return -127;
     return next(dev_id, slot_id, transa, transb, m, n, k, alpha, A, Atype, lda, strideA, B, Btype, ldb, strideB, beta, C, Ctype, ldc, strideC, batchCount, computeType);
 }
+
+/*
+ * Concordia's embedded cuBLAS shim uses the historical SIFIVE symbol names
+ * for accelerator-backed GEMM.  PACC implements the same staged ABI, so keep
+ * these small aliases in the PACC preload library.  LD_PRELOAD then makes
+ * cuBLAS resolve these entries before the generic SIFIVE runtime ones.
+ */
+int hetgpu_sifive_submit_gemm_staged(
+    int transa, int transb, int m, int n, int k,
+    const void *alpha,
+    const void *A, int Atype, int lda, long long strideA,
+    const void *B, int Btype, int ldb, long long strideB,
+    const void *beta,
+    void *C, int Ctype, int ldc, long long strideC,
+    int batchCount, int computeType) {
+    return hetgpu_pacc_submit_gemm_staged(
+        transa, transb, m, n, k, alpha,
+        A, Atype, lda, strideA,
+        B, Btype, ldb, strideB,
+        beta, C, Ctype, ldc, strideC,
+        batchCount, computeType);
+}
+
+int hetgpu_sifive_submit_gemm_staged_on(
+    int dev_id, int slot_id,
+    int transa, int transb, int m, int n, int k,
+    const void *alpha,
+    const void *A, int Atype, int lda, long long strideA,
+    const void *B, int Btype, int ldb, long long strideB,
+    const void *beta,
+    void *C, int Ctype, int ldc, long long strideC,
+    int batchCount, int computeType) {
+    return hetgpu_pacc_submit_gemm_staged_on(
+        dev_id, slot_id, transa, transb, m, n, k, alpha,
+        A, Atype, lda, strideA,
+        B, Btype, ldb, strideB,
+        beta, C, Ctype, ldc, strideC,
+        batchCount, computeType);
+}
