@@ -62,6 +62,346 @@ pub unsafe extern "C" fn hetgpu_tq1_try_mul_mat_id_v1(
     }))
     .unwrap_or(crate::r#impl::tq1_bridge::HETGPU_TQ1_ERROR)
 }
+
+// The embedded CUDA runtime shim exposes IPC entry points in every build. The
+// SIFIVE backend supplies real shared-DDR implementations; NVIDIA-only builds
+// must still provide fail-closed providers so the shim has no unresolved DT_NEEDED symbols.
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "sifive"),
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_sifive_ipc_get_mem_handle(
+    _ptr: *const ::core::ffi::c_void,
+    _handle: *mut ::core::ffi::c_void,
+    _handle_len: usize,
+) -> i32 {
+    1
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "sifive"),
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_sifive_ipc_open_mem_handle(
+    _dev_ptr: *mut *mut ::core::ffi::c_void,
+    _handle: *const ::core::ffi::c_void,
+    _flags: ::core::ffi::c_uint,
+) -> i32 {
+    1
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "sifive"),
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_sifive_ipc_close_mem_handle(_ptr: *mut ::core::ffi::c_void) -> i32 {
+    1
+}
+
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    feature = "evaluation",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn tq1_evaluate_raw(
+    blocks: *const u8,
+    blocks_len: usize,
+    activations: *const f32,
+    activations_len: usize,
+    k: u64,
+    rows: u64,
+    tokens: u64,
+    experts: u64,
+    output: *mut f32,
+    output_len: usize,
+) -> std::result::Result<(), String> {
+    use crate::r#impl::tq1_tmatmul::{
+        ExpertRole, Q8KBlock, TensorRegistry, Tq1TensorRegistration, TQ1_BLOCK_BYTES, TQ1_VALUES,
+    };
+    use crate::r#impl::tq1_xrt::{execute_mul_mat_id, Tq1MulMatIdOperation};
+    use std::io::Write;
+
+    if blocks.is_null() || activations.is_null() || output.is_null() {
+        return Err("TQ1_0 evaluation received a null buffer".to_string());
+    }
+    let k = usize::try_from(k).map_err(|_| "TQ1_0 evaluation K does not fit usize")?;
+    let rows = usize::try_from(rows).map_err(|_| "TQ1_0 evaluation rows do not fit usize")?;
+    let tokens = usize::try_from(tokens).map_err(|_| "TQ1_0 evaluation tokens do not fit usize")?;
+    let experts =
+        usize::try_from(experts).map_err(|_| "TQ1_0 evaluation experts do not fit usize")?;
+    if k == 0 || !k.is_multiple_of(TQ1_VALUES) {
+        return Err("TQ1_0 evaluation K must be a nonzero multiple of 256".to_string());
+    }
+    if rows == 0 || tokens == 0 || experts == 0 {
+        return Err("TQ1_0 evaluation dimensions must be positive".to_string());
+    }
+    let blocks_per_row = k / TQ1_VALUES;
+    let row_bytes = blocks_per_row
+        .checked_mul(TQ1_BLOCK_BYTES)
+        .ok_or_else(|| "TQ1_0 evaluation row byte count overflow".to_string())?;
+    let expected_blocks = experts
+        .checked_mul(rows)
+        .and_then(|value| value.checked_mul(row_bytes))
+        .ok_or_else(|| "TQ1_0 evaluation block byte count overflow".to_string())?;
+    let logical_groups = tokens
+        .checked_mul(experts)
+        .ok_or_else(|| "TQ1_0 evaluation logical group count overflow".to_string())?;
+    let expected_activations = logical_groups
+        .checked_mul(k)
+        .ok_or_else(|| "TQ1_0 evaluation activation count overflow".to_string())?;
+    let expected_output = logical_groups
+        .checked_mul(rows)
+        .ok_or_else(|| "TQ1_0 evaluation output count overflow".to_string())?;
+    if blocks_len != expected_blocks {
+        return Err(format!(
+            "TQ1_0 evaluation has {blocks_len} block bytes, expected {expected_blocks}"
+        ));
+    }
+    if activations_len != expected_activations {
+        return Err(format!(
+            "TQ1_0 evaluation has {activations_len} activations, expected {expected_activations}"
+        ));
+    }
+    if output_len != expected_output {
+        return Err(format!(
+            "TQ1_0 evaluation has {output_len} output elements, expected {expected_output}"
+        ));
+    }
+
+    let blocks = std::slice::from_raw_parts(blocks, blocks_len);
+    let activations = std::slice::from_raw_parts(activations, activations_len).to_vec();
+    if activations.iter().any(|value| !value.is_finite()) {
+        return Err("TQ1_0 evaluation activations must be finite".to_string());
+    }
+    let q8_dump_path = std::env::var_os("HETGPU_TQ1_Q8_DUMP")
+        .ok_or_else(|| "HETGPU_TQ1_Q8_DUMP is required for evaluation".to_string())?;
+    let mut q8_blocks = Vec::with_capacity(activations.len() / TQ1_VALUES);
+    for block in activations.chunks_exact(TQ1_VALUES) {
+        q8_blocks.push(Q8KBlock::quantize(block)?);
+    }
+    let mut q8_dump = std::fs::File::create(&q8_dump_path)
+        .map_err(|error| format!("create TQ1_0 Q8_K dump: {error}"))?;
+    q8_dump
+        .write_all(b"TQ1Q8K1\0")
+        .and_then(|_| q8_dump.write_all(&(q8_blocks.len() as u64).to_le_bytes()))
+        .map_err(|error| format!("write TQ1_0 Q8_K dump header: {error}"))?;
+    for block in &q8_blocks {
+        q8_dump
+            .write_all(&block.scale.to_le_bytes())
+            .and_then(|_| {
+                q8_dump.write_all(unsafe {
+                    std::slice::from_raw_parts(block.qs.as_ptr().cast::<u8>(), block.qs.len())
+                })
+            })
+            .map_err(|error| format!("write TQ1_0 Q8_K dump: {error}"))?;
+    }
+    q8_dump
+        .sync_all()
+        .map_err(|error| format!("sync TQ1_0 Q8_K dump: {error}"))?;
+    let mut fixture = tempfile::NamedTempFile::new()
+        .map_err(|error| format!("create TQ1_0 evaluation fixture: {error}"))?;
+    fixture
+        .write_all(blocks)
+        .map_err(|error| format!("write TQ1_0 evaluation fixture: {error}"))?;
+    fixture
+        .flush()
+        .map_err(|error| format!("flush TQ1_0 evaluation fixture: {error}"))?;
+    let nbytes = u64::try_from(expected_blocks)
+        .map_err(|_| "TQ1_0 evaluation byte count does not fit u64".to_string())?;
+    let source = TensorRegistry::default().register(Tq1TensorRegistration {
+        path: fixture.path().to_path_buf(),
+        file_offset: 0,
+        nbytes,
+        name: "blk.0.ffn_down_exps.weight".to_string(),
+        ne: [k as u64, rows as u64, experts as u64, 1],
+        nb: [
+            TQ1_BLOCK_BYTES as u64,
+            row_bytes as u64,
+            (rows * row_bytes) as u64,
+            nbytes,
+        ],
+        role: ExpertRole::Down,
+    })?;
+    let expert_ids = (0..tokens).flat_map(|_| 0..experts).collect::<Vec<_>>();
+    let result = execute_mul_mat_id(&Tq1MulMatIdOperation {
+        tensor: source,
+        activations,
+        expert_ids,
+        token_count: tokens,
+        expert_slots: experts,
+    })?;
+    if result.outputs.len() != expected_output {
+        return Err("TQ1_0 evaluation adapter returned the wrong output size".to_string());
+    }
+
+    let evidence_path = std::env::var_os("HETGPU_TQ1_EVIDENCE_LOG")
+        .ok_or_else(|| "HETGPU_TQ1_EVIDENCE_LOG is required for evaluation".to_string())?;
+    let mut evidence = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&evidence_path)
+        .map_err(|error| format!("open TQ1_0 evaluation evidence: {error}"))?;
+    serde_json::to_writer(
+        &mut evidence,
+        &serde_json::json!({
+            "route": "handled",
+            "fixture": true,
+            "dimensions": { "k": k, "rows": rows, "tokens": tokens, "experts": experts },
+            "evidence": result.evidence,
+        }),
+    )
+    .map_err(|error| format!("serialize TQ1_0 evaluation evidence: {error}"))?;
+    evidence
+        .write_all(b"\n")
+        .map_err(|error| format!("write TQ1_0 evaluation evidence: {error}"))?;
+    evidence
+        .sync_all()
+        .map_err(|error| format!("sync TQ1_0 evaluation evidence: {error}"))?;
+    std::ptr::copy_nonoverlapping(result.outputs.as_ptr(), output, expected_output);
+    Ok(())
+}
+
+/// Evaluation-only raw TQ1_0 entry point backed by the production XRT adapter.
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    feature = "evaluation",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_tq1_evaluate_raw_v1(
+    blocks: *const u8,
+    blocks_len: usize,
+    activations: *const f32,
+    activations_len: usize,
+    k: u64,
+    rows: u64,
+    tokens: u64,
+    experts: u64,
+    output: *mut f32,
+    output_len: usize,
+) -> i32 {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tq1_evaluate_raw(
+            blocks,
+            blocks_len,
+            activations,
+            activations_len,
+            k,
+            rows,
+            tokens,
+            experts,
+            output,
+            output_len,
+        )
+    })) {
+        Ok(Ok(())) => crate::r#impl::tq1_bridge::HETGPU_TQ1_HANDLED,
+        Ok(Err(error)) => {
+            eprintln!("[hetgpu-tq1-evaluation] {error}");
+            crate::r#impl::tq1_bridge::HETGPU_TQ1_ERROR
+        }
+        Err(_) => crate::r#impl::tq1_bridge::HETGPU_TQ1_ERROR,
+    }
+}
+
+#[cfg(all(test, feature = "evaluation", feature = "nvidia"))]
+mod tq1_evaluation_tests {
+    use super::*;
+
+    const K: u64 = 1024;
+    const ROWS: u64 = 1;
+    const TOKENS: u64 = 1;
+    const EXPERTS: u64 = 1;
+    const BLOCK_BYTES: usize = 4 * 54;
+
+    #[test]
+    fn tq1_evaluation_rejects_null_pointers() {
+        assert_eq!(
+            unsafe {
+                hetgpu_tq1_evaluate_raw_v1(
+                    std::ptr::null(),
+                    BLOCK_BYTES,
+                    std::ptr::null(),
+                    K as usize,
+                    K,
+                    ROWS,
+                    TOKENS,
+                    EXPERTS,
+                    std::ptr::null_mut(),
+                    1,
+                )
+            },
+            crate::r#impl::tq1_bridge::HETGPU_TQ1_ERROR
+        );
+    }
+
+    #[test]
+    fn tq1_evaluation_rejects_nonmultiple_of_256() {
+        let blocks = vec![0u8; BLOCK_BYTES];
+        let activations = vec![0.0f32; K as usize];
+        let mut output = vec![0.0f32; 1];
+        assert_eq!(
+            unsafe {
+                hetgpu_tq1_evaluate_raw_v1(
+                    blocks.as_ptr(),
+                    blocks.len(),
+                    activations.as_ptr(),
+                    activations.len(),
+                    1000,
+                    ROWS,
+                    TOKENS,
+                    EXPERTS,
+                    output.as_mut_ptr(),
+                    output.len(),
+                )
+            },
+            crate::r#impl::tq1_bridge::HETGPU_TQ1_ERROR
+        );
+    }
+
+    #[test]
+    fn tq1_evaluation_rejects_undersized_buffers() {
+        let blocks = vec![0u8; BLOCK_BYTES];
+        let activations = vec![0.0f32; K as usize];
+        let mut output = vec![0.0f32; 1];
+        let output_ptr = output.as_mut_ptr();
+        let output_len = output.len();
+        let invoke = |block_len, activation_len, output_len| unsafe {
+            hetgpu_tq1_evaluate_raw_v1(
+                blocks.as_ptr(),
+                block_len,
+                activations.as_ptr(),
+                activation_len,
+                K,
+                ROWS,
+                TOKENS,
+                EXPERTS,
+                output_ptr,
+                output_len,
+            )
+        };
+        assert_eq!(invoke(BLOCK_BYTES - 1, activations.len(), output_len), -1);
+        assert_eq!(invoke(BLOCK_BYTES, activations.len() - 1, output_len), -1);
+        assert_eq!(invoke(BLOCK_BYTES, activations.len(), output_len - 1), -1);
+    }
+}
 // Import necessary for FromCuda
 use crate::r#impl::FromCuda;
 // Import std::ptr for null_mut

@@ -43,6 +43,15 @@ cmake -S "${overlay}" -B "${llama_build}" \
     -DLLAMA_BUILD_TESTS=OFF \
     -DCMAKE_BUILD_TYPE=Release
 cmake --build "${llama_build}" --target llama-server llama-cli -j"$(nproc)"
+c++ -O2 -std=c++17 \
+    -I"${overlay}/ggml/include" \
+    -I"${overlay}/ggml/src" \
+    -I"${overlay}/ggml/src/ggml-cpu" \
+    "${repo_root}/zluda/tests/tq1_upstream_reference.cpp" \
+    -L"${llama_build}/bin" \
+    -Wl,-rpath,"${llama_build}/bin" \
+    -lggml-cpu -lggml-base -lggml -lpthread -ldl -lm \
+    -o /qwen-build/tq1_upstream_reference
 
 cargo build -p zluda --release --no-default-features \
     --features nvidia,embed_cudart,evaluation \
@@ -51,14 +60,22 @@ cargo build -p zluda --release --no-default-features \
 llama_server="${llama_build}/bin/llama-server"
 llama_cli="${llama_build}/bin/llama-cli"
 nvcuda="${rust_target}/release/libnvcuda.so"
+upstream_oracle=/qwen-build/tq1_upstream_reference
 test -x "${llama_server}"
 test -x "${llama_cli}"
 test -s "${nvcuda}"
-symbols="$(nm -D "${nvcuda}" | awk '$3 ~ /^hetgpu_tq1_(register_tensor|try_mul_mat_id)_v1$/ { print $3 }' | LC_ALL=C sort -u)"
-test "${symbols}" = $'hetgpu_tq1_register_tensor_v1\nhetgpu_tq1_try_mul_mat_id_v1' || {
-    echo "libnvcuda.so does not export exactly both TQ1 bridge symbols" >&2
+test -x "${upstream_oracle}"
+symbols="$(nm -D "${nvcuda}" | awk '$3 ~ /^hetgpu_tq1_(evaluate_raw|register_tensor|try_mul_mat_id)_v1$/ { print $3 }' | LC_ALL=C sort -u)"
+test "${symbols}" = $'hetgpu_tq1_evaluate_raw_v1\nhetgpu_tq1_register_tensor_v1\nhetgpu_tq1_try_mul_mat_id_v1' || {
+    echo "libnvcuda.so does not export exactly the three required TQ1 symbols" >&2
     exit 1
 }
+relocations="$(ldd -r "${nvcuda}" 2>&1)"
+if grep -Fq 'undefined symbol:' <<<"${relocations}"; then
+    printf '%s\n' "${relocations}" >&2
+    echo "libnvcuda.so has unresolved runtime symbols" >&2
+    exit 1
+fi
 
 patch_sha256="$(sha256sum "${repo_root}/tools/llama-qwen35-tq1-hetgpu.patch" | awk '{print $1}')"
 hetgpu_commit="$(git -C "${repo_root}" rev-parse HEAD)"
@@ -81,6 +98,7 @@ CUDA_MATH_HEADER_SHA256="${cuda_math_header_sha256}" \
 LLAMA_SERVER="${llama_server}" \
 LLAMA_CLI="${llama_cli}" \
 NVCUDA="${nvcuda}" \
+UPSTREAM_ORACLE="${upstream_oracle}" \
 python3 - <<'PY'
 import hashlib
 import json
@@ -126,11 +144,16 @@ manifest = {
             "path": os.environ["NVCUDA"],
             "sha256": sha256(os.environ["NVCUDA"]),
         },
+        "tq1_upstream_reference": {
+            "path": os.environ["UPSTREAM_ORACLE"],
+            "sha256": sha256(os.environ["UPSTREAM_ORACLE"]),
+        },
     },
     "build_commands": {
         "cmake": "GGML_CUDA=ON GGML_CUDA_F16=ON CMAKE_CUDA_ARCHITECTURES=120",
         "targets": "llama-server llama-cli",
         "cargo_features": "nvidia,embed_cudart,evaluation",
+        "oracle": "pinned llama.cpp quantize_row_q8_K_ref and ggml_vec_dot_tq1_0_q8_K",
     },
 }
 destination = pathlib.Path("/qwen-build/manifest.json")
