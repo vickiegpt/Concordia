@@ -79,6 +79,7 @@ def mode_record(mode):
         "prompt_token_ids": list(range(256)),
         "generated_token_ids": list(range(1000, 1032)),
         "semantic": {"text": "OK", "token_ids": [777]},
+        "hardware_probe": {"token_ids": [777, 778], "n_predict": 2},
         "semantic_hardware_gate": (
             {
                 "routes": {"eligible": 1, "handled": 1, "fallback": 0, "error": 0},

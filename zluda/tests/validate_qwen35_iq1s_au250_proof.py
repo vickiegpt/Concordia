@@ -308,6 +308,7 @@ def _validate_mode(mode, record, audit_sha256):
         "prompt_token_ids",
         "generated_token_ids",
         "semantic",
+        "hardware_probe",
         "semantic_hardware_gate",
         "routes",
         "xrt",
@@ -365,6 +366,17 @@ def _validate_mode(mode, record, audit_sha256):
     ]
     if len(semantic_ids) != 1:
         _fail(f"{mode}.semantic.token_ids must contain exactly one ID")
+    hardware_probe = _mapping(record["hardware_probe"], f"{mode}.hardware_probe")
+    _keys(hardware_probe, ("token_ids", "n_predict"), f"{mode}.hardware_probe")
+    _expect(hardware_probe["n_predict"], 2, f"{mode}.hardware_probe.n_predict")
+    probe_ids = [
+        _integer(item, f"{mode}.hardware_probe.token_ids[{index}]", 0)
+        for index, item in enumerate(
+            _list(hardware_probe["token_ids"], f"{mode}.hardware_probe.token_ids")
+        )
+    ]
+    if len(probe_ids) != 2:
+        _fail(f"{mode}.hardware_probe.token_ids must contain exactly two IDs")
     _validate_request_contract(mode, record, prompt_ids)
     _expect(record["warmup_count"], 1, f"{mode}.warmup_count")
 

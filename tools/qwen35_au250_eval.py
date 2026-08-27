@@ -216,6 +216,12 @@ def semantic_completion_request(prompt):
     return request
 
 
+def hardware_probe_request(prompt):
+    request = completion_request(prompt)
+    request["n_predict"] = 2
+    return request
+
+
 def templated_semantic_prompt(base_url, timeout):
     response = post_json(
         base_url,
@@ -694,19 +700,30 @@ def run(args):
             (proof_dir / "prompt.txt").write_text(prompt_text, encoding="utf-8")
             atomic_json(proof_dir / "prompt-token-ids.json", prompt_ids)
 
+            semantic_prompt = templated_semantic_prompt(base_url, args.request_timeout)
             semantic_result = stream_completion(
                 base_url,
-                semantic_completion_request(templated_semantic_prompt(base_url, args.request_timeout)),
+                semantic_completion_request(semantic_prompt),
                 args.request_timeout,
             )
             semantic_text = semantic_result["text"].strip()
             if semantic_text != "OK":
                 raise EvaluationError(f"semantic response was {semantic_text!r}, expected exact 'OK'")
+            if len(semantic_result["token_ids"]) != 1:
+                raise EvaluationError("semantic gate did not produce exactly one token ID")
+
+            # The first sampled token consumes prompt-evaluation logits.  A
+            # second token forces one genuine single-token decode/MMVQ graph.
+            hardware_probe = stream_completion(
+                base_url,
+                hardware_probe_request(semantic_prompt),
+                args.request_timeout,
+            )
+            if len(hardware_probe["token_ids"]) != 2:
+                raise EvaluationError("hardware probe did not produce exactly two token IDs")
 
             semantic_hardware_gate = None
             if args.evidence_kind == "iq1s":
-                if len(semantic_result["token_ids"]) != 1:
-                    raise EvaluationError("IQ1_S semantic gate did not produce exactly one token ID")
                 semantic_route_records = load_jsonl_records(
                     route_evidence_path,
                     "IQ1_S route evidence",
@@ -809,6 +826,7 @@ def run(args):
         "prompt_token_ids": prompt_ids,
         "generated_token_ids": generated,
         "semantic": {"text": semantic_text, "token_ids": semantic_result["token_ids"]},
+        "hardware_probe": {"token_ids": hardware_probe["token_ids"], "n_predict": 2},
         "semantic_hardware_gate": semantic_hardware_gate,
         "routes": routes,
         "xrt": xrt,

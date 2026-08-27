@@ -86,7 +86,8 @@ class Handler(BaseHTTPRequestHandler):
         with open(requests_path, "a", encoding="utf-8") as stream:
             stream.write(json.dumps({"mode": mode, "body": body}, sort_keys=True) + "\n")
         semantic = isinstance(body["prompt"], str)
-        if semantic and os.environ.get("FAKE_ROUTE_EVIDENCE"):
+        hardware_probe = semantic and body["n_predict"] == 2
+        if hardware_probe and os.environ.get("FAKE_ROUTE_EVIDENCE"):
             route_records = [
                 {
                     "kernel": "flash_attn_f32",
@@ -127,8 +128,8 @@ class Handler(BaseHTTPRequestHandler):
             }
             with open(os.environ["FAKE_XRT_EVIDENCE"], "a", encoding="utf-8") as stream:
                 stream.write(json.dumps(xrt_record, sort_keys=True) + "\n")
-        tokens = [777] if semantic else list(range(1000, 1032))
-        pieces = ["OK"] if semantic else [f"t{index}" for index in range(32)]
+        tokens = ([777, 778] if hardware_probe else [777]) if semantic else list(range(1000, 1032))
+        pieces = (["OK", ""] if hardware_probe else ["OK"]) if semantic else [f"t{index}" for index in range(32)]
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -232,20 +233,24 @@ def test_fake_server_preserves_identical_requests_and_fixed_counts(tmp_path):
     assert cuda["prompt_token_ids"] == hybrid["prompt_token_ids"] == list(range(256))
     assert cuda["generated_token_ids"] == hybrid["generated_token_ids"] == list(range(1000, 1032))
     assert cuda["semantic"] == hybrid["semantic"] == {"text": "OK", "token_ids": [777]}
+    assert cuda["hardware_probe"]["token_ids"] == hybrid["hardware_probe"]["token_ids"] == [777, 778]
     assert cuda["placement"] == {"all_layers_on_gpu": True, "cpu_layers": 0}
     for mode in ("cuda", "hybrid"):
         command = json.loads((tmp_path / mode / "command.json").read_text(encoding="utf-8"))
         assert "--no-warmup" in command
 
     records = [json.loads(line) for line in requests.read_text().splitlines()]
-    assert len(records) == 14  # semantic + warm-up + five measured, for each mode
+    assert len(records) == 16  # semantic + hardware probe + warm-up + five measured, for each mode
     cuda_bodies = [item["body"] for item in records if item["mode"] == "cuda"]
     hybrid_bodies = [item["body"] for item in records if item["mode"] == "hybrid"]
     assert cuda_bodies == hybrid_bodies
     semantic = cuda_bodies[0]
     assert semantic["prompt"] == "templated semantic prompt"
     assert semantic["n_predict"] == 1
-    timed = cuda_bodies[1:]
+    probe = cuda_bodies[1]
+    assert probe["prompt"] == "templated semantic prompt"
+    assert probe["n_predict"] == 2
+    timed = cuda_bodies[2:]
     assert len(timed) == 6
     assert all(body["prompt"] == list(range(256)) for body in timed)
     assert all(body["n_predict"] == 32 for body in timed)
@@ -595,12 +600,13 @@ def test_iq1s_semantic_hardware_gate_passes_before_timed_requests(tmp_path):
     record = json.loads((proof / "hybrid.json").read_text(encoding="utf-8"))
     assert record["schema_version"] == 2
     assert record["semantic"]["token_ids"] == [777]
+    assert record["hardware_probe"]["token_ids"] == [777, 778]
     assert record["semantic_hardware_gate"]["routes"]["handled"] == 1
     assert record["semantic_hardware_gate"]["xrt"]["per_cu_completions"] == [1, 1, 1, 1]
     assert record["model_audit_sha256"] == hashlib.sha256(
         (tmp_path / "model-tensor-audit.json").read_bytes()
     ).hexdigest()
-    assert len(requests.read_text(encoding="utf-8").splitlines()) == 7
+    assert len(requests.read_text(encoding="utf-8").splitlines()) == 8
 
 
 def test_iq1s_semantic_hardware_gate_rejects_inactive_cu_before_warmup(tmp_path):
@@ -608,4 +614,4 @@ def test_iq1s_semantic_hardware_gate_rejects_inactive_cu_before_warmup(tmp_path)
     assert result.returncode != 0
     assert "all four CUs" in result.stderr
     assert not (proof / "hybrid.json").exists()
-    assert len(requests.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(requests.read_text(encoding="utf-8").splitlines()) == 2
