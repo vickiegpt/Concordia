@@ -28,6 +28,40 @@ pub fn hetgpu_v3_batch_plan_for_evaluation(
         .map(|slice| (slice.first(), slice.count()))
         .collect())
 }
+
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_tq1_register_tensor_v1(
+    tensor: *const crate::r#impl::tq1_bridge::HetgpuTq1TensorV1,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::r#impl::tq1_bridge::register_tensor(tensor)
+    }))
+    .unwrap_or(crate::r#impl::tq1_bridge::HETGPU_TQ1_ERROR)
+}
+
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_tq1_try_mul_mat_id_v1(
+    operation: *const crate::r#impl::tq1_bridge::HetgpuTq1MulMatIdV1,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::r#impl::tq1_bridge::try_mul_mat_id(operation)
+    }))
+    .unwrap_or(crate::r#impl::tq1_bridge::HETGPU_TQ1_ERROR)
+}
 // Import necessary for FromCuda
 use crate::r#impl::FromCuda;
 // Import std::ptr for null_mut

@@ -55,7 +55,7 @@ pub(crate) struct TensorRegistry {
 
 static TENSOR_REGISTRY: OnceLock<TensorRegistry> = OnceLock::new();
 
-fn validate_tensor_name(bytes: &[u8], role: ExpertRole) -> Result<(), String> {
+pub(crate) fn classify_tensor_name(bytes: &[u8]) -> Result<ExpertRole, String> {
     let name = std::str::from_utf8(bytes)
         .map_err(|_| "TQ1_0 tensor name is not valid UTF-8".to_string())?;
     let remainder = name
@@ -67,13 +67,18 @@ fn validate_tensor_name(bytes: &[u8], role: ExpertRole) -> Result<(), String> {
     if block.is_empty() || !block.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("invalid TQ1_0 expert tensor name".to_string());
     }
-    let expected_role = match projection {
+    let role = match projection {
         "gate_exps.weight" => ExpertRole::Gate,
         "up_exps.weight" => ExpertRole::Up,
         "down_exps.weight" => ExpertRole::Down,
         "gate_up_exps.weight" => ExpertRole::GateUp,
         _ => return Err("invalid TQ1_0 expert tensor name".to_string()),
     };
+    Ok(role)
+}
+
+fn validate_tensor_name(bytes: &[u8], role: ExpertRole) -> Result<(), String> {
+    let expected_role = classify_tensor_name(bytes)?;
     if role != expected_role {
         return Err("TQ1_0 expert tensor role does not agree with its name".to_string());
     }
@@ -201,6 +206,14 @@ impl TensorRegistry {
         sources.insert(source.identity.name.clone(), Arc::clone(&source));
         Ok(source)
     }
+
+    pub(crate) fn get(&self, name: &str) -> Result<Option<Arc<Tq1TensorSource>>, String> {
+        let sources = self
+            .sources
+            .read()
+            .map_err(|_| "TQ1_0 tensor registry lock poisoned".to_string())?;
+        Ok(sources.get(name).cloned())
+    }
 }
 
 impl Tq1TensorSource {
@@ -208,6 +221,12 @@ impl Tq1TensorSource {
         TENSOR_REGISTRY
             .get_or_init(TensorRegistry::default)
             .register(registration)
+    }
+
+    pub(crate) fn lookup(name: &str) -> Result<Option<Arc<Self>>, String> {
+        TENSOR_REGISTRY
+            .get_or_init(TensorRegistry::default)
+            .get(name)
     }
 
     pub(crate) fn read_exact(&self, relative: u64, output: &mut [u8]) -> Result<(), String> {
