@@ -8,14 +8,19 @@ cublas_shim="${repo_root}/zluda/src/cublas_shim.c"
 runner="${repo_root}/tools/run_qwen35_tq1_au250_hybrid.sh"
 evaluator="${repo_root}/tools/qwen35_au250_eval.py"
 validator="${repo_root}/zluda/tests/validate_qwen35_tq1_au250_proof.py"
+iq1s_runner="${repo_root}/tools/run_qwen35_iq1s_au250_hybrid.sh"
+iq1s_validator="${repo_root}/zluda/tests/validate_qwen35_iq1s_au250_proof.py"
 
 test -x "${wrapper}"
 test -x "${builder}"
 test -x "${runner}"
 test -x "${evaluator}"
+test -x "${iq1s_runner}"
+test -x "${iq1s_validator}"
 bash -n "${wrapper}"
 bash -n "${builder}"
 bash -n "${runner}"
+bash -n "${iq1s_runner}"
 grep -Fq '#define _GNU_SOURCE' "${cublas_shim}"
 
 grep -Fq 'AU250_QWEN_MODEL_ROOT:-/root/models/qwen35-tq1' "${wrapper}"
@@ -79,5 +84,17 @@ grep -Fq 'HETGPU_QWEN_TQ1_STRICT=1' "${runner}"
 grep -Fq 'run_au250_xrt_tq1.sh' "${runner}"
 last_effective_command="$(grep -Ev '^\s*(#|$|echo |printf )' "${runner}" | tail -1)"
 test "${last_effective_command}" = 'python3 "${validator}" "${proof_dir}" | tee "${proof_dir}/summary.json"'
+
+grep -Fq 'qwen35_gguf_audit.py' "${iq1s_runner}"
+grep -Fq 'qwen35-iq1s-route-manifest.json' "${iq1s_runner}"
+test "$(grep -Fc 'HETGPU_QWEN_TQ1_XRT=0' "${iq1s_runner}")" -eq 2
+grep -Fq 'HETGPU_TMATMUL_BACKEND=xrt' "${iq1s_runner}"
+grep -Fq 'HETGPU_BITNET_DISAGGREGATE=1' "${iq1s_runner}"
+grep -Fq 'HETGPU_BITNET_DISAGG_STRICT=1' "${iq1s_runner}"
+grep -Fq 'HETGPU_TMATMUL_HARDWARE_MATMUL=1' "${iq1s_runner}"
+grep -Fq 'run_au250_xrt_tq1.sh' "${iq1s_runner}"
+grep -Fq 'validate_qwen35_iq1s_au250_proof.py' "${iq1s_runner}"
+iq1s_last_effective_command="$(grep -Ev '^\s*(#|$|echo |printf )' "${iq1s_runner}" | tail -1)"
+test "${iq1s_last_effective_command}" = 'python3 "${iq1s_validator}" "${proof_dir}" | tee "${proof_dir}/summary.json"'
 
 echo "PASS: static Qwen AU250 runtime workflow contract"
