@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "default": "gpu",
+  "routes": [
+    {
+      "match": "ggml_type19",
+      "route": "cxl_tmatmul",
+      "reason": "verified Qwen IQ1_S routed-expert tensor"
+    }
+  ]
+}

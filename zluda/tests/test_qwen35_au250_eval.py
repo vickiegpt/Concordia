@@ -86,6 +86,47 @@ class Handler(BaseHTTPRequestHandler):
         with open(requests_path, "a", encoding="utf-8") as stream:
             stream.write(json.dumps({"mode": mode, "body": body}, sort_keys=True) + "\n")
         semantic = isinstance(body["prompt"], str)
+        if semantic and os.environ.get("FAKE_ROUTE_EVIDENCE"):
+            route_records = [
+                {
+                    "kernel": "flash_attn_f32",
+                    "route": "gpu",
+                    "backend": "xrt",
+                    "strict": True,
+                    "xrt_enabled": True,
+                    "hardware_matmul_enabled": False,
+                },
+                {
+                    "kernel": "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
+                    "route": "cxl_tmatmul",
+                    "backend": "xrt",
+                    "strict": True,
+                    "xrt_enabled": True,
+                    "hardware_matmul_enabled": True,
+                },
+            ]
+            with open(os.environ["FAKE_ROUTE_EVIDENCE"], "a", encoding="utf-8") as stream:
+                for record in route_records:
+                    stream.write(json.dumps(record, sort_keys=True) + "\n")
+            per_cu = [2, 1, 1, 0] if os.environ.get("FAKE_XRT_INACTIVE_CU") else [1, 1, 1, 1]
+            xrt_record = {
+                "event": "au250_xrt_iq1s_completed",
+                "evidence": {
+                    "backend": "xrt",
+                    "comparison_status": "pass",
+                    "submission_count": 4,
+                    "completion_count": 4,
+                    "per_cu_submissions": per_cu,
+                    "per_cu_completions": per_cu,
+                    "request_ids": [0, 1, 2, 3],
+                    "stall_codes": [1, 1, 1, 1],
+                    "raw_min": -16,
+                    "raw_max": 19,
+                    "reference_checked_components": 64,
+                },
+            }
+            with open(os.environ["FAKE_XRT_EVIDENCE"], "a", encoding="utf-8") as stream:
+                stream.write(json.dumps(xrt_record, sort_keys=True) + "\n")
         tokens = [777] if semantic else list(range(1000, 1032))
         pieces = ["OK"] if semantic else [f"t{index}" for index in range(32)]
         self.send_response(200)
@@ -282,3 +323,191 @@ def test_render_report_refuses_nonpassing_proof():
     evaluator = load_evaluator()
     with pytest.raises(evaluator.EvaluationError):
         evaluator.render_report({"status": "fail"}, Path("proof"))
+
+
+def iq1s_route(kernel, route="cxl_tmatmul", hardware=True):
+    return {
+        "kernel": kernel,
+        "route": route,
+        "backend": "xrt",
+        "strict": True,
+        "xrt_enabled": True,
+        "hardware_matmul_enabled": hardware,
+    }
+
+
+def iq1s_xrt_record(**overrides):
+    evidence = {
+        "backend": "xrt",
+        "comparison_status": "pass",
+        "submission_count": 4,
+        "completion_count": 4,
+        "per_cu_submissions": [1, 1, 1, 1],
+        "per_cu_completions": [1, 1, 1, 1],
+        "request_ids": [0, 1, 2, 3],
+        "stall_codes": [1, 1, 1, 1],
+        "raw_min": -11,
+        "raw_max": 17,
+        "reference_checked_components": 64,
+    }
+    evidence.update(overrides)
+    return {"event": "au250_xrt_iq1s_completed", "evidence": evidence}
+
+
+def valid_iq1s_routes():
+    return [
+        iq1s_route("_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii"),
+        iq1s_route("_Z9mul_mat_qIL9ggml_type16ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii", "gpu", False),
+        iq1s_route("flash_attn_f32", "gpu", False),
+        iq1s_route("mul_mat_q_stream_k_fixup_ggml_type19", "gpu", False),
+    ]
+
+
+def test_parse_iq1s_routing_selects_only_exact_type19_matmul_and_physical_xrt():
+    evaluator = load_evaluator()
+
+    routes, xrt, attention = evaluator.parse_iq1s_routing(
+        valid_iq1s_routes(), [iq1s_xrt_record()]
+    )
+
+    assert routes == {"eligible": 1, "handled": 1, "fallback": 0, "error": 0}
+    assert xrt["submission_count"] == xrt["completion_count"] == 4
+    assert xrt["per_cu_submissions"] == xrt["per_cu_completions"] == [1, 1, 1, 1]
+    assert xrt["request_ids"] == [(1 << 32) + index for index in range(4)]
+    assert attention == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["fallback", "reject", "missing_xrt", "xrt_without_route", "duplicate_id", "wrong_cu", "zero_stall", "raw_overflow"],
+)
+def test_parse_iq1s_routing_rejects_incomplete_or_invalid_evidence(mutation):
+    evaluator = load_evaluator()
+    routes = valid_iq1s_routes()
+    xrt = [iq1s_xrt_record()]
+    if mutation == "fallback":
+        routes[0]["route"] = "gpu"
+        routes[0]["hardware_matmul_enabled"] = False
+    elif mutation == "reject":
+        routes[0]["route"] = "reject"
+        routes[0]["hardware_matmul_enabled"] = False
+    elif mutation == "missing_xrt":
+        xrt = []
+    elif mutation == "xrt_without_route":
+        routes = routes[1:]
+    elif mutation == "duplicate_id":
+        xrt = [iq1s_xrt_record(request_ids=[0, 1, 1, 3])]
+    elif mutation == "wrong_cu":
+        xrt = [iq1s_xrt_record(per_cu_completions=[2, 1, 1, 0])]
+    elif mutation == "zero_stall":
+        xrt = [iq1s_xrt_record(stall_codes=[1, 1, 0, 1])]
+    elif mutation == "raw_overflow":
+        xrt = [iq1s_xrt_record(raw_max=4097)]
+
+    with pytest.raises(evaluator.EvaluationError):
+        evaluator.parse_iq1s_routing(routes, xrt)
+
+
+def test_iq1s_jsonl_reader_rejects_malformed_and_empty_files(tmp_path):
+    evaluator = load_evaluator()
+    malformed = tmp_path / "malformed.jsonl"
+    malformed.write_text('{"route":\n', encoding="utf-8")
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("\n", encoding="utf-8")
+
+    with pytest.raises(evaluator.EvaluationError, match="invalid IQ1_S route evidence"):
+        evaluator.load_jsonl_records(malformed, "IQ1_S route evidence", required=True)
+    with pytest.raises(evaluator.EvaluationError, match="is empty"):
+        evaluator.load_jsonl_records(empty, "IQ1_S XRT evidence", required=True)
+
+
+def run_iq1s_mode(tmp_path, inactive_cu=False):
+    server = tmp_path / "fake-iq1s-server.py"
+    make_executable(server, FAKE_SERVER)
+    (tmp_path / "seed.txt").write_text("seed " * 300, encoding="utf-8")
+    (tmp_path / "health.txt").write_text("Level 0 : 0x0 (GOOD)\n", encoding="utf-8")
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"model")
+    model_hash = hashlib.sha256(model.read_bytes()).hexdigest()
+    audit = tmp_path / "model-tensor-audit.json"
+    audit.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "pass",
+                "model_sha256": model_hash,
+                "architecture": "qwen35moe",
+                "routed_expert_count": 180,
+                "routed_expert_types": {"IQ1_S": 141, "IQ2_XXS": 24, "IQ3_S": 4, "MXFP4": 11},
+                "tq1_0_total": 0,
+                "non_expert_iq1s": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    proof = tmp_path / "hybrid-iq1s"
+    routes = proof / "routes.jsonl"
+    xrt = proof / "xrt.jsonl"
+    requests = tmp_path / "iq1s-requests.jsonl"
+    env = os.environ.copy()
+    env.update(
+        {
+            "FAKE_MODE": "hybrid",
+            "FAKE_REQUESTS": str(requests),
+            "FAKE_ROUTE_EVIDENCE": str(routes),
+            "FAKE_XRT_EVIDENCE": str(xrt),
+        }
+    )
+    if inactive_cu:
+        env["FAKE_XRT_INACTIVE_CU"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(EVALUATOR),
+            "--mode", "hybrid",
+            "--evidence-kind", "iq1s",
+            "--server", str(server),
+            "--model", str(model),
+            "--prompt-seed", str(tmp_path / "seed.txt"),
+            "--proof-dir", str(proof),
+            "--port", str(free_port()),
+            "--threads", "4",
+            "--model-size", str(model.stat().st_size),
+            "--model-sha256", model_hash,
+            "--binary-sha256", hashlib.sha256(server.read_bytes()).hexdigest(),
+            "--health-fixture", str(tmp_path / "health.txt"),
+            "--route-evidence", str(routes),
+            "--xrt-evidence", str(xrt),
+            "--model-audit", str(audit),
+            "--require-routing-evidence",
+        ],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    return result, proof, requests
+
+
+def test_iq1s_semantic_hardware_gate_passes_before_timed_requests(tmp_path):
+    result, proof, requests = run_iq1s_mode(tmp_path)
+    assert result.returncode == 0, result.stderr
+    record = json.loads((proof / "hybrid.json").read_text(encoding="utf-8"))
+    assert record["schema_version"] == 2
+    assert record["semantic"]["token_ids"] == [777]
+    assert record["semantic_hardware_gate"]["routes"]["handled"] == 1
+    assert record["semantic_hardware_gate"]["xrt"]["per_cu_completions"] == [1, 1, 1, 1]
+    assert record["model_audit_sha256"] == hashlib.sha256(
+        (tmp_path / "model-tensor-audit.json").read_bytes()
+    ).hexdigest()
+    assert len(requests.read_text(encoding="utf-8").splitlines()) == 7
+
+
+def test_iq1s_semantic_hardware_gate_rejects_inactive_cu_before_warmup(tmp_path):
+    result, proof, requests = run_iq1s_mode(tmp_path, inactive_cu=True)
+    assert result.returncode != 0
+    assert "all four CUs" in result.stderr
+    assert not (proof / "hybrid.json").exists()
+    assert len(requests.read_text(encoding="utf-8").splitlines()) == 1

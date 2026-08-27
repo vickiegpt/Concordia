@@ -24,6 +24,19 @@ SEMANTIC_PROMPT = "Reply with exactly OK and no other text."
 MODEL_SIZE = 94_155_830_880
 MODEL_SHA256 = "0a32c2702fbb61934960cfeef34524b81ec6d9267158f246d45fc86f5aaa7568"
 LLAMA_REVISION = "925e1179947ea0c0ebfb0032df18af3a729822be"
+EXPECTED_EXPERT_TYPES = {"IQ1_S": 141, "IQ2_XXS": 24, "IQ3_S": 4, "MXFP4": 11}
+ATTENTION_MARKERS = (
+    "attention",
+    "attn",
+    "flash",
+    "softmax",
+    "qkv",
+    "query",
+    "key",
+    "value",
+    "kq",
+    "qk",
+)
 
 
 class EvaluationError(RuntimeError):
@@ -374,6 +387,230 @@ def parse_routing(mode, evidence_path, require_evidence):
     }
 
 
+def zero_xrt_evidence():
+    return {
+        "submission_count": 0,
+        "completion_count": 0,
+        "per_cu_submissions": [0, 0, 0, 0],
+        "per_cu_completions": [0, 0, 0, 0],
+        "request_ids": [],
+        "stall_codes": [],
+        "raw_min": 0,
+        "raw_max": 0,
+        "reference_checked_components": 0,
+        "operation_count": 0,
+    }
+
+
+def load_jsonl_records(path, label, required):
+    path = Path(path)
+    if not path.exists():
+        if required:
+            raise EvaluationError(f"{label} was not created: {path}")
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise EvaluationError(f"cannot read {label} {path}: {error}") from error
+    records = []
+    for line_number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise EvaluationError(
+                f"invalid {label} line {line_number}: {error}"
+            ) from error
+        if not isinstance(record, dict):
+            raise EvaluationError(f"{label} line {line_number} is not a JSON object")
+        records.append(record)
+    if required and not records:
+        raise EvaluationError(f"{label} is empty")
+    return records
+
+
+def is_iq1s_matmul(kernel):
+    name = str(kernel).lower()
+    return (
+        "ggml_type19" in name
+        and "stream_k_fixup" not in name
+        and ("mul_mat_q" in name or "mul_mat_vec_q" in name)
+    )
+
+
+def is_attention(kernel):
+    name = str(kernel).lower()
+    return any(marker in name for marker in ATTENTION_MARKERS)
+
+
+def _is_integer(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _four_nonnegative_integers(value, label):
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or not all(_is_integer(item) and item >= 0 for item in value)
+    ):
+        raise EvaluationError(f"IQ1_S {label} must contain four nonnegative integers")
+    return value
+
+
+def parse_iq1s_routing(route_records, xrt_records):
+    if not isinstance(route_records, list) or not all(
+        isinstance(record, dict) for record in route_records
+    ):
+        raise EvaluationError("IQ1_S route evidence must be a list of objects")
+    if not isinstance(xrt_records, list) or not all(
+        isinstance(record, dict) for record in xrt_records
+    ):
+        raise EvaluationError("IQ1_S XRT evidence must be a list of objects")
+
+    eligible = [record for record in route_records if is_iq1s_matmul(record.get("kernel"))]
+    handled = [
+        record
+        for record in eligible
+        if record.get("route") == "cxl_tmatmul"
+        and record.get("backend") == "xrt"
+        and record.get("xrt_enabled") is True
+        and record.get("hardware_matmul_enabled") is True
+    ]
+    fallback = [
+        record for record in eligible if record.get("route") in ("gpu", "fallback")
+    ]
+    errors = [record for record in eligible if record.get("route") in ("reject", "error")]
+    routes = {
+        "eligible": len(eligible),
+        "handled": len(handled),
+        "fallback": len(fallback),
+        "error": len(errors),
+    }
+    if not eligible:
+        raise EvaluationError("no eligible IQ1_S MMQ/MMVQ route was observed")
+    if len(handled) != len(eligible) or fallback or errors:
+        raise EvaluationError(f"IQ1_S routing was not strict and complete: {routes}")
+    if len(handled) != len(xrt_records):
+        raise EvaluationError(
+            "IQ1_S route/XRT operation counts differ: "
+            f"{len(handled)} routes, {len(xrt_records)} completions"
+        )
+
+    aggregate = zero_xrt_evidence()
+    global_request_ids = set()
+    for operation_index, record in enumerate(xrt_records):
+        if record.get("event") != "au250_xrt_iq1s_completed":
+            raise EvaluationError(f"unexpected IQ1_S XRT event: {record.get('event')!r}")
+        evidence = record.get("evidence")
+        if not isinstance(evidence, dict):
+            raise EvaluationError("IQ1_S XRT record omitted its evidence object")
+        if evidence.get("backend") != "xrt" or evidence.get("comparison_status") != "pass":
+            raise EvaluationError("IQ1_S XRT comparison did not pass")
+        submissions = evidence.get("submission_count")
+        completions = evidence.get("completion_count")
+        if (
+            not _is_integer(submissions)
+            or submissions <= 0
+            or not _is_integer(completions)
+            or completions != submissions
+        ):
+            raise EvaluationError("IQ1_S XRT submission/completion counts are invalid")
+        per_submit = _four_nonnegative_integers(
+            evidence.get("per_cu_submissions"), "per-CU submissions"
+        )
+        per_complete = _four_nonnegative_integers(
+            evidence.get("per_cu_completions"), "per-CU completions"
+        )
+        if sum(per_submit) != submissions or sum(per_complete) != completions:
+            raise EvaluationError("IQ1_S XRT per-CU totals do not account for every request")
+        if per_submit != per_complete:
+            raise EvaluationError("IQ1_S XRT per-CU submissions and completions differ")
+
+        local_ids = evidence.get("request_ids")
+        if (
+            not isinstance(local_ids, list)
+            or len(local_ids) != completions
+            or not all(_is_integer(value) and 0 <= value <= 0xFFFF_FFFF for value in local_ids)
+            or len(set(local_ids)) != len(local_ids)
+        ):
+            raise EvaluationError("IQ1_S XRT physical request IDs are invalid or duplicated")
+        namespaced_ids = [((operation_index + 1) << 32) | value for value in local_ids]
+        if any(value in global_request_ids for value in namespaced_ids):
+            raise EvaluationError("IQ1_S XRT aggregate request IDs are duplicated")
+        global_request_ids.update(namespaced_ids)
+
+        stalls = evidence.get("stall_codes")
+        if (
+            not isinstance(stalls, list)
+            or len(stalls) != completions
+            or not all(_is_integer(value) and value != 0 for value in stalls)
+        ):
+            raise EvaluationError("IQ1_S XRT STALL completion evidence is invalid")
+        raw_min = evidence.get("raw_min")
+        raw_max = evidence.get("raw_max")
+        if (
+            not _is_integer(raw_min)
+            or not _is_integer(raw_max)
+            or not (-4096 <= raw_min <= raw_max <= 4096)
+        ):
+            raise EvaluationError("IQ1_S XRT raw result is outside [-4096, 4096]")
+        checked = evidence.get("reference_checked_components")
+        if not _is_integer(checked) or checked <= 0:
+            raise EvaluationError("IQ1_S XRT evidence lacks reference-checked components")
+
+        aggregate["submission_count"] += submissions
+        aggregate["completion_count"] += completions
+        aggregate["per_cu_submissions"] = [
+            left + right for left, right in zip(aggregate["per_cu_submissions"], per_submit)
+        ]
+        aggregate["per_cu_completions"] = [
+            left + right for left, right in zip(aggregate["per_cu_completions"], per_complete)
+        ]
+        aggregate["request_ids"].extend(namespaced_ids)
+        aggregate["stall_codes"].extend(stalls)
+        aggregate["reference_checked_components"] += checked
+        if operation_index == 0:
+            aggregate["raw_min"] = raw_min
+            aggregate["raw_max"] = raw_max
+        else:
+            aggregate["raw_min"] = min(aggregate["raw_min"], raw_min)
+            aggregate["raw_max"] = max(aggregate["raw_max"], raw_max)
+    aggregate["operation_count"] = len(xrt_records)
+    attention = sum(
+        is_attention(record.get("kernel")) and record.get("route") == "gpu"
+        for record in route_records
+    )
+    return routes, aggregate, attention
+
+
+def load_model_audit(path, expected_model_sha256):
+    path = Path(path)
+    try:
+        raw = path.read_bytes()
+        audit = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise EvaluationError(f"cannot read Qwen model tensor audit: {error}") from error
+    if not isinstance(audit, dict):
+        raise EvaluationError("Qwen model tensor audit is not a JSON object")
+    required = {
+        "schema_version": 1,
+        "status": "pass",
+        "model_sha256": expected_model_sha256,
+        "architecture": "qwen35moe",
+        "routed_expert_count": 180,
+        "routed_expert_types": EXPECTED_EXPERT_TYPES,
+        "tq1_0_total": 0,
+        "non_expert_iq1s": [],
+    }
+    for key, expected in required.items():
+        if audit.get(key) != expected:
+            raise EvaluationError(
+                f"Qwen model tensor audit {key} is {audit.get(key)!r}, expected {expected!r}"
+            )
+    return audit, hashlib.sha256(raw).hexdigest()
+
+
 def stop_process(process):
     if process.poll() is not None:
         return process.returncode
@@ -394,6 +631,33 @@ def run(args):
     if sha256(server) != args.binary_sha256:
         raise EvaluationError("llama-server SHA-256 mismatch")
 
+    model_audit = None
+    model_audit_sha256 = None
+    route_evidence_path = None
+    xrt_evidence_path = None
+    if args.evidence_kind == "iq1s":
+        if not args.model_audit:
+            raise EvaluationError("IQ1_S evaluation requires --model-audit")
+        model_audit, model_audit_sha256 = load_model_audit(
+            args.model_audit, args.model_sha256
+        )
+        route_evidence_path = Path(
+            args.route_evidence
+            or os.environ.get("HETGPU_BITNET_ROUTE_LOG", proof_dir / "routes.jsonl")
+        )
+        xrt_evidence_path = Path(
+            args.xrt_evidence
+            or os.environ.get("HETGPU_XRT_EXECUTION_LOG", proof_dir / "xrt.jsonl")
+        )
+        expected_parent = proof_dir.resolve()
+        for path, label in (
+            (route_evidence_path, "route evidence"),
+            (xrt_evidence_path, "XRT evidence"),
+        ):
+            if path.resolve().parent != expected_parent:
+                raise EvaluationError(f"IQ1_S {label} must be directly beneath {proof_dir}")
+            path.unlink(missing_ok=True)
+
     before_health = capture_health(args, proof_dir, "before")
     command = [
         str(server), "--model", str(model), "--ctx-size", "512", "--n-gpu-layers", "999",
@@ -408,8 +672,11 @@ def run(args):
     atomic_json(proof_dir / "environment.json", environment_record)
     stdout_path = proof_dir / "server.stdout.log"
     stderr_path = proof_dir / "server.stderr.log"
-    evidence_path = Path(os.environ.get("HETGPU_TQ1_EVIDENCE_LOG", proof_dir / "tq1-evidence.jsonl"))
-    evidence_path.unlink(missing_ok=True)
+    tq1_evidence_path = Path(
+        os.environ.get("HETGPU_TQ1_EVIDENCE_LOG", proof_dir / "tq1-evidence.jsonl")
+    )
+    if args.evidence_kind == "tq1":
+        tq1_evidence_path.unlink(missing_ok=True)
     process = None
     try:
         with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
@@ -428,6 +695,37 @@ def run(args):
             semantic_text = semantic_result["text"].strip()
             if semantic_text != "OK":
                 raise EvaluationError(f"semantic response was {semantic_text!r}, expected exact 'OK'")
+
+            semantic_hardware_gate = None
+            if args.evidence_kind == "iq1s":
+                if len(semantic_result["token_ids"]) != 1:
+                    raise EvaluationError("IQ1_S semantic gate did not produce exactly one token ID")
+                semantic_route_records = load_jsonl_records(
+                    route_evidence_path,
+                    "IQ1_S route evidence",
+                    required=args.mode == "hybrid",
+                )
+                semantic_xrt_records = load_jsonl_records(
+                    xrt_evidence_path,
+                    "IQ1_S XRT evidence",
+                    required=args.mode == "hybrid",
+                )
+                if args.mode == "cuda":
+                    if semantic_route_records or semantic_xrt_records:
+                        raise EvaluationError("CUDA-only semantic gate unexpectedly created IQ1_S evidence")
+                else:
+                    gate_routes, gate_xrt, gate_attention = parse_iq1s_routing(
+                        semantic_route_records, semantic_xrt_records
+                    )
+                    if gate_attention <= 0:
+                        raise EvaluationError("IQ1_S semantic gate observed no native GPU attention")
+                    if not all(value > 0 for value in gate_xrt["per_cu_completions"]):
+                        raise EvaluationError("IQ1_S semantic gate did not activate all four CUs")
+                    semantic_hardware_gate = {
+                        "routes": gate_routes,
+                        "xrt": gate_xrt,
+                        "gpu_attention_routes": gate_attention,
+                    }
 
             timed_request = completion_request(prompt_ids)
             warmups = [stream_completion(base_url, timed_request, args.request_timeout) for _ in range(WARMUPS)]
@@ -449,7 +747,37 @@ def run(args):
     log_text = stderr_path.read_text(encoding="utf-8", errors="replace")
     placement = parse_placement(log_text)
     load_ms = parse_load_ms(log_text)
-    routes, xrt = parse_routing(args.mode, evidence_path, args.require_routing_evidence)
+    if args.evidence_kind == "tq1":
+        routes, xrt = parse_routing(
+            args.mode, tq1_evidence_path, args.require_routing_evidence
+        )
+        gpu_attention_routes = None
+    elif args.mode == "cuda":
+        route_records = load_jsonl_records(
+            route_evidence_path, "IQ1_S route evidence", required=False
+        )
+        xrt_records = load_jsonl_records(
+            xrt_evidence_path, "IQ1_S XRT evidence", required=False
+        )
+        if route_records or xrt_records:
+            raise EvaluationError("CUDA-only mode unexpectedly created IQ1_S route/XRT evidence")
+        routes = {"eligible": 0, "handled": 0, "fallback": 0, "error": 0}
+        xrt = zero_xrt_evidence()
+        gpu_attention_routes = 0
+    else:
+        route_records = load_jsonl_records(
+            route_evidence_path,
+            "IQ1_S route evidence",
+            required=args.require_routing_evidence,
+        )
+        xrt_records = load_jsonl_records(
+            xrt_evidence_path,
+            "IQ1_S XRT evidence",
+            required=args.require_routing_evidence,
+        )
+        routes, xrt, gpu_attention_routes = parse_iq1s_routing(
+            route_records, xrt_records
+        )
     measurements = []
     for result in measured:
         timings = result["timings"]
@@ -461,7 +789,8 @@ def run(args):
             "end_to_end_ms": result["end_to_end_ms"],
         })
     record = {
-        "schema_version": 1,
+        "schema_version": 2 if args.evidence_kind == "iq1s" else 1,
+        "evidence_kind": args.evidence_kind,
         "mode": args.mode,
         "model_size": args.model_size,
         "model_sha256": args.model_sha256,
@@ -473,8 +802,11 @@ def run(args):
         "prompt_token_ids": prompt_ids,
         "generated_token_ids": generated,
         "semantic": {"text": semantic_text, "token_ids": semantic_result["token_ids"]},
+        "semantic_hardware_gate": semantic_hardware_gate,
         "routes": routes,
         "xrt": xrt,
+        "gpu_attention_routes": gpu_attention_routes,
+        "model_audit_sha256": model_audit_sha256,
         "measurements": measurements,
         "process": {"exit_code": 0, "server_termination_code": server_exit},
         "device_health": {"before": before_health, "after": after_health},
@@ -609,6 +941,7 @@ def render_report_command(arguments):
 def parser():
     result = argparse.ArgumentParser()
     result.add_argument("--mode", choices=("cuda", "hybrid"), required=True)
+    result.add_argument("--evidence-kind", choices=("tq1", "iq1s"), default="tq1")
     result.add_argument("--server", required=True)
     result.add_argument("--model", required=True)
     result.add_argument("--prompt-seed", required=True)
@@ -626,6 +959,9 @@ def parser():
     result.add_argument("--xbutil", default="xbutil")
     result.add_argument("--fpga-bdf", default="0000:64:00.1")
     result.add_argument("--health-fixture")
+    result.add_argument("--route-evidence")
+    result.add_argument("--xrt-evidence")
+    result.add_argument("--model-audit")
     result.add_argument("--require-routing-evidence", action="store_true")
     return result
 
@@ -638,7 +974,8 @@ def main(argv=None):
     try:
         result = run(args)
     except (EvaluationError, OSError, ValueError, TypeError) as error:
-        print(f"QWEN_TQ1_EVALUATION_FAILED: {error}", file=sys.stderr)
+        prefix = "QWEN_IQ1S_EVALUATION_FAILED" if args.evidence_kind == "iq1s" else "QWEN_TQ1_EVALUATION_FAILED"
+        print(f"{prefix}: {error}", file=sys.stderr)
         return 1
     print(json.dumps({"mode": result["mode"], "status": "pass"}, sort_keys=True))
     return 0
