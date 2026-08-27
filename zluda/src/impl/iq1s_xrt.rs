@@ -740,18 +740,9 @@ fn raw_slot_index(
 }
 
 pub(crate) fn execute_captured(captured: &CapturedLaunch) -> Result<XrtIq1sResult, String> {
-    static POOL: OnceLock<Mutex<Result<XrtTmatmulPool, String>>> = OnceLock::new();
-    let pool = POOL.get_or_init(|| {
-        Mutex::new(XrtTmatmulPool::open_from_env().map_err(|error| error.to_string()))
-    });
-    let mut guard = pool
-        .lock()
-        .map_err(|_| "AU250 XRT pool mutex poisoned".to_string())?;
-    let pool = match &mut *guard {
-        Ok(pool) => pool,
-        Err(error) => return Err(error.clone()),
-    };
-    let result = execute_captured_with(captured, pool)?;
+    let result = super::xrt_tmatmul::with_persistent_pool(|pool| {
+        execute_captured_with(captured, pool)
+    })?;
     append_execution_log_from_env(&result.evidence)?;
     Ok(result)
 }

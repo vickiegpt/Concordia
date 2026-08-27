@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const AXI_INSTANCE_STRIDE: u32 = 0x4000;
@@ -716,10 +716,37 @@ pub(crate) struct XrtTmatmulPool {
     inner: Pool<RealXrt>,
 }
 
+static PERSISTENT_POOL: OnceLock<Mutex<Result<XrtTmatmulPool, String>>> = OnceLock::new();
+
 // SAFETY: every raw XRT handle is exclusively owned by this pool, all access is
-// serialized by the IQ1_S executor's process-global mutex, and destruction is
+// serialized by the quantized executors' process-global mutex, and destruction is
 // performed only by the owning pool. Raw-handle owners deliberately are not Sync.
 unsafe impl Send for XrtTmatmulPool {}
+
+fn with_pool_state<P, T>(
+    state: &OnceLock<Mutex<Result<P, String>>>,
+    initialize: impl FnOnce() -> Result<P, String>,
+    operation: impl FnOnce(&mut P) -> Result<T, String>,
+) -> Result<T, String> {
+    let state = state.get_or_init(|| Mutex::new(initialize()));
+    let mut guard = state
+        .lock()
+        .map_err(|_| "AU250 XRT pool mutex poisoned".to_string())?;
+    match &mut *guard {
+        Ok(pool) => operation(pool),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+pub(crate) fn with_persistent_pool<T>(
+    operation: impl FnOnce(&mut XrtTmatmulPool) -> Result<T, String>,
+) -> Result<T, String> {
+    with_pool_state(
+        &PERSISTENT_POOL,
+        || XrtTmatmulPool::open_from_env().map_err(|error| error.to_string()),
+        operation,
+    )
+}
 
 impl XrtTmatmulPool {
     pub(crate) fn open_from_env() -> Result<Self, XrtTmatmulError> {
@@ -1621,7 +1648,8 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::VecDeque;
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
 
     const DEVICE_HANDLE: usize = 1;
     const KERNEL_HANDLE: usize = 2;
@@ -1638,6 +1666,60 @@ mod tests {
         sv v1, PARAM_OUTPUT
         stall
     "#;
+
+    #[test]
+    fn persistent_pool_state_initializes_once_and_serializes_mutation() {
+        let state = OnceLock::<Mutex<Result<usize, String>>>::new();
+        let initializations = AtomicUsize::new(0);
+
+        let first = with_pool_state(
+            &state,
+            || {
+                initializations.fetch_add(1, Ordering::SeqCst);
+                Ok(0)
+            },
+            |value| {
+                *value += 1;
+                Ok(*value)
+            },
+        )
+        .unwrap();
+        let second = with_pool_state(
+            &state,
+            || {
+                initializations.fetch_add(1, Ordering::SeqCst);
+                Ok(0)
+            },
+            |value| {
+                *value += 1;
+                Ok(*value)
+            },
+        )
+        .unwrap();
+
+        assert_eq!((first, second), (1, 2));
+        assert_eq!(initializations.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn persistent_pool_state_caches_initialization_error() {
+        let state = OnceLock::<Mutex<Result<usize, String>>>::new();
+        let initializations = AtomicUsize::new(0);
+
+        for _ in 0..2 {
+            let error = with_pool_state(
+                &state,
+                || {
+                    initializations.fetch_add(1, Ordering::SeqCst);
+                    Err("fixture open failed".to_string())
+                },
+                |_| Ok(()),
+            )
+            .unwrap_err();
+            assert_eq!(error, "fixture open failed");
+        }
+        assert_eq!(initializations.load(Ordering::SeqCst), 1);
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Event {
