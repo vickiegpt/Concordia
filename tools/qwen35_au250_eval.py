@@ -265,9 +265,28 @@ def parse_placement(log_text):
 
 def parse_load_ms(log_text):
     matches = re.findall(r"load time\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*ms", log_text, re.IGNORECASE)
-    if not matches:
-        raise EvaluationError("server log did not report model load time")
-    value = float(matches[-1])
+    if matches:
+        value = float(matches[-1])
+    else:
+        timestamp = r"(\d+)\.(\d{2})\.(\d{3})\.(\d{3})"
+        started = re.search(
+            rf"^{timestamp}.*\bload_model:\s+loading model\b",
+            log_text,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        finished = re.search(
+            rf"^{timestamp}.*\bllama_server:\s+model loaded\b",
+            log_text,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if started is None or finished is None:
+            raise EvaluationError("server log did not report model load time")
+
+        def elapsed_ms(match):
+            minutes, seconds, milliseconds, microseconds = map(int, match.groups())
+            return (minutes * 60 + seconds) * 1000 + milliseconds + microseconds / 1000.0
+
+        value = elapsed_ms(finished) - elapsed_ms(started)
     if not math.isfinite(value) or value < 0:
         raise EvaluationError("server reported invalid model load time")
     return value

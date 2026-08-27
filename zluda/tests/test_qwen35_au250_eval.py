@@ -212,6 +212,18 @@ def test_rejects_non_roundtripping_prompt(tmp_path):
     assert "exactly 256" in evaluator_source.lower()
 
 
+def test_parse_load_ms_uses_verbose_server_timestamps():
+    evaluator = load_evaluator()
+    log = "\n".join(
+        [
+            "0.00.120.675 I srv    load_model: loading model '/models/qwen.gguf'",
+            "1.50.407.110 I srv  llama_server: model loaded",
+        ]
+    )
+
+    assert evaluator.parse_load_ms(log) == pytest.approx(110_286.435)
+
+
 def metric(median, minimum, maximum, stdev):
     return {
         "median": median,
