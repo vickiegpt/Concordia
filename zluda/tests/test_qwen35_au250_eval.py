@@ -239,6 +239,9 @@ def test_fake_server_preserves_identical_requests_and_fixed_counts(tmp_path):
     cuda_bodies = [item["body"] for item in records if item["mode"] == "cuda"]
     hybrid_bodies = [item["body"] for item in records if item["mode"] == "hybrid"]
     assert cuda_bodies == hybrid_bodies
+    semantic = cuda_bodies[0]
+    assert semantic["prompt"] == "templated semantic prompt"
+    assert semantic["n_predict"] == 1
     timed = cuda_bodies[1:]
     assert len(timed) == 6
     assert all(body["prompt"] == list(range(256)) for body in timed)

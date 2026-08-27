@@ -210,6 +210,12 @@ def completion_request(prompt):
     }
 
 
+def semantic_completion_request(prompt):
+    request = completion_request(prompt)
+    request["n_predict"] = 1
+    return request
+
+
 def templated_semantic_prompt(base_url, timeout):
     response = post_json(
         base_url,
@@ -689,7 +695,7 @@ def run(args):
 
             semantic_result = stream_completion(
                 base_url,
-                completion_request(templated_semantic_prompt(base_url, args.request_timeout)),
+                semantic_completion_request(templated_semantic_prompt(base_url, args.request_timeout)),
                 args.request_timeout,
             )
             semantic_text = semantic_result["text"].strip()
