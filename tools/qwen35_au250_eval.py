@@ -817,27 +817,7 @@ def run(args):
     return record
 
 
-def render_report(normalized, proof_path):
-    if not isinstance(normalized, dict) or normalized.get("status") != "pass":
-        raise EvaluationError("report generation requires a passing normalized proof")
-    try:
-        cuda = normalized["modes"]["cuda"]["metrics"]
-        hybrid_mode = normalized["modes"]["hybrid"]
-        hybrid = hybrid_mode["metrics"]
-        routes = hybrid_mode["routes"]
-        xrt = hybrid_mode["xrt"]
-    except (KeyError, TypeError) as error:
-        raise EvaluationError(f"normalized proof omitted report evidence: {error}") from error
-    if normalized.get("token_ids_match") is not True or normalized.get("all_cus_active") is not True:
-        raise EvaluationError("normalized proof did not validate tokens and all four CUs")
-    if normalized.get("eligible_route_coverage") != 1.0:
-        raise EvaluationError("normalized proof route coverage is not 100%")
-    if routes.get("eligible", 0) <= 0 or routes.get("handled") != routes.get("eligible") or routes.get("fallback") or routes.get("error"):
-        raise EvaluationError("normalized proof routing is not strict and complete")
-    per_cu = xrt.get("per_cu_completions")
-    if not isinstance(per_cu, list) or len(per_cu) != 4 or not all(isinstance(value, int) and value > 0 for value in per_cu):
-        raise EvaluationError("normalized proof does not contain four active CUs")
-
+def _report_metric_rows(cuda, hybrid):
     metric_specs = (
         ("Prompt tokens/s", "prompt_tokens_per_second"),
         ("Generation tokens/s", "generation_tokens_per_second"),
@@ -870,6 +850,191 @@ def render_report(normalized, proof_path):
             f"{cuda_minimum:.6g}-{cuda_maximum:.6g} / {hybrid_minimum:.6g}-{hybrid_maximum:.6g} | "
             f"{cuda_stdev:.6g} / {hybrid_stdev:.6g} |"
         )
+    return rows
+
+
+def render_iq1s_report(normalized, proof_path):
+    if not isinstance(normalized, dict) or normalized.get("schema_version") != 2:
+        raise EvaluationError("IQ1_S report generation requires a schema-2 normalized proof")
+    if normalized.get("status") != "pass":
+        raise EvaluationError("IQ1_S report generation requires a passing normalized proof")
+    try:
+        model = normalized["model"]
+        audit = normalized["model_audit"]
+        cuda_mode = normalized["modes"]["cuda"]
+        hybrid_mode = normalized["modes"]["hybrid"]
+        routes = hybrid_mode["routes"]
+        xrt = hybrid_mode["xrt"]
+        numerical_cases = normalized["numerical"]["cases"]
+    except (KeyError, TypeError) as error:
+        raise EvaluationError(f"normalized IQ1_S proof omitted report evidence: {error}") from error
+
+    expected_model = {
+        "size": MODEL_SIZE,
+        "sha256": MODEL_SHA256,
+        "architecture": "qwen35moe",
+        "llama_revision": LLAMA_REVISION,
+    }
+    if not isinstance(model, dict) or any(model.get(key) != value for key, value in expected_model.items()):
+        raise EvaluationError("normalized IQ1_S proof model identity is invalid")
+    binary_sha256 = model.get("binary_sha256")
+    if not isinstance(binary_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", binary_sha256) is None:
+        raise EvaluationError("normalized IQ1_S proof binary identity is invalid")
+
+    if not isinstance(audit, dict):
+        raise EvaluationError("normalized IQ1_S proof model audit is invalid")
+    if (
+        audit.get("routed_expert_count") != 180
+        or audit.get("routed_expert_types") != EXPECTED_EXPERT_TYPES
+        or audit.get("tq1_0_total") != 0
+        or audit.get("non_expert_iq1s") != []
+    ):
+        raise EvaluationError("normalized IQ1_S proof model audit does not match the mixed-format contract")
+    expected_tensor_coverage = EXPECTED_EXPERT_TYPES["IQ1_S"] / 180
+    tensor_coverage = normalized.get("tensor_eligibility_coverage")
+    if (
+        isinstance(tensor_coverage, bool)
+        or not isinstance(tensor_coverage, (int, float))
+        or not math.isfinite(float(tensor_coverage))
+        or not math.isclose(float(tensor_coverage), expected_tensor_coverage, rel_tol=0.0, abs_tol=1e-12)
+    ):
+        raise EvaluationError("normalized IQ1_S proof tensor eligibility coverage is invalid")
+
+    if normalized.get("token_ids_match") is not True or normalized.get("all_cus_active") is not True:
+        raise EvaluationError("normalized IQ1_S proof did not validate tokens and all four CUs")
+    if normalized.get("eligible_route_coverage") != 1.0:
+        raise EvaluationError("normalized IQ1_S proof route coverage is not 100%")
+    if not isinstance(routes, dict):
+        raise EvaluationError("normalized IQ1_S proof routes are invalid")
+    eligible = routes.get("eligible")
+    handled = routes.get("handled")
+    if (
+        isinstance(eligible, bool)
+        or not isinstance(eligible, int)
+        or eligible <= 0
+        or handled != eligible
+        or routes.get("fallback") != 0
+        or routes.get("error") != 0
+    ):
+        raise EvaluationError("normalized IQ1_S proof routing is not strict and complete")
+
+    if not isinstance(xrt, dict):
+        raise EvaluationError("normalized IQ1_S proof XRT evidence is invalid")
+    per_cu = xrt.get("per_cu_completions")
+    if (
+        not isinstance(per_cu, list)
+        or len(per_cu) != 4
+        or not all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in per_cu)
+    ):
+        raise EvaluationError("normalized IQ1_S proof does not contain four active CUs")
+    submission_count = xrt.get("submission_count")
+    completion_count = xrt.get("completion_count")
+    if (
+        not isinstance(submission_count, int)
+        or isinstance(submission_count, bool)
+        or submission_count <= 0
+        or completion_count != submission_count
+        or sum(per_cu) != completion_count
+    ):
+        raise EvaluationError("normalized IQ1_S proof XRT completion accounting is invalid")
+
+    for mode_name, mode in (("cuda", cuda_mode), ("hybrid", hybrid_mode)):
+        if not isinstance(mode, dict) or mode.get("measurements") != MEASUREMENTS:
+            raise EvaluationError(f"normalized IQ1_S proof has invalid {mode_name} measurement count")
+    rows = _report_metric_rows(cuda_mode.get("metrics", {}), hybrid_mode.get("metrics", {}))
+
+    numerical_errors = {}
+    for case_name in ("single_tile", "tiled"):
+        try:
+            case = numerical_cases[case_name]
+            error = float(case["max_absolute_error"])
+        except (KeyError, TypeError, ValueError) as exception:
+            raise EvaluationError(f"normalized IQ1_S proof has invalid {case_name} numerical evidence") from exception
+        if case.get("status") != "pass" or not math.isfinite(error) or error < 0.0:
+            raise EvaluationError(f"normalized IQ1_S proof has unqualified {case_name} numerical evidence")
+        numerical_errors[case_name] = error
+
+    return "\n".join(
+        [
+            "# Qwen3.5-397B-A17B Mixed-Quant CUDA vs AU250 IQ1_S Evaluation",
+            "",
+            "## Qualification result",
+            "",
+            "- Proof status: PASS",
+            "- Model: Qwen3.5-397B-A17B-UD-TQ1_0.gguf",
+            f"- Model SHA-256: {MODEL_SHA256}",
+            f"- llama.cpp revision: {LLAMA_REVISION}",
+            f"- Runtime binary SHA-256: {binary_sha256}",
+            "- Tensor audit: 141 IQ1_S, 24 IQ2_XXS, 4 IQ3_S, and 11 MXFP4 routed-expert tensors",
+            "- Tensor eligibility: 141/180 routed-expert tensors eligible",
+            "- IQ2_XXS, IQ3_S, and MXFP4 remained on CUDA",
+            "- Eligible IQ1_S operations handled by AU250: 100%",
+            "- Token IDs identical: yes",
+            f"- Active CUs: {sum(value > 0 for value in per_cu)}/4",
+            "",
+            "## Method",
+            "",
+            "Both modes used the same verified GGUF and binary, full CUDA layer placement, "
+            "a 512-token context, greedy seed-42 sampling, an exact 256-token timed prompt, "
+            "and 32 generated tokens. Each mode used one warm-up and five measured requests "
+            "in a fresh process while retaining the loaded model across requests.",
+            "",
+            "Hybrid intercepted only exact type-19 IQ1_S MMQ/MMVQ launches for the 141 eligible "
+            "routed-expert tensors. CUDA retained attention, linear attention, routing, shared "
+            "experts, normalization, KV/state work, sampling, and the other 39 routed-expert "
+            "tensors. AU250 execution used assembler-produced 128-bit tmatmul instructions and "
+            "the matrix/input/output/program four-BO ABI.",
+            "",
+            "## Performance",
+            "",
+            "| Metric | CUDA-only median | Hybrid median | Hybrid/CUDA | CUDA / hybrid min-max | CUDA / hybrid population stdev |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+            *rows,
+            "",
+            "## Numerical and physical evidence",
+            "",
+            f"TQ1 shared-backend qualification maximum absolute error was "
+            f"{numerical_errors['single_tile']:.6g} for the single-tile case and "
+            f"{numerical_errors['tiled']:.6g} for the tiled case.",
+            "",
+            f"Per-CU completions: `{per_cu}`; total validated submissions/completions: "
+            f"`{submission_count}/{completion_count}`. The normalized proof binds unique "
+            "request IDs, nonzero STALL codes, raw-output bounds, exact completion ownership, "
+            f"and pre/post device health to `{Path(proof_path)}`.",
+            "",
+            "## Limitations",
+            "",
+            "This is batch-size-one text generation on one host and one selected mixed-format "
+            "checkpoint. Only the 141 audited IQ1_S routed-expert tensors were eligible for "
+            "AU250 execution. The evaluation does not measure vision, multi-user serving, "
+            "speculative decoding, attention offload, or a CPU-expert baseline.",
+            "",
+        ]
+    )
+
+
+def render_report(normalized, proof_path):
+    if not isinstance(normalized, dict) or normalized.get("status") != "pass":
+        raise EvaluationError("report generation requires a passing normalized proof")
+    try:
+        cuda = normalized["modes"]["cuda"]["metrics"]
+        hybrid_mode = normalized["modes"]["hybrid"]
+        hybrid = hybrid_mode["metrics"]
+        routes = hybrid_mode["routes"]
+        xrt = hybrid_mode["xrt"]
+    except (KeyError, TypeError) as error:
+        raise EvaluationError(f"normalized proof omitted report evidence: {error}") from error
+    if normalized.get("token_ids_match") is not True or normalized.get("all_cus_active") is not True:
+        raise EvaluationError("normalized proof did not validate tokens and all four CUs")
+    if normalized.get("eligible_route_coverage") != 1.0:
+        raise EvaluationError("normalized proof route coverage is not 100%")
+    if routes.get("eligible", 0) <= 0 or routes.get("handled") != routes.get("eligible") or routes.get("fallback") or routes.get("error"):
+        raise EvaluationError("normalized proof routing is not strict and complete")
+    per_cu = xrt.get("per_cu_completions")
+    if not isinstance(per_cu, list) or len(per_cu) != 4 or not all(isinstance(value, int) and value > 0 for value in per_cu):
+        raise EvaluationError("normalized proof does not contain four active CUs")
+
+    rows = _report_metric_rows(cuda, hybrid)
 
     return "\n".join(
         [
@@ -938,6 +1103,29 @@ def render_report_command(arguments):
     return 0
 
 
+def render_iq1s_report_command(arguments):
+    report_parser = argparse.ArgumentParser(prog="qwen35_au250_eval.py render-iq1s-report")
+    report_parser.add_argument("--normalized", required=True)
+    report_parser.add_argument("--proof-path", required=True)
+    report_parser.add_argument("--output", required=True)
+    args = report_parser.parse_args(arguments)
+    try:
+        normalized = json.loads(Path(args.normalized).read_text(encoding="utf-8"))
+        report = render_iq1s_report(normalized, Path(args.proof_path))
+        repository = Path(__file__).resolve().parents[1]
+        evaluation_root = (repository / "zluda" / "evaluation").resolve()
+        output = Path(args.output).resolve()
+        if output.parent != evaluation_root:
+            raise EvaluationError(f"report output must be directly beneath {evaluation_root}")
+        temporary = output.with_suffix(output.suffix + ".partial")
+        temporary.write_text(report, encoding="utf-8")
+        os.replace(temporary, output)
+    except (EvaluationError, OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        print(f"QWEN_IQ1S_REPORT_FAILED: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def parser():
     result = argparse.ArgumentParser()
     result.add_argument("--mode", choices=("cuda", "hybrid"), required=True)
@@ -968,6 +1156,8 @@ def parser():
 
 def main(argv=None):
     arguments = sys.argv[1:] if argv is None else list(argv)
+    if arguments and arguments[0] == "render-iq1s-report":
+        return render_iq1s_report_command(arguments[1:])
     if arguments and arguments[0] == "render-report":
         return render_report_command(arguments[1:])
     args = parser().parse_args(arguments)

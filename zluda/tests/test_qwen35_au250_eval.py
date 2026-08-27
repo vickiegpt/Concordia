@@ -325,6 +325,98 @@ def test_render_report_refuses_nonpassing_proof():
         evaluator.render_report({"status": "fail"}, Path("proof"))
 
 
+def iq1s_report_proof():
+    cuda_metrics = {
+        "prompt_tokens_per_second": metric(20.0, 19.0, 21.0, 0.5),
+        "generation_tokens_per_second": metric(5.0, 4.5, 5.5, 0.2),
+        "ttft_ms": metric(100.0, 90.0, 110.0, 4.0),
+        "end_to_end_ms": metric(7000.0, 6900.0, 7100.0, 50.0),
+        "model_load_ms": metric(1000.0, 1000.0, 1000.0, 0.0),
+    }
+    hybrid_metrics = {
+        "prompt_tokens_per_second": metric(10.0, 9.0, 11.0, 0.4),
+        "generation_tokens_per_second": metric(4.0, 3.5, 4.5, 0.1),
+        "ttft_ms": metric(200.0, 190.0, 210.0, 5.0),
+        "end_to_end_ms": metric(8000.0, 7900.0, 8100.0, 60.0),
+        "model_load_ms": metric(1000.0, 1000.0, 1000.0, 0.0),
+    }
+    return {
+        "schema_version": 2,
+        "status": "pass",
+        "model": {
+            "size": 94155830880,
+            "sha256": "0a32c2702fbb61934960cfeef34524b81ec6d9267158f246d45fc86f5aaa7568",
+            "architecture": "qwen35moe",
+            "llama_revision": "925e1179947ea0c0ebfb0032df18af3a729822be",
+            "binary_sha256": "a" * 64,
+        },
+        "model_audit": {
+            "routed_expert_count": 180,
+            "routed_expert_types": {
+                "IQ1_S": 141,
+                "IQ2_XXS": 24,
+                "IQ3_S": 4,
+                "MXFP4": 11,
+            },
+            "tq1_0_total": 0,
+            "non_expert_iq1s": [],
+        },
+        "token_ids_match": True,
+        "eligible_route_coverage": 1.0,
+        "tensor_eligibility_coverage": 141 / 180,
+        "all_cus_active": True,
+        "modes": {
+            "cuda": {"measurements": 5, "metrics": cuda_metrics},
+            "hybrid": {
+                "measurements": 5,
+                "metrics": hybrid_metrics,
+                "routes": {"eligible": 8, "handled": 8, "fallback": 0, "error": 0},
+                "xrt": {
+                    "per_cu_completions": [4, 3, 2, 1],
+                    "submission_count": 10,
+                    "completion_count": 10,
+                },
+            },
+        },
+        "numerical": {
+            "cases": {
+                "single_tile": {"status": "pass", "max_absolute_error": 1e-6},
+                "tiled": {"status": "pass", "max_absolute_error": 2e-6},
+            }
+        },
+    }
+
+
+def test_iq1s_report_states_mixed_format_and_physical_boundary():
+    evaluator = load_evaluator()
+    report = evaluator.render_iq1s_report(iq1s_report_proof(), Path("proof"))
+    assert "141/180 routed-expert tensors eligible" in report
+    assert "IQ2_XXS, IQ3_S, and MXFP4 remained on CUDA" in report
+    assert "Eligible IQ1_S operations handled by AU250: 100%" in report
+    assert "Active CUs: 4/4" in report
+    assert "pure TQ1_0" not in report
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda proof: proof.update(status="fail"),
+        lambda proof: proof.update(eligible_route_coverage=0.5),
+        lambda proof: proof.update(all_cus_active=False),
+        lambda proof: proof.pop("model_audit"),
+        lambda proof: proof["modes"]["hybrid"]["metrics"][
+            "generation_tokens_per_second"
+        ].update(median=float("nan")),
+    ),
+)
+def test_iq1s_report_rejects_unqualified_normalized_proof(mutation):
+    evaluator = load_evaluator()
+    normalized = iq1s_report_proof()
+    mutation(normalized)
+    with pytest.raises(evaluator.EvaluationError):
+        evaluator.render_iq1s_report(normalized, Path("proof"))
+
+
 def iq1s_route(kernel, route="cxl_tmatmul", hardware=True):
     return {
         "kernel": kernel,
