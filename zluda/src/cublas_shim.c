@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 /*
  * cuBLAS Shim for hetGPU
  *
