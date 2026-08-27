@@ -66,10 +66,8 @@ index 2456f7d..9c7835c 100644
  #define GGML_LOG_WARN_ONCE(str) \
      { static std::once_flag warn_flag; std::call_once(warn_flag, []() { GGML_LOG_WARN(str); }); }
  
-@@ -885,2 +925,20 @@ static bool ggml_backend_buft_is_cuda(ggml_backend_buffer_type_t buft) {
-     return buft->iface.get_name == ggml_backend_cuda_buffer_type_get_name;
- }
-+
+@@ -889,1 +929,19 @@
+-static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
 +static size_t hetgpu_qwen35_cuda_buffer_max_size(ggml_backend_buffer_type_t buft) {
 +    const char * value = getenv("HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB");
 +    if (value == nullptr) {
@@ -87,6 +85,8 @@ index 2456f7d..9c7835c 100644
 +
 +    GGML_UNUSED(buft);
 +}
++
++static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
 @@ -929,7 +988,7 @@ static const ggml_backend_buffer_type_i ggml_backend_cuda_buffer_type_interface
      /* .get_name         = */ ggml_backend_cuda_buffer_type_get_name,
      /* .alloc_buffer     = */ ggml_backend_cuda_buffer_type_alloc_buffer,
