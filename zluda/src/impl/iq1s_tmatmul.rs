@@ -1906,7 +1906,7 @@ fn hex(bytes: &[u8]) -> String {
     result
 }
 
-fn half_to_f32(bits: u16) -> f32 {
+pub(crate) fn half_to_f32(bits: u16) -> f32 {
     let sign = u32::from(bits & 0x8000) << 16;
     let exponent = (bits >> 10) & 0x1f;
     let fraction = u32::from(bits & 0x03ff);
