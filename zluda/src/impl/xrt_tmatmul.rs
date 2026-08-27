@@ -533,6 +533,8 @@ pub(crate) struct XrtWaveCompletion {
     pub(crate) cu_index: usize,
     pub(crate) stall_code: u32,
     pub(crate) output: Vec<u8>,
+    pub(crate) dispatch_to_stall_ns: u64,
+    pub(crate) program_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -972,7 +974,9 @@ impl<O: XrtOps> Pool<O> {
 
         let registers = instance_registers(0)?;
         let mut launched = Vec::with_capacity(jobs.len());
+        let mut dispatch_starts = Vec::with_capacity(jobs.len());
         for job in &jobs {
+            dispatch_starts.push(Instant::now());
             launched.push(job.cu_index);
             let cu = &self.cus[job.cu_index];
             let start_result = (|| {
@@ -997,6 +1001,7 @@ impl<O: XrtOps> Pool<O> {
 
         let deadline = Instant::now() + Duration::from_millis(u64::from(self.timeout_ms));
         let mut stalls = vec![None; jobs.len()];
+        let mut dispatch_to_stall_ns = vec![None; jobs.len()];
         let mut pending = jobs.len();
         while pending != 0 {
             for (job_index, job) in jobs.iter().enumerate() {
@@ -1007,6 +1012,11 @@ impl<O: XrtOps> Pool<O> {
                     Ok(0) => {}
                     Ok(value) => {
                         stalls[job_index] = Some(value);
+                        dispatch_to_stall_ns[job_index] = Some(
+                            u64::try_from(dispatch_starts[job_index].elapsed().as_nanos())
+                                .unwrap_or(u64::MAX)
+                                .max(1),
+                        );
                         pending -= 1;
                     }
                     Err(error) => return self.fail_wave(error, &launched),
@@ -1049,6 +1059,9 @@ impl<O: XrtOps> Pool<O> {
                 cu_index: job.cu_index,
                 stall_code: stalls[job_index].expect("all wave jobs completed"),
                 output,
+                dispatch_to_stall_ns: dispatch_to_stall_ns[job_index]
+                    .expect("all wave jobs have dispatch timing"),
+                program_bytes: cu.program_bytes,
             });
         }
         Ok(completions)
@@ -2145,6 +2158,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![10, 11, 12, 13]
         );
+        assert!(completions
+            .iter()
+            .all(|completion| completion.dispatch_to_stall_ns > 0));
+        assert!(completions
+            .iter()
+            .all(|completion| completion.program_bytes == 96));
     }
 
     #[test]

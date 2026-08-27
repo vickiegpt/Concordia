@@ -95,6 +95,9 @@ pub(crate) mod iq1s_xrt;
 #[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) mod tq1_tmatmul;
 
+#[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) mod tq1_xrt;
+
 #[cfg(any(feature = "intel", feature = "nvidia"))]
 pub(crate) mod xrt_tmatmul;
 

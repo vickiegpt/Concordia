@@ -1254,6 +1254,8 @@ mod tests {
                     cu_index: job.cu_index,
                     stall_code: 1,
                     output,
+                    dispatch_to_stall_ns: 1,
+                    program_bytes: 96,
                 });
             }
             completions.reverse();
