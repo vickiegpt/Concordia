@@ -1,0 +1,315 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 2456f7d..9c7835c 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -69,6 +69,7 @@
+ #include "ggml-cuda/fill.cuh"
+ #include "ggml-cuda/lightning-indexer.cuh"
+ #include "ggml.h"
++#include "../../../tools/qwen35-tq1-bridge.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -78,6 +79,7 @@
+ #include <condition_variable>
+ #include <cstddef>
+ #include <cstdint>
++#include <cstring>
+ #include <cfloat>
+ #include <initializer_list>
+ #include <limits>
+@@ -90,8 +92,46 @@
+ #include <string>
+ #include <vector>
+ 
++#if !defined(_WIN32)
++#include <dlfcn.h>
++#endif
++
+ static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
+ 
++static bool hetgpu_tq1_env_is_one(const char * name) {
++    const char * value = getenv(name);
++    return value != nullptr && strcmp(value, "1") == 0;
++}
++
++static bool hetgpu_tq1_expert_name(const char * name) {
++    if (name == nullptr || strncmp(name, "blk.", 4) != 0) {
++        return false;
++    }
++    const char * cursor = name + 4;
++    const char * digits = cursor;
++    while (*cursor >= '0' && *cursor <= '9') {
++        ++cursor;
++    }
++    if (cursor == digits || strncmp(cursor, ".ffn_", 5) != 0) {
++        return false;
++    }
++    cursor += 5;
++    return strcmp(cursor, "gate_exps.weight") == 0 ||
++           strcmp(cursor, "up_exps.weight") == 0 ||
++           strcmp(cursor, "down_exps.weight") == 0 ||
++           strcmp(cursor, "gate_up_exps.weight") == 0;
++}
++
++static hetgpu_tq1_try_mul_mat_id_v1_fn hetgpu_tq1_mul_mat_id_hook() {
++#if defined(_WIN32)
++    return nullptr;
++#else
++    static const auto hook = reinterpret_cast<hetgpu_tq1_try_mul_mat_id_v1_fn>(
++        dlsym(RTLD_DEFAULT, "hetgpu_tq1_try_mul_mat_id_v1"));
++    return hook;
++#endif
++}
++
+ #define GGML_LOG_WARN_ONCE(str) \
+     { static std::once_flag warn_flag; std::call_once(warn_flag, []() { GGML_LOG_WARN(str); }); }
+ 
+@@ -1905,6 +1945,48 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
+     const ggml_tensor * src1 = dst->src[1];
+     const ggml_tensor * ids  = dst->src[2];
+ 
++    if (hetgpu_tq1_env_is_one("HETGPU_QWEN_TQ1_XRT") &&
++        src0->type == GGML_TYPE_TQ1_0 && hetgpu_tq1_expert_name(src0->name)) {
++        static_assert(GGML_TYPE_TQ1_0 == 34);
++        static_assert(GGML_TYPE_F32 == 0);
++        static_assert(GGML_TYPE_I32 == 26);
++        const auto hook = hetgpu_tq1_mul_mat_id_hook();
++        if (hook == nullptr) {
++            GGML_ABORT("strict HetGPU TQ1 route hook is unavailable");
++        }
++        struct hetgpu_tq1_mul_mat_id_v1 operation = {};
++        operation.abi_version = HETGPU_TQ1_ABI_VERSION;
++        operation.src0_type = static_cast<uint32_t>(src0->type);
++        operation.src1_type = static_cast<uint32_t>(src1->type);
++        operation.ids_type = static_cast<uint32_t>(ids->type);
++        operation.dst_type = static_cast<uint32_t>(dst->type);
++        operation.src0_name = src0->name;
++        operation.src1_device = src1->data;
++        operation.ids_device = ids->data;
++        operation.dst_device = dst->data;
++        operation.cuda_stream = ctx.stream();
++        for (int dimension = 0; dimension < 4; ++dimension) {
++            operation.src0_ne[dimension] = src0->ne[dimension];
++            operation.src0_nb[dimension] = src0->nb[dimension];
++            operation.src1_ne[dimension] = src1->ne[dimension];
++            operation.src1_nb[dimension] = src1->nb[dimension];
++            operation.ids_ne[dimension] = ids->ne[dimension];
++            operation.ids_nb[dimension] = ids->nb[dimension];
++            operation.dst_ne[dimension] = dst->ne[dimension];
++            operation.dst_nb[dimension] = dst->nb[dimension];
++        }
++        const int route = hook(&operation);
++        if (route == HETGPU_TQ1_HANDLED) {
++            return;
++        }
++        if (route == HETGPU_TQ1_ERROR) {
++            GGML_ABORT("strict HetGPU TQ1 route failed");
++        }
++        if (hetgpu_tq1_env_is_one("HETGPU_QWEN_TQ1_STRICT")) {
++            GGML_ABORT("eligible TQ1 mul_mat_id returned not-handled in strict mode");
++        }
++    }
++
+     GGML_ASSERT(src1->type == GGML_TYPE_F32);
+     GGML_ASSERT(dst->type  == GGML_TYPE_F32);
+ 
+@@ -2548,6 +2630,10 @@ static bool ggml_cuda_is_view_or_noop(const ggml_tensor * t) {
+ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
+ 
+     bool use_cuda_graph = true;
++    if (hetgpu_tq1_env_is_one("HETGPU_QWEN_TQ1_XRT") &&
++        hetgpu_tq1_env_is_one("HETGPU_QWEN_TQ1_STRICT")) {
++        return false;
++    }
+     // Loop over nodes in GGML graph to obtain info needed for CUDA graph
+ 
+     for (int i = 0; i < cgraph->n_nodes; i++) {
+diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
+index ed572da..1fecafb 100644
+--- a/src/llama-mmap.cpp
++++ b/src/llama-mmap.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <cstring>
+ #include <climits>
++#include <filesystem>
+ #include <stdexcept>
+ #include <cerrno>
+ #include <algorithm>
+@@ -65,6 +66,10 @@ static std::string llama_format_win_err(DWORD err) {
+ 
+ // llama_file
+ 
++static std::string llama_canonical_file_path(const char * fname) {
++    return std::filesystem::canonical(std::filesystem::u8path(fname)).u8string();
++}
++
+ struct llama_file::impl {
+ #if defined(_WIN32)
+     HANDLE fp_win32;
+@@ -83,10 +88,11 @@ struct llama_file::impl {
+         return ret;
+     }
+ 
+-    impl(const char * fname, const char * mode, [[maybe_unused]] const bool use_direct_io = false) {
+-        fp = ggml_fopen(fname, mode);
++    impl(const char * fname, const char * mode, [[maybe_unused]] const bool use_direct_io = false) :
++        fname(llama_canonical_file_path(fname)) {
++        fp = ggml_fopen(this->fname.c_str(), mode);
+         if (fp == NULL) {
+-            throw std::runtime_error(format("failed to open %s: %s", fname, strerror(errno)));
++            throw std::runtime_error(format("failed to open %s: %s", this->fname.c_str(), strerror(errno)));
+         }
+         fp_win32 = (HANDLE) _get_osfhandle(_fileno(fp));
+         seek(0, SEEK_END);
+@@ -94,7 +100,7 @@ struct llama_file::impl {
+         seek(0, SEEK_SET);
+     }
+ 
+-    impl(FILE * file) : owns_fp(false) {
++    impl(FILE * file) : fname("(file*)"), owns_fp(false) {
+         fp = file;
+         fp_win32 = (HANDLE) _get_osfhandle(_fileno(fp));
+         seek(0, SEEK_END);
+@@ -180,7 +186,8 @@ struct llama_file::impl {
+         }
+     }
+ #else
+-    impl(const char * fname, const char * mode, [[maybe_unused]] const bool use_direct_io = false) : fname(fname) {
++    impl(const char * fname, const char * mode, [[maybe_unused]] const bool use_direct_io = false) :
++        fname(llama_canonical_file_path(fname)) {
+ #ifdef __linux__
+         // Try unbuffered I/O for read only
+         if (use_direct_io && std::strcmp(mode, "rb") == 0) {
+@@ -381,7 +388,6 @@ struct llama_file::impl {
+         }
+     }
+     int fd = -1;
+-    std::string fname;
+ #endif
+ 
+     size_t read_alignment() const {
+@@ -392,6 +398,7 @@ struct llama_file::impl {
+ 
+     FILE * fp{};
+     size_t size{};
++    std::string fname;
+     bool owns_fp = true;
+ };
+ 
+@@ -404,6 +411,7 @@ llama_file::~llama_file() = default;
+ 
+ size_t llama_file::tell() const { return pimpl->tell(); }
+ size_t llama_file::size() const { return pimpl->size; }
++const std::string & llama_file::path() const { return pimpl->fname; }
+ 
+ size_t llama_file::read_alignment() const { return pimpl->read_alignment(); }
+ bool llama_file::has_direct_io() const { return pimpl->has_direct_io(); }
+diff --git a/src/llama-mmap.h b/src/llama-mmap.h
+index b7d5c61..29cbcab 100644
+--- a/src/llama-mmap.h
++++ b/src/llama-mmap.h
+@@ -2,6 +2,7 @@
+ 
+ #include <cstdint>
+ #include <memory>
++#include <string>
+ #include <vector>
+ #include <cstdio>
+ 
+@@ -20,6 +21,7 @@ struct llama_file {
+ 
+     size_t tell() const;
+     size_t size() const;
++    const std::string & path() const;
+ 
+     int file_id() const; // fileno overload
+ 
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 9b22cb0..32a80ca 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -5,6 +5,7 @@
+ #include "gguf.h"
+ #include "llama-hparams.h"
+ #include "llama.h"
++#include "../tools/qwen35-tq1-bridge.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -14,10 +15,35 @@
+ #include <future>
+ #include <regex>
+ 
++#if !defined(_WIN32)
++#include <dlfcn.h>
++#endif
++
+ static const size_t kiB = 1024;
+ static const size_t MiB = 1024*kiB;
+ static const size_t GiB = 1024*MiB;
+ 
++static bool hetgpu_tq1_requested() {
++    const char * value = getenv("HETGPU_QWEN_TQ1_XRT");
++    return value != nullptr && strcmp(value, "1") == 0;
++}
++
++static uint32_t hetgpu_tq1_role(const char * name) {
++    if (std::regex_match(name, std::regex("blk\\.[0-9]+\\.ffn_gate_exps\\.weight"))) return HETGPU_TQ1_ROLE_GATE_EXPS;
++    if (std::regex_match(name, std::regex("blk\\.[0-9]+\\.ffn_up_exps\\.weight"))) return HETGPU_TQ1_ROLE_UP_EXPS;
++    if (std::regex_match(name, std::regex("blk\\.[0-9]+\\.ffn_down_exps\\.weight"))) return HETGPU_TQ1_ROLE_DOWN_EXPS;
++    if (std::regex_match(name, std::regex("blk\\.[0-9]+\\.ffn_gate_up_exps\\.weight"))) return HETGPU_TQ1_ROLE_GATE_UP_EXPS;
++    return 0;
++}
++
++static hetgpu_tq1_register_tensor_v1_fn hetgpu_tq1_registration_hook() {
++#if defined(_WIN32)
++    return nullptr;
++#else
++    return reinterpret_cast<hetgpu_tq1_register_tensor_v1_fn>(dlsym(RTLD_DEFAULT, "hetgpu_tq1_register_tensor_v1"));
++#endif
++}
++
+ const char * llama_file_version_name(llama_fver version) {
+     switch (version) {
+         case GGUF_FILE_VERSION_V1: return "GGUF V1 (support until nov 2023)";
+@@ -705,6 +731,37 @@ llama_model_loader::llama_model_loader(
+     n_kv      = gguf_get_n_kv(metadata);
+     n_tensors = weights_map.size();
+ 
++    const auto hetgpu_register = hetgpu_tq1_registration_hook();
++    if (hetgpu_tq1_requested() && hetgpu_register == nullptr) {
++        throw std::runtime_error("HETGPU_QWEN_TQ1_XRT=1 but hetgpu_tq1_register_tensor_v1 is unavailable");
++    }
++    if (hetgpu_register != nullptr) {
++        for (const auto & entry : weights_map) {
++            const auto & name = entry.first;
++            const auto & weight = entry.second;
++            const uint32_t role = hetgpu_tq1_role(name.c_str());
++            if (role == 0 || weight.tensor->type != GGML_TYPE_TQ1_0) {
++                continue;
++            }
++            struct hetgpu_tq1_tensor_v1 registration = {};
++            registration.abi_version = HETGPU_TQ1_ABI_VERSION;
++            registration.ggml_type = static_cast<uint32_t>(weight.tensor->type);
++            registration.role = role;
++            registration.file_index = weight.idx;
++            registration.name = name.c_str();
++            registration.path = files.at(weight.idx)->path().c_str();
++            registration.file_offset = weight.offs;
++            registration.nbytes = ggml_nbytes(weight.tensor);
++            for (int dimension = 0; dimension < 4; ++dimension) {
++                registration.ne[dimension] = weight.tensor->ne[dimension];
++                registration.nb[dimension] = weight.tensor->nb[dimension];
++            }
++            if (hetgpu_register(&registration) == HETGPU_TQ1_ERROR) {
++                throw std::runtime_error(format("failed to register TQ1_0 expert tensor '%s'", name.c_str()));
++            }
++        }
++    }
++
+     fver = (enum llama_fver) gguf_get_version(metadata);
+ 
+     LLAMA_LOG_INFO("%s: loaded meta data with %d key-value pairs and %d tensors from %s (version %s)\n",
+
