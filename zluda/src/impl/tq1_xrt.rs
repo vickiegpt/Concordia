@@ -1141,8 +1141,16 @@ mod tests {
                     matrix_cache_hit: false,
                     matrix_bytes_transferred: job.matrix.len(),
                     program_address: 0x2000,
-                    program_sha256: [0x33; 32],
+                    program_sha256: Sha256::digest(vec![0x77; 96]).into(),
                     program_cache_hit: false,
+                    encoded_program: vec![0x77; 96],
+                    trace_mode: "legacy".to_string(),
+                    model_context_limit: 0,
+                    trace_semantic_sha256: [0; 32],
+                    trace_assembly_sha256: [0x55; 32],
+                    replay_safe_program_sha256: [0x66; 32],
+                    trace_assembly: "fixture".to_string(),
+                    trace_instructions: Vec::new(),
                 });
             }
             self.jobs.extend(jobs);

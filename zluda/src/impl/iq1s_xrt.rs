@@ -65,6 +65,48 @@ pub(crate) struct XrtIq1sEvidence {
     pub(crate) raw_max: i16,
     pub(crate) reference_checked_components: u64,
     pub(crate) comparison_status: &'static str,
+    pub(crate) resident_matrix_hits: u64,
+    pub(crate) resident_matrix_misses: u64,
+    pub(crate) resident_matrix_bytes_transferred: u64,
+    pub(crate) program_cache_hits: u64,
+    pub(crate) program_cache_misses: u64,
+    pub(crate) physical_completions: Vec<XrtPhysicalCompletionEvidence>,
+    pub(crate) host_pack_hits: u64,
+    pub(crate) host_pack_misses: u64,
+    pub(crate) host_pack_bytes_built: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct XrtPhysicalCompletionEvidence {
+    pub(crate) request_id: u64,
+    pub(crate) cu_index: usize,
+    pub(crate) stall_code: u32,
+    pub(crate) dispatch_to_stall_ns: u64,
+    pub(crate) matrix_key_sha256: String,
+    pub(crate) matrix_content_sha256: String,
+    pub(crate) matrix_address: u64,
+    pub(crate) matrix_cache_hit: bool,
+    pub(crate) matrix_bytes_transferred: usize,
+    pub(crate) trace_mode: String,
+    pub(crate) model_context_limit: u32,
+    pub(crate) trace_semantic_sha256: String,
+    pub(crate) trace_assembly_sha256: String,
+    pub(crate) replay_safe_program_sha256: String,
+    pub(crate) trace_assembly: String,
+    pub(crate) trace_instructions: Vec<Vec<String>>,
+    pub(crate) encoded_program_sha256: String,
+    pub(crate) encoded_program_hex: String,
+    pub(crate) program_address: u64,
+    pub(crate) program_bytes: usize,
+    pub(crate) program_cache_hit: bool,
+}
+
+fn sha256_hex(value: [u8; 32]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn bytes_hex(value: &[u8]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[derive(Debug)]
@@ -127,13 +169,22 @@ impl PackedMatrixCache {
         key: PackedMatrixKey,
         build: impl FnOnce() -> Result<Vec<u8>, String>,
     ) -> Result<Arc<[u8]>, String> {
+        self.get_or_insert_with_status(key, build)
+            .map(|(value, _)| value)
+    }
+
+    fn get_or_insert_with_status(
+        &mut self,
+        key: PackedMatrixKey,
+        build: impl FnOnce() -> Result<Vec<u8>, String>,
+    ) -> Result<(Arc<[u8]>, bool), String> {
         self.clock = self
             .clock
             .checked_add(1)
             .ok_or("AU250 matrix cache clock overflow")?;
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.last_used = self.clock;
-            return Ok(entry.value.clone());
+            return Ok((entry.value.clone(), true));
         }
 
         let built = build()?;
@@ -178,7 +229,7 @@ impl PackedMatrixCache {
                 last_used: self.clock,
             },
         );
-        Ok(value)
+        Ok((value, false))
     }
 }
 
@@ -201,7 +252,7 @@ fn packed_matrix_for(
     captured: &CapturedLaunch,
     tile: Au250Tile,
     key: Au250MatrixKey,
-) -> Result<Arc<[u8]>, String> {
+) -> Result<(Arc<[u8]>, bool), String> {
     static CACHE: OnceLock<Mutex<Result<PackedMatrixCache, String>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(PackedMatrixCache::from_env()));
     let mut guard = cache
@@ -217,7 +268,7 @@ fn packed_matrix_for(
         allocation_generation: captured.launch.allocation_generation,
         content_hash: captured.launch.content_hash,
     };
-    cache.get_or_insert(
+    cache.get_or_insert_with_status(
         PackedMatrixKey {
             identity,
             tile: key,
@@ -252,6 +303,108 @@ fn resident_matrix_key(captured: &CapturedLaunch, key: Au250MatrixKey) -> [u8; 3
         ComponentKind::Delta => 1,
     }]);
     hash.finalize().into()
+}
+
+fn trace_tokens(assembly: &str) -> Vec<Vec<String>> {
+    assembly
+        .lines()
+        .filter_map(|raw| {
+            let line = raw.split(';').next().unwrap_or("").trim();
+            (!line.is_empty()).then(|| {
+                line.split(|byte: char| byte.is_whitespace() || byte == ',')
+                    .filter(|token| !token.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect()
+}
+
+fn validate_completion_binding(
+    completion: &XrtWaveCompletion,
+    expected_matrix_key: [u8; 32],
+    expected_matrix_sha256: [u8; 32],
+    strict_qwen: bool,
+    expected_trace_mode: Option<&str>,
+) -> Result<(), String> {
+    if completion.matrix_key != expected_matrix_key
+        || completion.matrix_sha256 != expected_matrix_sha256
+    {
+        return Err(format!(
+            "AU250 completion {} matrix identity does not match its submitted job",
+            completion.request_id
+        ));
+    }
+    if completion.matrix_address == 0 || completion.program_address == 0 {
+        return Err(format!(
+            "AU250 completion {} has a zero resident matrix or program address",
+            completion.request_id
+        ));
+    }
+    let expected_transfer = if completion.matrix_cache_hit {
+        0
+    } else {
+        AU250_MATRIX_BYTES
+    };
+    if completion.matrix_bytes_transferred != expected_transfer {
+        return Err(format!(
+            "AU250 completion {} resident transfer bytes {} do not match cache status",
+            completion.request_id, completion.matrix_bytes_transferred
+        ));
+    }
+    if completion.program_bytes == 0
+        || completion.program_bytes % 16 != 0
+        || completion.encoded_program.len() != completion.program_bytes
+        || Sha256::digest(&completion.encoded_program).as_slice() != completion.program_sha256
+    {
+        return Err(format!(
+            "AU250 completion {} encoded program body/hash/length mismatch",
+            completion.request_id
+        ));
+    }
+    if !strict_qwen {
+        return Ok(());
+    }
+    let expected_trace_mode = expected_trace_mode.ok_or_else(|| {
+        "strict Qwen completion validation requires HETGPU_IQ1S_TRACE_MODE".to_string()
+    })?;
+    if completion.trace_mode != expected_trace_mode
+        || !matches!(completion.trace_mode.as_str(), "handwritten" | "compiler")
+    {
+        return Err(format!(
+            "AU250 completion {} trace mode {:?} does not match {:?}",
+            completion.request_id, completion.trace_mode, expected_trace_mode
+        ));
+    }
+    if completion.model_context_limit != super::iq1s_trace::QWEN_MODEL_CONTEXT_LIMIT {
+        return Err(format!(
+            "AU250 completion {} model context limit {} is not {}",
+            completion.request_id,
+            completion.model_context_limit,
+            super::iq1s_trace::QWEN_MODEL_CONTEXT_LIMIT
+        ));
+    }
+    if trace_tokens(&completion.trace_assembly) != completion.trace_instructions
+        || completion.trace_instructions.last() != Some(&vec!["stall".to_string()])
+    {
+        return Err(format!(
+            "AU250 completion {} trace body is not the recorded terminal-STALL instruction sequence",
+            completion.request_id
+        ));
+    }
+    if Sha256::digest(completion.trace_assembly.as_bytes()).as_slice()
+        != completion.trace_assembly_sha256
+        || super::iq1s_trace::semantic_sha256(&completion.trace_instructions)
+            != completion.trace_semantic_sha256
+        || completion.replay_safe_program_sha256 == [0; 32]
+        || completion.program_sha256 == [0; 32]
+    {
+        return Err(format!(
+            "AU250 completion {} trace or program hash mismatch",
+            completion.request_id
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn plan_au250_tiles(signature: &GgmlType19Signature) -> Result<Vec<Au250Tile>, String> {
@@ -517,6 +670,17 @@ pub(crate) fn execute_captured_with(
     let mut stall_codes = Vec::new();
     let mut raw_min = None::<i16>;
     let mut raw_max = None::<i16>;
+    let mut resident_matrix_hits = 0u64;
+    let mut resident_matrix_misses = 0u64;
+    let mut resident_matrix_bytes_transferred = 0u64;
+    let mut program_cache_hits = 0u64;
+    let mut program_cache_misses = 0u64;
+    let mut physical_completions = Vec::new();
+    let mut host_pack_hits = 0u64;
+    let mut host_pack_misses = 0u64;
+    let mut host_pack_bytes_built = 0u64;
+    let strict_qwen = std::env::var("HETGPU_QWEN_IQ1S_STRICT").as_deref() == Ok("1");
+    let expected_trace_mode = std::env::var("HETGPU_IQ1S_TRACE_MODE").ok();
 
     for planned_wave in planned_waves {
         let mut xrt_jobs = Vec::with_capacity(planned_wave.len());
@@ -524,7 +688,22 @@ pub(crate) fn execute_captured_with(
             let tile = *tile_by_coordinate
                 .get(&(planned.matrix_key.row_tile, planned.matrix_key.k_tile))
                 .ok_or("planned AU250 job refers to unknown tile")?;
-            let matrix = packed_matrix_for(captured, tile, planned.matrix_key)?;
+            let (matrix, host_cache_hit) = packed_matrix_for(captured, tile, planned.matrix_key)?;
+            if host_cache_hit {
+                host_pack_hits = host_pack_hits
+                    .checked_add(1)
+                    .ok_or("AU250 host pack hit count overflow")?;
+            } else {
+                host_pack_misses = host_pack_misses
+                    .checked_add(1)
+                    .ok_or("AU250 host pack miss count overflow")?;
+                host_pack_bytes_built = host_pack_bytes_built
+                    .checked_add(
+                        u64::try_from(matrix.len())
+                            .map_err(|_| "AU250 host pack bytes do not fit u64")?,
+                    )
+                    .ok_or("AU250 host pack byte count overflow")?;
+            }
             let lanes = *lane_capacities
                 .get(planned.cu_index)
                 .ok_or("planned AU250 job refers to unknown CU")?;
@@ -562,6 +741,10 @@ pub(crate) fn execute_captured_with(
                 .checked_add(1)
                 .ok_or("AU250 per-CU submission count overflow")?;
         }
+        let expected_matrix_by_request = xrt_jobs
+            .iter()
+            .map(|job| (job.request_id, (job.matrix_key, job.matrix_sha256)))
+            .collect::<HashMap<_, _>>();
         let completions = backend.run_wave(xrt_jobs)?;
         if completions.len() != planned_wave.len() {
             return Err(format!(
@@ -606,6 +789,69 @@ pub(crate) fn execute_captured_with(
                     completion.request_id
                 ));
             }
+            let (expected_matrix_key, expected_matrix_sha256) = expected_matrix_by_request
+                .get(&completion.request_id)
+                .copied()
+                .ok_or_else(|| {
+                    format!(
+                        "AU250 completion {} has no submitted matrix identity",
+                        completion.request_id
+                    )
+                })?;
+            validate_completion_binding(
+                completion,
+                expected_matrix_key,
+                expected_matrix_sha256,
+                strict_qwen,
+                expected_trace_mode.as_deref(),
+            )?;
+            if completion.matrix_cache_hit {
+                resident_matrix_hits = resident_matrix_hits
+                    .checked_add(1)
+                    .ok_or("AU250 resident matrix hit count overflow")?;
+            } else {
+                resident_matrix_misses = resident_matrix_misses
+                    .checked_add(1)
+                    .ok_or("AU250 resident matrix miss count overflow")?;
+            }
+            resident_matrix_bytes_transferred = resident_matrix_bytes_transferred
+                .checked_add(
+                    u64::try_from(completion.matrix_bytes_transferred)
+                        .map_err(|_| "AU250 resident transfer bytes do not fit u64")?,
+                )
+                .ok_or("AU250 resident transfer byte count overflow")?;
+            if completion.program_cache_hit {
+                program_cache_hits = program_cache_hits
+                    .checked_add(1)
+                    .ok_or("AU250 program cache hit count overflow")?;
+            } else {
+                program_cache_misses = program_cache_misses
+                    .checked_add(1)
+                    .ok_or("AU250 program cache miss count overflow")?;
+            }
+            physical_completions.push(XrtPhysicalCompletionEvidence {
+                request_id: completion.request_id,
+                cu_index: completion.cu_index,
+                stall_code: completion.stall_code,
+                dispatch_to_stall_ns: completion.dispatch_to_stall_ns,
+                matrix_key_sha256: sha256_hex(completion.matrix_key),
+                matrix_content_sha256: sha256_hex(completion.matrix_sha256),
+                matrix_address: completion.matrix_address,
+                matrix_cache_hit: completion.matrix_cache_hit,
+                matrix_bytes_transferred: completion.matrix_bytes_transferred,
+                trace_mode: completion.trace_mode.clone(),
+                model_context_limit: completion.model_context_limit,
+                trace_semantic_sha256: sha256_hex(completion.trace_semantic_sha256),
+                trace_assembly_sha256: sha256_hex(completion.trace_assembly_sha256),
+                replay_safe_program_sha256: sha256_hex(completion.replay_safe_program_sha256),
+                trace_assembly: completion.trace_assembly.clone(),
+                trace_instructions: completion.trace_instructions.clone(),
+                encoded_program_sha256: sha256_hex(completion.program_sha256),
+                encoded_program_hex: bytes_hex(&completion.encoded_program),
+                program_address: completion.program_address,
+                program_bytes: completion.program_bytes,
+                program_cache_hit: completion.program_cache_hit,
+            });
             stall_codes.push(completion.stall_code);
             let expected_bytes = AU250_DIM
                 .checked_mul(lane_capacities[completion.cu_index])
@@ -783,6 +1029,15 @@ pub(crate) fn execute_captured_with(
             raw_max: raw_max.ok_or("AU250 execution produced no raw components")?,
             reference_checked_components,
             comparison_status: "pass",
+            resident_matrix_hits,
+            resident_matrix_misses,
+            resident_matrix_bytes_transferred,
+            program_cache_hits,
+            program_cache_misses,
+            physical_completions,
+            host_pack_hits,
+            host_pack_misses,
+            host_pack_bytes_built,
         },
     })
 }
@@ -852,6 +1107,105 @@ mod tests {
     use super::super::xrt_tmatmul::{XrtWaveCompletion, XrtWaveJob};
     use super::*;
     use std::sync::Arc;
+
+    fn valid_strict_completion() -> XrtWaveCompletion {
+        let labels = HashMap::from([
+            ("PARAM_MATRIX".to_string(), 0x1000),
+            ("PARAM_INPUT".to_string(), 0x2000),
+            ("PARAM_OUTPUT".to_string(), 0x3000),
+        ]);
+        let selected = crate::r#impl::iq1s_trace::build_selected_trace(
+            "compiler",
+            crate::r#impl::iq1s_trace::QWEN_MODEL_CONTEXT_LIMIT,
+            &labels,
+            4,
+        )
+        .unwrap();
+        let program_sha256 = Sha256::digest(&selected.program).into();
+        XrtWaveCompletion {
+            request_id: 7,
+            cu_index: 0,
+            stall_code: 1,
+            output: vec![0; AU250_DIM * 9 * 2],
+            dispatch_to_stall_ns: 10,
+            program_bytes: selected.program.len(),
+            matrix_key: [0x11; 32],
+            matrix_sha256: [0x22; 32],
+            matrix_address: 0x1000,
+            matrix_cache_hit: true,
+            matrix_bytes_transferred: 0,
+            program_address: 0x4000,
+            program_sha256,
+            program_cache_hit: true,
+            encoded_program: selected.program,
+            trace_mode: selected.selected_kind.as_str().to_string(),
+            model_context_limit: selected.model_context_limit,
+            trace_semantic_sha256: selected.semantic_sha256,
+            trace_assembly_sha256: selected.assembly_sha256,
+            replay_safe_program_sha256: selected.selected_sha256,
+            trace_assembly: selected.assembly,
+            trace_instructions: selected.instructions,
+        }
+    }
+
+    #[test]
+    fn strict_completion_binding_rejects_logged_only_or_mutated_trace_evidence() {
+        let valid = valid_strict_completion();
+        validate_completion_binding(
+            &valid,
+            valid.matrix_key,
+            valid.matrix_sha256,
+            true,
+            Some("compiler"),
+        )
+        .unwrap();
+
+        let mut changed_program = valid.clone();
+        changed_program.encoded_program[0] ^= 1;
+        assert!(validate_completion_binding(
+            &changed_program,
+            valid.matrix_key,
+            valid.matrix_sha256,
+            true,
+            Some("compiler"),
+        )
+        .unwrap_err()
+        .contains("program body/hash/length"));
+
+        let mut logged_only = valid.clone();
+        logged_only.trace_assembly.push_str("nop\n");
+        assert!(validate_completion_binding(
+            &logged_only,
+            valid.matrix_key,
+            valid.matrix_sha256,
+            true,
+            Some("compiler"),
+        )
+        .unwrap_err()
+        .contains("trace body"));
+
+        let mut wrong_mode = valid.clone();
+        wrong_mode.trace_mode = "handwritten".to_string();
+        assert!(validate_completion_binding(
+            &wrong_mode,
+            valid.matrix_key,
+            valid.matrix_sha256,
+            true,
+            Some("compiler"),
+        )
+        .unwrap_err()
+        .contains("trace mode"));
+
+        assert!(validate_completion_binding(
+            &valid,
+            [0x99; 32],
+            valid.matrix_sha256,
+            true,
+            Some("compiler"),
+        )
+        .unwrap_err()
+        .contains("matrix identity"));
+    }
 
     fn kimi_signature() -> GgmlType19Signature {
         GgmlType19Signature {
@@ -1207,6 +1561,15 @@ mod tests {
             raw_max: 4,
             reference_checked_components: 16,
             comparison_status: "pass",
+            resident_matrix_hits: 1,
+            resident_matrix_misses: 1,
+            resident_matrix_bytes_transferred: AU250_MATRIX_BYTES as u64,
+            program_cache_hits: 1,
+            program_cache_misses: 1,
+            physical_completions: Vec::new(),
+            host_pack_hits: 1,
+            host_pack_misses: 1,
+            host_pack_bytes_built: AU250_MATRIX_BYTES as u64,
         };
         append_execution_log(file.path(), &evidence).unwrap();
         let text = std::fs::read_to_string(file.path()).unwrap();
@@ -1373,8 +1736,16 @@ mod tests {
                     matrix_cache_hit: false,
                     matrix_bytes_transferred: job.matrix.len(),
                     program_address: 0x2000,
-                    program_sha256: [0x33; 32],
+                    program_sha256: Sha256::digest(vec![0x77; 96]).into(),
                     program_cache_hit: false,
+                    encoded_program: vec![0x77; 96],
+                    trace_mode: "compiler".to_string(),
+                    model_context_limit: 262_144,
+                    trace_semantic_sha256: [0x44; 32],
+                    trace_assembly_sha256: [0x55; 32],
+                    replay_safe_program_sha256: [0x66; 32],
+                    trace_assembly: "fixture".to_string(),
+                    trace_instructions: vec![vec!["stall".to_string()]],
                 });
             }
             completions.reverse();

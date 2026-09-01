@@ -546,6 +546,14 @@ pub(crate) struct XrtWaveCompletion {
     pub(crate) program_address: u64,
     pub(crate) program_sha256: [u8; 32],
     pub(crate) program_cache_hit: bool,
+    pub(crate) encoded_program: Vec<u8>,
+    pub(crate) trace_mode: String,
+    pub(crate) model_context_limit: u32,
+    pub(crate) trace_semantic_sha256: [u8; 32],
+    pub(crate) trace_assembly_sha256: [u8; 32],
+    pub(crate) replay_safe_program_sha256: [u8; 32],
+    pub(crate) trace_assembly: String,
+    pub(crate) trace_instructions: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -799,6 +807,19 @@ struct BoundProgramEntry {
     address: u64,
     bytes: usize,
     sha256: [u8; 32],
+    program: Vec<u8>,
+    trace: ProgramTraceMetadata,
+}
+
+#[derive(Debug, Clone)]
+struct ProgramTraceMetadata {
+    mode: String,
+    model_context_limit: u32,
+    semantic_sha256: [u8; 32],
+    assembly_sha256: [u8; 32],
+    replay_safe_program_sha256: [u8; 32],
+    assembly: String,
+    instructions: Vec<Vec<String>>,
 }
 
 struct ReusableCu {
@@ -829,7 +850,7 @@ struct Pool<O: XrtOps> {
     release_device: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PreparedWaveJob {
     matrix_address: u64,
     matrix_cache_hit: bool,
@@ -838,6 +859,8 @@ struct PreparedWaveJob {
     program_bytes: usize,
     program_sha256: [u8; 32],
     program_cache_hit: bool,
+    encoded_program: Vec<u8>,
+    trace: ProgramTraceMetadata,
 }
 
 pub(crate) struct XrtTmatmulPool {
@@ -1147,6 +1170,8 @@ impl<O: XrtOps> Pool<O> {
                 program_bytes: program.bytes,
                 program_sha256: program.sha256,
                 program_cache_hit: true,
+                encoded_program: program.program.clone(),
+                trace: program.trace.clone(),
             });
         }
 
@@ -1158,22 +1183,41 @@ impl<O: XrtOps> Pool<O> {
             input_address,
             output_address,
         )?;
-        let replay_safe_program = if let Some(trace) = &self.qwen_trace {
-            super::iq1s_trace::build_selected_trace(
+        let (replay_safe_program, trace_metadata) = if let Some(trace) = &self.qwen_trace {
+            let selected = super::iq1s_trace::build_selected_trace(
                 &trace.mode,
                 trace.model_context_limit,
                 &labels,
                 self.num_vector_registers,
             )
-            .map_err(XrtTmatmulError::Assemble)?
-            .program
+            .map_err(XrtTmatmulError::Assemble)?;
+            let metadata = ProgramTraceMetadata {
+                mode: selected.selected_kind.as_str().to_string(),
+                model_context_limit: selected.model_context_limit,
+                semantic_sha256: selected.semantic_sha256,
+                assembly_sha256: selected.assembly_sha256,
+                replay_safe_program_sha256: selected.selected_sha256,
+                assembly: selected.assembly,
+                instructions: selected.instructions,
+            };
+            (selected.program, metadata)
         } else {
-            super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
+            let program = super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
                 AU250_TMATMUL_ASSEMBLY,
                 &labels,
                 self.num_vector_registers,
             )
-            .map_err(|error| XrtTmatmulError::Assemble(error.to_string()))?
+            .map_err(|error| XrtTmatmulError::Assemble(error.to_string()))?;
+            let metadata = ProgramTraceMetadata {
+                mode: "legacy".to_string(),
+                model_context_limit: 0,
+                semantic_sha256: [0; 32],
+                assembly_sha256: Sha256::digest(AU250_TMATMUL_ASSEMBLY.as_bytes()).into(),
+                replay_safe_program_sha256: Sha256::digest(&program).into(),
+                assembly: AU250_TMATMUL_ASSEMBLY.to_string(),
+                instructions: Vec::new(),
+            };
+            (program, metadata)
         };
         let program = compact_xrt_program(&replay_safe_program)?;
         validate_program(&program)?;
@@ -1198,6 +1242,8 @@ impl<O: XrtOps> Pool<O> {
                 address: program_address,
                 bytes: program.len(),
                 sha256: program_sha256,
+                program: program.clone(),
+                trace: trace_metadata.clone(),
             },
         );
         Ok(PreparedWaveJob {
@@ -1208,6 +1254,8 @@ impl<O: XrtOps> Pool<O> {
             program_bytes: program.len(),
             program_sha256,
             program_cache_hit: false,
+            encoded_program: program,
+            trace: trace_metadata,
         })
     }
 
@@ -1391,6 +1439,14 @@ impl<O: XrtOps> Pool<O> {
                 program_address: prepared.program_address,
                 program_sha256: prepared.program_sha256,
                 program_cache_hit: prepared.program_cache_hit,
+                encoded_program: prepared.encoded_program.clone(),
+                trace_mode: prepared.trace.mode.clone(),
+                model_context_limit: prepared.trace.model_context_limit,
+                trace_semantic_sha256: prepared.trace.semantic_sha256,
+                trace_assembly_sha256: prepared.trace.assembly_sha256,
+                replay_safe_program_sha256: prepared.trace.replay_safe_program_sha256,
+                trace_assembly: prepared.trace.assembly.clone(),
+                trace_instructions: prepared.trace.instructions.clone(),
             });
         }
         Ok(completions)

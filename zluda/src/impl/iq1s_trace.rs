@@ -14,6 +14,15 @@ pub(crate) enum TraceKind {
     AlgorithmTreeCompiler,
 }
 
+impl TraceKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Handwritten => "handwritten",
+            Self::AlgorithmTreeCompiler => "compiler",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TmatmulTrace {
     pub(crate) kind: TraceKind,
@@ -38,6 +47,9 @@ pub(crate) struct SelectedTraceProgram {
     pub(crate) selected_sha256: [u8; 32],
     pub(crate) handwritten_sha256: [u8; 32],
     pub(crate) compiler_sha256: [u8; 32],
+    pub(crate) semantic_sha256: [u8; 32],
+    pub(crate) assembly_sha256: [u8; 32],
+    pub(crate) assembly: String,
     pub(crate) instructions: Vec<Vec<String>>,
 }
 
@@ -75,6 +87,19 @@ fn canonical_instructions() -> Vec<Vec<String>> {
     executable_tokens(HANDWRITTEN_ASSEMBLY)
 }
 
+pub(crate) fn semantic_sha256(instructions: &[Vec<String>]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"hetgpu-tmatmul-semantic-trace-v1\0");
+    for instruction in instructions {
+        for token in instruction {
+            hash.update(token.as_bytes());
+            hash.update([0]);
+        }
+        hash.update([b'\n']);
+    }
+    hash.finalize().into()
+}
+
 pub(crate) fn build_handwritten_trace(model_context_limit: u32) -> Result<TmatmulTrace, String> {
     validate_model_context_limit(model_context_limit)?;
     Ok(TmatmulTrace {
@@ -108,17 +133,19 @@ pub(crate) fn build_compiler_trace(model_context_limit: u32) -> Result<TmatmulTr
         "address_label".to_string(),
         OperationInfo::String("PARAM_INPUT".to_string()),
     );
-    tree.new_abstract_operation(AbstractOperation::Ldv, vec![], vec![input], Some(input_info));
+    tree.new_abstract_operation(
+        AbstractOperation::Ldv,
+        vec![],
+        vec![input],
+        Some(input_info),
+    );
 
     let mut matrix_info = HashMap::new();
     matrix_info.insert(
         "address_label".to_string(),
         OperationInfo::String("PARAM_MATRIX".to_string()),
     );
-    matrix_info.insert(
-        "NumRows".to_string(),
-        OperationInfo::Int(TILE_DIM as i64),
-    );
+    matrix_info.insert("NumRows".to_string(), OperationInfo::Int(TILE_DIM as i64));
     matrix_info.insert(
         "NumColumns".to_string(),
         OperationInfo::Int(TILE_DIM as i64),
@@ -135,7 +162,12 @@ pub(crate) fn build_compiler_trace(model_context_limit: u32) -> Result<TmatmulTr
         "address_label".to_string(),
         OperationInfo::String("PARAM_OUTPUT".to_string()),
     );
-    tree.new_abstract_operation(AbstractOperation::Sv, vec![output], vec![], Some(output_info));
+    tree.new_abstract_operation(
+        AbstractOperation::Sv,
+        vec![output],
+        vec![],
+        Some(output_info),
+    );
 
     let algorithm_tree_instruction_count = tree.instruction_operations.len();
     let mut assembly = tree.generate_assembly();
@@ -212,7 +244,9 @@ pub(crate) fn build_selected_trace(
         || handwritten_binary.program != compiler_binary.program
         || handwritten_binary.sha256 != compiler_binary.sha256
     {
-        return Err("handwritten and AlgorithmTree compiler traces are not byte-identical".to_string());
+        return Err(
+            "handwritten and AlgorithmTree compiler traces are not byte-identical".to_string(),
+        );
     }
     let selected_kind = match mode {
         "handwritten" => TraceKind::Handwritten,
@@ -223,6 +257,10 @@ pub(crate) fn build_selected_trace(
             )
         }
     };
+    let selected_trace = match selected_kind {
+        TraceKind::Handwritten => &handwritten,
+        TraceKind::AlgorithmTreeCompiler => &compiler,
+    };
     Ok(SelectedTraceProgram {
         selected_kind,
         model_context_limit,
@@ -230,7 +268,10 @@ pub(crate) fn build_selected_trace(
         selected_sha256: handwritten_binary.sha256,
         handwritten_sha256: handwritten_binary.sha256,
         compiler_sha256: compiler_binary.sha256,
-        instructions: handwritten.instructions,
+        semantic_sha256: semantic_sha256(&selected_trace.instructions),
+        assembly_sha256: Sha256::digest(selected_trace.assembly.as_bytes()).into(),
+        assembly: selected_trace.assembly.clone(),
+        instructions: selected_trace.instructions.clone(),
     })
 }
 
