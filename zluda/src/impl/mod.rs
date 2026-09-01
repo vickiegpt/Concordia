@@ -90,6 +90,9 @@ pub(crate) mod batch_scheduler;
 pub(crate) mod iq1s_tmatmul;
 
 #[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) mod iq1s_weight_registry;
+
+#[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) mod iq1s_xrt;
 
 #[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]

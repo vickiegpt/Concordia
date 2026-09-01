@@ -40,7 +40,11 @@ HETGPU_TEST_LLAMA_REVISION="${fixture_revision}" \
     "${prepare}" "${source}" "${overlay}"
 
 grep -Fq 'hetgpu_tq1_register_tensor_v1' "${overlay}/src/llama-model-loader.cpp"
+grep -Fq 'hetgpu_iq1s_register_tensor_v1' "${overlay}/src/llama-model-loader.cpp"
+grep -Fq 'GGML_TYPE_IQ1_S' "${overlay}/src/llama-model-loader.cpp"
 grep -Fq 'hetgpu_tq1_try_mul_mat_id_v1' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'hetgpu_iq1s_bind_device_v1' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'HETGPU_QWEN_IQ1S_DISABLE_CUDA_FUSION' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
 grep -Fq 'HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
 grep -Fq 'hetgpu_qwen35_cuda_buffer_max_size' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
 buffer_helper_line="$(grep -nF 'static size_t hetgpu_qwen35_cuda_buffer_max_size' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu" | cut -d: -f1)"
@@ -48,6 +52,7 @@ buffer_allocator_line="$(grep -nF 'static ggml_backend_buffer_t ggml_backend_cud
 test "${buffer_helper_line}" -lt "${buffer_allocator_line}"
 grep -Fq 'const std::string & path() const' "${overlay}/src/llama-mmap.h"
 grep -Fq 'HETGPU_TQ1_ABI_VERSION' "${overlay}/tools/qwen35-tq1-bridge.h"
+grep -Fq 'HETGPU_IQ1S_ABI_VERSION' "${overlay}/tools/qwen35-tq1-bridge.h"
 grep -Fq '925e1179947ea0c0ebfb0032df18af3a729822be' "${prepare}"
 test "$(git -C "${source}" rev-parse HEAD)" = "${fixture_revision}"
 test -z "$(git -C "${source}" status --short)"
@@ -82,7 +87,7 @@ if HETGPU_OVERLAY_TESTING=1 HETGPU_TEST_LLAMA_REVISION="${fixture_revision}" \
 fi
 test "$(cat "${nonempty}/user-file")" = keep
 
-printf '#include "qwen35-tq1-bridge.h"\nint main(void) { return HETGPU_TQ1_ABI_VERSION != 1; }\n' \
+printf '#include "qwen35-tq1-bridge.h"\nint main(void) { return HETGPU_TQ1_ABI_VERSION != 1 || HETGPU_IQ1S_ABI_VERSION != 1; }\n' \
     > "${scratch}/header.c"
 cc -std=c11 -Werror -I"${repo_root}/tools" -c "${scratch}/header.c" -o "${scratch}/header-c.o"
 c++ -std=c++17 -Werror -I"${repo_root}/tools" -x c++ -c "${scratch}/header.c" \

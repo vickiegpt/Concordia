@@ -63,6 +63,40 @@ pub unsafe extern "C" fn hetgpu_tq1_try_mul_mat_id_v1(
     .unwrap_or(crate::r#impl::tq1_bridge::HETGPU_TQ1_ERROR)
 }
 
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_iq1s_register_tensor_v1(
+    tensor: *const crate::r#impl::iq1s_weight_registry::HetgpuIq1sTensorV1,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::r#impl::iq1s_weight_registry::register_tensor(tensor)
+    }))
+    .unwrap_or(crate::r#impl::iq1s_weight_registry::HETGPU_IQ1S_ERROR)
+}
+
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_iq1s_bind_device_v1(
+    binding: *const crate::r#impl::iq1s_weight_registry::HetgpuIq1sDeviceBindingV1,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::r#impl::iq1s_weight_registry::bind_device(binding)
+    }))
+    .unwrap_or(crate::r#impl::iq1s_weight_registry::HETGPU_IQ1S_ERROR)
+}
+
 // The embedded CUDA runtime shim exposes IPC entry points in every build. The
 // SIFIVE backend supplies real shared-DDR implementations; NVIDIA-only builds
 // must still provide fail-closed providers so the shim has no unresolved DT_NEEDED symbols.

@@ -7,6 +7,12 @@ pristine=/llama-pristine
 overlay=/qwen-build/llama-overlay
 llama_build=/qwen-build/llama-build
 rust_target=/qwen-build/hetgpu-target
+build_jobs="${QWEN35_BUILD_JOBS:-32}"
+
+if [[ ! "${build_jobs}" =~ ^[0-9]+$ ]] || (( build_jobs < 1 || build_jobs > 32 )); then
+    echo "QWEN35_BUILD_JOBS must be an integer from 1 through 32" >&2
+    exit 2
+fi
 
 test -d "${pristine}/.git" || { echo "missing pristine llama.cpp checkout" >&2; exit 1; }
 test "$(git -C "${pristine}" rev-parse HEAD)" = "${pinned_revision}" || {
@@ -25,6 +31,7 @@ export LD_LIBRARY_PATH="/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH:-}"
 export RUSTUP_HOME=/qwen-build/rustup
 export CARGO_HOME=/qwen-build/cargo
 export CARGO_TARGET_DIR="${rust_target}"
+export CARGO_BUILD_JOBS="${build_jobs}"
 export PATH="${CARGO_HOME}/bin:${PATH}"
 if ! command -v cargo >/dev/null 2>&1; then
     install -d "${CARGO_HOME}" "${RUSTUP_HOME}"
@@ -42,7 +49,7 @@ cmake -S "${overlay}" -B "${llama_build}" \
     -DLLAMA_BUILD_TOOLS=ON \
     -DLLAMA_BUILD_TESTS=OFF \
     -DCMAKE_BUILD_TYPE=Release
-cmake --build "${llama_build}" --target llama-server llama-cli -j"$(nproc)"
+cmake --build "${llama_build}" --target llama-server llama-cli -j"${build_jobs}"
 c++ -O2 -std=c++17 \
     -I"${overlay}/ggml/include" \
     -I"${overlay}/ggml/src" \
@@ -84,6 +91,11 @@ test -x "${upstream_oracle}"
 symbols="$(nm -D "${nvcuda}" | awk '$3 ~ /^hetgpu_tq1_(evaluate_raw|register_tensor|try_mul_mat_id)_v1$/ { print $3 }' | LC_ALL=C sort -u)"
 test "${symbols}" = $'hetgpu_tq1_evaluate_raw_v1\nhetgpu_tq1_register_tensor_v1\nhetgpu_tq1_try_mul_mat_id_v1' || {
     echo "libnvcuda.so does not export exactly the three required TQ1 symbols" >&2
+    exit 1
+}
+iq1s_symbols="$(nm -D "${nvcuda}" | awk '$3 ~ /^hetgpu_iq1s_(bind_device|register_tensor)_v1$/ { print $3 }' | LC_ALL=C sort -u)"
+test "${iq1s_symbols}" = $'hetgpu_iq1s_bind_device_v1\nhetgpu_iq1s_register_tensor_v1' || {
+    echo "libnvcuda.so does not export exactly the two required IQ1_S symbols" >&2
     exit 1
 }
 relocations="$(ldd -r "${nvcuda}" 2>&1)"
