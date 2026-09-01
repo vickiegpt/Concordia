@@ -628,6 +628,11 @@ typedef void* cudaDeviceProp_t; // opaque placeholder for device properties stru
 typedef void* cudaMemPool_t;
 typedef void* cudaUserObject_t;
 typedef void* cudaFunction_t;
+static void* hetgpu_real_cudart_handle(void);
+static void* hetgpu_real_cudart_symbol(const char* name);
+static CUfunction lookup_registered_function(const void* func, const char** func_name);
+static CUfunction lazy_load_registered_function_for_launch(const char* func_name, const void* func);
+extern CUresult cuFuncSetAttribute(CUfunction hfunc, int attrib, int value);
 typedef struct { unsigned int x, y, z; } dim3;
 typedef struct {
     dim3 gridDim;
@@ -678,6 +683,20 @@ static CUstream hetgpu_driver_stream(cudaStream_t stream) {
 }
 
 static cudaError_t hetgpu_stream_create(cudaStream_t* pStream, unsigned int flags, int priority) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*stream_create_priority_fn)(cudaStream_t*, unsigned int, int);
+        typedef cudaError_t (*stream_create_flags_fn)(cudaStream_t*, unsigned int);
+        if (priority != 0) {
+            stream_create_priority_fn create_priority =
+                (stream_create_priority_fn)hetgpu_real_cudart_symbol("cudaStreamCreateWithPriority");
+            if (create_priority) return create_priority(pStream, flags, priority);
+        }
+        stream_create_flags_fn create_flags =
+            (stream_create_flags_fn)hetgpu_real_cudart_symbol("cudaStreamCreateWithFlags");
+        if (create_flags) return create_flags(pStream, flags);
+        fprintf(stderr, "[cudart_shim] ERROR: real CUDA stream creation is unavailable\n");
+        return HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     if (!pStream) return 1;
     HetgpuCudaStream* s = (HetgpuCudaStream*)calloc(1, sizeof(*s));
     if (!s) return 2;
@@ -913,6 +932,12 @@ cudaError_t cudaStreamCreateWithFlags(cudaStream_t* pStream, unsigned int flags)
 }
 
 cudaError_t cudaStreamDestroy(cudaStream_t stream) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*stream_destroy_fn)(cudaStream_t);
+        stream_destroy_fn destroy =
+            (stream_destroy_fn)hetgpu_real_cudart_symbol("cudaStreamDestroy");
+        return destroy ? destroy(stream) : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     if (hetgpu_stream_is_managed(stream)) {
         HetgpuCudaStream* s = (HetgpuCudaStream*)stream;
         s->magic = 0;
@@ -965,37 +990,86 @@ cudaError_t cudaStreamCreateWithPriority(cudaStream_t* pStream,
 
 // Event API stubs
 cudaError_t cudaEventCreate(cudaEvent_t* event) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*event_create_fn)(cudaEvent_t*);
+        event_create_fn create =
+            (event_create_fn)hetgpu_real_cudart_symbol("cudaEventCreate");
+        return create ? create(event) : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     if (event) *event = (cudaEvent_t)0;
     return 0;
 }
 
 cudaError_t cudaEventCreateWithFlags(cudaEvent_t* event, unsigned int flags) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*event_create_flags_fn)(cudaEvent_t*, unsigned int);
+        event_create_flags_fn create =
+            (event_create_flags_fn)hetgpu_real_cudart_symbol("cudaEventCreateWithFlags");
+        return create ? create(event, flags) : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     (void)flags;
     if (event) *event = (cudaEvent_t)0;
     return 0;
 }
 
 cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*event_record_fn)(cudaEvent_t, cudaStream_t);
+        event_record_fn record =
+            (event_record_fn)hetgpu_real_cudart_symbol("cudaEventRecord");
+        return record ? record(event, stream) : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     (void)event; (void)stream; return 0;
 }
 
 cudaError_t cudaEventRecordWithFlags(cudaEvent_t event, cudaStream_t stream, unsigned int flags) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*event_record_flags_fn)(cudaEvent_t, cudaStream_t, unsigned int);
+        event_record_flags_fn record =
+            (event_record_flags_fn)hetgpu_real_cudart_symbol("cudaEventRecordWithFlags");
+        if (record) return record(event, stream, flags);
+        return cudaEventRecord(event, stream);
+    }
     (void)event; (void)stream; (void)flags; return 0;
 }
 
 cudaError_t cudaEventSynchronize(cudaEvent_t event) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*event_sync_fn)(cudaEvent_t);
+        event_sync_fn synchronize =
+            (event_sync_fn)hetgpu_real_cudart_symbol("cudaEventSynchronize");
+        return synchronize ? synchronize(event) : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     (void)event; return 0;
 }
 
 cudaError_t cudaEventQuery(cudaEvent_t event) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*event_query_fn)(cudaEvent_t);
+        event_query_fn query =
+            (event_query_fn)hetgpu_real_cudart_symbol("cudaEventQuery");
+        return query ? query(event) : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     (void)event; return 0;
 }
 
 cudaError_t cudaEventDestroy(cudaEvent_t event) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*event_destroy_fn)(cudaEvent_t);
+        event_destroy_fn destroy =
+            (event_destroy_fn)hetgpu_real_cudart_symbol("cudaEventDestroy");
+        return destroy ? destroy(event) : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     (void)event; return 0;
 }
 
 cudaError_t cudaEventElapsedTime(float* ms, cudaEvent_t start, cudaEvent_t end) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*event_elapsed_fn)(float*, cudaEvent_t, cudaEvent_t);
+        event_elapsed_fn elapsed =
+            (event_elapsed_fn)hetgpu_real_cudart_symbol("cudaEventElapsedTime");
+        return elapsed ? elapsed(ms, start, end) : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     (void)start; (void)end; if (ms) *ms = 0.0f; return 0;
 }
 
@@ -1140,8 +1214,47 @@ typedef struct {
     int    directManagedMemAccessFromHost; // 700-703
 } cudaDeviceProp_full;
 
+static void* hetgpu_real_cudart_handle(void) {
+    static void* handle = NULL;
+    static int tried = 0;
+    if (tried) return handle;
+    tried = 1;
+
+    const char* override_path = getenv("HETGPU_REAL_CUDART_PATH");
+    if (override_path && *override_path) {
+        handle = dlopen(override_path, RTLD_LAZY | RTLD_LOCAL);
+        if (handle) return handle;
+    }
+
+    const char* names[] = {"libcudart.so.13", "libcudart.so.12", NULL};
+    for (int index = 0; names[index]; ++index) {
+        handle = dlopen(names[index], RTLD_LAZY | RTLD_LOCAL);
+        if (handle) return handle;
+    }
+    return NULL;
+}
+
+static void* hetgpu_real_cudart_symbol(const char* name) {
+    void* handle = hetgpu_real_cudart_handle();
+    return handle ? dlsym(handle, name) : NULL;
+}
+
 cudaError_t cudaGetDeviceProperties(cudaDeviceProp_t prop, int device) {
     if (!prop) return 1; // cudaErrorInvalidValue
+
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_DEVICE_INFO", 0)) {
+        typedef cudaError_t (*get_properties_fn)(cudaDeviceProp_t, int);
+        void* handle = hetgpu_real_cudart_handle();
+        get_properties_fn get_properties = handle
+            ? (get_properties_fn)dlsym(handle, "cudaGetDeviceProperties")
+            : NULL;
+        if (!get_properties || get_properties == cudaGetDeviceProperties) {
+            fprintf(stderr,
+                    "[cudart_shim] ERROR: real cudaGetDeviceProperties is unavailable\n");
+            return HETGPU_CUDA_ERROR_UNKNOWN;
+        }
+        return get_properties(prop, device);
+    }
 
     // Fill full struct matching CUDA 11.x/12.x layout
     cudaDeviceProp_full p;
@@ -1305,14 +1418,40 @@ cudaError_t cudaRuntimeGetVersion(int* version) {
 }
 
 cudaError_t cudaDeviceSynchronize(void) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*device_sync_fn)(void);
+        device_sync_fn synchronize =
+            (device_sync_fn)hetgpu_real_cudart_symbol("cudaDeviceSynchronize");
+        return synchronize ? synchronize() : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     return hetgpu_hide_sync_errors() ? HETGPU_CUDA_SUCCESS : g_last_cuda_error;
 }
 cudaError_t cudaStreamSynchronize(cudaStream_t stream) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*stream_sync_fn)(cudaStream_t);
+        stream_sync_fn synchronize =
+            (stream_sync_fn)hetgpu_real_cudart_symbol("cudaStreamSynchronize");
+        return synchronize ? synchronize(stream) : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     (void)stream;
     return hetgpu_hide_sync_errors() ? HETGPU_CUDA_SUCCESS : g_last_cuda_error;
 }
-cudaError_t cudaStreamQuery(cudaStream_t stream) { (void)stream; return 0; }
+cudaError_t cudaStreamQuery(cudaStream_t stream) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*stream_query_fn)(cudaStream_t);
+        stream_query_fn query =
+            (stream_query_fn)hetgpu_real_cudart_symbol("cudaStreamQuery");
+        return query ? query(stream) : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
+    (void)stream; return 0;
+}
 cudaError_t cudaStreamWaitEvent(cudaStream_t stream, cudaEvent_t event, unsigned int flags) {
+    if (hetgpu_env_enabled_default("HETGPU_CUDART_FORWARD_REAL_STREAMS", 0)) {
+        typedef cudaError_t (*stream_wait_fn)(cudaStream_t, cudaEvent_t, unsigned int);
+        stream_wait_fn wait_event =
+            (stream_wait_fn)hetgpu_real_cudart_symbol("cudaStreamWaitEvent");
+        return wait_event ? wait_event(stream, event, flags) : HETGPU_CUDA_ERROR_UNKNOWN;
+    }
     (void)stream; (void)event; (void)flags; return 0;
 }
 
@@ -1777,7 +1916,30 @@ typedef struct {
 } cudaFuncAttributes;
 
 // Occupancy/API helpers
-cudaError_t cudaFuncSetAttribute(const void* func, int attr, int value) { (void)func; (void)attr; (void)value; return 0; }
+cudaError_t cudaFuncSetAttribute(const void* func, int attr, int value) {
+    const char* func_name = "<unknown>";
+    CUfunction cu_func = func ? lookup_registered_function(func, &func_name) : NULL;
+    if (!cu_func && func_name && strcmp(func_name, "<unknown>") != 0) {
+        cu_func = lazy_load_registered_function_for_launch(func_name, func);
+    }
+    if (!cu_func) {
+        fprintf(stderr,
+                "[cudart_shim] cudaFuncSetAttribute could not resolve func=%p name='%s'\n",
+                func,
+                func_name ? func_name : "<unknown>");
+        return hetgpu_set_last_error(HETGPU_CUDA_ERROR_INVALID_VALUE);
+    }
+    CUresult result = cuFuncSetAttribute(cu_func, attr, value);
+    if (result != 0) {
+        fprintf(stderr,
+                "[cudart_shim] cuFuncSetAttribute('%s', attr=%d, value=%d) failed: %d\n",
+                func_name,
+                attr,
+                value,
+                result);
+    }
+    return hetgpu_set_last_error(hetgpu_cuda_from_cu(result));
+}
 cudaError_t cudaFuncGetAttributes(void* attr, const void* func) {
     (void)func;
     if (!attr) return 1; // cudaErrorInvalidValue
@@ -4267,7 +4429,16 @@ void __cudaRegisterVar(void** fatCubinHandle,
     (void)ext; (void)size; (void)constant; (void)global;
 }
 
-void* __cudaGetKernel(const void* f) { return (void*)f; }
+// CUDA 12.8+ host stubs cache a launch handle through this two-argument ABI.
+// Preserve the registered host function pointer as that handle so the launch
+// hook can recover its kernel name and CUfunction from g_functions.
+cudaError_t __cudaGetKernel(void** kernel, const void* f) {
+    if (!kernel || !f) {
+        return hetgpu_set_last_error(HETGPU_CUDA_ERROR_INVALID_VALUE);
+    }
+    *kernel = (void*)f;
+    return hetgpu_set_last_error(HETGPU_CUDA_SUCCESS);
+}
 
 cudaError_t __cudaInitModule(void** fatCubinHandle) {
     (void)fatCubinHandle;

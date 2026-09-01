@@ -1,0 +1,21 @@
+diff --git a/3rdparty/llama.cpp/ggml/src/ggml-cuda/mmq.cu b/3rdparty/llama.cpp/ggml/src/ggml-cuda/mmq.cu
+--- a/3rdparty/llama.cpp/ggml/src/ggml-cuda/mmq.cu
++++ b/3rdparty/llama.cpp/ggml/src/ggml-cuda/mmq.cu
+@@ -1,5 +1,5 @@ void ggml_cuda_op_mul_mat_q(
+     // The stream-k decomposition is only faster for recent NVIDIA GPUs.
+     // Also its fixup needs to allocate a temporary buffer in the memory pool.
+     // There are multiple parallel CUDA streams for src1_ncols != ne11 which would introduce a race condition for this buffer.
+-    const bool use_stream_k = compute_capability >= CC_VOLTA && compute_capability < CC_OFFSET_AMD && src1_ncols == ne11;
++    const bool use_stream_k = false;
+     const mmq_args args = {src0_dd_i, src1_ddq_i, dst_dd_i, ne00, row_diff, stride00, src1_padded_row_size, src1_ncols, ne11, nrows_dst, use_stream_k};
+diff --git a/3rdparty/llama.cpp/ggml/src/ggml-cuda/mmq.cuh b/3rdparty/llama.cpp/ggml/src/ggml-cuda/mmq.cuh
+--- a/3rdparty/llama.cpp/ggml/src/ggml-cuda/mmq.cuh
++++ b/3rdparty/llama.cpp/ggml/src/ggml-cuda/mmq.cuh
+@@ -1,6 +1,6 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
+     const int mmq_x_max = get_mmq_x_max_host(cc);
+     const int mmq_y = get_mmq_y_host(cc);
+     const int block_num_y = (args.ne01 + mmq_y - 1) / mmq_y;
+-    const bool use_stream_k = cc >= CC_VOLTA && cc < CC_OFFSET_AMD;
++    const bool use_stream_k = args.use_stream_k;
+ 
+     int mmq_x_best  = 0;

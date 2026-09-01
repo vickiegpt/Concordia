@@ -370,7 +370,11 @@ pub(crate) fn iter_q8_1_mmq<'a>(
                 let packed = packed
                     .get(range)
                     .ok_or("Q8 record is outside the captured activation")?;
-                Q8_1MmqBlock::parse(packed)
+                Q8_1MmqBlock::parse(packed).map_err(|error| {
+                    format!(
+                        "Q8 record k_record={k_record_index} batch={batch_index}: {error}"
+                    )
+                })
             })
         }),
     )

@@ -974,6 +974,20 @@ pub fn cuFuncGetAttribute(pi: *mut c_int, attrib: CUfunction_attribute, hfunc: C
     999
 }
 
+pub fn cuFuncSetAttribute(
+    hfunc: CUfunction,
+    attrib: CUfunction_attribute,
+    value: c_int,
+) -> i32 {
+    if let Some(funcs) = get_cuda_funcs() {
+        if let Some(f) = funcs.cuFuncSetAttribute {
+            let result = unsafe { f(hfunc, attrib, value) };
+            return cuda_result_to_int(result);
+        }
+    }
+    999
+}
+
 pub fn cuLaunchKernel(
     f: CUfunction,
     gridDimX: c_uint,

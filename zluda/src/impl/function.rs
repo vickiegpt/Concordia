@@ -8129,6 +8129,9 @@ fn nvidia_log_bitnet_route_for_native_launch(kernel_name: &str) {
     if !super::bitnet_disagg::enabled_from_env() {
         return;
     }
+    if NVIDIA_SUPPRESS_NEXT_NATIVE_ROUTE_LOG.with(|flag| flag.replace(false)) {
+        return;
+    }
 
     let route_config = super::bitnet_disagg::config_from_env();
     let decision = super::bitnet_disagg::classify_kernel_name(kernel_name, &route_config);
@@ -8166,6 +8169,30 @@ fn nvidia_log_bitnet_route_for_native_launch(kernel_name: &str) {
             kernel_name,
             decision.source.as_str()
         );
+    }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+thread_local! {
+    static NVIDIA_SUPPRESS_NEXT_NATIVE_ROUTE_LOG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static NVIDIA_NAMED_PRELAUNCH_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static NVIDIA_SKIP_NEXT_XRT_ATTEMPT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_arm_native_fallback_continuation() {
+    if NVIDIA_NAMED_PRELAUNCH_ACTIVE.with(std::cell::Cell::get) {
+        NVIDIA_SKIP_NEXT_XRT_ATTEMPT.with(|flag| flag.set(true));
     }
 }
 
@@ -9095,6 +9122,185 @@ fn nvidia_xrt_output_hash(outputs: &[f32]) -> u64 {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+#[derive(Debug, Clone, PartialEq)]
+struct NvidiaXrtNativeComparison {
+    max_abs_error: f32,
+    max_rel_error: f32,
+    mismatch_count: usize,
+    first_mismatch: Option<(usize, f32, f32)>,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_xrt_compare_native_outputs(
+    xrt: &[f32],
+    native: &[f32],
+    abs_tolerance: f32,
+    rel_tolerance: f32,
+) -> Result<NvidiaXrtNativeComparison, String> {
+    if xrt.len() != native.len() {
+        return Err(format!(
+            "XRT/native output length mismatch: {} versus {}",
+            xrt.len(),
+            native.len()
+        ));
+    }
+    if !abs_tolerance.is_finite()
+        || !rel_tolerance.is_finite()
+        || abs_tolerance < 0.0
+        || rel_tolerance < 0.0
+    {
+        return Err("XRT/native comparison tolerances must be finite and nonnegative".into());
+    }
+
+    let mut comparison = NvidiaXrtNativeComparison {
+        max_abs_error: 0.0,
+        max_rel_error: 0.0,
+        mismatch_count: 0,
+        first_mismatch: None,
+    };
+    for (index, (&xrt_value, &native_value)) in xrt.iter().zip(native).enumerate() {
+        let abs_error = (xrt_value - native_value).abs();
+        let scale = xrt_value.abs().max(native_value.abs());
+        let rel_error = if scale == 0.0 { 0.0 } else { abs_error / scale };
+        comparison.max_abs_error = comparison.max_abs_error.max(abs_error);
+        comparison.max_rel_error = comparison.max_rel_error.max(rel_error);
+        let matches = xrt_value.is_finite()
+            && native_value.is_finite()
+            && abs_error <= abs_tolerance + rel_tolerance * scale;
+        if !matches {
+            comparison.mismatch_count += 1;
+            comparison
+                .first_mismatch
+                .get_or_insert((index, xrt_value, native_value));
+        }
+    }
+    Ok(comparison)
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+struct NvidiaXrtNativePending {
+    kernel: String,
+    launch_ordinal: u64,
+    output_ptr: usize,
+    xrt_outputs: Vec<f32>,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+thread_local! {
+    static NVIDIA_XRT_NATIVE_PENDING: std::cell::RefCell<Option<NvidiaXrtNativePending>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_xrt_native_compare_max_launches() -> u64 {
+    nvidia_env_u64_any(&["HETGPU_XRT_NATIVE_COMPARE_MAX_LAUNCHES"]).unwrap_or(0)
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_xrt_native_compare_start_launch() -> u64 {
+    nvidia_env_u64_any(&["HETGPU_XRT_NATIVE_COMPARE_START_LAUNCH"]).unwrap_or(0)
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_xrt_finish_native_comparison(
+    kernel_name: &str,
+    stream: cuda_types::cuda::CUstream,
+) -> Result<(), String> {
+    let pending = NVIDIA_XRT_NATIVE_PENDING.with(|slot| slot.borrow_mut().take());
+    let Some(pending) = pending else {
+        return Ok(());
+    };
+    if pending.kernel != kernel_name {
+        return Err(format!(
+            "pending XRT/native comparison for '{}' reached native kernel '{}'",
+            pending.kernel, kernel_name
+        ));
+    }
+    let sync_result = nvidia_runtime_sys::cuStreamSynchronize_ckpt(stream);
+    if sync_result != 0 {
+        return Err(format!(
+            "native comparison stream synchronization failed with error {sync_result}"
+        ));
+    }
+    let byte_count = pending
+        .xrt_outputs
+        .len()
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or("native comparison output size overflow")?;
+    let bytes = super::cxl_tmatmul::copy_cuda_to_host(pending.output_ptr, byte_count)
+        .map_err(|error| error.to_string())?;
+    let native_outputs = bytes
+        .chunks_exact(std::mem::size_of::<f32>())
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("exact f32 chunk")))
+        .collect::<Vec<_>>();
+    let comparison = nvidia_xrt_compare_native_outputs(
+        &pending.xrt_outputs,
+        &native_outputs,
+        1.0e-3,
+        1.0e-3,
+    )?;
+    let first_mismatch = comparison
+        .first_mismatch
+        .map(|(index, xrt, native)| serde_json::json!({
+            "index": index,
+            "xrt": xrt,
+            "native": native,
+        }));
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event": "xrt_native_output_comparison",
+            "kernel": kernel_name,
+            "launch_ordinal": pending.launch_ordinal,
+            "output_elements": pending.xrt_outputs.len(),
+            "xrt_output_hash": format!("{:016x}", nvidia_xrt_output_hash(&pending.xrt_outputs)),
+            "native_output_hash": format!("{:016x}", nvidia_xrt_output_hash(&native_outputs)),
+            "max_abs_error": comparison.max_abs_error,
+            "max_rel_error": comparison.max_rel_error,
+            "mismatch_count": comparison.mismatch_count,
+            "first_mismatch": first_mismatch,
+            "comparison_status": if comparison.mismatch_count == 0 { "pass" } else { "fail" },
+        })
+    );
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 fn nvidia_xrt_emit_success_records(
     kernel_name: &str,
     result: &super::iq1s_xrt::XrtIq1sResult,
@@ -9134,6 +9340,7 @@ unsafe fn nvidia_capture_iq1s_xrt_mmq(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
 ) -> Result<super::iq1s_tmatmul::CapturedLaunch, String> {
+    nvidia_xrt_require_direct_output_mmq(kernel_params, kernel_name)?;
     let shape = nvidia_cxl_read_mmq_shape(kernel_params, kernel_name)?;
     let signature = nvidia_iq1s_signature(kernel_name, shape)?;
     let matrix_ptr = nvidia_cxl_read_pointer_param(kernel_params, 0, kernel_name)?;
@@ -9149,8 +9356,38 @@ unsafe fn nvidia_capture_iq1s_xrt_mmq(
         ])
         .unwrap_or(0),
         content_hash: [0; 32],
-        signature,
+        signature: signature.clone(),
     })
+    .map_err(|error| format!("signature={signature:?}: {error}"))
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_xrt_require_direct_output_mmq(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    kernel_name: &str,
+) -> Result<(), String> {
+    if kernel_params.is_null() {
+        return Err(format!("kernel '{kernel_name}' has null kernel_params"));
+    }
+    let slot = *kernel_params.add(3);
+    if slot.is_null() || (slot as usize) < 0x1000 {
+        return Err(format!(
+            "kernel '{kernel_name}' PARAM_3 tmp_fixup has invalid parameter slot {:#x}",
+            slot as usize
+        ));
+    }
+    let tmp_fixup = (slot as *const u64).read_unaligned();
+    if tmp_fixup != 0 {
+        return Err(format!(
+            "kernel '{kernel_name}' uses stream-k tmp_fixup={tmp_fixup:#x}; AU250 XRT substitution requires direct-output MMQ with a null tmp_fixup"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(all(
@@ -9191,7 +9428,11 @@ unsafe fn nvidia_capture_iq1s_xrt_mmvq(
 pub(crate) unsafe fn nvidia_try_launch_named_xrt_tmatmul(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
+    stream: cuda_types::cuda::CUstream,
 ) -> Option<Result<(), String>> {
+    if NVIDIA_SKIP_NEXT_XRT_ATTEMPT.with(|flag| flag.replace(false)) {
+        return None;
+    }
     let kernel_kind = nvidia_iq1s_xrt_kernel(kernel_name)?;
     if !super::bitnet_disagg::enabled_from_env()
         || !nvidia_env_truthy("HETGPU_TMATMUL_HARDWARE_MATMUL")
@@ -9213,6 +9454,81 @@ pub(crate) unsafe fn nvidia_try_launch_named_xrt_tmatmul(
         }
         super::bitnet_disagg::BitnetRoute::CxlTmatmul => {}
     }
+
+    let native_compare_max = nvidia_xrt_native_compare_max_launches();
+    let native_compare_start = nvidia_xrt_native_compare_start_launch();
+    let native_compare_ordinal = if native_compare_max != 0 {
+        static NATIVE_COMPARE_CANDIDATES: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let ordinal =
+            NATIVE_COMPARE_CANDIDATES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if ordinal < native_compare_start || ordinal >= native_compare_max {
+            return None;
+        }
+        Some(ordinal)
+    } else {
+        None
+    };
+    let sync_result = nvidia_runtime_sys::cuStreamSynchronize_ckpt(stream);
+    if sync_result != 0 {
+        return nvidia_xrt_route_failure(
+            kernel_name,
+            decision.strict,
+            format!("CUDA stream synchronization before XRT capture failed with error {sync_result}"),
+        );
+    }
+
+    let captured = match kernel_kind {
+        NvidiaIq1sXrtKernel::Mmq => nvidia_capture_iq1s_xrt_mmq(kernel_name, kernel_params),
+        NvidiaIq1sXrtKernel::Mmvq => nvidia_capture_iq1s_xrt_mmvq(kernel_name, kernel_params),
+    };
+    let captured = match captured {
+        Ok(captured) => captured,
+        Err(error) => {
+            if let Some(launch_ordinal) = native_compare_ordinal {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "xrt_native_capture_rejected",
+                        "kernel": kernel_name,
+                        "launch_ordinal": launch_ordinal,
+                        "error": error,
+                        "continuation": "native_diagnostic",
+                    })
+                );
+                return None;
+            }
+            if nvidia_env_truthy("HETGPU_XRT_ALLOW_NONFINITE_Q8_NATIVE")
+                && error.contains("Q8_1 MMQ d/s pair")
+                && error.contains("must be finite")
+            {
+                let mut fallback = decision.clone();
+                fallback.route = super::bitnet_disagg::BitnetRoute::GpuNative;
+                fallback.reason = Some(
+                    "nonfinite_q8_not_representable_by_au250_abi".to_string(),
+                );
+                if let Err(log_error) = super::bitnet_disagg::append_route_log_from_env(
+                    &fallback,
+                    super::bitnet_disagg::RouteHardware::xrt(false),
+                ) {
+                    return Some(Err(format!("route log failed: {log_error}")));
+                }
+                NVIDIA_SUPPRESS_NEXT_NATIVE_ROUTE_LOG.with(|flag| flag.set(true));
+                nvidia_arm_native_fallback_continuation();
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "au250_xrt_iq1s_native_capability_fallback",
+                        "kernel": kernel_name,
+                        "reason": "nonfinite_q8_not_representable_by_au250_abi",
+                        "capture_error": error,
+                    })
+                );
+                return None;
+            }
+            return nvidia_xrt_route_failure(kernel_name, decision.strict, error);
+        }
+    };
     if let Err(error) = super::bitnet_disagg::append_route_log_from_env(
         &decision,
         super::bitnet_disagg::RouteHardware::xrt(true),
@@ -9222,15 +9538,6 @@ pub(crate) unsafe fn nvidia_try_launch_named_xrt_tmatmul(
             return Some(Err(format!("route log failed: {error}")));
         }
     }
-
-    let captured = match kernel_kind {
-        NvidiaIq1sXrtKernel::Mmq => nvidia_capture_iq1s_xrt_mmq(kernel_name, kernel_params),
-        NvidiaIq1sXrtKernel::Mmvq => nvidia_capture_iq1s_xrt_mmvq(kernel_name, kernel_params),
-    };
-    let captured = match captured {
-        Ok(captured) => captured,
-        Err(error) => return nvidia_xrt_route_failure(kernel_name, decision.strict, error),
-    };
     eprintln!(
         "[XRT TMatmul][NVIDIA] launching IQ1_S '{}' on the persistent AU250 four-CU pool",
         kernel_name
@@ -9239,7 +9546,26 @@ pub(crate) unsafe fn nvidia_try_launch_named_xrt_tmatmul(
         Ok(value) => value,
         Err(error) => return nvidia_xrt_route_failure(kernel_name, decision.strict, error),
     };
-    let execution = super::iq1s_xrt::execute_captured(&captured).and_then(|result| {
+    let execution = super::iq1s_xrt::execute_captured(&captured);
+    if let Some(launch_ordinal) = native_compare_ordinal {
+        return match execution {
+            Ok(result) => {
+                nvidia_xrt_emit_success_records(kernel_name, &result, compare_max_launches);
+                let output_ptr = captured.launch.output_ptr;
+                NVIDIA_XRT_NATIVE_PENDING.with(|slot| {
+                    *slot.borrow_mut() = Some(NvidiaXrtNativePending {
+                        kernel: kernel_name.to_string(),
+                        launch_ordinal,
+                        output_ptr,
+                        xrt_outputs: result.outputs,
+                    });
+                });
+                None
+            }
+            Err(error) => nvidia_xrt_route_failure(kernel_name, decision.strict, error),
+        };
+    }
+    let execution = execution.and_then(|result| {
         super::iq1s_tmatmul::copy_outputs_to_cuda(&captured, &result.outputs)?;
         Ok(result)
     });
@@ -9481,6 +9807,7 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
 pub(crate) unsafe fn nvidia_try_launch_named_tmatmul(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
+    stream: cuda_types::cuda::CUstream,
 ) -> Option<Result<(), String>> {
     if !super::bitnet_disagg::enabled_from_env()
         || !nvidia_env_truthy("HETGPU_TMATMUL_HARDWARE_MATMUL")
@@ -9497,7 +9824,7 @@ pub(crate) unsafe fn nvidia_try_launch_named_tmatmul(
             nvidia_try_launch_named_cxl_tmatmul(kernel_name, kernel_params)
         }
         super::bitnet_disagg::TmatmulBackend::Xrt => {
-            nvidia_try_launch_named_xrt_tmatmul(kernel_name, kernel_params)
+            nvidia_try_launch_named_xrt_tmatmul(kernel_name, kernel_params, stream)
         }
     }
 }
@@ -9524,7 +9851,7 @@ unsafe fn nvidia_try_launch_tmatmul_before_native(
         }));
     }
 
-    if let Some(result) = nvidia_try_launch_named_tmatmul(kernel_name, kernel_params) {
+    if let Some(result) = nvidia_try_launch_named_tmatmul(kernel_name, kernel_params, stream) {
         return Some(result.map_err(|err| {
             eprintln!("[TMatmul][NVIDIA] named launch failed: {err}");
             CUerror::UNKNOWN
@@ -9598,6 +9925,11 @@ pub(crate) fn launch_kernel(
         );
         return Err(CUerror::UNKNOWN);
     }
+    if let Err(error) = unsafe { nvidia_xrt_finish_native_comparison(&f.function_name, h_stream) }
+    {
+        eprintln!("[NVIDIA Backend] XRT/native output comparison failed: {error}");
+        return Err(CUerror::UNKNOWN);
+    }
     nvidia_emit_gpu_attention_completed(&f.function_name);
     super::kimi_concordia::observe_kernel_launch(&f.function_name, h_stream, &concordia_ptrs);
     Ok(())
@@ -9649,6 +9981,12 @@ pub(crate) fn launch_kernel_ex(
             "[NVIDIA Backend] cuLaunchKernelEx failed with error {}",
             result
         );
+        return Err(CUerror::UNKNOWN);
+    }
+    if let Err(error) =
+        unsafe { nvidia_xrt_finish_native_comparison(&f.function_name, config.hStream) }
+    {
+        eprintln!("[NVIDIA Backend] XRT/native output comparison failed: {error}");
         return Err(CUerror::UNKNOWN);
     }
     nvidia_emit_gpu_attention_completed(&f.function_name);
@@ -9827,6 +10165,7 @@ mod nvidia_bitnet_route_tests {
             super::nvidia_try_launch_named_tmatmul(
                 "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
                 std::ptr::null_mut(),
+                cuda_types::cuda::CUstream(std::ptr::null_mut()),
             )
         }
         .expect("selected XRT route must be consumed")
@@ -9844,6 +10183,72 @@ mod nvidia_bitnet_route_tests {
     }
 
     #[test]
+    fn nvidia_xrt_mmq_rejects_stream_k_temporary_output() {
+        let mut tmp_fixup = 0x1234_u64;
+        let mut kernel_params = [std::ptr::null_mut(); 4];
+        kernel_params[3] = &mut tmp_fixup as *mut _ as *mut c_void;
+
+        let error = unsafe {
+            super::nvidia_xrt_require_direct_output_mmq(
+                kernel_params.as_mut_ptr(),
+                "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
+            )
+        }
+        .expect_err("stream-k MMQ must not be substituted by a direct-output XRT launch");
+
+        assert!(error.contains("stream-k"), "unexpected error: {error}");
+        assert!(error.contains("tmp_fixup"), "unexpected error: {error}");
+
+        tmp_fixup = 0;
+        unsafe {
+            super::nvidia_xrt_require_direct_output_mmq(
+                kernel_params.as_mut_ptr(),
+                "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
+            )
+        }
+        .expect("direct-output MMQ with null tmp_fixup must be accepted");
+    }
+
+    #[test]
+    fn nvidia_xrt_native_comparison_reports_first_material_difference() {
+        let comparison = super::nvidia_xrt_compare_native_outputs(
+            &[1.0, 2.0, -4.0],
+            &[1.00001, 2.5, -4.02],
+            1.0e-4,
+            1.0e-3,
+        )
+        .unwrap();
+        assert_eq!(comparison.mismatch_count, 2);
+        assert_eq!(comparison.first_mismatch, Some((1, 2.0, 2.5)));
+        assert!((comparison.max_abs_error - 0.5).abs() < f32::EPSILON);
+        assert!((comparison.max_rel_error - 0.2).abs() < f32::EPSILON);
+
+        let nonfinite = super::nvidia_xrt_compare_native_outputs(
+            &[f32::NAN],
+            &[f32::NAN],
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(nonfinite.mismatch_count, 1);
+        assert!(super::nvidia_xrt_compare_native_outputs(&[1.0], &[], 0.0, 0.0).is_err());
+    }
+
+    #[test]
+    fn native_fallback_skips_only_the_driver_retry_armed_by_named_prelaunch() {
+        super::NVIDIA_NAMED_PRELAUNCH_ACTIVE.with(|flag| flag.set(false));
+        super::NVIDIA_SKIP_NEXT_XRT_ATTEMPT.with(|flag| flag.set(false));
+        super::nvidia_arm_native_fallback_continuation();
+        assert!(!super::NVIDIA_SKIP_NEXT_XRT_ATTEMPT.with(|flag| flag.replace(false)));
+
+        super::NVIDIA_NAMED_PRELAUNCH_ACTIVE.with(|flag| flag.set(true));
+        super::nvidia_arm_native_fallback_continuation();
+        super::NVIDIA_NAMED_PRELAUNCH_ACTIVE.with(|flag| flag.set(false));
+        assert!(super::NVIDIA_SKIP_NEXT_XRT_ATTEMPT.with(|flag| flag.replace(false)));
+        assert!(!super::NVIDIA_SKIP_NEXT_XRT_ATTEMPT.with(|flag| flag.replace(false)));
+    }
+
+    #[test]
     fn nvidia_named_route_rejects_invalid_physical_backend() {
         let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
         let _guard = EnvGuard::set(&[
@@ -9854,7 +10259,11 @@ mod nvidia_bitnet_route_tests {
         ]);
 
         let error = unsafe {
-            super::nvidia_try_launch_named_tmatmul("ffn_mul_mat_q", std::ptr::null_mut())
+            super::nvidia_try_launch_named_tmatmul(
+                "ffn_mul_mat_q",
+                std::ptr::null_mut(),
+                cuda_types::cuda::CUstream(std::ptr::null_mut()),
+            )
         }
         .expect("invalid backend must be consumed")
         .expect_err("invalid backend must fail closed");
@@ -9873,12 +10282,17 @@ mod nvidia_bitnet_route_tests {
         ]);
 
         let attention = unsafe {
-            super::nvidia_try_launch_named_tmatmul("flash_attn_fwd", std::ptr::null_mut())
+            super::nvidia_try_launch_named_tmatmul(
+                "flash_attn_fwd",
+                std::ptr::null_mut(),
+                cuda_types::cuda::CUstream(std::ptr::null_mut()),
+            )
         };
         let q4 = unsafe {
             super::nvidia_try_launch_named_tmatmul(
                 "_Z9mul_mat_qIL9ggml_type12ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
                 std::ptr::null_mut(),
+                cuda_types::cuda::CUstream(std::ptr::null_mut()),
             )
         };
 
@@ -10884,16 +11298,35 @@ pub(crate) unsafe fn launch_named_kernel_c(
         feature = "nvidia",
         not(feature = "amd"),
         not(feature = "intel"),
+        not(feature = "tenstorrent")
+    ))]
+    if nvidia_xrt_native_compare_max_launches() != 0 {
+        // The CUDART prelaunch callback must decline this diagnostic request so
+        // the real driver launch reaches launch_kernel(), where AU250 output is
+        // retained and compared after the native CUDA kernel completes.
+        return 1;
+    }
+
+    #[cfg(all(
+        feature = "nvidia",
+        not(feature = "amd"),
+        not(feature = "intel"),
         not(feature = "tenstorrent"),
         not(feature = "tmatmul")
     ))]
-    if let Some(result) = nvidia_try_launch_tmatmul_before_native(
-        kernel_name,
-        kernel_params,
-        (grid_dim_x, grid_dim_y, grid_dim_z),
-        (block_dim_x, block_dim_y, block_dim_z),
-        cuda_types::cuda::CUstream(stream.cast()),
-    ) {
+    let named_prelaunch_result = {
+        NVIDIA_NAMED_PRELAUNCH_ACTIVE.with(|flag| flag.set(true));
+        let result = nvidia_try_launch_tmatmul_before_native(
+            kernel_name,
+            kernel_params,
+            (grid_dim_x, grid_dim_y, grid_dim_z),
+            (block_dim_x, block_dim_y, block_dim_z),
+            cuda_types::cuda::CUstream(stream.cast()),
+        );
+        NVIDIA_NAMED_PRELAUNCH_ACTIVE.with(|flag| flag.set(false));
+        result
+    };
+    if let Some(result) = named_prelaunch_result {
         return match result {
             Ok(()) => 0,
             Err(_) => 999,

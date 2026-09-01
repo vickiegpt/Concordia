@@ -510,7 +510,11 @@ void __cudaRegisterVar(void** fatCubinHandle,
     (void)ext; (void)size; (void)constant; (void)global;
 }
 
-void* __cudaGetKernel(const void* f) { return (void*)f; }
+cudaError_t __cudaGetKernel(void** kernel, const void* f) {
+    if (!kernel || !f) return 1;
+    *kernel = (void*)f;
+    return 0;
+}
 
 cudaError_t __cudaInitModule(void** fatCubinHandle) {
     (void)fatCubinHandle;

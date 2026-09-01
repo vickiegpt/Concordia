@@ -179,7 +179,7 @@ pub unsafe extern "C" fn hetgpu_sifive_launch_named_kernel(
 }
 
 // Note: cudaDriverGetVersion and cudaGetDeviceCount are now in cudart_shim.c
-// to get proper version tags (@@libcudart.so.12). The C implementations
+// to get proper version tags (@@libcudart.so.12 or @@libcudart.so.13). The C implementations
 // call through to cuDriverGetVersion/cuDeviceGetCount defined below.
 
 // Note: cuGetProcAddress/cuGetProcAddress_v2/cuGetExportTable are provided
@@ -492,6 +492,7 @@ cuda_base::cuda_function_declarations!(
             cuDeviceTotalMem_v2,
             cuDriverGetVersion,
             cuFuncGetAttribute,
+            cuFuncSetAttribute,
             cuInit,
             cuMemAlloc_v2,
             cuMemFree_v2,

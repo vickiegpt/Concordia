@@ -22,6 +22,7 @@ def make_valid_proof(tmp_path):
         "model_sha256": SHA,
         "xclbin_sha256": "b" * 64,
         "libnvcuda_sha256": "c" * 64,
+        "cudart_shim_sha256": "e" * 64,
         "runner_sha256": "d" * 64,
         "exit_code": 0,
         "generated_token_ids": [1234],
@@ -32,6 +33,7 @@ def make_valid_proof(tmp_path):
         "firewall_status": "GOOD",
         "fatal_errors": [],
         "fpga_temperature_c": 28.0,
+        "gpu_layers": 24,
     }
     (proof / "summary.json").write_text(json.dumps(summary))
     write_jsonl(
@@ -84,6 +86,61 @@ def test_accepts_gpu_attention_and_physical_xrt_bitlinear(tmp_path):
     assert result["physical_submissions"] == 4
 
 
+def test_accepts_explicit_nonfinite_q8_native_capability_fallback(tmp_path):
+    proof = make_valid_proof(tmp_path)
+    routes = [json.loads(line) for line in (proof / "routes.jsonl").read_text().splitlines()]
+    routes.insert(
+        1,
+        {
+            "kernel": "_Z9mul_mat_qIL9ggml_type19E",
+            "route": "gpu",
+            "backend": "xrt",
+            "xrt_enabled": True,
+            "hardware_matmul_enabled": False,
+            "reason": "nonfinite_q8_not_representable_by_au250_abi",
+        },
+    )
+    write_jsonl(proof / "routes.jsonl", routes)
+
+    result = validator.validate(proof)
+    assert result["xrt_completions"] == 1
+    assert result["iq1s_native_capability_fallbacks"] == 1
+
+
+def test_accepts_explicit_gpu_single_token_iq1s_vector_route(tmp_path):
+    proof = make_valid_proof(tmp_path)
+    routes = [json.loads(line) for line in (proof / "routes.jsonl").read_text().splitlines()]
+    routes.insert(
+        1,
+        {
+            "kernel": "_Z13mul_mat_vec_qIL9ggml_type19ELi1E",
+            "route": "gpu",
+            "source": "explicit_gpu_env",
+            "backend": "xrt",
+            "xrt_enabled": True,
+            "hardware_matmul_enabled": False,
+        },
+    )
+    write_jsonl(proof / "routes.jsonl", routes)
+
+    result = validator.validate(proof)
+    assert result["xrt_completions"] == 1
+    assert result["iq1s_gpu_vector_routes"] == 1
+
+
+def test_parses_current_llama_perf_lines_without_mixing_prompt_and_eval():
+    stderr = """\
+llama_perf_context_print: prompt eval time = 4710.77 ms / 33 tokens (142.75 ms per token, 7.01 tokens per second)
+llama_perf_context_print:        eval time = 250.00 ms / 1 runs (250.00 ms per token, 4.00 tokens per second)
+"""
+    assert validator.parse_perf_rate(stderr, "prompt eval") == 7.01
+    assert validator.parse_perf_rate(stderr, "eval") == 4.0
+
+
+def test_recognizes_current_cuda_soft_max_symbol_as_attention():
+    assert validator.is_attention("_Z12soft_max_f32ILb1ELi64ELi64EfEvPKf")
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -95,7 +152,9 @@ def test_accepts_gpu_attention_and_physical_xrt_bitlinear(tmp_path):
         "firewall_bad",
         "fatal_error",
         "hash_missing",
+        "cudart_hash_missing",
         "zero_stall",
+        "zero_gpu_layers",
     ],
 )
 def test_rejects_incomplete_or_ambiguous_proof(tmp_path, mutation):
@@ -121,8 +180,12 @@ def test_rejects_incomplete_or_ambiguous_proof(tmp_path, mutation):
         summary["fatal_errors"] = ["fatal DMA error"]
     elif mutation == "hash_missing":
         summary["libnvcuda_sha256"] = ""
+    elif mutation == "cudart_hash_missing":
+        summary["cudart_shim_sha256"] = ""
     elif mutation == "zero_stall":
         xrt[0]["evidence"]["stall_codes"][2] = 0
+    elif mutation == "zero_gpu_layers":
+        summary["gpu_layers"] = 0
 
     summary_path.write_text(json.dumps(summary))
     write_jsonl(proof / "routes.jsonl", routes)

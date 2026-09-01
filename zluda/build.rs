@@ -23,6 +23,7 @@ fn main() {
         println!("cargo:rerun-if-changed={}", cudart_map.display());
         println!("cargo:rerun-if-changed={}", cublas_map.display());
         println!("cargo:rerun-if-changed={}", cublaslt_map.display());
+        println!("cargo:rerun-if-env-changed=HETGPU_CUDART_SYMBOL_VERSION");
 
         let out_dir = std::env::var("OUT_DIR").unwrap();
         let profile_dir = std::path::Path::new(&out_dir)
@@ -46,10 +47,24 @@ fn main() {
         let version_script = profile_dir.join("hetgpu_cuda_shim.map");
         if !is_macos {
             let mut combined_version_script = String::new();
-            for map in [&cudart_map, &cublas_map, &cublaslt_map] {
-                combined_version_script.push_str(
-                    &std::fs::read_to_string(map).expect("failed to read CUDA shim version map"),
+            let cudart_symbol_version = std::env::var("HETGPU_CUDART_SYMBOL_VERSION")
+                .unwrap_or_else(|_| "12".to_string());
+            assert!(
+                matches!(cudart_symbol_version.as_str(), "12" | "13"),
+                "HETGPU_CUDART_SYMBOL_VERSION must be 12 or 13"
+            );
+            let cudart_script = std::fs::read_to_string(&cudart_map)
+                .expect("failed to read CUDA runtime shim version map")
+                .replacen(
+                    "libcudart.so.12 {",
+                    &format!("libcudart.so.{cudart_symbol_version} {{"),
+                    1,
                 );
+            combined_version_script.push_str(&cudart_script);
+            combined_version_script.push('\n');
+            for map in [&cublas_map, &cublaslt_map] {
+                combined_version_script.push_str(&std::fs::read_to_string(map)
+                    .expect("failed to read CUDA shim version map"));
                 combined_version_script.push('\n');
             }
             std::fs::write(&version_script, combined_version_script)
