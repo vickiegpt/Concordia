@@ -543,6 +543,33 @@ impl Iq1sWeightRegistry {
             content_sha256: bound.source.identity.content_sha256,
         })
     }
+
+    pub(crate) fn resolve_launch(
+        &self,
+        matrix_ptr: usize,
+        matrix_bytes: u64,
+        ncols: u64,
+        nrows: u64,
+        row_stride_bytes: u64,
+    ) -> Result<ResolvedIq1sWeight, String> {
+        let resolved = self.lookup(matrix_ptr, matrix_bytes)?;
+        if matrix_bytes != resolved.identity.nb[2] {
+            return Err(format!(
+                "IQ1_S launch matrix bytes {matrix_bytes} do not equal registered expert span {}",
+                resolved.identity.nb[2]
+            ));
+        }
+        if ncols != resolved.identity.ne[0]
+            || nrows != resolved.identity.ne[1]
+            || row_stride_bytes != resolved.identity.nb[1]
+        {
+            return Err(format!(
+                "IQ1_S launch layout ({ncols}, {nrows}, {row_stride_bytes}) does not match registered layout ({}, {}, {})",
+                resolved.identity.ne[0], resolved.identity.ne[1], resolved.identity.nb[1]
+            ));
+        }
+        Ok(resolved)
+    }
 }
 
 #[cfg(test)]
@@ -760,6 +787,44 @@ mod tests {
             (4, Iq1sExpertRole::GateUp)
         );
         assert!(classify_tensor_name("blk.60.attn_q.weight").is_err());
+    }
+
+    #[test]
+    fn launch_resolution_requires_exact_registered_expert_layout() {
+        let file = tensor_file(0x27);
+        let registry = Iq1sWeightRegistry::default();
+        registry
+            .register(registration(
+                &file,
+                "blk.9.ffn_gate_exps.weight",
+                Iq1sExpertRole::Gate,
+            ))
+            .unwrap();
+        registry
+            .bind(Iq1sDeviceBinding {
+                name: "blk.9.ffn_gate_exps.weight".to_string(),
+                base_ptr: 0x40_000,
+                allocation_bytes: 200,
+                allocation_generation: 12,
+            })
+            .unwrap();
+
+        let resolved = registry
+            .resolve_launch(0x40_000 + 100, 100, 256, 2, 50)
+            .unwrap();
+        assert_eq!(resolved.expert, 1);
+        assert_eq!(resolved.allocation_generation, 12);
+
+        for (ncols, nrows, row_stride) in [(512, 2, 50), (256, 3, 50), (256, 2, 100)] {
+            assert!(registry
+                .resolve_launch(0x40_000 + 100, 100, ncols, nrows, row_stride)
+                .unwrap_err()
+                .contains("layout"));
+        }
+        assert!(registry
+            .resolve_launch(0x40_000 + 100, 50, 256, 2, 50)
+            .unwrap_err()
+            .contains("expert span"));
     }
 
     #[test]

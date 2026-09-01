@@ -133,15 +133,6 @@ static cudaError_t try_named_launch(
     if (!name) {
         return 1;
     }
-    /*
-     * llama.cpp's dedicated multi-token MoE MMVQ kernel has an ids/stride ABI
-     * distinct from the already-qualified one-token MMVQ capture.  Leave that
-     * kernel entirely native: invoking the named hook would also create a
-     * misleading type-19 route record for an operation the AU250 did not run.
-     */
-    if (strstr(name, "mul_mat_vec_q_moe") != NULL) {
-        return 1;
-    }
     launch_named_fn launch_named = (launch_named_fn)dlsym(RTLD_DEFAULT, "hetgpu_launch_named_kernel");
     if (!launch_named) {
         fprintf(stderr, "[Qwen CUDA13 launch shim] hetgpu_launch_named_kernel is unavailable\n");

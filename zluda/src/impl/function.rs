@@ -8311,6 +8311,76 @@ struct NvidiaCxlMmvqShape {
     not(feature = "tenstorrent")
 ))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NvidiaCudaUint3 {
+    x: u32,
+    y: u32,
+    z: u32,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NvidiaModernMmvqLayout {
+    ncols_x: u32,
+    nchannels_y: NvidiaCudaUint3,
+    stride_row_x: u32,
+    stride_col_y: u32,
+    stride_col_dst: u32,
+    stride_channel_x: u32,
+    stride_channel_y: u32,
+    stride_channel_dst: u32,
+    sample_ratio: NvidiaCudaUint3,
+    stride_sample_x: u32,
+    stride_sample_y: u32,
+    stride_sample_dst: u32,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NvidiaModernMoeMmvqLayout {
+    ncols_x: u32,
+    nchannels_y: NvidiaCudaUint3,
+    nrows_x: u32,
+    stride_row_x: u32,
+    stride_col_y: u32,
+    stride_col_dst: u32,
+    stride_channel_x: u32,
+    stride_channel_y: u32,
+    stride_channel_dst: u32,
+    ncols_dst: u32,
+    ids_stride: u32,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[derive(Clone, Debug)]
+struct NvidiaModernMmvqPlan {
+    matrix_ptr: usize,
+    activation_ptr: usize,
+    output_ptr: usize,
+    signature: super::iq1s_tmatmul::GgmlType19VecSignature,
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NvidiaCxlMmqShape {
     ne00: i32,
     ne01: i32,
@@ -8495,6 +8565,416 @@ unsafe fn nvidia_cxl_read_i32_param(
         ));
     }
     Ok((slot as *const i32).read_unaligned())
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_cxl_read_u32_param(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+    kernel_name: &str,
+) -> Result<u32, String> {
+    if kernel_params.is_null() {
+        return Err(format!("kernel '{kernel_name}' has null kernel_params"));
+    }
+    let slot = *kernel_params.add(index);
+    if slot.is_null() || (slot as usize) < 0x1000 {
+        return Err(format!(
+            "kernel '{kernel_name}' PARAM_{index} has invalid scalar slot {:#x}",
+            slot as usize
+        ));
+    }
+    Ok((slot as *const u32).read_unaligned())
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_cxl_read_uint3_param(
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    index: usize,
+    kernel_name: &str,
+) -> Result<NvidiaCudaUint3, String> {
+    if kernel_params.is_null() {
+        return Err(format!("kernel '{kernel_name}' has null kernel_params"));
+    }
+    let slot = *kernel_params.add(index);
+    if slot.is_null() || (slot as usize) < 0x1000 {
+        return Err(format!(
+            "kernel '{kernel_name}' PARAM_{index} has invalid uint3 slot {:#x}",
+            slot as usize
+        ));
+    }
+    let words = slot as *const u32;
+    Ok(NvidiaCudaUint3 {
+        x: words.read_unaligned(),
+        y: words.add(1).read_unaligned(),
+        z: words.add(2).read_unaligned(),
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_modern_iq1s_mmvq_has_fusion(kernel_name: &str) -> bool {
+    kernel_name
+        .to_ascii_lowercase()
+        .contains("ggml_type19eli1elb1")
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_is_modern_iq1s_mmvq(kernel_name: &str) -> bool {
+    let name = kernel_name.to_ascii_lowercase();
+    name.contains("mul_mat_vec_q")
+        && name.contains("ggml_type19eli1el")
+        && name.contains("ggml_cuda_mm_fusion_args_device")
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_is_modern_iq1s_moe_mmvq(kernel_name: &str) -> bool {
+    let name = kernel_name.to_ascii_lowercase();
+    name.contains("mul_mat_vec_q_moe")
+        && name.contains("ggml_type19")
+        && name.contains("eli2e")
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_checked_pointer_offset(
+    base: usize,
+    elements: u64,
+    element_bytes: usize,
+    field: &str,
+) -> Result<usize, String> {
+    let elements = usize::try_from(elements).map_err(|_| format!("{field} does not fit usize"))?;
+    let bytes = elements
+        .checked_mul(element_bytes)
+        .ok_or_else(|| format!("{field} byte offset overflow"))?;
+    base.checked_add(bytes)
+        .ok_or_else(|| format!("{field} pointer overflow"))
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_plan_modern_iq1s_mmvq(
+    layout: NvidiaModernMmvqLayout,
+    matrix_base: usize,
+    activation_base: usize,
+    output_base: usize,
+    expert_ids: &[i32],
+    grid: (u32, u32, u32),
+) -> Result<Vec<NvidiaModernMmvqPlan>, String> {
+    use super::iq1s_tmatmul::{IQ1S_BLOCK_BYTES, IQ1S_BLOCK_VALUES, Q8_1_BLOCK_BYTES};
+
+    if matrix_base == 0 || activation_base == 0 || output_base == 0 {
+        return Err("modern IQ1_S MMVQ contains a null data pointer".to_string());
+    }
+    if grid.0 == 0 || grid.1 == 0 || grid.2 == 0 {
+        return Err("modern IQ1_S MMVQ grid dimensions must be positive".to_string());
+    }
+    if expert_ids.len() != grid.1 as usize {
+        return Err(format!(
+            "modern IQ1_S MMVQ has {} expert ids for grid.y={}",
+            expert_ids.len(),
+            grid.1
+        ));
+    }
+    if grid.2 != 1 {
+        return Err(format!(
+            "modern single-token IQ1_S MMVQ requires grid.z=1, got {}",
+            grid.2
+        ));
+    }
+    if layout.ncols_x == 0 || layout.stride_col_dst == 0 || layout.stride_channel_dst == 0 {
+        return Err("modern IQ1_S MMVQ dimensions must be positive".to_string());
+    }
+    let expected_stride = layout.ncols_x / IQ1S_BLOCK_VALUES as u32;
+    if !layout.ncols_x.is_multiple_of(IQ1S_BLOCK_VALUES as u32)
+        || layout.stride_row_x != expected_stride
+    {
+        return Err(format!(
+            "modern IQ1_S MMVQ stride_row_x={} is not the contiguous IQ1_S row stride {} for ncols_x={}",
+            layout.stride_row_x, expected_stride, layout.ncols_x
+        ));
+    }
+    if layout.nchannels_y.z == 0 || layout.sample_ratio.z == 0 {
+        return Err("modern IQ1_S MMVQ fast-divisor metadata has a zero divisor".to_string());
+    }
+    if layout.stride_col_y == 0 {
+        return Err("modern IQ1_S MMVQ stride_col_y must be positive".to_string());
+    }
+    let nrows_x = layout
+        .stride_channel_x
+        .checked_div(layout.stride_row_x)
+        .ok_or("modern IQ1_S MMVQ stride_row_x must divide stride_channel_x")?;
+    if nrows_x
+        .checked_mul(layout.stride_row_x)
+        .filter(|span| *span == layout.stride_channel_x)
+        .is_none()
+        || nrows_x != layout.stride_channel_dst
+    {
+        return Err(format!(
+            "modern IQ1_S MMVQ per-expert row layout is inconsistent: stride_channel_x={}, stride_row_x={}, stride_channel_dst={}",
+            layout.stride_channel_x, layout.stride_row_x, layout.stride_channel_dst
+        ));
+    }
+    // In llama.cpp's single-token MUL_MAT_ID kernel, selected experts are
+    // separated by stride_channel_dst. stride_col_dst is the pitch between
+    // token columns and may span the complete destination tensor, including
+    // channels not selected by this launch.
+    if layout.stride_col_dst < nrows_x {
+        return Err(format!(
+            "modern IQ1_S MMVQ stride_col_dst={} is smaller than one {}-row output column",
+            layout.stride_col_dst, nrows_x
+        ));
+    }
+    if layout.stride_sample_x == 0
+        || !layout
+            .stride_sample_x
+            .is_multiple_of(layout.stride_channel_x)
+    {
+        return Err(format!(
+            "modern IQ1_S MMVQ stride_sample_x={} does not contain a whole number of expert matrices with stride_channel_x={}",
+            layout.stride_sample_x, layout.stride_channel_x
+        ));
+    }
+    let expert_count = layout.stride_sample_x / layout.stride_channel_x;
+
+    let mut plans = Vec::with_capacity(expert_ids.len() * grid.2 as usize);
+    for sample_dst in 0..grid.2 {
+        let sample_x = sample_dst / layout.sample_ratio.z;
+        for (channel_dst, expert_id) in expert_ids.iter().copied().enumerate() {
+            let expert = u32::try_from(expert_id)
+                .map_err(|_| format!("modern IQ1_S MMVQ expert id {expert_id} is negative"))?;
+            if expert >= expert_count {
+                return Err(format!(
+                    "modern IQ1_S MMVQ expert id {expert} exceeds expert count {expert_count}"
+                ));
+            }
+            let channel_dst = channel_dst as u32;
+            let channel_y = channel_dst % layout.nchannels_y.z;
+            let matrix_blocks = u64::from(sample_x)
+                .checked_mul(u64::from(layout.stride_sample_x))
+                .and_then(|offset| {
+                    u64::from(expert)
+                        .checked_mul(u64::from(layout.stride_channel_x))
+                        .and_then(|expert_offset| offset.checked_add(expert_offset))
+                })
+                .ok_or("modern IQ1_S MMVQ matrix offset overflow")?;
+            let activation_blocks = u64::from(sample_dst)
+                .checked_mul(u64::from(layout.stride_sample_y))
+                .and_then(|offset| {
+                    u64::from(channel_y)
+                        .checked_mul(u64::from(layout.stride_channel_y))
+                        .and_then(|channel_offset| offset.checked_add(channel_offset))
+                })
+                .ok_or("modern IQ1_S MMVQ activation offset overflow")?;
+            let output_elements = u64::from(sample_dst)
+                .checked_mul(u64::from(layout.stride_sample_dst))
+                .and_then(|offset| {
+                    u64::from(channel_dst)
+                        .checked_mul(u64::from(layout.stride_channel_dst))
+                        .and_then(|channel_offset| offset.checked_add(channel_offset))
+                })
+                .ok_or("modern IQ1_S MMVQ output offset overflow")?;
+            plans.push(NvidiaModernMmvqPlan {
+                matrix_ptr: nvidia_checked_pointer_offset(
+                    matrix_base,
+                    matrix_blocks,
+                    IQ1S_BLOCK_BYTES,
+                    "matrix",
+                )?,
+                activation_ptr: nvidia_checked_pointer_offset(
+                    activation_base,
+                    activation_blocks,
+                    Q8_1_BLOCK_BYTES,
+                    "activation",
+                )?,
+                output_ptr: nvidia_checked_pointer_offset(
+                    output_base,
+                    output_elements,
+                    std::mem::size_of::<f32>(),
+                    "output",
+                )?,
+                signature: super::iq1s_tmatmul::GgmlType19VecSignature {
+                    kernel: "mul_mat_vec_q_ggml_type19".to_string(),
+                    ncols_x: u64::from(layout.ncols_x),
+                    nrows_x: u64::from(nrows_x),
+                    nrows_y: u64::from(layout.ncols_x),
+                    nrows_dst: u64::from(nrows_x),
+                }
+                .validate()?,
+            });
+        }
+    }
+    Ok(plans)
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_plan_modern_iq1s_moe_mmvq(
+    layout: NvidiaModernMoeMmvqLayout,
+    matrix_base: usize,
+    activation_base: usize,
+    output_base: usize,
+    expert_ids: &[i32],
+    grid: (u32, u32, u32),
+) -> Result<Vec<NvidiaModernMmvqPlan>, String> {
+    use super::iq1s_tmatmul::{IQ1S_BLOCK_BYTES, IQ1S_BLOCK_VALUES, Q8_1_BLOCK_BYTES};
+
+    if matrix_base < 0x1000 || activation_base < 0x1000 || output_base < 0x1000 {
+        return Err("modern IQ1_S MoE MMVQ contains an invalid data pointer".to_string());
+    }
+    if layout.ncols_x == 0
+        || layout.nrows_x == 0
+        || layout.nchannels_y.z == 0
+        || layout.ncols_dst < 2
+        || layout.ncols_dst > 16
+    {
+        return Err("modern IQ1_S MoE MMVQ dimensions or active-token count are invalid".to_string());
+    }
+    if grid.1 == 0 || grid.2 != 1 {
+        return Err("modern IQ1_S MoE MMVQ grid.y must be positive and grid.z must equal one".to_string());
+    }
+    let expected_grid_x = layout.nrows_x.div_ceil(2);
+    if grid.0 != expected_grid_x {
+        return Err(format!(
+            "modern IQ1_S MoE MMVQ grid.x={} does not match two-row kernel grid.x={expected_grid_x}",
+            grid.0
+        ));
+    }
+    let expected_row_stride = layout.ncols_x / IQ1S_BLOCK_VALUES as u32;
+    if !layout
+        .ncols_x
+        .is_multiple_of(IQ1S_BLOCK_VALUES as u32)
+        || layout.stride_row_x != expected_row_stride
+    {
+        return Err("modern IQ1_S MoE MMVQ has a noncontiguous IQ1_S row stride".to_string());
+    }
+    let expected_expert_stride = layout
+        .nrows_x
+        .checked_mul(layout.stride_row_x)
+        .ok_or("modern IQ1_S MoE MMVQ expert stride overflow")?;
+    if layout.stride_channel_x != expected_expert_stride
+        || layout.stride_channel_dst != layout.nrows_x
+    {
+        return Err("modern IQ1_S MoE MMVQ matrix/output channel strides do not match nrows_x".to_string());
+    }
+    let expected_q8_stride = layout.ncols_x / 32;
+    if layout.stride_col_y != expected_q8_stride
+        || layout.stride_channel_y != expected_q8_stride
+    {
+        return Err("modern IQ1_S MoE MMVQ activation strides do not match Q8_1 storage".to_string());
+    }
+    if layout.ids_stride < grid.1 {
+        return Err("modern IQ1_S MoE MMVQ ids_stride is smaller than grid.y".to_string());
+    }
+    let required_ids = layout
+        .ncols_dst
+        .checked_sub(1)
+        .and_then(|token| token.checked_mul(layout.ids_stride))
+        .and_then(|base| base.checked_add(grid.1))
+        .ok_or("modern IQ1_S MoE MMVQ ids extent overflow")?;
+    if expert_ids.len() < required_ids as usize {
+        return Err(format!(
+            "modern IQ1_S MoE MMVQ has {} ids but its strided layout requires {required_ids}",
+            expert_ids.len()
+        ));
+    }
+
+    let mut plans = Vec::with_capacity(layout.ncols_dst as usize * grid.1 as usize);
+    for token in 0..layout.ncols_dst {
+        for channel_dst in 0..grid.1 {
+            let id_index = token
+                .checked_mul(layout.ids_stride)
+                .and_then(|base| base.checked_add(channel_dst))
+                .ok_or("modern IQ1_S MoE MMVQ id index overflow")?;
+            let expert_id = expert_ids[id_index as usize];
+            let expert = u64::try_from(expert_id)
+                .map_err(|_| format!("modern IQ1_S MoE MMVQ expert id {expert_id} is negative"))?;
+            let channel_y = channel_dst % layout.nchannels_y.z;
+            let matrix_blocks = expert
+                .checked_mul(u64::from(layout.stride_channel_x))
+                .ok_or("modern IQ1_S MoE MMVQ matrix offset overflow")?;
+            let activation_blocks = u64::from(token)
+                .checked_mul(u64::from(layout.stride_col_y))
+                .and_then(|offset| {
+                    u64::from(channel_y)
+                        .checked_mul(u64::from(layout.stride_channel_y))
+                        .and_then(|channel_offset| offset.checked_add(channel_offset))
+                })
+                .ok_or("modern IQ1_S MoE MMVQ activation offset overflow")?;
+            let output_elements = u64::from(token)
+                .checked_mul(u64::from(layout.stride_col_dst))
+                .and_then(|offset| {
+                    u64::from(channel_dst)
+                        .checked_mul(u64::from(layout.stride_channel_dst))
+                        .and_then(|channel_offset| offset.checked_add(channel_offset))
+                })
+                .ok_or("modern IQ1_S MoE MMVQ output offset overflow")?;
+            plans.push(NvidiaModernMmvqPlan {
+                matrix_ptr: nvidia_checked_pointer_offset(
+                    matrix_base,
+                    matrix_blocks,
+                    IQ1S_BLOCK_BYTES,
+                    "MoE matrix",
+                )?,
+                activation_ptr: nvidia_checked_pointer_offset(
+                    activation_base,
+                    activation_blocks,
+                    Q8_1_BLOCK_BYTES,
+                    "MoE activation",
+                )?,
+                output_ptr: nvidia_checked_pointer_offset(
+                    output_base,
+                    output_elements,
+                    std::mem::size_of::<f32>(),
+                    "MoE output",
+                )?,
+                signature: super::iq1s_tmatmul::GgmlType19VecSignature {
+                    kernel: "mul_mat_vec_q_moe_ggml_type19".to_string(),
+                    ncols_x: u64::from(layout.ncols_x),
+                    nrows_x: u64::from(layout.nrows_x),
+                    nrows_y: u64::from(layout.ncols_x),
+                    nrows_dst: u64::from(layout.nrows_x),
+                }
+                .validate()?,
+            });
+        }
+    }
+    Ok(plans)
 }
 
 #[cfg(all(
@@ -8999,10 +9479,7 @@ enum NvidiaIq1sXrtKernel {
 ))]
 fn nvidia_iq1s_xrt_kernel(kernel_name: &str) -> Option<NvidiaIq1sXrtKernel> {
     let name = kernel_name.to_ascii_lowercase();
-    if !name.contains("ggml_type19")
-        || name.contains("stream_k_fixup")
-        || name.contains("mul_mat_vec_q_moe")
-    {
+    if !name.contains("ggml_type19") || name.contains("stream_k_fixup") {
         return None;
     }
     if name.contains("mul_mat_vec_q") {
@@ -9098,6 +9575,78 @@ fn nvidia_xrt_output_hash(outputs: &[f32]) -> u64 {
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NvidiaIq1sCaptureIdentity {
+    tensor_name: String,
+    expert: u64,
+    allocation_generation: u64,
+    model_hash: [u8; 32],
+    content_hash: [u8; 32],
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_resolve_registered_iq1s_launch(
+    registry: &super::iq1s_weight_registry::Iq1sWeightRegistry,
+    matrix_ptr: usize,
+    matrix_bytes: u64,
+    ncols: u64,
+    nrows: u64,
+    row_stride_bytes: u64,
+) -> Result<NvidiaIq1sCaptureIdentity, String> {
+    let resolved = registry.resolve_launch(
+        matrix_ptr,
+        matrix_bytes,
+        ncols,
+        nrows,
+        row_stride_bytes,
+    )?;
+    Ok(NvidiaIq1sCaptureIdentity {
+        tensor_name: resolved.identity.name,
+        expert: resolved.expert,
+        allocation_generation: resolved.allocation_generation,
+        model_hash: resolved.identity.model_sha256,
+        content_hash: resolved.content_sha256,
+    })
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_qwen_iq1s_capture_identity(
+    matrix_ptr: usize,
+    matrix_bytes: usize,
+    ncols: u64,
+    nrows: u64,
+    row_stride_bytes: u64,
+) -> Result<Option<NvidiaIq1sCaptureIdentity>, String> {
+    if !nvidia_env_truthy("HETGPU_QWEN_IQ1S_STRICT") {
+        return Ok(None);
+    }
+    nvidia_resolve_registered_iq1s_launch(
+        super::iq1s_weight_registry::global_registry(),
+        matrix_ptr,
+        u64::try_from(matrix_bytes).map_err(|_| "IQ1_S matrix bytes do not fit u64")?,
+        ncols,
+        nrows,
+        row_stride_bytes,
+    )
+    .map(Some)
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 fn nvidia_xrt_emit_success_records(
     kernel_name: &str,
     result: &super::iq1s_xrt::XrtIq1sResult,
@@ -9136,24 +9685,45 @@ fn nvidia_xrt_emit_success_records(
 unsafe fn nvidia_capture_iq1s_xrt_mmq(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
-) -> Result<super::iq1s_tmatmul::CapturedLaunch, String> {
+) -> Result<Vec<super::iq1s_tmatmul::CapturedLaunch>, String> {
     let shape = nvidia_cxl_read_mmq_shape(kernel_params, kernel_name)?;
     let signature = nvidia_iq1s_signature(kernel_name, shape)?;
     let matrix_ptr = nvidia_cxl_read_pointer_param(kernel_params, 0, kernel_name)?;
     let activation_ptr = nvidia_cxl_read_pointer_param(kernel_params, 1, kernel_name)?;
     let output_ptr = nvidia_cxl_read_pointer_param(kernel_params, 2, kernel_name)?;
+    let matrix_bytes = signature.matrix_storage_bytes()?;
+    let row_stride_bytes = signature
+        .stride01
+        .checked_mul(super::iq1s_tmatmul::IQ1S_BLOCK_BYTES as u64)
+        .ok_or("IQ1_S MMQ row stride overflow")?;
+    let identity = nvidia_qwen_iq1s_capture_identity(
+        matrix_ptr,
+        matrix_bytes,
+        signature.ne00,
+        signature.ne01,
+        row_stride_bytes,
+    )?;
     super::iq1s_tmatmul::capture_launch(super::iq1s_tmatmul::LogicalLaunch {
         matrix_ptr,
         activation_ptr,
         output_ptr,
-        allocation_generation: nvidia_env_u64_any(&[
-            "HETGPU_TMATMUL_ALLOCATION_GENERATION",
-            "HETGPU_XRT_TMATMUL_ALLOCATION_GENERATION",
-        ])
-        .unwrap_or(0),
-        content_hash: [0; 32],
+        allocation_generation: identity
+            .as_ref()
+            .map(|identity| identity.allocation_generation)
+            .unwrap_or_else(|| {
+                nvidia_env_u64_any(&[
+                    "HETGPU_TMATMUL_ALLOCATION_GENERATION",
+                    "HETGPU_XRT_TMATMUL_ALLOCATION_GENERATION",
+                ])
+                .unwrap_or(0)
+            }),
+        content_hash: identity
+            .as_ref()
+            .map(|identity| identity.content_hash)
+            .unwrap_or([0; 32]),
         signature,
     })
+    .map(|captured| vec![captured])
 }
 
 #[cfg(all(
@@ -9165,24 +9735,246 @@ unsafe fn nvidia_capture_iq1s_xrt_mmq(
 unsafe fn nvidia_capture_iq1s_xrt_mmvq(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
-) -> Result<super::iq1s_tmatmul::CapturedLaunch, String> {
+) -> Result<Vec<super::iq1s_tmatmul::CapturedLaunch>, String> {
     let shape = nvidia_cxl_read_mmvq_shape(kernel_params, kernel_name)?;
     let signature = nvidia_iq1s_vec_signature(kernel_name, shape)?;
     let matrix_ptr = nvidia_cxl_read_pointer_param(kernel_params, 0, kernel_name)?;
     let activation_ptr = nvidia_cxl_read_pointer_param(kernel_params, 1, kernel_name)?;
     let output_ptr = nvidia_cxl_read_pointer_param(kernel_params, 2, kernel_name)?;
+    let matrix_bytes = signature.matrix_storage_bytes()?;
+    let row_stride_bytes = signature
+        .ncols_x
+        .checked_div(super::iq1s_tmatmul::IQ1S_BLOCK_VALUES as u64)
+        .and_then(|blocks| {
+            blocks.checked_mul(super::iq1s_tmatmul::IQ1S_BLOCK_BYTES as u64)
+        })
+        .ok_or("IQ1_S MMVQ row stride overflow")?;
+    let identity = nvidia_qwen_iq1s_capture_identity(
+        matrix_ptr,
+        matrix_bytes,
+        signature.ncols_x,
+        signature.nrows_x,
+        row_stride_bytes,
+    )?;
     super::iq1s_tmatmul::capture_vec_launch(
         matrix_ptr,
         activation_ptr,
         output_ptr,
-        nvidia_env_u64_any(&[
-            "HETGPU_TMATMUL_ALLOCATION_GENERATION",
-            "HETGPU_XRT_TMATMUL_ALLOCATION_GENERATION",
-        ])
-        .unwrap_or(0),
-        [0; 32],
+        identity
+            .as_ref()
+            .map(|identity| identity.allocation_generation)
+            .unwrap_or_else(|| {
+                nvidia_env_u64_any(&[
+                    "HETGPU_TMATMUL_ALLOCATION_GENERATION",
+                    "HETGPU_XRT_TMATMUL_ALLOCATION_GENERATION",
+                ])
+                .unwrap_or(0)
+            }),
+        identity
+            .as_ref()
+            .map(|identity| identity.content_hash)
+            .unwrap_or([0; 32]),
         signature,
     )
+    .map(|captured| vec![captured])
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_capture_modern_iq1s_xrt_mmvq(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    grid: (u32, u32, u32),
+) -> Result<Vec<super::iq1s_tmatmul::CapturedLaunch>, String> {
+    if nvidia_modern_iq1s_mmvq_has_fusion(kernel_name) {
+        return Err(format!(
+            "kernel '{kernel_name}' has fused MMVQ semantics; set HETGPU_QWEN_IQ1S_DISABLE_CUDA_FUSION=1 in the patched llama.cpp runtime"
+        ));
+    }
+    let matrix_base = nvidia_cxl_read_pointer_param(kernel_params, 0, kernel_name)?;
+    let activation_base = nvidia_cxl_read_pointer_param(kernel_params, 1, kernel_name)?;
+    let ids_ptr = nvidia_cxl_read_pointer_param(kernel_params, 2, kernel_name)?;
+    let output_base = nvidia_cxl_read_pointer_param(kernel_params, 4, kernel_name)?;
+    let layout = NvidiaModernMmvqLayout {
+        ncols_x: nvidia_cxl_read_u32_param(kernel_params, 5, kernel_name)?,
+        nchannels_y: nvidia_cxl_read_uint3_param(kernel_params, 6, kernel_name)?,
+        stride_row_x: nvidia_cxl_read_u32_param(kernel_params, 7, kernel_name)?,
+        stride_col_y: nvidia_cxl_read_u32_param(kernel_params, 8, kernel_name)?,
+        stride_col_dst: nvidia_cxl_read_u32_param(kernel_params, 9, kernel_name)?,
+        stride_channel_x: nvidia_cxl_read_u32_param(kernel_params, 11, kernel_name)?,
+        stride_channel_y: nvidia_cxl_read_u32_param(kernel_params, 12, kernel_name)?,
+        stride_channel_dst: nvidia_cxl_read_u32_param(kernel_params, 13, kernel_name)?,
+        sample_ratio: nvidia_cxl_read_uint3_param(kernel_params, 14, kernel_name)?,
+        stride_sample_x: nvidia_cxl_read_u32_param(kernel_params, 15, kernel_name)?,
+        stride_sample_y: nvidia_cxl_read_u32_param(kernel_params, 16, kernel_name)?,
+        stride_sample_dst: nvidia_cxl_read_u32_param(kernel_params, 17, kernel_name)?,
+    };
+    let ids_bytes = super::cxl_tmatmul::copy_cuda_to_host(
+        ids_ptr,
+        (grid.1 as usize)
+            .checked_mul(std::mem::size_of::<i32>())
+            .ok_or("modern IQ1_S MMVQ ids size overflow")?,
+    )
+    .map_err(|error| error.to_string())?;
+    let expert_ids = ids_bytes
+        .chunks_exact(std::mem::size_of::<i32>())
+        .map(|bytes| i32::from_le_bytes(bytes.try_into().expect("four-byte ids chunk")))
+        .collect::<Vec<_>>();
+    let plans = nvidia_plan_modern_iq1s_mmvq(
+        layout,
+        matrix_base,
+        activation_base,
+        output_base,
+        &expert_ids,
+        grid,
+    )?;
+    let legacy_generation = nvidia_env_u64_any(&[
+        "HETGPU_TMATMUL_ALLOCATION_GENERATION",
+        "HETGPU_XRT_TMATMUL_ALLOCATION_GENERATION",
+    ])
+    .unwrap_or(0);
+    plans
+        .into_iter()
+        .map(|mut plan| {
+            plan.signature.kernel = kernel_name.to_string();
+            let matrix_bytes = plan.signature.matrix_storage_bytes()?;
+            let row_stride_bytes = plan
+                .signature
+                .ncols_x
+                .checked_div(super::iq1s_tmatmul::IQ1S_BLOCK_VALUES as u64)
+                .and_then(|blocks| {
+                    blocks.checked_mul(super::iq1s_tmatmul::IQ1S_BLOCK_BYTES as u64)
+                })
+                .ok_or("modern IQ1_S MMVQ row stride overflow")?;
+            let identity = nvidia_qwen_iq1s_capture_identity(
+                plan.matrix_ptr,
+                matrix_bytes,
+                plan.signature.ncols_x,
+                plan.signature.nrows_x,
+                row_stride_bytes,
+            )?;
+            super::iq1s_tmatmul::capture_vec_launch(
+                plan.matrix_ptr,
+                plan.activation_ptr,
+                plan.output_ptr,
+                identity
+                    .as_ref()
+                    .map(|identity| identity.allocation_generation)
+                    .unwrap_or(legacy_generation),
+                identity
+                    .as_ref()
+                    .map(|identity| identity.content_hash)
+                    .unwrap_or([0; 32]),
+                plan.signature,
+            )
+        })
+        .collect()
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+unsafe fn nvidia_capture_modern_iq1s_xrt_moe_mmvq(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+    grid: (u32, u32, u32),
+) -> Result<Vec<super::iq1s_tmatmul::CapturedLaunch>, String> {
+    if !nvidia_is_modern_iq1s_moe_mmvq(kernel_name) {
+        return Err(format!(
+            "kernel '{kernel_name}' is not the pinned two-row IQ1_S MoE MMVQ ABI"
+        ));
+    }
+    let matrix_base = nvidia_cxl_read_pointer_param(kernel_params, 0, kernel_name)?;
+    let activation_base = nvidia_cxl_read_pointer_param(kernel_params, 1, kernel_name)?;
+    let ids_ptr = nvidia_cxl_read_pointer_param(kernel_params, 2, kernel_name)?;
+    let output_base = nvidia_cxl_read_pointer_param(kernel_params, 3, kernel_name)?;
+    let layout = NvidiaModernMoeMmvqLayout {
+        ncols_x: nvidia_cxl_read_u32_param(kernel_params, 4, kernel_name)?,
+        nchannels_y: nvidia_cxl_read_uint3_param(kernel_params, 5, kernel_name)?,
+        nrows_x: nvidia_cxl_read_u32_param(kernel_params, 6, kernel_name)?,
+        stride_row_x: nvidia_cxl_read_u32_param(kernel_params, 7, kernel_name)?,
+        stride_col_y: nvidia_cxl_read_u32_param(kernel_params, 8, kernel_name)?,
+        stride_col_dst: nvidia_cxl_read_u32_param(kernel_params, 9, kernel_name)?,
+        stride_channel_x: nvidia_cxl_read_u32_param(kernel_params, 10, kernel_name)?,
+        stride_channel_y: nvidia_cxl_read_u32_param(kernel_params, 11, kernel_name)?,
+        stride_channel_dst: nvidia_cxl_read_u32_param(kernel_params, 12, kernel_name)?,
+        ncols_dst: nvidia_cxl_read_u32_param(kernel_params, 13, kernel_name)?,
+        ids_stride: nvidia_cxl_read_u32_param(kernel_params, 14, kernel_name)?,
+    };
+    let ids_count = layout
+        .ncols_dst
+        .checked_sub(1)
+        .and_then(|token| token.checked_mul(layout.ids_stride))
+        .and_then(|base| base.checked_add(grid.1))
+        .ok_or("modern IQ1_S MoE MMVQ ids extent overflow")?;
+    let ids_bytes = super::cxl_tmatmul::copy_cuda_to_host(
+        ids_ptr,
+        usize::try_from(ids_count)
+            .map_err(|_| "modern IQ1_S MoE MMVQ ids count does not fit usize")?
+            .checked_mul(std::mem::size_of::<i32>())
+            .ok_or("modern IQ1_S MoE MMVQ ids size overflow")?,
+    )
+    .map_err(|error| error.to_string())?;
+    let expert_ids = ids_bytes
+        .chunks_exact(std::mem::size_of::<i32>())
+        .map(|bytes| i32::from_le_bytes(bytes.try_into().expect("four-byte ids chunk")))
+        .collect::<Vec<_>>();
+    let plans = nvidia_plan_modern_iq1s_moe_mmvq(
+        layout,
+        matrix_base,
+        activation_base,
+        output_base,
+        &expert_ids,
+        grid,
+    )?;
+    let legacy_generation = nvidia_env_u64_any(&[
+        "HETGPU_TMATMUL_ALLOCATION_GENERATION",
+        "HETGPU_XRT_TMATMUL_ALLOCATION_GENERATION",
+    ])
+    .unwrap_or(0);
+    plans
+        .into_iter()
+        .map(|mut plan| {
+            plan.signature.kernel = kernel_name.to_string();
+            let matrix_bytes = plan.signature.matrix_storage_bytes()?;
+            let row_stride_bytes = plan
+                .signature
+                .ncols_x
+                .checked_div(super::iq1s_tmatmul::IQ1S_BLOCK_VALUES as u64)
+                .and_then(|blocks| {
+                    blocks.checked_mul(super::iq1s_tmatmul::IQ1S_BLOCK_BYTES as u64)
+                })
+                .ok_or("modern IQ1_S MoE MMVQ row stride overflow")?;
+            let identity = nvidia_qwen_iq1s_capture_identity(
+                plan.matrix_ptr,
+                matrix_bytes,
+                plan.signature.ncols_x,
+                plan.signature.nrows_x,
+                row_stride_bytes,
+            )?;
+            super::iq1s_tmatmul::capture_vec_launch(
+                plan.matrix_ptr,
+                plan.activation_ptr,
+                plan.output_ptr,
+                identity
+                    .as_ref()
+                    .map(|identity| identity.allocation_generation)
+                    .unwrap_or(legacy_generation),
+                identity
+                    .as_ref()
+                    .map(|identity| identity.content_hash)
+                    .unwrap_or([0; 32]),
+                plan.signature,
+            )
+        })
+        .collect()
 }
 
 #[cfg(all(
@@ -9194,6 +9986,7 @@ unsafe fn nvidia_capture_iq1s_xrt_mmvq(
 pub(crate) unsafe fn nvidia_try_launch_named_xrt_tmatmul(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
+    grid: (u32, u32, u32),
 ) -> Option<Result<(), String>> {
     let kernel_kind = nvidia_iq1s_xrt_kernel(kernel_name)?;
     if !super::bitnet_disagg::enabled_from_env()
@@ -9216,18 +10009,29 @@ pub(crate) unsafe fn nvidia_try_launch_named_xrt_tmatmul(
         }
         super::bitnet_disagg::BitnetRoute::CxlTmatmul => {}
     }
-    if let Err(error) = super::bitnet_disagg::append_route_log_from_env(
-        &decision,
-        super::bitnet_disagg::RouteHardware::xrt(true),
-    ) {
-        eprintln!("[BitNet Disagg][NVIDIA XRT] route log failed for '{kernel_name}': {error}");
-        if decision.strict {
-            return Some(Err(format!("route log failed: {error}")));
+    let modern_moe = matches!(kernel_kind, NvidiaIq1sXrtKernel::Mmvq)
+        && nvidia_is_modern_iq1s_moe_mmvq(kernel_name);
+    let modern_multi = matches!(kernel_kind, NvidiaIq1sXrtKernel::Mmvq)
+        && (modern_moe || nvidia_is_modern_iq1s_mmvq(kernel_name));
+    if !modern_multi {
+        if let Err(error) = super::bitnet_disagg::append_route_log_from_env(
+            &decision,
+            super::bitnet_disagg::RouteHardware::xrt(true),
+        ) {
+            eprintln!("[BitNet Disagg][NVIDIA XRT] route log failed for '{kernel_name}': {error}");
+            if decision.strict {
+                return Some(Err(format!("route log failed: {error}")));
+            }
         }
     }
-
     let captured = match kernel_kind {
         NvidiaIq1sXrtKernel::Mmq => nvidia_capture_iq1s_xrt_mmq(kernel_name, kernel_params),
+        NvidiaIq1sXrtKernel::Mmvq if modern_moe => {
+            nvidia_capture_modern_iq1s_xrt_moe_mmvq(kernel_name, kernel_params, grid)
+        }
+        NvidiaIq1sXrtKernel::Mmvq if modern_multi => {
+            nvidia_capture_modern_iq1s_xrt_mmvq(kernel_name, kernel_params, grid)
+        }
         NvidiaIq1sXrtKernel::Mmvq => nvidia_capture_iq1s_xrt_mmvq(kernel_name, kernel_params),
     };
     let captured = match captured {
@@ -9235,20 +10039,39 @@ pub(crate) unsafe fn nvidia_try_launch_named_xrt_tmatmul(
         Err(error) => return nvidia_xrt_route_failure(kernel_name, decision.strict, error),
     };
     eprintln!(
-        "[XRT TMatmul][NVIDIA] launching IQ1_S '{}' on the persistent AU250 four-CU pool",
-        kernel_name
+        "[XRT TMatmul][NVIDIA] launching {} IQ1_S component(s) from '{}' on the persistent AU250 four-CU pool",
+        captured.len(), kernel_name
     );
     let compare_max_launches = match nvidia_xrt_compare_max_launches() {
         Ok(value) => value,
         Err(error) => return nvidia_xrt_route_failure(kernel_name, decision.strict, error),
     };
-    let execution = super::iq1s_xrt::execute_captured(&captured).and_then(|result| {
-        super::iq1s_tmatmul::copy_outputs_to_cuda(&captured, &result.outputs)?;
-        Ok(result)
-    });
-    nvidia_xrt_post_execution_route(kernel_name, decision.strict, execution, |result| {
-        nvidia_xrt_emit_success_records(kernel_name, result, compare_max_launches)
-    })
+    for component in &captured {
+        if modern_multi {
+            if let Err(error) = super::bitnet_disagg::append_route_log_from_env(
+                &decision,
+                super::bitnet_disagg::RouteHardware::xrt(true),
+            ) {
+                eprintln!(
+                    "[BitNet Disagg][NVIDIA XRT] route log failed for '{kernel_name}': {error}"
+                );
+                if decision.strict {
+                    return Some(Err(format!("route log failed: {error}")));
+                }
+            }
+        }
+        let execution = super::iq1s_xrt::execute_captured(component).and_then(|result| {
+            super::iq1s_tmatmul::copy_outputs_to_cuda(component, &result.outputs)?;
+            Ok(result)
+        });
+        match execution {
+            Ok(result) => {
+                nvidia_xrt_emit_success_records(kernel_name, &result, compare_max_launches)
+            }
+            Err(error) => return nvidia_xrt_route_failure(kernel_name, decision.strict, error),
+        }
+    }
+    Some(Ok(()))
 }
 
 #[cfg(all(
@@ -9484,6 +10307,7 @@ pub(crate) unsafe fn nvidia_try_launch_named_cxl_tmatmul(
 pub(crate) unsafe fn nvidia_try_launch_named_tmatmul(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
+    grid: (u32, u32, u32),
 ) -> Option<Result<(), String>> {
     if !super::bitnet_disagg::enabled_from_env()
         || !nvidia_env_truthy("HETGPU_TMATMUL_HARDWARE_MATMUL")
@@ -9500,7 +10324,7 @@ pub(crate) unsafe fn nvidia_try_launch_named_tmatmul(
             nvidia_try_launch_named_cxl_tmatmul(kernel_name, kernel_params)
         }
         super::bitnet_disagg::TmatmulBackend::Xrt => {
-            nvidia_try_launch_named_xrt_tmatmul(kernel_name, kernel_params)
+            nvidia_try_launch_named_xrt_tmatmul(kernel_name, kernel_params, grid)
         }
     }
 }
@@ -9527,7 +10351,7 @@ unsafe fn nvidia_try_launch_tmatmul_before_native(
         }));
     }
 
-    if let Some(result) = nvidia_try_launch_named_tmatmul(kernel_name, kernel_params) {
+    if let Some(result) = nvidia_try_launch_named_tmatmul(kernel_name, kernel_params, grid) {
         return Some(result.map_err(|err| {
             eprintln!("[TMatmul][NVIDIA] named launch failed: {err}");
             CUerror::UNKNOWN
@@ -9668,6 +10492,7 @@ pub(crate) fn launch_kernel_ex(
 ))]
 mod nvidia_bitnet_route_tests {
     use core::ffi::c_void;
+    use std::io::Write;
     use std::sync::Mutex;
 
     static NVIDIA_ROUTE_TEST_MUTEX: Mutex<()> = Mutex::new(());
@@ -9874,6 +10699,7 @@ mod nvidia_bitnet_route_tests {
             super::nvidia_try_launch_named_tmatmul(
                 "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
                 std::ptr::null_mut(),
+                (1, 1, 1),
             )
         }
         .expect("selected XRT route must be consumed")
@@ -9901,7 +10727,7 @@ mod nvidia_bitnet_route_tests {
         ]);
 
         let error = unsafe {
-            super::nvidia_try_launch_named_tmatmul("ffn_mul_mat_q", std::ptr::null_mut())
+            super::nvidia_try_launch_named_tmatmul("ffn_mul_mat_q", std::ptr::null_mut(), (1, 1, 1))
         }
         .expect("invalid backend must be consumed")
         .expect_err("invalid backend must fail closed");
@@ -9920,23 +10746,26 @@ mod nvidia_bitnet_route_tests {
         ]);
 
         let attention = unsafe {
-            super::nvidia_try_launch_named_tmatmul("flash_attn_fwd", std::ptr::null_mut())
+            super::nvidia_try_launch_named_tmatmul(
+                "flash_attn_fwd",
+                std::ptr::null_mut(),
+                (1, 1, 1),
+            )
         };
         let q4 = unsafe {
             super::nvidia_try_launch_named_tmatmul(
                 "_Z9mul_mat_qIL9ggml_type12ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii",
                 std::ptr::null_mut(),
+                (1, 1, 1),
             )
         };
 
         assert!(attention.is_none(), "attention must remain on the GPU");
         assert!(q4.is_none(), "only exact IQ1_S matmul may use XRT");
         assert!(
-            super::nvidia_iq1s_xrt_kernel(
-                "_Z17mul_mat_vec_q_moeIL9ggml_type19ELi2EEvPKvS2_PKiPf"
-            )
-            .is_none(),
-            "the multi-token MoE kernel has a distinct, unqualified launch ABI"
+            super::nvidia_iq1s_xrt_kernel("_Z17mul_mat_vec_q_moeIL9ggml_type19ELi2EEvPKvS2_PKiPf")
+                .is_some(),
+            "the pinned multi-token MoE ABI must be intercepted for continuous batching"
         );
     }
 
@@ -10035,6 +10864,203 @@ mod nvidia_bitnet_route_tests {
             "unexpected error: {err}"
         );
         assert!(err.contains("dense NVINT8"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn nvidia_modern_iq1s_mmvq_plans_selected_expert_offsets() {
+        let layout = super::NvidiaModernMmvqLayout {
+            ncols_x: 4096,
+            nchannels_y: super::NvidiaCudaUint3 { x: 0, y: 0, z: 8 },
+            stride_row_x: 16,
+            stride_col_y: 128,
+            stride_col_dst: 10240,
+            stride_channel_x: 16384,
+            stride_channel_y: 128,
+            stride_channel_dst: 1024,
+            sample_ratio: super::NvidiaCudaUint3 { x: 0, y: 0, z: 1 },
+            stride_sample_x: 512 * 16384,
+            stride_sample_y: 1024,
+            stride_sample_dst: 10240,
+        };
+        let plans = super::nvidia_plan_modern_iq1s_mmvq(
+            layout,
+            0x1000_0000,
+            0x2000_0000,
+            0x3000_0000,
+            &[7, 3],
+            (1024, 2, 1),
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].matrix_ptr, 0x1000_0000 + 7 * 16384 * 50);
+        assert_eq!(plans[1].matrix_ptr, 0x1000_0000 + 3 * 16384 * 50);
+        assert_eq!(plans[0].activation_ptr, 0x2000_0000);
+        assert_eq!(plans[1].activation_ptr, 0x2000_0000 + 128 * 36);
+        assert_eq!(plans[0].output_ptr, 0x3000_0000);
+        assert_eq!(plans[1].output_ptr, 0x3000_0000 + 1024 * 4);
+        assert_eq!(plans[0].signature.ncols_x, 4096);
+        assert_eq!(plans[0].signature.nrows_x, 1024);
+    }
+
+    #[test]
+    fn nvidia_iq1s_capture_identity_comes_from_registered_weight_not_environment() {
+        use crate::r#impl::iq1s_weight_registry::{
+            Iq1sDeviceBinding, Iq1sExpertRole, Iq1sTensorRegistration, Iq1sWeightRegistry,
+        };
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&vec![0x5c; 200]).unwrap();
+        file.flush().unwrap();
+        let registry = Iq1sWeightRegistry::default();
+        let source = registry
+            .register(Iq1sTensorRegistration {
+                path: file.path().to_path_buf(),
+                file_offset: 0,
+                nbytes: 200,
+                name: "blk.4.ffn_down_exps.weight".to_string(),
+                ne: [256, 2, 2, 1],
+                nb: [50, 50, 100, 200],
+                role: Iq1sExpertRole::Down,
+                ggml_type: 19,
+                model_sha256: [0x33; 32],
+            })
+            .unwrap();
+        registry
+            .bind(Iq1sDeviceBinding {
+                name: source.identity.name.clone(),
+                base_ptr: 0x70_000,
+                allocation_bytes: 200,
+                allocation_generation: 27,
+            })
+            .unwrap();
+
+        let identity = super::nvidia_resolve_registered_iq1s_launch(
+            &registry,
+            0x70_000 + 100,
+            100,
+            256,
+            2,
+            50,
+        )
+        .unwrap();
+        assert_eq!(identity.allocation_generation, 27);
+        assert_eq!(identity.content_hash, source.identity.content_sha256);
+        assert_eq!(identity.tensor_name, source.identity.name);
+        assert_eq!(identity.expert, 1);
+
+        let error = super::nvidia_resolve_registered_iq1s_launch(
+            &registry,
+            0x80_000,
+            100,
+            256,
+            2,
+            50,
+        )
+        .unwrap_err();
+        assert!(error.contains("registered device binding"), "{error}");
+    }
+
+    #[test]
+    fn nvidia_modern_iq1s_mmvq_rejects_fused_or_noncontiguous_layouts() {
+        let kernel = "_Z13mul_mat_vec_qIL9ggml_type19ELi1ELb1ELb0ELb0EEv";
+        assert!(super::nvidia_modern_iq1s_mmvq_has_fusion(kernel));
+
+        let layout = super::NvidiaModernMmvqLayout {
+            ncols_x: 4096,
+            nchannels_y: super::NvidiaCudaUint3 { x: 0, y: 0, z: 1 },
+            stride_row_x: 17,
+            stride_col_y: 128,
+            stride_col_dst: 4096,
+            stride_channel_x: 65536,
+            stride_channel_y: 128,
+            stride_channel_dst: 4096,
+            sample_ratio: super::NvidiaCudaUint3 { x: 0, y: 0, z: 1 },
+            stride_sample_x: 0,
+            stride_sample_y: 128,
+            stride_sample_dst: 4096,
+        };
+        let error =
+            super::nvidia_plan_modern_iq1s_mmvq(layout, 0x1000, 0x2000, 0x3000, &[0], (4, 1, 1))
+                .unwrap_err();
+        assert!(error.contains("stride_row_x"));
+    }
+
+    #[test]
+    fn nvidia_modern_iq1s_moe_plans_every_token_and_selected_expert() {
+        let layout = super::NvidiaModernMoeMmvqLayout {
+            ncols_x: 4096,
+            nchannels_y: super::NvidiaCudaUint3 { x: 0, y: 0, z: 8 },
+            nrows_x: 1024,
+            stride_row_x: 16,
+            stride_col_y: 128,
+            stride_col_dst: 8192,
+            stride_channel_x: 16384,
+            stride_channel_y: 128,
+            stride_channel_dst: 1024,
+            ncols_dst: 2,
+            ids_stride: 8,
+        };
+        let plans = super::nvidia_plan_modern_iq1s_moe_mmvq(
+            layout,
+            0x1000_0000,
+            0x2000_0000,
+            0x3000_0000,
+            &[7, 3, 0, 0, 0, 0, 0, 0, 5, 1],
+            (512, 2, 1),
+        )
+        .unwrap();
+
+        assert_eq!(plans.len(), 4);
+        assert_eq!(plans[0].matrix_ptr, 0x1000_0000 + 7 * 16384 * 50);
+        assert_eq!(plans[1].matrix_ptr, 0x1000_0000 + 3 * 16384 * 50);
+        assert_eq!(plans[2].matrix_ptr, 0x1000_0000 + 5 * 16384 * 50);
+        assert_eq!(plans[3].matrix_ptr, 0x1000_0000 + 1 * 16384 * 50);
+        assert_eq!(plans[0].activation_ptr, 0x2000_0000);
+        assert_eq!(plans[1].activation_ptr, 0x2000_0000 + 128 * 36);
+        assert_eq!(plans[2].activation_ptr, 0x2000_0000 + 128 * 36);
+        assert_eq!(plans[3].activation_ptr, 0x2000_0000 + 2 * 128 * 36);
+        assert_eq!(plans[0].output_ptr, 0x3000_0000);
+        assert_eq!(plans[1].output_ptr, 0x3000_0000 + 1024 * 4);
+        assert_eq!(plans[2].output_ptr, 0x3000_0000 + 8192 * 4);
+        assert_eq!(plans[3].output_ptr, 0x3000_0000 + (8192 + 1024) * 4);
+    }
+
+    #[test]
+    fn nvidia_modern_iq1s_moe_rejects_nonexact_grid_and_ids_layout() {
+        let layout = super::NvidiaModernMoeMmvqLayout {
+            ncols_x: 4096,
+            nchannels_y: super::NvidiaCudaUint3 { x: 0, y: 0, z: 1 },
+            nrows_x: 1024,
+            stride_row_x: 16,
+            stride_col_y: 128,
+            stride_col_dst: 4096,
+            stride_channel_x: 16384,
+            stride_channel_y: 128,
+            stride_channel_dst: 1024,
+            ncols_dst: 2,
+            ids_stride: 1,
+        };
+        let error = super::nvidia_plan_modern_iq1s_moe_mmvq(
+            layout,
+            0x1000,
+            0x2000,
+            0x3000,
+            &[0, 1],
+            (511, 1, 1),
+        )
+        .unwrap_err();
+        assert!(error.contains("grid.x"), "{error}");
+
+        let error = super::nvidia_plan_modern_iq1s_moe_mmvq(
+            layout,
+            0x1000,
+            0x2000,
+            0x3000,
+            &[0],
+            (512, 1, 1),
+        )
+        .unwrap_err();
+        assert!(error.contains("ids"), "{error}");
     }
 
     #[test]
@@ -10146,16 +11172,12 @@ mod nvidia_bitnet_route_tests {
 
         let mut config = crate::r#impl::bitnet_disagg::BitnetRouteConfig::default();
         config.enabled = true;
-        assert!(super::nvidia_gpu_attention_completed_evidence(
-            "flash_attn_fwd",
-            &config
-        )
-        .is_some());
-        assert!(super::nvidia_gpu_attention_completed_evidence(
-            "layer_3_attention",
-            &config
-        )
-        .is_some());
+        assert!(
+            super::nvidia_gpu_attention_completed_evidence("flash_attn_fwd", &config).is_some()
+        );
+        assert!(
+            super::nvidia_gpu_attention_completed_evidence("layer_3_attention", &config).is_some()
+        );
         assert!(super::nvidia_gpu_attention_completed_evidence(
             "layer_3_ffn_gate_mul_mat",
             &config
@@ -10163,11 +11185,9 @@ mod nvidia_bitnet_route_tests {
         .is_none());
 
         config.cxl_markers = vec!["flash_attn".to_string()];
-        assert!(super::nvidia_gpu_attention_completed_evidence(
-            "flash_attn_fwd",
-            &config
-        )
-        .is_none());
+        assert!(
+            super::nvidia_gpu_attention_completed_evidence("flash_attn_fwd", &config).is_none()
+        );
     }
 
     fn nvidia_iq1s_test_execution_result() -> crate::r#impl::iq1s_tmatmul::ExecutionResult {
@@ -10280,16 +11300,16 @@ mod nvidia_bitnet_route_tests {
     }
 
     #[test]
-    fn nvidia_named_q4k_candidate_falls_back_before_hardware_staging() {
+    fn nvidia_named_q4k_strict_gpu_route_falls_back_before_hardware_staging() {
         let _mutex = NVIDIA_ROUTE_TEST_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let route_log = dir.path().join("routes.jsonl");
         let route_log_text = route_log.to_string_lossy().to_string();
         let _guard = EnvGuard::set(&[
             ("HETGPU_BITNET_DISAGGREGATE", Some("1")),
-            ("HETGPU_BITNET_DISAGG_STRICT", None),
-            ("HETGPU_BITNET_CXL_KERNELS", Some("ggml_type12")),
-            ("HETGPU_BITNET_GPU_KERNELS", None),
+            ("HETGPU_BITNET_DISAGG_STRICT", Some("1")),
+            ("HETGPU_BITNET_CXL_KERNELS", None),
+            ("HETGPU_BITNET_GPU_KERNELS", Some("ggml_type12")),
             ("HETGPU_BITNET_ROUTE_MANIFEST", None),
             ("HETGPU_BITNET_ROUTE_LOG", Some(&route_log_text)),
             ("HETGPU_CXL_TMATMUL", Some("1")),

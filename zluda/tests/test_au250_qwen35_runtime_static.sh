@@ -13,6 +13,7 @@ iq1s_validator="${repo_root}/zluda/tests/validate_qwen35_iq1s_au250_proof.py"
 cuda13_launch_shim="${repo_root}/tools/qwen35_cuda13_launch_shim.c"
 cuda13_launch_map="${repo_root}/tools/qwen35_cuda13_launch_shim.map"
 build_preflight="${repo_root}/tools/qwen35_build_preflight.py"
+function_rs="${repo_root}/zluda/src/impl/function.rs"
 
 test -x "${wrapper}"
 test -x "${builder}"
@@ -123,7 +124,11 @@ grep -Fq 'libqwen35_cuda13_launch_shim.so' "${iq1s_runner}"
 grep -Fq '"${cuda13_launch_shim}:${libnvcuda}"' "${iq1s_runner}"
 test -f "${cuda13_launch_shim}"
 test -f "${cuda13_launch_map}"
-grep -Fq 'mul_mat_vec_q_moe' "${cuda13_launch_shim}"
+grep -Fq 'nvidia_capture_modern_iq1s_xrt_moe_mmvq' "${function_rs}"
+if grep -Fq 'if (strstr(name, "mul_mat_vec_q_moe") != NULL)' "${cuda13_launch_shim}"; then
+    echo "CUDA 13 launch shim still bypasses the multi-token IQ1_S MoE kernel" >&2
+    exit 1
+fi
 grep -Fq 'run_au250_xrt_tq1.sh' "${iq1s_runner}"
 grep -Fq 'validate_qwen35_iq1s_au250_proof.py' "${iq1s_runner}"
 iq1s_last_effective_command="$(grep -Ev '^\s*(#|$|echo |printf )' "${iq1s_runner}" | tail -1)"
