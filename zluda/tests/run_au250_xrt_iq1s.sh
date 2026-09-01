@@ -4,12 +4,26 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 cd "$repo_root"
 
+trace_mode=
+if [[ ${1:-} == "--trace-mode" ]]; then
+    [[ $# -eq 2 ]] || { echo "usage: $0 --trace-mode handwritten|compiler" >&2; exit 2; }
+    trace_mode=$2
+elif [[ ${1:-} == "--inside" ]]; then
+    [[ $# -eq 2 ]] || { echo "usage: $0 --inside handwritten|compiler" >&2; exit 2; }
+    trace_mode=$2
+fi
+case "$trace_mode" in
+    handwritten|compiler) ;;
+    *) echo "trace mode must be handwritten or compiler" >&2; exit 2 ;;
+esac
+
 if [[ ${1:-} == "--inside" ]]; then
     export RUSTUP_HOME=/work/target/au250-runtime/rustup
     export CARGO_HOME=/work/target/au250-runtime/cargo
     export CARGO_TARGET_DIR=/work/target/au250-app215
     export PATH=/work/target/au250-runtime/bin:$CARGO_HOME/bin:$PATH
     export CARGO_INCREMENTAL=0
+    export CARGO_BUILD_JOBS=32
 
     xclbin=/au250_xrt/example/MaxCores_370M.xclbin
     xclbin_info=$(xclbinutil --info --input "$xclbin" 2>&1)
@@ -35,26 +49,38 @@ if [[ ${1:-} == "--inside" ]]; then
     export HETGPU_XRT_XCLBIN="$xclbin"
     export HETGPU_XRT_NUM_VECTOR_REGISTERS=4
     export HETGPU_XRT_TIMEOUT_MS=10000
-    export HETGPU_XRT_EXECUTION_LOG=/work/target/au250-iq1s-live.jsonl
-    rm -f /work/target/au250-iq1s-live.jsonl
+    export HETGPU_XRT_CU_CONFIG='{"version":1,"cus":[{"ip_name":"ternip_big:ternip_big_1","memory_group":0,"lanes":9},{"ip_name":"ternip_big:ternip_big_2","memory_group":3,"lanes":9},{"ip_name":"ternip_big:ternip_big_3","memory_group":2,"lanes":9},{"ip_name":"ternip_small:ternip_small_1","memory_group":1,"lanes":6}]}'
+    export HETGPU_QWEN_IQ1S_STRICT=1
+    export HETGPU_IQ1S_TRACE_MODE="$trace_mode"
+    export HETGPU_QWEN_MODEL_CONTEXT_LIMIT=262144
+    export HETGPU_XRT_EXECUTION_LOG="/work/target/au250-iq1s-${trace_mode}-live.jsonl"
+    rm -f "$HETGPU_XRT_EXECUTION_LOG"
 
     cargo test -p zluda --features nvidia --no-default-features \
         au250_iq1s_two_by_two_tiles_match_reference -- --ignored --nocapture
 
     python3 - <<'PY'
 import json
+import os
 from pathlib import Path
 
-records = [json.loads(line) for line in Path("/work/target/au250-iq1s-live.jsonl").read_text().splitlines()]
+records = [json.loads(line) for line in Path(os.environ["HETGPU_XRT_EXECUTION_LOG"]).read_text().splitlines()]
 if len(records) != 1:
     raise SystemExit(f"expected one XRT IQ1_S evidence record, got {len(records)}")
 evidence = records[0]["evidence"]
 if evidence["comparison_status"] != "pass":
     raise SystemExit(f"XRT IQ1_S comparison did not pass: {evidence}")
-if sum(value > 0 for value in evidence["per_cu_submissions"]) < 2:
-    raise SystemExit(f"fewer than two CUs were used: {evidence}")
+if not all(value > 0 for value in evidence["per_cu_submissions"]):
+    raise SystemExit(f"not all four CUs were used: {evidence}")
 if not (-4096 <= evidence["raw_min"] <= evidence["raw_max"] <= 4096):
     raise SystemExit(f"raw component bounds are invalid: {evidence}")
+if not evidence["physical_completions"]:
+    raise SystemExit("physical completion evidence is empty")
+for completion in evidence["physical_completions"]:
+    if completion["trace_mode"] != os.environ["HETGPU_IQ1S_TRACE_MODE"]:
+        raise SystemExit(f"trace mode mismatch: {completion}")
+    if completion["stall_code"] == 0 or completion["program_address"] == 0:
+        raise SystemExit(f"unbound program completion: {completion}")
 PY
 
     health_report=$(xbutil examine -d 0000:64:00.1 \
@@ -89,7 +115,7 @@ awk -v temperature="$temperature" 'BEGIN { exit !(temperature < 85) }' || {
 }
 
 "$repo_root/tools/au250_hybrid_run.sh" \
-    bash /work/zluda/tests/run_au250_xrt_iq1s.sh --inside
+    bash /work/zluda/tests/run_au250_xrt_iq1s.sh --inside "$trace_mode"
 
 temperature="$(_au250_fpga_temp)"
 awk -v temperature="$temperature" 'BEGIN { exit !(temperature < 85) }' || {

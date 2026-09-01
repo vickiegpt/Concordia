@@ -191,13 +191,19 @@ PY
     nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv \
         > "${proof_dir}/cuda-compute-apps-after.csv"
 
-    HETGPU_TQ1_EVALUATION_LIBRARY="${libnvcuda}" \
-    HETGPU_XRT_XCLBIN="${xclbin}" \
-        bash /work/zluda/tests/run_au250_xrt_tq1.sh "${oracle}" "${proof_dir}/numerical"
+    bash /work/zluda/tests/run_au250_xrt_iq1s.sh --inside handwritten \
+        > "${proof_dir}/standalone-handwritten.log" 2>&1
+    bash /work/zluda/tests/run_au250_xrt_iq1s.sh --inside compiler \
+        > "${proof_dir}/standalone-compiler.log" 2>&1
 
-    nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv \
-        > "${proof_dir}/hybrid-compute-apps-before.csv"
-    (
+    run_hybrid_mode() {
+        local trace_mode=$1
+        local mode_port=$2
+        local mode_dir="${proof_dir}/${trace_mode}-mode"
+        install -d "${mode_dir}"
+        nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv \
+            > "${mode_dir}/cuda-compute-apps-before.csv"
+        (
         export HETGPU_QWEN_TQ1_XRT=0
         export HETGPU_QWEN_TQ1_STRICT=0
         export HETGPU_TMATMUL_BACKEND=xrt
@@ -207,32 +213,40 @@ PY
         export HETGPU_QWEN_IQ1S_DISABLE_CUDA_FUSION=1
         export HETGPU_QWEN_IQ1S_STRICT=1
         export HETGPU_QWEN_MODEL_SHA256="${model_sha256}"
+        export HETGPU_QWEN_MODEL_CONTEXT_LIMIT=262144
+        export HETGPU_IQ1S_TRACE_MODE="${trace_mode}"
         export HETGPU_LIBGGML="${verified_libggml}"
         export HETGPU_TMATMUL_HARDWARE_MATMUL=1
         export HETGPU_BITNET_ROUTE_MANIFEST="${route_manifest}"
         export HETGPU_BITNET_GPU_KERNELS=attention,attn,flash,softmax,soft_max,rope,kq,qk,qkv,query,key,value,kv_cache
         export HETGPU_BITNET_CXL_KERNELS=ggml_type19
-        export HETGPU_BITNET_ROUTE_LOG="${proof_dir}/hybrid-mode/routes.jsonl"
-        export HETGPU_XRT_EXECUTION_LOG="${proof_dir}/hybrid-mode/xrt.jsonl"
-        export HETGPU_XRT_COMPARE_MAX_LAUNCHES=0
+        export HETGPU_BITNET_ROUTE_LOG="${mode_dir}/routes.jsonl"
+        export HETGPU_XRT_EXECUTION_LOG="${mode_dir}/xrt.jsonl"
+        # The process-global ordinal consumes this one comparison during the
+        # semantic/hardware gate. Warm-up and measured batches do no shadow work.
+        export HETGPU_XRT_COMPARE_MAX_LAUNCHES=1
         unset HETGPU_TQ1_EVIDENCE_LOG
         python3 "${evaluator}" \
-            --mode hybrid --evidence-kind iq1s \
+            --mode "${trace_mode}" --evidence-kind iq1s \
             --server "${llama_server}" --server-preload "${cuda13_launch_shim}:${libnvcuda}" \
             --model "${model}" --prompt-seed "${prompt_seed}" \
             --model-verification "${proof_dir}/model-verification.json" \
             --model-audit "${proof_dir}/model-tensor-audit.json" \
-            --proof-dir "${proof_dir}/hybrid-mode" --port 18081 --threads "${threads}" \
+            --proof-dir "${mode_dir}" --port "${mode_port}" --threads "${threads}" \
             --model-size "${model_size}" --model-sha256 "${model_sha256}" \
             --llama-revision "${llama_revision}" --binary-sha256 "${server_sha256}" \
             --fpga-bdf "${fpga_bdf}" \
-            --route-evidence "${proof_dir}/hybrid-mode/routes.jsonl" \
-            --xrt-evidence "${proof_dir}/hybrid-mode/xrt.jsonl" \
+            --route-evidence "${mode_dir}/routes.jsonl" \
+            --xrt-evidence "${mode_dir}/xrt.jsonl" \
             --require-routing-evidence
-    )
-    cp "${proof_dir}/hybrid-mode/hybrid.json" "${proof_dir}/hybrid.json"
-    nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv \
-        > "${proof_dir}/hybrid-compute-apps-after.csv"
+        )
+        cp "${mode_dir}/${trace_mode}.json" "${proof_dir}/${trace_mode}.json"
+        nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv \
+            > "${mode_dir}/cuda-compute-apps-after.csv"
+    }
+
+    run_hybrid_mode handwritten 18081
+    run_hybrid_mode compiler 18082
 
     python3 "${iq1s_validator}" "${proof_dir}" | tee "${proof_dir}/summary.json"
     exit 0

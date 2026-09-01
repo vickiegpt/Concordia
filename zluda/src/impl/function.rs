@@ -9650,7 +9650,7 @@ fn nvidia_qwen_iq1s_capture_identity(
 fn nvidia_xrt_emit_success_records(
     kernel_name: &str,
     result: &super::iq1s_xrt::XrtIq1sResult,
-    compare_max_launches: u64,
+    comparison: Option<(u64, &super::iq1s_xrt::SampledOutputComparison)>,
 ) {
     let completed = serde_json::json!({
         "event": "au250_xrt_iq1s_completed",
@@ -9659,10 +9659,7 @@ fn nvidia_xrt_emit_success_records(
     });
     eprintln!("{completed}");
 
-    static SUCCESSFUL_XRT_LAUNCHES: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
-    let ordinal = SUCCESSFUL_XRT_LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if ordinal < compare_max_launches {
+    if let Some((ordinal, comparison)) = comparison {
         let comparison = serde_json::json!({
             "event": "captured_layer_comparison",
             "backend": "xrt",
@@ -9670,10 +9667,24 @@ fn nvidia_xrt_emit_success_records(
             "launch_ordinal": ordinal,
             "output_hash": format!("{:016x}", nvidia_xrt_output_hash(&result.outputs)),
             "reference_checked_components": result.evidence.reference_checked_components,
-            "comparison_status": "pass",
+            "comparison_status": comparison.status,
+            "comparison": comparison,
         });
         eprintln!("{comparison}");
     }
+}
+
+#[cfg(all(
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+fn nvidia_xrt_reserve_comparison(compare_max_launches: u64) -> Option<u64> {
+    static SUCCESSFUL_XRT_LAUNCHES: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    let ordinal = SUCCESSFUL_XRT_LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    (ordinal < compare_max_launches).then_some(ordinal)
 }
 
 #[cfg(all(
@@ -10066,7 +10077,32 @@ pub(crate) unsafe fn nvidia_try_launch_named_xrt_tmatmul(
         });
         match execution {
             Ok(result) => {
-                nvidia_xrt_emit_success_records(kernel_name, &result, compare_max_launches)
+                let comparison_ordinal = nvidia_xrt_reserve_comparison(compare_max_launches);
+                let comparison = match comparison_ordinal {
+                    Some(ordinal) => match super::iq1s_xrt::compare_outputs_with_reference(
+                        component,
+                        &result.outputs,
+                        1.0e-4,
+                        1.0e-3,
+                    ) {
+                        Ok(comparison) => Some((ordinal, comparison)),
+                        Err(error) => {
+                            return nvidia_xrt_route_failure(
+                                kernel_name,
+                                decision.strict,
+                                format!("sampled IQ1_S output comparison failed: {error}"),
+                            )
+                        }
+                    },
+                    None => None,
+                };
+                nvidia_xrt_emit_success_records(
+                    kernel_name,
+                    &result,
+                    comparison
+                        .as_ref()
+                        .map(|(ordinal, record)| (*ordinal, record)),
+                )
             }
             Err(error) => return nvidia_xrt_route_failure(kernel_name, decision.strict, error),
         }

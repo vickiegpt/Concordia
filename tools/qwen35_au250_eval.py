@@ -8,16 +8,21 @@ import math
 import os
 import re
 import signal
+import statistics
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from pathlib import Path
 
 
 WARMUPS = 1
-MEASUREMENTS = 5
+MEASUREMENTS = 3
+REQUEST_COUNT = 64
+MAX_ACTIVE_REQUESTS = 16
 PREDICT_TOKENS = 32
 PROMPT_TOKENS = 256
 SEMANTIC_PROMPT = "Reply with exactly OK and no other text."
@@ -210,6 +215,76 @@ def completion_request(prompt):
     }
 
 
+def run_continuous_batch(base_url, request_body, timeout):
+    lock = Lock()
+    active = 0
+    max_active = 0
+    batch_started = time.monotonic()
+
+    def run_one(request_id):
+        nonlocal active, max_active
+        worker_started = time.monotonic()
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            if active > MAX_ACTIVE_REQUESTS:
+                raise EvaluationError("continuous batch exceeded 16 active requests")
+        try:
+            result = stream_completion(base_url, dict(request_body), timeout)
+        finally:
+            with lock:
+                active -= 1
+        worker_finished = time.monotonic()
+        result = dict(result)
+        result.update(
+            {
+                "request_id": request_id,
+                "queue_ms": (worker_started - batch_started) * 1000.0,
+                "service_ms": (worker_finished - worker_started) * 1000.0,
+                "completed_from_batch_start_ms": (worker_finished - batch_started) * 1000.0,
+            }
+        )
+        return result
+
+    requests = []
+    with ThreadPoolExecutor(max_workers=MAX_ACTIVE_REQUESTS) as executor:
+        futures = [executor.submit(run_one, request_id) for request_id in range(REQUEST_COUNT)]
+        for future in as_completed(futures):
+            requests.append(future.result())
+    batch_finished = time.monotonic()
+    requests.sort(key=lambda item: item["request_id"])
+    if [item["request_id"] for item in requests] != list(range(REQUEST_COUNT)):
+        raise EvaluationError("continuous batch request IDs are missing or duplicated")
+    for item in requests:
+        if (
+            item.get("tokens_predicted") != PREDICT_TOKENS
+            or item.get("tokens_evaluated") != PROMPT_TOKENS
+            or len(item.get("token_ids", [])) != PREDICT_TOKENS
+        ):
+            raise EvaluationError(
+                f"continuous request {item['request_id']} did not execute the fixed 256+32 workload"
+            )
+    reference_tokens = requests[0]["token_ids"]
+    if any(item["token_ids"] != reference_tokens for item in requests[1:]):
+        raise EvaluationError("continuous batch produced nondeterministic greedy token IDs")
+    wall_seconds = batch_finished - batch_started
+    if not math.isfinite(wall_seconds) or wall_seconds <= 0:
+        raise EvaluationError("continuous batch wall time is not positive and finite")
+    generated_tokens = REQUEST_COUNT * PREDICT_TOKENS
+    throughput = generated_tokens / wall_seconds
+    if not math.isfinite(throughput) or throughput <= 0:
+        raise EvaluationError("continuous batch throughput is not positive and finite")
+    return {
+        "request_count": REQUEST_COUNT,
+        "max_active": max_active,
+        "tokens_per_request": PREDICT_TOKENS,
+        "generated_tokens": generated_tokens,
+        "wall_seconds": wall_seconds,
+        "aggregate_generated_tokens_per_second": throughput,
+        "requests": requests,
+    }
+
+
 def semantic_completion_request(prompt):
     request = completion_request(prompt)
     request["n_predict"] = 1
@@ -315,6 +390,81 @@ def parse_load_ms(log_text):
     if not math.isfinite(value) or value < 0:
         raise EvaluationError("server reported invalid model load time")
     return value
+
+
+def parse_sampled_ffn_comparison(log_text, mode):
+    records = []
+    for line in log_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            record = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and record.get("event") == "captured_layer_comparison":
+            records.append(record)
+    if mode == "cuda":
+        if records:
+            raise EvaluationError("CUDA-only mode unexpectedly emitted an XRT FFN comparison")
+        return None
+    if len(records) != 1:
+        raise EvaluationError(
+            f"{mode} mode requires exactly one pre-timed sampled FFN comparison, got {len(records)}"
+        )
+    record = records[0]
+    comparison = record.get("comparison")
+    if (
+        record.get("backend") != "xrt"
+        or record.get("comparison_status") != "pass"
+        or record.get("launch_ordinal") != 0
+        or not isinstance(comparison, dict)
+        or comparison.get("status") != "pass"
+        or comparison.get("reference_backend") != "scalar_iq1s"
+    ):
+        raise EvaluationError("sampled FFN comparison metadata is invalid")
+    checked = comparison.get("checked_elements")
+    reference = comparison.get("reference_outputs")
+    actual = comparison.get("actual_outputs")
+    if (
+        not _is_integer(checked)
+        or checked <= 0
+        or not isinstance(reference, list)
+        or not isinstance(actual, list)
+        or len(reference) != checked
+        or len(actual) != checked
+    ):
+        raise EvaluationError("sampled FFN comparison vectors are incomplete")
+    try:
+        atol = float(comparison["atol"])
+        rtol = float(comparison["rtol"])
+        reported_max_abs = float(comparison["max_absolute_error"])
+        reported_max_rel = float(comparison["max_relative_error"])
+        pairs = [(float(left), float(right)) for left, right in zip(reference, actual)]
+    except (KeyError, TypeError, ValueError) as error:
+        raise EvaluationError(f"sampled FFN comparison contains invalid numbers: {error}") from error
+    if atol != 1.0e-4 or rtol != 1.0e-3:
+        raise EvaluationError("sampled FFN comparison used the wrong tolerance")
+    if not all(math.isfinite(value) for pair in pairs for value in pair):
+        raise EvaluationError("sampled FFN comparison contains non-finite output")
+    absolute_errors = [abs(actual_value - reference_value) for reference_value, actual_value in pairs]
+    relative_errors = [
+        error / abs(reference_value) if reference_value != 0.0 else error
+        for error, (reference_value, _) in zip(absolute_errors, pairs)
+    ]
+    if any(
+        error > atol + rtol * abs(reference_value)
+        for error, (reference_value, _) in zip(absolute_errors, pairs)
+    ):
+        raise EvaluationError("sampled FFN output is outside atol=1e-4, rtol=1e-3")
+    max_abs = max(absolute_errors)
+    max_rel = max(relative_errors)
+    if (
+        not math.isclose(reported_max_abs, max_abs, rel_tol=0.0, abs_tol=1.0e-7)
+        or not math.isclose(reported_max_rel, max_rel, rel_tol=0.0, abs_tol=1.0e-7)
+    ):
+        raise EvaluationError("sampled FFN comparison error summary does not match its vectors")
+    return {**comparison, "phase": "pre_timed", "kernel": record.get("kernel")}
 
 
 def parse_routing(mode, evidence_path, require_evidence):
@@ -674,7 +824,7 @@ def run(args):
     command = [
         str(server), "--model", str(model), "--ctx-size", "512", "--n-gpu-layers", "999",
         "--threads", str(args.threads), "--host", "127.0.0.1", "--port", str(args.port),
-        "--seed", "42", "--parallel", "1", "--reasoning", "off", "--verbosity", "4",
+        "--seed", "42", "--parallel", "16", "--reasoning", "off", "--verbosity", "4",
         "--no-warmup", "--no-webui",
     ]
     (proof_dir / "command.json").write_text(json.dumps(command, indent=2) + "\n", encoding="utf-8")
@@ -727,12 +877,12 @@ def run(args):
                 semantic_route_records = load_jsonl_records(
                     route_evidence_path,
                     "IQ1_S route evidence",
-                    required=args.mode == "hybrid",
+                    required=args.mode != "cuda",
                 )
                 semantic_xrt_records = load_jsonl_records(
                     xrt_evidence_path,
                     "IQ1_S XRT evidence",
-                    required=args.mode == "hybrid",
+                    required=args.mode != "cuda",
                 )
                 if args.mode == "cuda":
                     if semantic_route_records or semantic_xrt_records:
@@ -752,16 +902,23 @@ def run(args):
                     }
 
             timed_request = completion_request(prompt_ids)
-            warmups = [stream_completion(base_url, timed_request, args.request_timeout) for _ in range(WARMUPS)]
-            measured = [stream_completion(base_url, timed_request, args.request_timeout) for _ in range(MEASUREMENTS)]
-            generated = measured[0]["token_ids"]
-            if len(generated) != PREDICT_TOKENS:
-                raise EvaluationError(f"timed response generated {len(generated)} tokens, expected 32")
-            for index, result in enumerate(measured):
-                if result["token_ids"] != generated:
-                    raise EvaluationError(f"measured request {index} generated different token IDs")
-                if result["tokens_evaluated"] != PROMPT_TOKENS or result["tokens_predicted"] != PREDICT_TOKENS:
-                    raise EvaluationError(f"measured request {index} did not execute the fixed 256+32 workload")
+            warmups = [
+                run_continuous_batch(base_url, timed_request, args.request_timeout)
+                for _ in range(WARMUPS)
+            ]
+            measured = [
+                run_continuous_batch(base_url, timed_request, args.request_timeout)
+                for _ in range(MEASUREMENTS)
+            ]
+            generated_by_request = [
+                item["token_ids"] for item in measured[0]["requests"]
+            ]
+            for index, batch in enumerate(measured):
+                current = [item["token_ids"] for item in batch["requests"]]
+                if current != generated_by_request:
+                    raise EvaluationError(
+                        f"measured continuous batch {index} generated different token IDs"
+                    )
             atomic_json(proof_dir / "warmups.json", warmups)
             atomic_json(proof_dir / "measured-requests.json", measured)
     finally:
@@ -771,6 +928,7 @@ def run(args):
     log_text = stderr_path.read_text(encoding="utf-8", errors="replace")
     placement = parse_placement(log_text)
     load_ms = parse_load_ms(log_text)
+    sampled_ffn_comparison = parse_sampled_ffn_comparison(log_text, args.mode)
     if args.evidence_kind == "tq1":
         routes, xrt = parse_routing(
             args.mode, tq1_evidence_path, args.require_routing_evidence
@@ -803,14 +961,29 @@ def run(args):
             route_records, xrt_records
         )
     measurements = []
-    for result in measured:
-        timings = result["timings"]
+    for batch in measured:
+        requests = batch["requests"]
         measurements.append({
             "model_load_ms": load_ms,
-            "prompt_tokens_per_second": timings.get("prompt_per_second"),
-            "ttft_ms": result["ttft_ms"],
-            "generation_tokens_per_second": timings.get("predicted_per_second"),
-            "end_to_end_ms": result["end_to_end_ms"],
+            "prompt_tokens_per_second": statistics.median(
+                item["timings"].get("prompt_per_second") for item in requests
+            ),
+            "ttft_ms": statistics.median(item["ttft_ms"] for item in requests),
+            "generation_tokens_per_second": batch[
+                "aggregate_generated_tokens_per_second"
+            ],
+            "single_request_generation_tokens_per_second": statistics.median(
+                item["timings"].get("predicted_per_second") for item in requests
+            ),
+            "end_to_end_ms": statistics.median(
+                item["end_to_end_ms"] for item in requests
+            ),
+            "queue_ms": statistics.median(item["queue_ms"] for item in requests),
+            "service_ms": statistics.median(item["service_ms"] for item in requests),
+            "measured_wall_seconds": batch["wall_seconds"],
+            "request_count": batch["request_count"],
+            "max_active": batch["max_active"],
+            "generated_tokens": batch["generated_tokens"],
         })
     record = {
         "schema_version": 2 if args.evidence_kind == "iq1s" else 1,
@@ -824,9 +997,11 @@ def run(args):
         "prompt_tokens": PROMPT_TOKENS,
         "prompt_text": prompt_text,
         "prompt_token_ids": prompt_ids,
-        "generated_token_ids": generated,
+        "generated_token_ids": generated_by_request[0],
+        "generated_token_ids_by_request": generated_by_request,
         "semantic": {"text": semantic_text, "token_ids": semantic_result["token_ids"]},
         "hardware_probe": {"token_ids": hardware_probe["token_ids"], "n_predict": 2},
+        "sampled_ffn_comparison": sampled_ffn_comparison,
         "semantic_hardware_gate": semantic_hardware_gate,
         "routes": routes,
         "xrt": xrt,
@@ -837,6 +1012,9 @@ def run(args):
         "device_health": {"before": before_health, "after": after_health},
         "request_contract": timed_request,
         "warmup_count": len(warmups),
+        "request_count": REQUEST_COUNT,
+        "max_active_requests": MAX_ACTIVE_REQUESTS,
+        "generated_tokens_per_request": PREDICT_TOKENS,
     }
     atomic_json(proof_dir / f"{args.mode}.json", record)
     return record
@@ -878,6 +1056,42 @@ def _report_metric_rows(cuda, hybrid):
     return rows
 
 
+def _iq1s_report_metric_rows(cuda, handwritten, compiler):
+    metric_specs = (
+        ("Prompt tokens/s", "prompt_tokens_per_second"),
+        ("Generation tokens/s", "generation_tokens_per_second"),
+        ("Time to first token (ms)", "ttft_ms"),
+        ("End-to-end latency (ms)", "end_to_end_ms"),
+    )
+    rows = []
+    for label, key in metric_specs:
+        medians = []
+        for mode_name, metrics in (
+            ("cuda", cuda),
+            ("handwritten", handwritten),
+            ("compiler", compiler),
+        ):
+            try:
+                metric = metrics[key]
+                values = [
+                    float(metric[field])
+                    for field in ("median", "min", "max", "population_stdev")
+                ]
+            except (KeyError, TypeError, ValueError) as error:
+                raise EvaluationError(
+                    f"normalized proof has invalid {mode_name} {key}: {error}"
+                ) from error
+            if not all(math.isfinite(value) and value >= 0.0 for value in values):
+                raise EvaluationError(
+                    f"normalized proof has non-finite or negative {mode_name} {key}"
+                )
+            medians.append(values[0])
+        rows.append(
+            f"| {label} | {medians[0]:.6g} | {medians[1]:.6g} | {medians[2]:.6g} |"
+        )
+    return rows
+
+
 def render_iq1s_report(normalized, proof_path):
     if not isinstance(normalized, dict) or normalized.get("schema_version") != 2:
         raise EvaluationError("IQ1_S report generation requires a schema-2 normalized proof")
@@ -887,9 +1101,8 @@ def render_iq1s_report(normalized, proof_path):
         model = normalized["model"]
         audit = normalized["model_audit"]
         cuda_mode = normalized["modes"]["cuda"]
-        hybrid_mode = normalized["modes"]["hybrid"]
-        routes = hybrid_mode["routes"]
-        xrt = hybrid_mode["xrt"]
+        handwritten_mode = normalized["modes"]["handwritten"]
+        compiler_mode = normalized["modes"]["compiler"]
         numerical_cases = normalized["numerical"]["cases"]
     except (KeyError, TypeError) as error:
         raise EvaluationError(f"normalized IQ1_S proof omitted report evidence: {error}") from error
@@ -929,44 +1142,62 @@ def render_iq1s_report(normalized, proof_path):
         raise EvaluationError("normalized IQ1_S proof did not validate tokens and all four CUs")
     if normalized.get("eligible_route_coverage") != 1.0:
         raise EvaluationError("normalized IQ1_S proof route coverage is not 100%")
-    if not isinstance(routes, dict):
-        raise EvaluationError("normalized IQ1_S proof routes are invalid")
-    eligible = routes.get("eligible")
-    handled = routes.get("handled")
-    if (
-        isinstance(eligible, bool)
-        or not isinstance(eligible, int)
-        or eligible <= 0
-        or handled != eligible
-        or routes.get("fallback") != 0
-        or routes.get("error") != 0
+    xrt_by_mode = {}
+    for mode_name, mode in (
+        ("handwritten", handwritten_mode),
+        ("compiler", compiler_mode),
     ):
-        raise EvaluationError("normalized IQ1_S proof routing is not strict and complete")
+        routes = mode.get("routes") if isinstance(mode, dict) else None
+        xrt = mode.get("xrt") if isinstance(mode, dict) else None
+        if not isinstance(routes, dict):
+            raise EvaluationError(f"normalized IQ1_S proof {mode_name} routes are invalid")
+        eligible = routes.get("eligible")
+        if (
+            isinstance(eligible, bool)
+            or not isinstance(eligible, int)
+            or eligible <= 0
+            or routes.get("handled") != eligible
+            or routes.get("fallback") != 0
+            or routes.get("error") != 0
+        ):
+            raise EvaluationError(
+                f"normalized IQ1_S proof {mode_name} routing is not strict and complete"
+            )
+        if not isinstance(xrt, dict):
+            raise EvaluationError(f"normalized IQ1_S proof {mode_name} XRT evidence is invalid")
+        per_cu = xrt.get("per_cu_completions")
+        submission_count = xrt.get("submission_count")
+        completion_count = xrt.get("completion_count")
+        if (
+            not isinstance(per_cu, list)
+            or len(per_cu) != 4
+            or not all(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0
+                for value in per_cu
+            )
+            or not isinstance(submission_count, int)
+            or isinstance(submission_count, bool)
+            or submission_count <= 0
+            or completion_count != submission_count
+            or sum(per_cu) != completion_count
+        ):
+            raise EvaluationError(
+                f"normalized IQ1_S proof {mode_name} XRT completion accounting is invalid"
+            )
+        xrt_by_mode[mode_name] = (per_cu, submission_count, completion_count)
 
-    if not isinstance(xrt, dict):
-        raise EvaluationError("normalized IQ1_S proof XRT evidence is invalid")
-    per_cu = xrt.get("per_cu_completions")
-    if (
-        not isinstance(per_cu, list)
-        or len(per_cu) != 4
-        or not all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in per_cu)
+    for mode_name, mode in (
+        ("cuda", cuda_mode),
+        ("handwritten", handwritten_mode),
+        ("compiler", compiler_mode),
     ):
-        raise EvaluationError("normalized IQ1_S proof does not contain four active CUs")
-    submission_count = xrt.get("submission_count")
-    completion_count = xrt.get("completion_count")
-    if (
-        not isinstance(submission_count, int)
-        or isinstance(submission_count, bool)
-        or submission_count <= 0
-        or completion_count != submission_count
-        or sum(per_cu) != completion_count
-    ):
-        raise EvaluationError("normalized IQ1_S proof XRT completion accounting is invalid")
-
-    for mode_name, mode in (("cuda", cuda_mode), ("hybrid", hybrid_mode)):
         if not isinstance(mode, dict) or mode.get("measurements") != MEASUREMENTS:
             raise EvaluationError(f"normalized IQ1_S proof has invalid {mode_name} measurement count")
-    rows = _report_metric_rows(cuda_mode.get("metrics", {}), hybrid_mode.get("metrics", {}))
+    rows = _iq1s_report_metric_rows(
+        cuda_mode.get("metrics", {}),
+        handwritten_mode.get("metrics", {}),
+        compiler_mode.get("metrics", {}),
+    )
 
     numerical_errors = {}
     for case_name in ("single_tile", "tiled"):
@@ -995,14 +1226,14 @@ def render_iq1s_report(normalized, proof_path):
             "- IQ2_XXS, IQ3_S, and MXFP4 remained on CUDA",
             "- Eligible IQ1_S operations handled by AU250: 100%",
             "- Token IDs identical: yes",
-            f"- Active CUs: {sum(value > 0 for value in per_cu)}/4",
+            "- Active CUs: 4/4 in handwritten and compiler modes",
             "",
             "## Method",
             "",
             "Both modes used the same verified GGUF and binary, full CUDA layer placement, "
             "a 512-token context, greedy seed-42 sampling, an exact 256-token timed prompt, "
-            "and 32 generated tokens. Each mode used one warm-up and five measured requests "
-            "in a fresh process while retaining the loaded model across requests.",
+            "and 32 generated tokens per request. Each mode used one 64-request warm-up and "
+            "three measured 64-request continuous batches with at most 16 active requests.",
             "",
             "Hybrid intercepted only exact type-19 IQ1_S MMQ/MMVQ launches for the 141 eligible "
             "routed-expert tensors. CUDA retained attention, linear attention, routing, shared "
@@ -1012,8 +1243,8 @@ def render_iq1s_report(normalized, proof_path):
             "",
             "## Performance",
             "",
-            "| Metric | CUDA-only median | Hybrid median | Hybrid/CUDA | CUDA / hybrid min-max | CUDA / hybrid population stdev |",
-            "| --- | ---: | ---: | ---: | ---: | ---: |",
+            "| Metric | CUDA-only median | Handwritten median | Compiler median |",
+            "| --- | ---: | ---: | ---: |",
             *rows,
             "",
             "## Numerical and physical evidence",
@@ -1022,8 +1253,8 @@ def render_iq1s_report(normalized, proof_path):
             f"{numerical_errors['single_tile']:.6g} for the single-tile case and "
             f"{numerical_errors['tiled']:.6g} for the tiled case.",
             "",
-            f"Per-CU completions: `{per_cu}`; total validated submissions/completions: "
-            f"`{submission_count}/{completion_count}`. The normalized proof binds unique "
+            f"Handwritten per-CU completions: `{xrt_by_mode['handwritten'][0]}`; compiler "
+            f"per-CU completions: `{xrt_by_mode['compiler'][0]}`. The normalized proof binds unique "
             "request IDs, nonzero STALL codes, raw-output bounds, exact completion ownership, "
             f"and pre/post device health to `{Path(proof_path)}`.",
             "",
@@ -1153,7 +1384,9 @@ def render_iq1s_report_command(arguments):
 
 def parser():
     result = argparse.ArgumentParser()
-    result.add_argument("--mode", choices=("cuda", "hybrid"), required=True)
+    result.add_argument(
+        "--mode", choices=("cuda", "handwritten", "compiler"), required=True
+    )
     result.add_argument("--evidence-kind", choices=("tq1", "iq1s"), default="tq1")
     result.add_argument("--server", required=True)
     result.add_argument("--model", required=True)

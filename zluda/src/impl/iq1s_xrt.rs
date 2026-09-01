@@ -1,8 +1,8 @@
 //! AU250 D=1024 planning and execution for captured IQ1_S launches.
 
 use super::iq1s_tmatmul::{
-    checked_output_element_count, reconstruct_from_raw, CapturedLaunch, ComponentKind,
-    GgmlType19Signature, MatrixCacheIdentity, MatrixSource, Q8_1Block,
+    checked_output_element_count, raw_component_dots, reconstruct_from_raw, CapturedLaunch,
+    ComponentKind, GgmlType19Signature, MatrixCacheIdentity, MatrixSource, Q8_1Block,
 };
 use super::xrt_tmatmul::{XrtTmatmulPool, XrtWaveCompletion, XrtWaveJob};
 use serde::Serialize;
@@ -113,6 +113,96 @@ fn bytes_hex(value: &[u8]) -> String {
 pub(crate) struct XrtIq1sResult {
     pub(crate) outputs: Vec<f32>,
     pub(crate) evidence: XrtIq1sEvidence,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SampledOutputComparison {
+    pub(crate) status: &'static str,
+    pub(crate) reference_backend: &'static str,
+    pub(crate) checked_elements: usize,
+    pub(crate) atol: f32,
+    pub(crate) rtol: f32,
+    pub(crate) max_absolute_error: f32,
+    pub(crate) max_relative_error: f32,
+    pub(crate) reference_outputs: Vec<f32>,
+    pub(crate) actual_outputs: Vec<f32>,
+}
+
+fn scalar_reference_outputs(captured: &CapturedLaunch) -> Result<Vec<f32>, String> {
+    let signature = &captured.launch.signature;
+    let batch = usize::try_from(signature.ne11).map_err(|_| "batch overflow")?;
+    let rows = usize::try_from(signature.ne0).map_err(|_| "row overflow")?;
+    let groups = usize::try_from(signature.ne00 / 32).map_err(|_| "group overflow")?;
+    let mut outputs = vec![0_f32; batch.checked_mul(rows).ok_or("output overflow")?];
+    for batch_index in 0..batch {
+        for row in 0..rows {
+            for global_group in 0..groups {
+                let q8 = captured.q8_group(batch_index, global_group)?;
+                let (d, group) = captured.matrix.group(row, global_group)?;
+                let (grid, delta) = raw_component_dots(&group, &q8);
+                let contribution =
+                    reconstruct_from_raw(&group, d, &q8, grid << 8, delta << 8)?;
+                let output = &mut outputs[batch_index * rows + row];
+                *output = (*output + contribution) as f32;
+            }
+        }
+    }
+    Ok(outputs)
+}
+
+pub(crate) fn compare_outputs_with_reference(
+    captured: &CapturedLaunch,
+    actual_outputs: &[f32],
+    atol: f32,
+    rtol: f32,
+) -> Result<SampledOutputComparison, String> {
+    if !atol.is_finite() || atol < 0.0 || !rtol.is_finite() || rtol < 0.0 {
+        return Err("IQ1_S comparison tolerances must be finite and nonnegative".into());
+    }
+    let reference_outputs = scalar_reference_outputs(captured)?;
+    if reference_outputs.len() != actual_outputs.len() {
+        return Err(format!(
+            "IQ1_S sampled comparison length mismatch: reference {}, actual {}",
+            reference_outputs.len(),
+            actual_outputs.len()
+        ));
+    }
+    let mut max_absolute_error = 0.0_f32;
+    let mut max_relative_error = 0.0_f32;
+    for (index, (&reference, &actual)) in reference_outputs
+        .iter()
+        .zip(actual_outputs)
+        .enumerate()
+    {
+        if !reference.is_finite() || !actual.is_finite() {
+            return Err(format!("IQ1_S sampled output {index} is non-finite"));
+        }
+        let absolute_error = (actual - reference).abs();
+        let relative_error = if reference == 0.0 {
+            absolute_error
+        } else {
+            absolute_error / reference.abs()
+        };
+        max_absolute_error = max_absolute_error.max(absolute_error);
+        max_relative_error = max_relative_error.max(relative_error);
+        let limit = atol + rtol * reference.abs();
+        if absolute_error > limit {
+            return Err(format!(
+                "IQ1_S sampled output {index} is outside tolerance: actual={actual}, reference={reference}, absolute_error={absolute_error}, limit={limit}"
+            ));
+        }
+    }
+    Ok(SampledOutputComparison {
+        status: "pass",
+        reference_backend: "scalar_iq1s",
+        checked_elements: actual_outputs.len(),
+        atol,
+        rtol,
+        max_absolute_error,
+        max_relative_error,
+        reference_outputs,
+        actual_outputs: actual_outputs.to_vec(),
+    })
 }
 
 pub(crate) trait Au250WaveExecutor {
@@ -1353,6 +1443,34 @@ mod tests {
     }
 
     #[test]
+    fn sampled_output_comparison_retains_vectors_and_rejects_drift() {
+        let captured = small_fixture();
+        let reference = software_reference(&captured).unwrap();
+        let comparison = compare_outputs_with_reference(
+            &captured,
+            &reference,
+            1.0e-4,
+            1.0e-3,
+        )
+        .unwrap();
+        assert_eq!(comparison.status, "pass");
+        assert_eq!(comparison.reference_outputs, reference);
+        assert_eq!(comparison.actual_outputs, reference);
+        assert_eq!(comparison.checked_elements, comparison.actual_outputs.len());
+
+        let mut drifted = comparison.actual_outputs.clone();
+        drifted[0] += 1.0;
+        let error = compare_outputs_with_reference(
+            &captured,
+            &drifted,
+            1.0e-4,
+            1.0e-3,
+        )
+        .unwrap_err();
+        assert!(error.contains("outside tolerance"), "{error}");
+    }
+
+    #[test]
     #[ignore = "requires HETGPU_XRT_AU250_IQ1S_TEST=1 and live MaxCores AU250"]
     fn au250_iq1s_two_by_two_tiles_match_reference() {
         assert_eq!(
@@ -1381,8 +1499,8 @@ mod tests {
                 .iter()
                 .filter(|submissions| **submissions > 0)
                 .count()
-                >= 2,
-            "tiled proof must exercise at least two physical CUs: {:?}",
+                == 4,
+            "tiled proof must exercise all four physical CUs: {:?}",
             actual.evidence.per_cu_submissions
         );
         eprintln!(

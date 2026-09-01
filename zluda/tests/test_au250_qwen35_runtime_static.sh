@@ -86,12 +86,15 @@ grep -Fq '/qwen-build/manifest.json' "${builder}"
 grep -Fq -- '--ctx-size", "512"' "${evaluator}"
 grep -Fq -- '--n-gpu-layers", "999"' "${evaluator}"
 grep -Fq -- '--verbosity", "4"' "${evaluator}"
-grep -Fq -- '--parallel", "1"' "${evaluator}"
+grep -Fq -- '--parallel", "16"' "${evaluator}"
 grep -Fq '"n_predict": 32' "${evaluator}"
 grep -Fq '"temperature": 0.0' "${evaluator}"
 grep -Fq '"seed": 42' "${evaluator}"
 grep -Fq '"cache_prompt": False' "${evaluator}"
-grep -Fq 'MEASUREMENTS = 5' "${evaluator}"
+grep -Fq 'REQUEST_COUNT = 64' "${evaluator}"
+grep -Fq 'MAX_ACTIVE_REQUESTS = 16' "${evaluator}"
+grep -Fq 'PREDICT_TOKENS = 32' "${evaluator}"
+grep -Fq 'MEASUREMENTS = 3' "${evaluator}"
 grep -Fq 'WARMUPS = 1' "${evaluator}"
 grep -Fq 'Reply with exactly OK and no other text.' "${evaluator}"
 grep -Fq 'semantic' "${evaluator}"
@@ -129,7 +132,14 @@ if grep -Fq 'if (strstr(name, "mul_mat_vec_q_moe") != NULL)' "${cuda13_launch_sh
     echo "CUDA 13 launch shim still bypasses the multi-token IQ1_S MoE kernel" >&2
     exit 1
 fi
-grep -Fq 'run_au250_xrt_tq1.sh' "${iq1s_runner}"
+test "$(grep -Fc 'run_au250_xrt_iq1s.sh --inside' "${iq1s_runner}")" -eq 2
+grep -Fq 'run_au250_xrt_iq1s.sh --inside handwritten' "${iq1s_runner}"
+grep -Fq 'run_au250_xrt_iq1s.sh --inside compiler' "${iq1s_runner}"
+grep -Fq 'HETGPU_IQ1S_TRACE_MODE="${trace_mode}"' "${iq1s_runner}"
+grep -Fq 'HETGPU_XRT_COMPARE_MAX_LAUNCHES=1' "${iq1s_runner}"
+grep -Fq -- '--mode "${trace_mode}"' "${iq1s_runner}"
+grep -Fq -- '--port "${mode_port}"' "${iq1s_runner}"
+grep -Fq 'HETGPU_QWEN_MODEL_CONTEXT_LIMIT=262144' "${iq1s_runner}"
 grep -Fq 'validate_qwen35_iq1s_au250_proof.py' "${iq1s_runner}"
 iq1s_last_effective_command="$(grep -Ev '^\s*(#|$|echo |printf )' "${iq1s_runner}" | tail -1)"
 test "${iq1s_last_effective_command}" = 'python3 "${iq1s_validator}" "${proof_dir}" | tee "${proof_dir}/summary.json"'
