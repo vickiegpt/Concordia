@@ -538,12 +538,19 @@ pub(crate) struct XrtWaveCompletion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct QwenTraceConfig {
+    mode: String,
+    model_context_limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct XrtPoolConfig {
     xclbin: PathBuf,
     device_index: u32,
     targets: Vec<XrtCuTarget>,
     num_vector_registers: u8,
     timeout_ms: u32,
+    qwen_trace: Option<QwenTraceConfig>,
 }
 
 #[derive(Deserialize)]
@@ -630,6 +637,27 @@ impl XrtPoolConfig {
         Ok(())
     }
 
+    fn validate(&self) -> Result<(), XrtTmatmulError> {
+        Self::validate_targets(&self.targets)?;
+        if let Some(trace) = &self.qwen_trace {
+            if self.targets != Self::maxcores_targets() {
+                return Err(XrtTmatmulError::Config(
+                    "strict Qwen IQ1_S execution requires the exact four-CU MaxCores topology"
+                        .to_string(),
+                ));
+            }
+            super::iq1s_trace::build_handwritten_trace(trace.model_context_limit)
+                .map_err(XrtTmatmulError::Config)?;
+            if !matches!(trace.mode.as_str(), "handwritten" | "compiler") {
+                return Err(XrtTmatmulError::Config(
+                    "HETGPU_IQ1S_TRACE_MODE must be exactly handwritten or compiler"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn from_env() -> Result<Self, XrtTmatmulError> {
         fn parse_u32(name: &'static str, default: u32) -> Result<u32, XrtTmatmulError> {
             std::env::var(name).map_or(Ok(default), |text| {
@@ -659,14 +687,32 @@ impl XrtPoolConfig {
             Ok(json) if !json.trim().is_empty() => Self::parse_cu_table(&json)?,
             _ => Self::maxcores_targets(),
         };
-        Self::validate_targets(&targets)?;
-        Ok(Self {
+        let qwen_trace = if std::env::var("HETGPU_QWEN_IQ1S_STRICT").as_deref() == Ok("1") {
+            let mode = std::env::var("HETGPU_IQ1S_TRACE_MODE").map_err(|_| {
+                XrtTmatmulError::Config(
+                    "HETGPU_IQ1S_TRACE_MODE is required in strict Qwen mode".to_string(),
+                )
+            })?;
+            Some(QwenTraceConfig {
+                mode,
+                model_context_limit: parse_u32(
+                    "HETGPU_QWEN_MODEL_CONTEXT_LIMIT",
+                    super::iq1s_trace::QWEN_MODEL_CONTEXT_LIMIT,
+                )?,
+            })
+        } else {
+            None
+        };
+        let config = Self {
             xclbin: PathBuf::from(xclbin),
             device_index,
             targets,
             num_vector_registers,
             timeout_ms,
-        })
+            qwen_trace,
+        };
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -773,7 +819,7 @@ impl XrtTmatmulPool {
 
 impl<O: XrtOps> Pool<O> {
     fn open_with_ops(ops: O, config: XrtPoolConfig) -> Result<Self, XrtTmatmulError> {
-        XrtPoolConfig::validate_targets(&config.targets)?;
+        config.validate()?;
         let device = ops.device_open(config.device_index);
         if device.is_null() {
             return Err(XrtTmatmulError::NullHandle("xrtDeviceOpen"));
@@ -864,13 +910,23 @@ impl<O: XrtOps> Pool<O> {
                 input_address,
                 output_address,
             )?;
-            let replay_safe_program =
+            let replay_safe_program = if let Some(trace) = &config.qwen_trace {
+                super::iq1s_trace::build_selected_trace(
+                    &trace.mode,
+                    trace.model_context_limit,
+                    &labels,
+                    config.num_vector_registers,
+                )
+                .map_err(XrtTmatmulError::Assemble)?
+                .program
+            } else {
                 super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
                     AU250_TMATMUL_ASSEMBLY,
                     &labels,
                     config.num_vector_registers,
                 )
-                .map_err(|error| XrtTmatmulError::Assemble(error.to_string()))?;
+                .map_err(|error| XrtTmatmulError::Assemble(error.to_string()))?
+            };
             let program = compact_xrt_program(&replay_safe_program)?;
             validate_program(&program)?;
             let program_bo = pool.allocate_bo(program.len(), group, "xrtBOAlloc(program)")?;
@@ -2082,6 +2138,17 @@ mod tests {
             targets: XrtPoolConfig::maxcores_targets(),
             num_vector_registers: 4,
             timeout_ms: 20,
+            qwen_trace: None,
+        }
+    }
+
+    fn qwen_pool_test_config(mode: &str) -> XrtPoolConfig {
+        XrtPoolConfig {
+            qwen_trace: Some(QwenTraceConfig {
+                mode: mode.to_string(),
+                model_context_limit: crate::r#impl::iq1s_trace::QWEN_MODEL_CONTEXT_LIMIT,
+            }),
+            ..pool_test_config()
         }
     }
 
@@ -2121,6 +2188,59 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert!(XrtPoolConfig::parse_cu_table(r#"{"version":2,"cus":[]}"#).is_err());
         assert!(XrtPoolConfig::parse_cu_table(r#"{"version":1,"cus":[]}"#).is_err());
+    }
+
+    #[test]
+    fn qwen_trace_mode_requires_the_exact_four_cu_maxcores_topology() {
+        let exact = qwen_pool_test_config("compiler");
+        exact.validate().unwrap();
+
+        let mut missing = exact.clone();
+        missing.targets.pop();
+        assert!(missing.validate().unwrap_err().to_string().contains("exact four-CU"));
+
+        let mut reordered = exact;
+        reordered.targets.swap(0, 1);
+        assert!(reordered
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("exact four-CU"));
+    }
+
+    #[test]
+    fn qwen_pool_program_bo_is_the_cross_checked_compiler_trace() {
+        let xrt = FakeXrt::new([1, 1, 1, 1]);
+        let pool = Pool::open_with_ops(xrt, qwen_pool_test_config("compiler")).unwrap();
+        let labels = bind_labels(
+            "PARAM_MATRIX",
+            "PARAM_INPUT",
+            "PARAM_OUTPUT",
+            0x1000,
+            0x2000,
+            0x3000,
+        )
+        .unwrap();
+        let expected = crate::r#impl::iq1s_trace::build_selected_trace(
+            "compiler",
+            crate::r#impl::iq1s_trace::QWEN_MODEL_CONTEXT_LIMIT,
+            &labels,
+            4,
+        )
+        .unwrap();
+        let expected = compact_xrt_program(&expected.program).unwrap();
+        let actual = pool
+            .ops
+            .events()
+            .iter()
+            .find_map(|event| match event {
+                Event::BoWrite { bo: 103, bytes } => Some(bytes.clone()),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 96);
     }
 
     #[test]
