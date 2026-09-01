@@ -2002,11 +2002,21 @@ impl Drop for OracleLibrary {
 static GRID_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<GridTable>>>> = OnceLock::new();
 static GRID_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
 
+fn select_libggml_path(path: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(path) = path {
+        return Ok(path.to_path_buf());
+    }
+    if let Some(path) = std::env::var_os("HETGPU_LIBGGML") {
+        return Ok(PathBuf::from(path));
+    }
+    if std::env::var("HETGPU_QWEN_IQ1S_STRICT").as_deref() == Ok("1") {
+        return Err("strict Qwen IQ1_S mode requires verified HETGPU_LIBGGML".to_string());
+    }
+    Ok(PathBuf::from(DEFAULT_LIBGGML))
+}
+
 pub(crate) fn validated_grid(path: Option<&Path>) -> Result<Arc<GridTable>, String> {
-    let selected = path
-        .map(Path::to_path_buf)
-        .or_else(|| std::env::var_os("HETGPU_LIBGGML").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_LIBGGML));
+    let selected = select_libggml_path(path)?;
     let path = selected
         .canonicalize()
         .map_err(|error| format!("libggml {}: {error}", selected.display()))?;
@@ -2163,6 +2173,25 @@ mod tests {
                 None => std::env::remove_var(self.name),
             }
         }
+    }
+
+    #[test]
+    fn strict_qwen_requires_an_explicit_libggml_path() {
+        let _env_lock = crate::r#impl::test_env::lock();
+        let _library = RemovedEnvGuard::new("HETGPU_LIBGGML");
+        let original_strict = std::env::var_os("HETGPU_QWEN_IQ1S_STRICT");
+        std::env::set_var("HETGPU_QWEN_IQ1S_STRICT", "1");
+
+        let result = select_libggml_path(None);
+
+        match original_strict {
+            Some(value) => std::env::set_var("HETGPU_QWEN_IQ1S_STRICT", value),
+            None => std::env::remove_var("HETGPU_QWEN_IQ1S_STRICT"),
+        }
+        assert_eq!(
+            result.unwrap_err(),
+            "strict Qwen IQ1_S mode requires verified HETGPU_LIBGGML"
+        );
     }
 
     fn grid() -> GridTable {

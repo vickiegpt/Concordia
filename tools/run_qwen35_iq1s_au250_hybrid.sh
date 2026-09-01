@@ -21,6 +21,7 @@ if [[ "${1:-}" == "--inside" ]]; then
     oracle=/qwen-build/tq1_upstream_reference
     evaluator=/work/tools/qwen35_au250_eval.py
     auditor=/work/tools/qwen35_gguf_audit.py
+    build_preflight=/work/tools/qwen35_build_preflight.py
     route_manifest=/work/tools/qwen35-iq1s-route-manifest.json
     prompt_seed=/work/zluda/evaluation/fixtures/qwen35_prompt_seed.txt
     iq1s_validator=/work/zluda/tests/validate_qwen35_iq1s_au250_proof.py
@@ -32,7 +33,7 @@ if [[ "${1:-}" == "--inside" ]]; then
 
     for required in \
         "${model}" "${manifest}" "${llama_server}" "${libnvcuda}" "${cuda13_launch_shim}" "${oracle}" \
-        "${evaluator}" "${auditor}" "${route_manifest}" "${prompt_seed}" \
+        "${evaluator}" "${auditor}" "${build_preflight}" "${route_manifest}" "${prompt_seed}" \
         "${xclbin}" "${iq1s_validator}"; do
         [[ -f "${required}" ]] || { echo "missing Qwen IQ1_S evaluation input ${required}" >&2; exit 1; }
     done
@@ -67,7 +68,8 @@ PY
         --model-verification "${proof_dir}/model-verification.json" \
         --output "${proof_dir}/model-tensor-audit.json"
 
-    LLAMA_SERVER="${llama_server}" LIBNVCUDA="${libnvcuda}" \
+    libggml=/qwen-build/llama-build/bin/libggml.so
+    LLAMA_SERVER="${llama_server}" LIBGGML="${libggml}" LIBNVCUDA="${libnvcuda}" \
     CUDA13_LAUNCH_SHIM="${cuda13_launch_shim}" \
     ORACLE="${oracle}" \
     MANIFEST="${manifest}" LLAMA_REVISION="${llama_revision}" python3 - <<'PY'
@@ -85,11 +87,18 @@ def digest(path):
 manifest = json.load(open(os.environ["MANIFEST"], encoding="utf-8"))
 if manifest.get("schema_version") != 1 or manifest.get("llama_revision") != os.environ["LLAMA_REVISION"]:
     raise SystemExit("build manifest revision/schema mismatch")
-for name, variable in (("llama_server", "LLAMA_SERVER"), ("libnvcuda", "LIBNVCUDA"), ("cuda13_launch_shim", "CUDA13_LAUNCH_SHIM"), ("tq1_upstream_reference", "ORACLE")):
+for name, variable in (("llama_server", "LLAMA_SERVER"), ("libggml", "LIBGGML"), ("libnvcuda", "LIBNVCUDA"), ("cuda13_launch_shim", "CUDA13_LAUNCH_SHIM"), ("tq1_upstream_reference", "ORACLE")):
     artifact = manifest.get("artifacts", {}).get(name, {})
     if artifact.get("path") != os.environ[variable] or artifact.get("sha256") != digest(os.environ[variable]):
         raise SystemExit(f"build manifest artifact mismatch: {name}")
 PY
+    python3 "${build_preflight}" \
+        --manifest "${manifest}" \
+        --build-root /qwen-build \
+        --llama-revision "${llama_revision}" \
+        --output "${proof_dir}/qwen-build-preflight.json"
+    verified_libggml="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["libggml_path"])' "${proof_dir}/qwen-build-preflight.json")"
+    libggml_sha256="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["libggml_sha256"])' "${proof_dir}/qwen-build-preflight.json")"
     server_sha256="$(sha256sum "${llama_server}" | awk '{print $1}')"
     libnvcuda_sha256="$(sha256sum "${libnvcuda}" | awk '{print $1}')"
     cuda13_launch_shim_sha256="$(sha256sum "${cuda13_launch_shim}" | awk '{print $1}')"
@@ -134,6 +143,7 @@ PY
     {
         printf 'model_sha256=%s\n' "${actual_model_sha}"
         printf 'llama_server_sha256=%s\n' "${server_sha256}"
+        printf 'libggml_sha256=%s\n' "${libggml_sha256}"
         printf 'libnvcuda_sha256=%s\n' "${libnvcuda_sha256}"
         printf 'cuda13_launch_shim_sha256=%s\n' "${cuda13_launch_shim_sha256}"
         printf 'xclbin_sha256=%s\n' "${xclbin_sha256}"
@@ -194,6 +204,10 @@ PY
         export HETGPU_BITNET_DISAGGREGATE=1
         export HETGPU_BITNET_DISAGG_STRICT=1
         export HETGPU_CUDART_PRELAUNCH_NAMED_KERNEL=1
+        export HETGPU_QWEN_IQ1S_DISABLE_CUDA_FUSION=1
+        export HETGPU_QWEN_IQ1S_STRICT=1
+        export HETGPU_QWEN_MODEL_SHA256="${model_sha256}"
+        export HETGPU_LIBGGML="${verified_libggml}"
         export HETGPU_TMATMUL_HARDWARE_MATMUL=1
         export HETGPU_BITNET_ROUTE_MANIFEST="${route_manifest}"
         export HETGPU_BITNET_GPU_KERNELS=attention,attn,flash,softmax,soft_max,rope,kq,qk,qkv,query,key,value,kv_cache

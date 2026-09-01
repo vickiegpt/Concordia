@@ -59,6 +59,7 @@ cargo build -p zluda --release --no-default-features \
 
 llama_server="${llama_build}/bin/llama-server"
 llama_cli="${llama_build}/bin/llama-cli"
+libggml="${llama_build}/bin/libggml.so"
 nvcuda="${rust_target}/release/libnvcuda.so"
 cuda13_launch_shim="${rust_target}/release/libqwen35_cuda13_launch_shim.so"
 upstream_oracle=/qwen-build/tq1_upstream_reference
@@ -68,6 +69,7 @@ cc -O2 -fPIC -shared -Wall -Wextra -Werror \
     -ldl -lpthread -o "${cuda13_launch_shim}"
 test -x "${llama_server}"
 test -x "${llama_cli}"
+test -s "${libggml}"
 test -s "${nvcuda}"
 test -s "${cuda13_launch_shim}"
 objdump -T "${cuda13_launch_shim}" | grep -Eq 'libcudart\.so\.13[[:space:]]+cudaLaunchKernelExC$' || {
@@ -111,6 +113,7 @@ DIRTY_MANIFEST_SHA256="${dirty_manifest_sha256}" \
 CUDA_MATH_HEADER_SHA256="${cuda_math_header_sha256}" \
 LLAMA_SERVER="${llama_server}" \
 LLAMA_CLI="${llama_cli}" \
+LIBGGML="${libggml}" \
 NVCUDA="${nvcuda}" \
 CUDA13_LAUNCH_SHIM="${cuda13_launch_shim}" \
 UPSTREAM_ORACLE="${upstream_oracle}" \
@@ -154,6 +157,10 @@ manifest = {
         "llama_cli": {
             "path": os.environ["LLAMA_CLI"],
             "sha256": sha256(os.environ["LLAMA_CLI"]),
+        },
+        "libggml": {
+            "path": os.environ["LIBGGML"],
+            "sha256": sha256(os.environ["LIBGGML"]),
         },
         "libnvcuda": {
             "path": os.environ["NVCUDA"],
