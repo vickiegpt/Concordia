@@ -131,6 +131,7 @@ PY
 
     xbutil examine -d "${fpga_bdf}" -r dynamic-regions -r error -r firewall -r thermal \
         > "${proof_dir}/xbutil-preflight.txt" 2>&1
+    lspci -s "${fpga_bdf}" -vv > "${proof_dir}/pcie-link.txt"
     grep -Fq 'Level 0 : 0x0 (GOOD)' "${proof_dir}/xbutil-preflight.txt" || {
         echo "AU250 firewall is not GOOD during preflight" >&2
         exit 1
@@ -148,6 +149,7 @@ PY
         printf 'cuda13_launch_shim_sha256=%s\n' "${cuda13_launch_shim_sha256}"
         printf 'xclbin_sha256=%s\n' "${xclbin_sha256}"
         printf 'llama_revision=%s\n' "${llama_revision}"
+        printf 'build_threads=%s\n' "${QWEN35_BUILD_JOBS:-32}"
         printf 'threads=%s\n' "${QWEN35_THREADS:-$(nproc)}"
     } > "${proof_dir}/artifact-hashes.txt"
     git -C /work status --porcelain=v1 --untracked-files=normal --ignore-submodules=all \

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Fail-closed validator for Qwen mixed-quant CUDA/AU250 IQ1_S proof bundles."""
+"""Fail-closed validator for the fixed Qwen CUDA/handwritten/compiler proof."""
 
 import hashlib
 import json
 import math
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -13,21 +14,41 @@ MODEL_SIZE = 94_155_830_880
 MODEL_SHA256 = "0a32c2702fbb61934960cfeef34524b81ec6d9267158f246d45fc86f5aaa7568"
 LLAMA_REVISION = "925e1179947ea0c0ebfb0032df18af3a729822be"
 EXPERT_TYPES = {"IQ1_S": 141, "IQ2_XXS": 24, "IQ3_S": 4, "MXFP4": 11}
-MEASUREMENT_COUNT = 5
+MODES = ("cuda", "handwritten", "compiler")
+HYBRID_MODES = ("handwritten", "compiler")
+REQUEST_COUNT = 64
+MAX_ACTIVE = 16
+TOKENS_PER_REQUEST = 32
+GENERATED_TOKENS = REQUEST_COUNT * TOKENS_PER_REQUEST
+MEASUREMENT_COUNT = 3
+MIN_HYBRID_TOKENS_PER_SECOND = 15.0
+MODEL_CONTEXT_LIMIT = 262_144
 CU_COUNT = 4
-RAW_MIN = -4096
-RAW_MAX = 4096
+MATRIX_TILE_BYTES = 262_144
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
+EXPECTED_TRACE = [
+    ["ldv", "v0", "PARAM_INPUT"],
+    ["tmatmul_import", "v0"],
+    ["tmatmul_go", "PARAM_MATRIX"],
+    ["tmatmul_export", "v0"],
+    ["sv", "v0", "PARAM_OUTPUT"],
+    ["stall"],
+]
 TIMING_KEYS = (
     "model_load_ms",
     "prompt_tokens_per_second",
     "ttft_ms",
     "generation_tokens_per_second",
+    "single_request_generation_tokens_per_second",
     "end_to_end_ms",
+    "queue_ms",
+    "service_ms",
+    "measured_wall_seconds",
 )
 
 
 class ProofInvalid(ValueError):
-    """Raised when any required proof boundary is absent or inconsistent."""
+    pass
 
 
 def _fail(message):
@@ -57,11 +78,15 @@ def _integer(value, label, minimum=None):
 def _number(value, label, positive=False):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         _fail(f"{label} must be numeric")
-    result = float(value)
-    if not math.isfinite(result) or result < 0.0 or (positive and result <= 0.0):
-        qualifier = "positive" if positive else "nonnegative"
-        _fail(f"{label} must be finite and {qualifier}")
-    return result
+    value = float(value)
+    if not math.isfinite(value) or value < 0.0 or (positive and value <= 0.0):
+        _fail(f"{label} must be finite and {'positive' if positive else 'nonnegative'}")
+    return value
+
+
+def _expect(value, expected, label):
+    if value != expected:
+        _fail(f"{label} must equal {expected!r}")
 
 
 def _keys(value, keys, label):
@@ -70,9 +95,12 @@ def _keys(value, keys, label):
         _fail(f"{label} missing keys: {', '.join(missing)}")
 
 
-def _expect(value, expected, label):
-    if value != expected:
-        _fail(f"{label} must equal {expected!r}")
+def _sha(value, label, nonzero=False):
+    if not isinstance(value, str) or SHA256_RE.fullmatch(value) is None:
+        _fail(f"{label} must be a lowercase SHA-256")
+    if nonzero and value == "0" * 64:
+        _fail(f"{label} must be nonzero")
+    return value
 
 
 def _read_bytes(path):
@@ -82,13 +110,19 @@ def _read_bytes(path):
         _fail(f"cannot read {path}: {error}")
 
 
-def _read_json(path):
-    raw = _read_bytes(path)
+def _read_text(path):
     try:
-        return _mapping(json.loads(raw), str(path))
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        _fail(f"cannot read {path}: {error}")
+
+
+def _read_json(path):
+    try:
+        return _mapping(json.loads(_read_text(path)), str(path))
     except ProofInvalid:
         raise
-    except (UnicodeError, json.JSONDecodeError) as error:
+    except json.JSONDecodeError as error:
         _fail(f"cannot parse {path}: {error}")
 
 
@@ -104,7 +138,7 @@ def _validate_audit(path):
         raise
     except (UnicodeError, json.JSONDecodeError) as error:
         _fail(f"cannot parse {path}: {error}")
-    required = {
+    expected = {
         "schema_version": 1,
         "status": "pass",
         "model_sha256": MODEL_SHA256,
@@ -114,210 +148,330 @@ def _validate_audit(path):
         "tq1_0_total": 0,
         "non_expert_iq1s": [],
     }
-    for key, expected in required.items():
-        _expect(audit.get(key), expected, f"model_audit.{key}")
+    for key, value in expected.items():
+        _expect(audit.get(key), value, f"model_audit.{key}")
     return audit, _sha256(raw)
 
 
+def _parse_key_values(path):
+    result = {}
+    for index, line in enumerate(_read_text(path).splitlines(), 1):
+        if not line or "=" not in line:
+            _fail(f"{path} line {index} is not key=value")
+        key, value = line.split("=", 1)
+        if not key or key in result:
+            _fail(f"{path} contains an empty or duplicate key")
+        result[key] = value
+    return result
+
+
+def _validate_artifacts(root):
+    verification = _read_json(root / "model-verification.json")
+    _expect(verification.get("path"), "/models/qwen/Qwen3.5-397B-A17B-UD-TQ1_0.gguf", "model_verification.path")
+    _expect(verification.get("size"), MODEL_SIZE, "model_verification.size")
+    _expect(verification.get("sha256"), MODEL_SHA256, "model_verification.sha256")
+    for name in ("device", "inode", "mtime_ns", "ctime_ns"):
+        _integer(verification.get(name), f"model_verification.{name}", 1)
+
+    artifacts = _parse_key_values(root / "artifact-hashes.txt")
+    required_hashes = (
+        "model_sha256", "llama_server_sha256", "libggml_sha256",
+        "libnvcuda_sha256", "cuda13_launch_shim_sha256", "xclbin_sha256",
+    )
+    _keys(artifacts, (*required_hashes, "llama_revision", "build_threads", "threads"), "artifact_hashes")
+    for name in required_hashes:
+        _sha(artifacts[name], f"artifact_hashes.{name}", nonzero=True)
+    _expect(artifacts["model_sha256"], MODEL_SHA256, "artifact_hashes.model_sha256")
+    _expect(artifacts["llama_revision"], LLAMA_REVISION, "artifact_hashes.llama_revision")
+    try:
+        build_threads = int(artifacts["build_threads"])
+        runtime_threads = int(artifacts["threads"])
+    except ValueError:
+        _fail("artifact thread counts must be integers")
+    if not 1 <= build_threads <= 32:
+        _fail("artifact_hashes.build_threads must be between 1 and 32")
+    if runtime_threads < 1:
+        _fail("artifact_hashes.threads must be positive")
+
+    preflight = _read_json(root / "qwen-build-preflight.json")
+    expected_preflight = {
+        "schema_version": 1,
+        "build_root": "/qwen-build",
+        "libggml_path": "/qwen-build/llama-build/bin/libggml.so",
+        "libggml_sha256": artifacts["libggml_sha256"],
+        "llama_revision": LLAMA_REVISION,
+        "required_symbols": ["dequantize_row_iq1_s", "ggml_init", "ggml_free"],
+        "status": "pass",
+    }
+    _expect(preflight, expected_preflight, "qwen_build_preflight")
+    source_hash = _read_text(root / "repository-diff.sha256").strip()
+    _sha(source_hash, "repository_diff_sha256", nonzero=True)
+
+    xclbin = _read_text(root / "xclbin-info.txt")
+    for name in ("ternip_big_1", "ternip_big_2", "ternip_big_3", "ternip_small_1"):
+        if f"Instance:        {name}" not in xclbin:
+            _fail(f"xclbin topology is missing {name}")
+    pcie = _read_text(root / "pcie-link.txt")
+    if re.search(r"LnkSta:.*Speed 8GT/s.*Width x4", pcie) is None:
+        _fail("PCIe link evidence must record the observed Gen3 x4 link")
+    return {
+        "hashes": artifacts,
+        "repository_diff_sha256": source_hash,
+        "pcie_link": {"observed": "Gen3 x4", "downgrade_risk": True},
+    }
+
+
 def _validate_health(mode, record):
-    health = _mapping(record["device_health"], f"{mode}.device_health")
-    _keys(health, ("before", "after"), f"{mode}.device_health")
+    health = _mapping(record.get("device_health"), f"{mode}.device_health")
     for phase in ("before", "after"):
-        item = _mapping(health[phase], f"{mode}.device_health.{phase}")
-        _keys(item, ("firewall", "fatal_errors"), f"{mode}.device_health.{phase}")
-        _expect(item["firewall"], "GOOD", f"{mode}.device_health.{phase}.firewall")
-        fatal = _list(item["fatal_errors"], f"{mode}.device_health.{phase}.fatal_errors")
+        item = _mapping(health.get(phase), f"{mode}.device_health.{phase}")
+        _expect(item.get("firewall"), "GOOD", f"{mode}.device_health.{phase}.firewall")
+        fatal = _list(item.get("fatal_errors"), f"{mode}.device_health.{phase}.fatal_errors")
         if fatal:
             _fail(f"{mode}.device_health.{phase}.fatal_errors must be empty")
 
 
-def _summarize_measurements(mode, measurements):
-    measurements = _list(measurements, f"{mode}.measurements")
-    if len(measurements) != MEASUREMENT_COUNT:
-        _fail(f"{mode}.measurements must contain exactly {MEASUREMENT_COUNT} entries")
-    columns = {key: [] for key in TIMING_KEYS}
-    for index, raw_measurement in enumerate(measurements):
-        measurement = _mapping(raw_measurement, f"{mode}.measurements[{index}]")
-        _keys(measurement, TIMING_KEYS, f"{mode}.measurements[{index}]")
-        for key in TIMING_KEYS:
-            columns[key].append(
-                _number(
-                    measurement[key],
-                    f"{mode}.measurements[{index}].{key}",
-                    positive=key != "model_load_ms",
-                )
-            )
-    summaries = {}
-    for key, values in columns.items():
-        mean = statistics.fmean(values)
-        stdev = statistics.pstdev(values)
-        summaries[key] = {
-            "min": min(values),
-            "max": max(values),
-            "median": statistics.median(values),
-            "population_stdev": stdev,
-            "cv": 0.0 if mean == 0.0 else stdev / mean,
-        }
-    return summaries
+def _trace_tokens(assembly):
+    result = []
+    for raw in assembly.splitlines():
+        line = raw.split(";", 1)[0].strip()
+        if line:
+            result.append([item for item in re.split(r"[\s,]+", line) if item])
+    return result
+
+
+def _semantic_hash(instructions):
+    digest = hashlib.sha256(b"hetgpu-tmatmul-semantic-trace-v1\0")
+    for instruction in instructions:
+        for token in instruction:
+            digest.update(token.encode())
+            digest.update(b"\0")
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _validate_physical(mode, value):
+    completion = _mapping(value, f"{mode}.physical_completion")
+    required = (
+        "request_id", "cu_index", "stall_code", "dispatch_to_stall_ns",
+        "matrix_key_sha256", "matrix_content_sha256", "matrix_address",
+        "matrix_cache_hit", "matrix_bytes_transferred", "trace_mode",
+        "model_context_limit", "trace_semantic_sha256", "trace_assembly_sha256",
+        "replay_safe_program_sha256", "trace_assembly", "trace_instructions",
+        "encoded_program_sha256", "encoded_program_hex", "program_address",
+        "program_bytes", "program_cache_hit",
+    )
+    _keys(completion, required, f"{mode}.physical_completion")
+    request_id = _integer(completion["request_id"], f"{mode}.physical.request_id", 1)
+    cu = _integer(completion["cu_index"], f"{mode}.physical.cu_index", 0)
+    if cu >= CU_COUNT:
+        _fail(f"{mode}.physical.cu_index is outside four CUs")
+    stall = _integer(completion["stall_code"], f"{mode}.physical.stall_code", 1)
+    _integer(completion["dispatch_to_stall_ns"], f"{mode}.physical.dispatch_to_stall_ns", 1)
+    _sha(completion["matrix_key_sha256"], f"{mode}.physical.matrix_key_sha256", True)
+    _sha(completion["matrix_content_sha256"], f"{mode}.physical.matrix_content_sha256", True)
+    _integer(completion["matrix_address"], f"{mode}.physical.matrix_address", 1)
+    if not isinstance(completion["matrix_cache_hit"], bool):
+        _fail(f"{mode}.physical.matrix_cache_hit must be boolean")
+    expected_transfer = 0 if completion["matrix_cache_hit"] else MATRIX_TILE_BYTES
+    _expect(completion["matrix_bytes_transferred"], expected_transfer, f"{mode}.physical.matrix_bytes_transferred")
+    _expect(completion["trace_mode"], mode, f"{mode}.physical.trace_mode")
+    _expect(completion["model_context_limit"], MODEL_CONTEXT_LIMIT, f"{mode}.physical.model_context_limit")
+    assembly = completion["trace_assembly"]
+    instructions = completion["trace_instructions"]
+    if not isinstance(assembly, str) or _trace_tokens(assembly) != instructions or instructions != EXPECTED_TRACE:
+        _fail(f"{mode}.physical trace body/instructions are not canonical terminal-STALL trace")
+    _expect(completion["trace_assembly_sha256"], _sha256(assembly.encode()), f"{mode}.physical.trace_assembly_sha256")
+    _expect(completion["trace_semantic_sha256"], _semantic_hash(instructions), f"{mode}.physical.trace_semantic_sha256")
+    encoded_hex = completion["encoded_program_hex"]
+    try:
+        encoded = bytes.fromhex(encoded_hex)
+    except (TypeError, ValueError):
+        _fail(f"{mode}.physical.encoded_program_hex is invalid")
+    program_bytes = _integer(completion["program_bytes"], f"{mode}.physical.program_bytes", 16)
+    if program_bytes % 16 or len(encoded) != program_bytes:
+        _fail(f"{mode}.physical encoded program length is inconsistent")
+    program_sha = _sha256(encoded)
+    _expect(completion["encoded_program_sha256"], program_sha, f"{mode}.physical.encoded_program_sha256")
+    _expect(completion["replay_safe_program_sha256"], program_sha, f"{mode}.physical.replay_safe_program_sha256")
+    _integer(completion["program_address"], f"{mode}.physical.program_address", 1)
+    if not isinstance(completion["program_cache_hit"], bool):
+        _fail(f"{mode}.physical.program_cache_hit must be boolean")
+    return dict(completion)
+
+
+def _zero_xrt():
+    return {
+        "submission_count": 0, "completion_count": 0,
+        "per_cu_submissions": [0, 0, 0, 0], "per_cu_completions": [0, 0, 0, 0],
+        "request_ids": [], "stall_codes": [], "raw_min": 0, "raw_max": 0,
+        "reference_checked_components": 0, "operation_count": 0,
+        "resident_matrix_hits": 0, "resident_matrix_misses": 0,
+        "resident_matrix_bytes_transferred": 0, "program_cache_hits": 0,
+        "program_cache_misses": 0, "host_pack_hits": 0, "host_pack_misses": 0,
+        "host_pack_bytes_built": 0, "physical_completions": [],
+    }
+
+
+def _validate_xrt(label, value, hybrid, require_reuse):
+    xrt = _mapping(value, f"{label}.xrt")
+    required = tuple(_zero_xrt())
+    _keys(xrt, required, f"{label}.xrt")
+    if not hybrid:
+        _expect(xrt, _zero_xrt(), f"{label}.xrt")
+        return _zero_xrt()
+    submissions = _integer(xrt["submission_count"], f"{label}.xrt.submission_count", 1)
+    completions = _integer(xrt["completion_count"], f"{label}.xrt.completion_count", 1)
+    _expect(completions, submissions, f"{label}.xrt.completion_count")
+    per_submit = [_integer(item, f"{label}.xrt.per_cu_submissions", 0) for item in _list(xrt["per_cu_submissions"], f"{label}.xrt.per_cu_submissions")]
+    per_complete = [_integer(item, f"{label}.xrt.per_cu_completions", 0) for item in _list(xrt["per_cu_completions"], f"{label}.xrt.per_cu_completions")]
+    if len(per_submit) != CU_COUNT or len(per_complete) != CU_COUNT or per_submit != per_complete or sum(per_complete) != completions:
+        _fail(f"{label}.xrt per-CU accounting is inconsistent")
+    if any(item <= 0 for item in per_complete):
+        _fail(f"{label}.xrt must complete work on all four CUs")
+    ids = [_integer(item, f"{label}.xrt.request_ids", 1) for item in _list(xrt["request_ids"], f"{label}.xrt.request_ids")]
+    stalls = [_integer(item, f"{label}.xrt.stall_codes", 1) for item in _list(xrt["stall_codes"], f"{label}.xrt.stall_codes")]
+    if len(ids) != completions or len(set(ids)) != completions or len(stalls) != completions:
+        _fail(f"{label}.xrt request/STALL accounting is incomplete")
+    raw_min = _integer(xrt["raw_min"], f"{label}.xrt.raw_min")
+    raw_max = _integer(xrt["raw_max"], f"{label}.xrt.raw_max")
+    if not -4096 <= raw_min <= raw_max <= 4096:
+        _fail(f"{label}.xrt raw range is invalid")
+    _integer(xrt["reference_checked_components"], f"{label}.xrt.reference_checked_components", 1)
+    _integer(xrt["operation_count"], f"{label}.xrt.operation_count", 1)
+    physical = [_validate_physical(label.split(".")[0], item) for item in _list(xrt["physical_completions"], f"{label}.xrt.physical_completions")]
+    if len(physical) != completions:
+        _fail(f"{label}.xrt physical completion count differs")
+    if [item["request_id"] for item in physical] != ids or [item["stall_code"] for item in physical] != stalls:
+        _fail(f"{label}.xrt physical IDs or STALLs do not bind aggregate evidence")
+    physical_per_cu = [sum(item["cu_index"] == cu for item in physical) for cu in range(CU_COUNT)]
+    if physical_per_cu != per_complete:
+        _fail(f"{label}.xrt physical CU ownership differs from aggregate evidence")
+    resident_hits = sum(item["matrix_cache_hit"] for item in physical)
+    resident_misses = completions - resident_hits
+    program_hits = sum(item["program_cache_hit"] for item in physical)
+    program_misses = completions - program_hits
+    _expect(xrt["resident_matrix_hits"], resident_hits, f"{label}.xrt.resident_matrix_hits")
+    _expect(xrt["resident_matrix_misses"], resident_misses, f"{label}.xrt.resident_matrix_misses")
+    _expect(xrt["resident_matrix_bytes_transferred"], resident_misses * MATRIX_TILE_BYTES, f"{label}.xrt.resident_matrix_bytes_transferred")
+    _expect(xrt["program_cache_hits"], program_hits, f"{label}.xrt.program_cache_hits")
+    _expect(xrt["program_cache_misses"], program_misses, f"{label}.xrt.program_cache_misses")
+    host_hits = _integer(xrt["host_pack_hits"], f"{label}.xrt.host_pack_hits", 0)
+    host_misses = _integer(xrt["host_pack_misses"], f"{label}.xrt.host_pack_misses", 0)
+    _expect(xrt["host_pack_bytes_built"], host_misses * MATRIX_TILE_BYTES, f"{label}.xrt.host_pack_bytes_built")
+    if require_reuse and (resident_hits <= 0 or program_hits <= 0 or host_hits <= 0):
+        _fail(f"{label}.xrt must prove resident, program, and host cache reuse")
+    return {**xrt, "physical_completions": physical}
 
 
 def _validate_routes(label, value, hybrid):
     routes = _mapping(value, f"{label}.routes")
-    names = ("eligible", "handled", "fallback", "error")
-    _keys(routes, names, f"{label}.routes")
-    normalized = {
-        name: _integer(routes[name], f"{label}.routes.{name}", 0) for name in names
-    }
+    _keys(routes, ("eligible", "handled", "fallback", "error", "eligible_kernels"), f"{label}.routes")
+    result = {name: _integer(routes[name], f"{label}.routes.{name}", 0) for name in ("eligible", "handled", "fallback", "error")}
+    kernels = _list(routes["eligible_kernels"], f"{label}.routes.eligible_kernels")
+    if len(kernels) != result["eligible"] or any(
+        not isinstance(name, str) or "ggml_type19" not in name.lower()
+        or ("mul_mat_q" not in name.lower() and "mul_mat_vec_q" not in name.lower())
+        or "stream_k_fixup" in name.lower() for name in kernels
+    ):
+        _fail(f"{label}.routes eligible kernel set is invalid")
     if hybrid:
-        if normalized["eligible"] <= 0:
-            _fail(f"{label}.routes.eligible must be positive")
-        if normalized["handled"] != normalized["eligible"]:
-            _fail(f"{label} must handle every eligible IQ1_S route")
-        if normalized["fallback"] or normalized["error"]:
-            _fail(f"{label} fallback and error counts must be zero")
-    elif any(normalized.values()):
-        _fail(f"{label} routes must all be zero")
-    return normalized
+        if result["eligible"] <= 0 or result["handled"] != result["eligible"] or result["fallback"] or result["error"]:
+            _fail(f"{label} IQ1_S routing is not strict and complete")
+    elif any(result.values()) or kernels:
+        _fail(f"{label} CUDA route evidence must be zero")
+    result["eligible_kernels"] = kernels
+    return result
 
 
-def _validate_xrt(label, value, hybrid):
-    xrt = _mapping(value, f"{label}.xrt")
-    required = (
-        "submission_count",
-        "completion_count",
-        "per_cu_submissions",
-        "per_cu_completions",
-        "request_ids",
-        "stall_codes",
-        "raw_min",
-        "raw_max",
-        "reference_checked_components",
-        "operation_count",
-    )
-    _keys(xrt, required, f"{label}.xrt")
-    submissions = _integer(xrt["submission_count"], f"{label}.xrt.submission_count", 0)
-    completions = _integer(xrt["completion_count"], f"{label}.xrt.completion_count", 0)
-    if submissions != completions:
-        _fail(f"{label}.xrt submission/completion counts differ")
-    per_submit = [
-        _integer(item, f"{label}.xrt.per_cu_submissions[{index}]", 0)
-        for index, item in enumerate(
-            _list(xrt["per_cu_submissions"], f"{label}.xrt.per_cu_submissions")
-        )
-    ]
-    per_complete = [
-        _integer(item, f"{label}.xrt.per_cu_completions[{index}]", 0)
-        for index, item in enumerate(
-            _list(xrt["per_cu_completions"], f"{label}.xrt.per_cu_completions")
-        )
-    ]
-    if len(per_submit) != CU_COUNT or len(per_complete) != CU_COUNT:
-        _fail(f"{label}.xrt per-CU arrays must contain four entries")
-    if per_submit != per_complete or sum(per_submit) != submissions:
-        _fail(f"{label}.xrt per-CU accounting is inconsistent")
-    request_ids = [
-        _integer(item, f"{label}.xrt.request_ids[{index}]", 1)
-        for index, item in enumerate(_list(xrt["request_ids"], f"{label}.xrt.request_ids"))
-    ]
-    if len(request_ids) != completions or len(request_ids) != len(set(request_ids)):
-        _fail(f"{label}.xrt request IDs are missing or duplicated")
-    stalls = [
-        _integer(item, f"{label}.xrt.stall_codes[{index}]")
-        for index, item in enumerate(_list(xrt["stall_codes"], f"{label}.xrt.stall_codes"))
-    ]
-    if len(stalls) != completions or any(item == 0 for item in stalls):
-        _fail(f"{label}.xrt STALL evidence is incomplete or zero")
-    raw_min = _integer(xrt["raw_min"], f"{label}.xrt.raw_min")
-    raw_max = _integer(xrt["raw_max"], f"{label}.xrt.raw_max")
-    if not (RAW_MIN <= raw_min <= raw_max <= RAW_MAX):
-        _fail(f"{label}.xrt raw output range is invalid")
-    checked = _integer(
-        xrt["reference_checked_components"],
-        f"{label}.xrt.reference_checked_components",
-        0,
-    )
-    operations = _integer(xrt["operation_count"], f"{label}.xrt.operation_count", 0)
-    if hybrid:
-        if submissions <= 0 or checked <= 0 or operations <= 0:
-            _fail(f"{label}.xrt must contain physical checked work")
-        if any(item <= 0 for item in per_complete):
-            _fail(f"{label}.xrt must complete work on all four CUs")
-    elif any((submissions, completions, checked, operations, *per_submit, *per_complete)) or request_ids or stalls or raw_min != 0 or raw_max != 0:
-        _fail(f"{label}.xrt must contain only zero accounting")
-    return {
-        "submission_count": submissions,
-        "completion_count": completions,
-        "per_cu_submissions": per_submit,
-        "per_cu_completions": per_complete,
-        "request_ids": request_ids,
-        "stall_codes": stalls,
-        "raw_min": raw_min,
-        "raw_max": raw_max,
-        "reference_checked_components": checked,
-        "operation_count": operations,
-    }
-
-
-def _validate_request_contract(mode, record, prompt_ids):
-    contract = _mapping(record["request_contract"], f"{mode}.request_contract")
-    expected = {
-        "prompt": prompt_ids,
-        "n_predict": 32,
-        "temperature": 0.0,
-        "seed": 42,
-        "cache_prompt": False,
-        "return_tokens": True,
-        "stream": True,
-        "timings_per_token": True,
-        "return_progress": True,
-    }
-    _expect(contract, expected, f"{mode}.request_contract")
-
-
-def _validate_semantic_gate(mode, record):
-    gate = record["semantic_hardware_gate"]
+def _validate_ffn(mode, comparison):
     if mode == "cuda":
-        _expect(gate, None, "cuda.semantic_hardware_gate")
+        _expect(comparison, None, "cuda.sampled_ffn_comparison")
         return None
-    gate = _mapping(gate, "hybrid.semantic_hardware_gate")
-    _keys(gate, ("routes", "xrt", "gpu_attention_routes"), "hybrid.semantic_hardware_gate")
-    routes = _validate_routes("hybrid.semantic_hardware_gate", gate["routes"], True)
-    xrt = _validate_xrt("hybrid.semantic_hardware_gate", gate["xrt"], True)
-    attention = _integer(
-        gate["gpu_attention_routes"],
-        "hybrid.semantic_hardware_gate.gpu_attention_routes",
-        1,
-    )
-    return {"routes": routes, "xrt": xrt, "gpu_attention_routes": attention}
+    comparison = _mapping(comparison, f"{mode}.sampled_ffn_comparison")
+    _expect(comparison.get("status"), "pass", f"{mode}.sampled_ffn.status")
+    _expect(comparison.get("reference_backend"), "scalar_iq1s", f"{mode}.sampled_ffn.reference_backend")
+    _expect(comparison.get("phase"), "pre_timed", f"{mode}.sampled_ffn.phase")
+    checked = _integer(comparison.get("checked_elements"), f"{mode}.sampled_ffn.checked_elements", 1)
+    atol = _number(comparison.get("atol"), f"{mode}.sampled_ffn.atol")
+    rtol = _number(comparison.get("rtol"), f"{mode}.sampled_ffn.rtol")
+    _expect(atol, 1e-4, f"{mode}.sampled_ffn.atol")
+    _expect(rtol, 1e-3, f"{mode}.sampled_ffn.rtol")
+    reference = _list(comparison.get("reference_outputs"), f"{mode}.sampled_ffn.reference_outputs")
+    actual = _list(comparison.get("actual_outputs"), f"{mode}.sampled_ffn.actual_outputs")
+    if len(reference) != checked or len(actual) != checked:
+        _fail(f"{mode}.sampled_ffn vectors are incomplete")
+    errors = []
+    relatives = []
+    for index, (left, right) in enumerate(zip(reference, actual)):
+        if (
+            isinstance(left, bool)
+            or not isinstance(left, (int, float))
+            or not math.isfinite(float(left))
+            or isinstance(right, bool)
+            or not isinstance(right, (int, float))
+            or not math.isfinite(float(right))
+        ):
+            _fail(f"{mode}.sampled_ffn output {index} is invalid")
+        reference_raw = float(left)
+        right = float(right)
+        error = abs(right - reference_raw)
+        if error > atol + rtol * abs(reference_raw):
+            _fail(f"{mode}.sampled FFN output is outside atol=1e-4, rtol=1e-3")
+        errors.append(error)
+        relatives.append(error / abs(reference_raw) if reference_raw else error)
+    reported_abs = _number(comparison.get("max_absolute_error"), f"{mode}.sampled_ffn.max_absolute_error")
+    reported_rel = _number(comparison.get("max_relative_error"), f"{mode}.sampled_ffn.max_relative_error")
+    if not math.isclose(reported_abs, max(errors), rel_tol=0.0, abs_tol=1e-7) or not math.isclose(reported_rel, max(relatives), rel_tol=0.0, abs_tol=1e-7):
+        _fail(f"{mode}.sampled FFN error summary differs from vectors")
+    return comparison
+
+
+def _validate_measurements(mode, values):
+    values = _list(values, f"{mode}.measurements")
+    if len(values) != MEASUREMENT_COUNT:
+        _fail(f"{mode}.measurements must contain exactly three entries")
+    columns = {key: [] for key in TIMING_KEYS}
+    throughput = []
+    for index, raw in enumerate(values):
+        item = _mapping(raw, f"{mode}.measurements[{index}]")
+        _keys(item, (*TIMING_KEYS, "request_count", "max_active", "generated_tokens"), f"{mode}.measurements[{index}]")
+        for key in TIMING_KEYS:
+            columns[key].append(_number(item[key], f"{mode}.measurements[{index}].{key}", positive=key != "model_load_ms"))
+        _expect(item["request_count"], REQUEST_COUNT, f"{mode}.measurements[{index}].request_count")
+        active = _integer(item["max_active"], f"{mode}.measurements[{index}].max_active", 1)
+        if active > MAX_ACTIVE:
+            _fail(f"{mode}.measurements[{index}].max_active exceeds 16")
+        _expect(item["generated_tokens"], GENERATED_TOKENS, f"{mode}.measurements[{index}].generated_tokens")
+        computed = GENERATED_TOKENS / columns["measured_wall_seconds"][-1]
+        observed = columns["generation_tokens_per_second"][-1]
+        if not math.isclose(computed, observed, rel_tol=1e-9, abs_tol=1e-9):
+            _fail(f"{mode}.measurements[{index}] throughput does not equal 2048/wall_seconds")
+        if mode in HYBRID_MODES and computed < MIN_HYBRID_TOKENS_PER_SECOND:
+            _fail(f"{mode}.measurements[{index}] is below 15 aggregate generated tok/s")
+        throughput.append(computed)
+    summaries = {}
+    for key, column in columns.items():
+        mean = statistics.fmean(column)
+        summaries[key] = {
+            "min": min(column), "max": max(column), "median": statistics.median(column),
+            "population_stdev": statistics.pstdev(column),
+            "cv": 0.0 if mean == 0.0 else statistics.pstdev(column) / mean,
+        }
+    return summaries, throughput
 
 
 def _validate_mode(mode, record, audit_sha256):
     record = _mapping(record, mode)
     required = (
-        "schema_version",
-        "evidence_kind",
-        "mode",
-        "model_size",
-        "model_sha256",
-        "model_audit_sha256",
-        "llama_revision",
-        "binary_sha256",
-        "placement",
-        "prompt_tokens",
-        "prompt_text",
-        "prompt_token_ids",
-        "generated_token_ids",
-        "semantic",
-        "hardware_probe",
-        "semantic_hardware_gate",
-        "routes",
-        "xrt",
-        "gpu_attention_routes",
-        "measurements",
-        "process",
-        "device_health",
-        "request_contract",
-        "warmup_count",
+        "schema_version", "evidence_kind", "mode", "model_size", "model_sha256",
+        "model_audit_sha256", "llama_revision", "binary_sha256", "placement",
+        "prompt_tokens", "prompt_text", "prompt_token_ids", "generated_token_ids",
+        "generated_token_ids_by_request", "semantic", "hardware_probe",
+        "sampled_ffn_comparison", "semantic_hardware_gate", "routes", "xrt",
+        "gpu_attention_routes", "measurements", "process", "device_health",
+        "request_contract", "warmup_count", "request_count", "max_active_requests",
+        "generated_tokens_per_request",
     )
     _keys(record, required, mode)
     _expect(record["schema_version"], 2, f"{mode}.schema_version")
@@ -327,168 +481,120 @@ def _validate_mode(mode, record, audit_sha256):
     _expect(record["model_sha256"], MODEL_SHA256, f"{mode}.model_sha256")
     _expect(record["model_audit_sha256"], audit_sha256, f"{mode}.model_audit_sha256")
     _expect(record["llama_revision"], LLAMA_REVISION, f"{mode}.llama_revision")
-    binary_sha = record["binary_sha256"]
-    if not isinstance(binary_sha, str) or not len(binary_sha) == 64:
-        _fail(f"{mode}.binary_sha256 must contain 64 characters")
-
-    placement = _mapping(record["placement"], f"{mode}.placement")
-    _keys(placement, ("all_layers_on_gpu", "cpu_layers"), f"{mode}.placement")
-    _expect(placement["all_layers_on_gpu"], True, f"{mode}.placement.all_layers_on_gpu")
-    _expect(placement["cpu_layers"], 0, f"{mode}.placement.cpu_layers")
+    binary = _sha(record["binary_sha256"], f"{mode}.binary_sha256", True)
+    _expect(record["placement"], {"all_layers_on_gpu": True, "cpu_layers": 0}, f"{mode}.placement")
     _expect(record["prompt_tokens"], 256, f"{mode}.prompt_tokens")
-    prompt_text = record["prompt_text"]
-    if not isinstance(prompt_text, str) or not prompt_text:
+    if not isinstance(record["prompt_text"], str) or not record["prompt_text"]:
         _fail(f"{mode}.prompt_text must be nonempty")
-    prompt_ids = [
-        _integer(item, f"{mode}.prompt_token_ids[{index}]", 0)
-        for index, item in enumerate(
-            _list(record["prompt_token_ids"], f"{mode}.prompt_token_ids")
-        )
-    ]
-    if len(prompt_ids) != 256:
-        _fail(f"{mode}.prompt_token_ids must contain exactly 256 IDs")
-    generated_ids = [
-        _integer(item, f"{mode}.generated_token_ids[{index}]", 0)
-        for index, item in enumerate(
-            _list(record["generated_token_ids"], f"{mode}.generated_token_ids")
-        )
-    ]
-    if len(generated_ids) != 32:
-        _fail(f"{mode}.generated_token_ids must contain exactly 32 IDs")
-    semantic = _mapping(record["semantic"], f"{mode}.semantic")
-    _keys(semantic, ("text", "token_ids"), f"{mode}.semantic")
-    _expect(semantic["text"], "OK", f"{mode}.semantic.text")
-    semantic_ids = [
-        _integer(item, f"{mode}.semantic.token_ids[{index}]", 0)
-        for index, item in enumerate(
-            _list(semantic["token_ids"], f"{mode}.semantic.token_ids")
-        )
-    ]
-    if len(semantic_ids) != 1:
-        _fail(f"{mode}.semantic.token_ids must contain exactly one ID")
-    hardware_probe = _mapping(record["hardware_probe"], f"{mode}.hardware_probe")
-    _keys(hardware_probe, ("token_ids", "n_predict"), f"{mode}.hardware_probe")
-    _expect(hardware_probe["n_predict"], 2, f"{mode}.hardware_probe.n_predict")
-    probe_ids = [
-        _integer(item, f"{mode}.hardware_probe.token_ids[{index}]", 0)
-        for index, item in enumerate(
-            _list(hardware_probe["token_ids"], f"{mode}.hardware_probe.token_ids")
-        )
-    ]
-    if len(probe_ids) != 2:
-        _fail(f"{mode}.hardware_probe.token_ids must contain exactly two IDs")
-    _validate_request_contract(mode, record, prompt_ids)
+    prompt_ids = _list(record["prompt_token_ids"], f"{mode}.prompt_token_ids")
+    if len(prompt_ids) != 256 or any(isinstance(item, bool) or not isinstance(item, int) for item in prompt_ids):
+        _fail(f"{mode}.prompt_token_ids must contain 256 integers")
+    generated = _list(record["generated_token_ids"], f"{mode}.generated_token_ids")
+    if len(generated) != TOKENS_PER_REQUEST:
+        _fail(f"{mode}.generated_token_ids must contain 32 IDs")
+    by_request = _list(record["generated_token_ids_by_request"], f"{mode}.generated_token_ids_by_request")
+    if len(by_request) != REQUEST_COUNT or any(item != generated for item in by_request):
+        _fail(f"{mode} must retain 64 deterministic 32-token request outputs")
+    _expect(record["request_count"], REQUEST_COUNT, f"{mode}.request_count")
+    _expect(record["max_active_requests"], MAX_ACTIVE, f"{mode}.max_active_requests")
+    _expect(record["generated_tokens_per_request"], TOKENS_PER_REQUEST, f"{mode}.generated_tokens_per_request")
     _expect(record["warmup_count"], 1, f"{mode}.warmup_count")
-
+    expected_contract = {
+        "prompt": prompt_ids, "n_predict": 32, "temperature": 0.0, "seed": 42,
+        "cache_prompt": False, "return_tokens": True, "stream": True,
+        "timings_per_token": True, "return_progress": True,
+    }
+    _expect(record["request_contract"], expected_contract, f"{mode}.request_contract")
+    semantic = _mapping(record["semantic"], f"{mode}.semantic")
+    _expect(semantic.get("text"), "OK", f"{mode}.semantic.text")
+    if len(_list(semantic.get("token_ids"), f"{mode}.semantic.token_ids")) != 1:
+        _fail(f"{mode}.semantic.token_ids must contain one ID")
+    probe = _mapping(record["hardware_probe"], f"{mode}.hardware_probe")
+    _expect(probe.get("n_predict"), 2, f"{mode}.hardware_probe.n_predict")
+    if len(_list(probe.get("token_ids"), f"{mode}.hardware_probe.token_ids")) != 2:
+        _fail(f"{mode}.hardware_probe.token_ids must contain two IDs")
     process = _mapping(record["process"], f"{mode}.process")
-    _keys(process, ("exit_code",), f"{mode}.process")
-    _expect(process["exit_code"], 0, f"{mode}.process.exit_code")
+    _expect(process.get("exit_code"), 0, f"{mode}.process.exit_code")
     _validate_health(mode, record)
-
-    hybrid = mode == "hybrid"
+    hybrid = mode in HYBRID_MODES
     routes = _validate_routes(mode, record["routes"], hybrid)
-    xrt = _validate_xrt(mode, record["xrt"], hybrid)
+    xrt = _validate_xrt(mode, record["xrt"], hybrid, require_reuse=hybrid)
     attention = _integer(record["gpu_attention_routes"], f"{mode}.gpu_attention_routes", 0)
     if hybrid and attention <= 0:
-        _fail("hybrid.gpu_attention_routes must be positive")
-    if not hybrid and attention != 0:
+        _fail(f"{mode}.gpu_attention_routes must be positive")
+    if not hybrid and attention:
         _fail("cuda.gpu_attention_routes must be zero")
-    semantic_gate = _validate_semantic_gate(mode, record)
-    if hybrid:
-        if routes["handled"] < semantic_gate["routes"]["handled"]:
-            _fail("hybrid final routes do not include the semantic hardware gate")
-        if xrt["completion_count"] < semantic_gate["xrt"]["completion_count"]:
-            _fail("hybrid final XRT evidence does not include the semantic hardware gate")
-
+    gate = record["semantic_hardware_gate"]
+    if not hybrid:
+        _expect(gate, None, "cuda.semantic_hardware_gate")
+        gate_result = None
+    else:
+        gate = _mapping(gate, f"{mode}.semantic_hardware_gate")
+        gate_routes = _validate_routes(f"{mode}.semantic_hardware_gate", gate.get("routes"), True)
+        gate_xrt = _validate_xrt(f"{mode}.semantic_hardware_gate", gate.get("xrt"), True, require_reuse=False)
+        _integer(gate.get("gpu_attention_routes"), f"{mode}.semantic_hardware_gate.gpu_attention_routes", 1)
+        if routes["handled"] < gate_routes["handled"] or xrt["completion_count"] < gate_xrt["completion_count"]:
+            _fail(f"{mode} final evidence does not include its semantic hardware gate")
+        gate_result = {"routes": gate_routes, "xrt": gate_xrt}
+    comparison = _validate_ffn(mode, record["sampled_ffn_comparison"])
+    metrics, throughput = _validate_measurements(mode, record["measurements"])
     return {
-        "binary_sha256": binary_sha,
-        "prompt_text": prompt_text,
-        "prompt_token_ids": prompt_ids,
-        "generated_token_ids": generated_ids,
-        "semantic_token_ids": semantic_ids,
-        "routes": routes,
-        "xrt": xrt,
-        "semantic_hardware_gate": semantic_gate,
-        "gpu_attention_routes": attention,
-        "metrics": _summarize_measurements(mode, record["measurements"]),
+        "binary_sha256": binary, "prompt_text": record["prompt_text"],
+        "prompt_token_ids": prompt_ids, "generated_token_ids": generated,
+        "generated_token_ids_by_request": by_request,
+        "semantic_token_ids": semantic["token_ids"], "probe_token_ids": probe["token_ids"],
+        "routes": routes, "xrt": xrt, "semantic_hardware_gate": gate_result,
+        "gpu_attention_routes": attention, "sampled_ffn_comparison": comparison,
+        "metrics": metrics, "measured_throughput": throughput,
     }
-
-
-def _validate_numerical(record):
-    record = _mapping(record, "numerical")
-    _keys(record, ("schema_version", "status", "cases"), "numerical")
-    _expect(record["schema_version"], 1, "numerical.schema_version")
-    _expect(record["status"], "pass", "numerical.status")
-    cases = _mapping(record["cases"], "numerical.cases")
-    _keys(cases, ("single_tile", "tiled"), "numerical.cases")
-    normalized = {}
-    for name in ("single_tile", "tiled"):
-        case = _mapping(cases[name], f"numerical.cases.{name}")
-        _keys(case, ("status", "max_absolute_error"), f"numerical.cases.{name}")
-        _expect(case["status"], "pass", f"numerical.cases.{name}.status")
-        normalized[name] = {
-            "status": "pass",
-            "max_absolute_error": _number(
-                case["max_absolute_error"], f"numerical.cases.{name}.max_absolute_error"
-            ),
-        }
-    return {"schema_version": 1, "status": "pass", "cases": normalized}
 
 
 def validate_proof(proof_root):
     root = Path(proof_root)
-    audit, audit_sha256 = _validate_audit(root / "model-tensor-audit.json")
-    cuda = _validate_mode("cuda", _read_json(root / "cuda.json"), audit_sha256)
-    hybrid = _validate_mode("hybrid", _read_json(root / "hybrid.json"), audit_sha256)
-    numerical = _validate_numerical(_read_json(root / "numerical" / "summary.json"))
-    if cuda["binary_sha256"] != hybrid["binary_sha256"]:
-        _fail("CUDA and hybrid binaries differ")
-    if cuda["prompt_text"] != hybrid["prompt_text"]:
-        _fail("CUDA and hybrid prompt text differs")
-    if cuda["prompt_token_ids"] != hybrid["prompt_token_ids"]:
-        _fail("CUDA and hybrid prompt token IDs differ")
-    if cuda["generated_token_ids"] != hybrid["generated_token_ids"]:
-        _fail("CUDA and hybrid generated token IDs differ")
-    if cuda["semantic_token_ids"] != hybrid["semantic_token_ids"]:
-        _fail("CUDA and hybrid semantic token IDs differ")
-    eligible = hybrid["routes"]["eligible"]
-    handled = hybrid["routes"]["handled"]
+    audit, audit_sha = _validate_audit(root / "model-tensor-audit.json")
+    artifacts = _validate_artifacts(root)
+    modes = {mode: _validate_mode(mode, _read_json(root / f"{mode}.json"), audit_sha) for mode in MODES}
+    for mode in MODES:
+        _expect(modes[mode]["binary_sha256"], artifacts["hashes"]["llama_server_sha256"], f"{mode}.binary artifact binding")
+    reference = modes["cuda"]
+    for mode in HYBRID_MODES:
+        current = modes[mode]
+        for field in ("prompt_text", "prompt_token_ids", "generated_token_ids", "generated_token_ids_by_request", "semantic_token_ids", "probe_token_ids"):
+            _expect(current[field], reference[field], f"{mode}.{field} CUDA equivalence")
+    _expect(modes["handwritten"]["routes"]["eligible_kernels"], modes["compiler"]["routes"]["eligible_kernels"], "hybrid eligible launch set")
+    handwritten_semantics = {item["trace_semantic_sha256"] for item in modes["handwritten"]["xrt"]["physical_completions"]}
+    compiler_semantics = {item["trace_semantic_sha256"] for item in modes["compiler"]["xrt"]["physical_completions"]}
+    _expect(compiler_semantics, handwritten_semantics, "compiler/handwritten semantic trace identities")
+    normalized_modes = {}
+    for mode in MODES:
+        item = modes[mode]
+        normalized_modes[mode] = {
+            "measurements": MEASUREMENT_COUNT, "metrics": item["metrics"],
+            "measured_throughput": item["measured_throughput"], "routes": item["routes"],
+            "xrt": item["xrt"], "gpu_attention_routes": item["gpu_attention_routes"],
+            "sampled_ffn_comparison": item["sampled_ffn_comparison"],
+        }
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "pass",
         "model": {
-            "size": MODEL_SIZE,
-            "sha256": MODEL_SHA256,
-            "architecture": "qwen35moe",
+            "size": MODEL_SIZE, "sha256": MODEL_SHA256, "architecture": "qwen35moe",
             "llama_revision": LLAMA_REVISION,
-            "binary_sha256": cuda["binary_sha256"],
+            "binary_sha256": artifacts["hashes"]["llama_server_sha256"],
         },
         "model_audit": audit,
-        "model_audit_sha256": audit_sha256,
-        "modes": {
-            "cuda": {
-                "measurements": MEASUREMENT_COUNT,
-                "metrics": cuda["metrics"],
-                "routes": cuda["routes"],
-                "xrt": cuda["xrt"],
-                "gpu_attention_routes": cuda["gpu_attention_routes"],
-            },
-            "hybrid": {
-                "measurements": MEASUREMENT_COUNT,
-                "metrics": hybrid["metrics"],
-                "routes": hybrid["routes"],
-                "xrt": hybrid["xrt"],
-                "semantic_hardware_gate": hybrid["semantic_hardware_gate"],
-                "gpu_attention_routes": hybrid["gpu_attention_routes"],
-            },
-        },
-        "numerical": numerical,
+        "model_audit_sha256": audit_sha,
+        "artifact_hashes": artifacts["hashes"],
+        "repository_diff_sha256": artifacts["repository_diff_sha256"],
+        "pcie_link": artifacts["pcie_link"],
+        "modes": normalized_modes,
         "token_ids_match": True,
-        "eligible_route_coverage": handled / eligible,
-        "tensor_eligibility_coverage": audit["routed_expert_types"]["IQ1_S"]
-        / audit["routed_expert_count"],
+        "sampled_ffn_within_tolerance": True,
+        "eligible_route_coverage": 1.0,
+        "tensor_eligibility_coverage": EXPERT_TYPES["IQ1_S"] / 180,
         "all_cus_active": all(
-            value > 0 for value in hybrid["xrt"]["per_cu_completions"]
+            all(value > 0 for value in modes[mode]["xrt"]["per_cu_completions"])
+            for mode in HYBRID_MODES
         ),
     }
 

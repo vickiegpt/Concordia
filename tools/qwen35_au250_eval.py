@@ -561,6 +561,15 @@ def zero_xrt_evidence():
         "raw_max": 0,
         "reference_checked_components": 0,
         "operation_count": 0,
+        "resident_matrix_hits": 0,
+        "resident_matrix_misses": 0,
+        "resident_matrix_bytes_transferred": 0,
+        "program_cache_hits": 0,
+        "program_cache_misses": 0,
+        "host_pack_hits": 0,
+        "host_pack_misses": 0,
+        "host_pack_bytes_built": 0,
+        "physical_completions": [],
     }
 
 
@@ -648,6 +657,7 @@ def parse_iq1s_routing(route_records, xrt_records):
         "handled": len(handled),
         "fallback": len(fallback),
         "error": len(errors),
+        "eligible_kernels": [record.get("kernel") for record in eligible],
     }
     if not eligible:
         raise EvaluationError("no eligible IQ1_S MMQ/MMVQ route was observed")
@@ -720,6 +730,38 @@ def parse_iq1s_routing(route_records, xrt_records):
         checked = evidence.get("reference_checked_components")
         if not _is_integer(checked) or checked <= 0:
             raise EvaluationError("IQ1_S XRT evidence lacks reference-checked components")
+        counter_names = (
+            "resident_matrix_hits",
+            "resident_matrix_misses",
+            "resident_matrix_bytes_transferred",
+            "program_cache_hits",
+            "program_cache_misses",
+            "host_pack_hits",
+            "host_pack_misses",
+            "host_pack_bytes_built",
+        )
+        counters = {}
+        for name in counter_names:
+            value = evidence.get(name)
+            if not _is_integer(value) or value < 0:
+                raise EvaluationError(f"IQ1_S XRT {name} is invalid")
+            counters[name] = value
+        physical = evidence.get("physical_completions")
+        if not isinstance(physical, list) or len(physical) != completions:
+            raise EvaluationError("IQ1_S XRT physical completion evidence is incomplete")
+        physical_ids = []
+        for item in physical:
+            if not isinstance(item, dict):
+                raise EvaluationError("IQ1_S XRT physical completion is not an object")
+            local_id = item.get("request_id")
+            if not _is_integer(local_id) or local_id not in local_ids:
+                raise EvaluationError("IQ1_S XRT physical completion request ID is invalid")
+            copied = dict(item)
+            copied["request_id"] = ((operation_index + 1) << 32) | local_id
+            physical_ids.append(copied["request_id"])
+            aggregate["physical_completions"].append(copied)
+        if sorted(physical_ids) != sorted(namespaced_ids):
+            raise EvaluationError("IQ1_S XRT physical completions do not match request IDs")
 
         aggregate["submission_count"] += submissions
         aggregate["completion_count"] += completions
@@ -732,6 +774,8 @@ def parse_iq1s_routing(route_records, xrt_records):
         aggregate["request_ids"].extend(namespaced_ids)
         aggregate["stall_codes"].extend(stalls)
         aggregate["reference_checked_components"] += checked
+        for name, value in counters.items():
+            aggregate[name] += value
         if operation_index == 0:
             aggregate["raw_min"] = raw_min
             aggregate["raw_max"] = raw_max
@@ -943,7 +987,13 @@ def run(args):
         )
         if route_records or xrt_records:
             raise EvaluationError("CUDA-only mode unexpectedly created IQ1_S route/XRT evidence")
-        routes = {"eligible": 0, "handled": 0, "fallback": 0, "error": 0}
+        routes = {
+            "eligible": 0,
+            "handled": 0,
+            "fallback": 0,
+            "error": 0,
+            "eligible_kernels": [],
+        }
         xrt = zero_xrt_evidence()
         gpu_attention_routes = 0
     else:

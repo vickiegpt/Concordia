@@ -66,6 +66,7 @@ def test_continuous_batch_runs_64_requests_with_at_most_16_active(monkeypatch):
 
 FAKE_SERVER = r'''#!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -175,6 +176,49 @@ class Handler(BaseHTTPRequestHandler):
                 for record in route_records:
                     stream.write(json.dumps(record, sort_keys=True) + "\n")
             per_cu = [2, 1, 1, 0] if os.environ.get("FAKE_XRT_INACTIVE_CU") else [1, 1, 1, 1]
+            trace_assembly = "ldv v0, PARAM_INPUT\ntmatmul_import v0\ntmatmul_go PARAM_MATRIX\ntmatmul_export v0\nsv v0, PARAM_OUTPUT\nstall\n"
+            trace_instructions = [
+                ["ldv", "v0", "PARAM_INPUT"],
+                ["tmatmul_import", "v0"],
+                ["tmatmul_go", "PARAM_MATRIX"],
+                ["tmatmul_export", "v0"],
+                ["sv", "v0", "PARAM_OUTPUT"],
+                ["stall"],
+            ]
+            semantic = hashlib.sha256(b"hetgpu-tmatmul-semantic-trace-v1\0")
+            for instruction in trace_instructions:
+                for token in instruction:
+                    semantic.update(token.encode())
+                    semantic.update(b"\0")
+                semantic.update(b"\n")
+            encoded = bytes(range(16))
+            program_sha = hashlib.sha256(encoded).hexdigest()
+            physical = []
+            for index in range(4):
+                cache_hit = index >= 2
+                physical.append({
+                    "request_id": index,
+                    "cu_index": index,
+                    "stall_code": index + 1,
+                    "dispatch_to_stall_ns": 1000 + index,
+                    "matrix_key_sha256": f"{index + 1:064x}",
+                    "matrix_content_sha256": f"{index + 5:064x}",
+                    "matrix_address": 0x1000 + index * 0x1000,
+                    "matrix_cache_hit": cache_hit,
+                    "matrix_bytes_transferred": 0 if cache_hit else 262144,
+                    "trace_mode": mode,
+                    "model_context_limit": 262144,
+                    "trace_semantic_sha256": semantic.hexdigest(),
+                    "trace_assembly_sha256": hashlib.sha256(trace_assembly.encode()).hexdigest(),
+                    "replay_safe_program_sha256": program_sha,
+                    "trace_assembly": trace_assembly,
+                    "trace_instructions": trace_instructions,
+                    "encoded_program_sha256": program_sha,
+                    "encoded_program_hex": encoded.hex(),
+                    "program_address": 0x10000 + index * 0x1000,
+                    "program_bytes": len(encoded),
+                    "program_cache_hit": cache_hit,
+                })
             xrt_record = {
                 "event": "au250_xrt_iq1s_completed",
                 "evidence": {
@@ -189,6 +233,15 @@ class Handler(BaseHTTPRequestHandler):
                     "raw_min": -16,
                     "raw_max": 19,
                     "reference_checked_components": 64,
+                    "resident_matrix_hits": 2,
+                    "resident_matrix_misses": 2,
+                    "resident_matrix_bytes_transferred": 2 * 262144,
+                    "program_cache_hits": 2,
+                    "program_cache_misses": 2,
+                    "host_pack_hits": 2,
+                    "host_pack_misses": 2,
+                    "host_pack_bytes_built": 2 * 262144,
+                    "physical_completions": physical,
                 },
             }
             with open(os.environ["FAKE_XRT_EVIDENCE"], "a", encoding="utf-8") as stream:
@@ -525,6 +578,10 @@ def iq1s_route(kernel, route="cxl_tmatmul", hardware=True):
 
 
 def iq1s_xrt_record(**overrides):
+    physical = [
+        {"request_id": index, "cu_index": index}
+        for index in range(4)
+    ]
     evidence = {
         "backend": "xrt",
         "comparison_status": "pass",
@@ -537,6 +594,15 @@ def iq1s_xrt_record(**overrides):
         "raw_min": -11,
         "raw_max": 17,
         "reference_checked_components": 64,
+        "resident_matrix_hits": 2,
+        "resident_matrix_misses": 2,
+        "resident_matrix_bytes_transferred": 2 * 262144,
+        "program_cache_hits": 2,
+        "program_cache_misses": 2,
+        "host_pack_hits": 2,
+        "host_pack_misses": 2,
+        "host_pack_bytes_built": 2 * 262144,
+        "physical_completions": physical,
     }
     evidence.update(overrides)
     return {"event": "au250_xrt_iq1s_completed", "evidence": evidence}
@@ -558,7 +624,15 @@ def test_parse_iq1s_routing_selects_only_exact_type19_matmul_and_physical_xrt():
         valid_iq1s_routes(), [iq1s_xrt_record()]
     )
 
-    assert routes == {"eligible": 1, "handled": 1, "fallback": 0, "error": 0}
+    assert routes == {
+        "eligible": 1,
+        "handled": 1,
+        "fallback": 0,
+        "error": 0,
+        "eligible_kernels": [
+            "_Z9mul_mat_qIL9ggml_type19ELi32ELi8ELb0EEvPKcS2_PfS3_iiiiiii"
+        ],
+    }
     assert xrt["submission_count"] == xrt["completion_count"] == 4
     assert xrt["per_cu_submissions"] == xrt["per_cu_completions"] == [1, 1, 1, 1]
     assert xrt["request_ids"] == [(1 << 32) + index for index in range(4)]
