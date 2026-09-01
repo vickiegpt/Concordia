@@ -1,6 +1,7 @@
 use super::tq1_tmatmul::{Q8KBlock, TensorIdentity, Tq1Block, Tq1TensorSource, TQ1_VALUES};
 use super::xrt_tmatmul::{XrtTmatmulPool, XrtWaveCompletion, XrtWaveJob};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -738,6 +739,8 @@ pub(crate) fn execute_mul_mat_id_with(
             xrt_jobs.push(XrtWaveJob {
                 request_id: planned.request_id,
                 cu_index: planned.cu_index,
+                matrix_key: Sha256::digest(&tile.matrix).into(),
+                matrix_sha256: Sha256::digest(&tile.matrix).into(),
                 matrix: Arc::clone(&tile.matrix),
                 input,
             });
@@ -1132,6 +1135,14 @@ mod tests {
                     output,
                     dispatch_to_stall_ns: 500,
                     program_bytes: 96,
+                    matrix_key: job.matrix_key,
+                    matrix_sha256: job.matrix_sha256,
+                    matrix_address: 0x1000,
+                    matrix_cache_hit: false,
+                    matrix_bytes_transferred: job.matrix.len(),
+                    program_address: 0x2000,
+                    program_sha256: [0x33; 32],
+                    program_cache_hit: false,
                 });
             }
             self.jobs.extend(jobs);

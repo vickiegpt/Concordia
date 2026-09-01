@@ -6,6 +6,7 @@ use super::iq1s_tmatmul::{
 };
 use super::xrt_tmatmul::{XrtTmatmulPool, XrtWaveCompletion, XrtWaveJob};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -223,6 +224,34 @@ fn packed_matrix_for(
         },
         || pack_component_matrix(&captured.matrix, tile, key.kind),
     )
+}
+
+fn resident_matrix_key(captured: &CapturedLaunch, key: Au250MatrixKey) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"hetgpu-iq1s-resident-matrix-v1");
+    hash.update(captured.launch.content_hash);
+    hash.update(captured.launch.allocation_generation.to_le_bytes());
+    hash.update(captured.launch.matrix_ptr.to_le_bytes());
+    let signature = &captured.launch.signature;
+    hash.update(signature.kernel.as_bytes());
+    for value in [
+        signature.ne00,
+        signature.ne01,
+        signature.stride01,
+        signature.ne10,
+        signature.ne11,
+        signature.stride11,
+        signature.ne0,
+    ] {
+        hash.update(value.to_le_bytes());
+    }
+    hash.update(key.row_tile.to_le_bytes());
+    hash.update(key.k_tile.to_le_bytes());
+    hash.update([match key.kind {
+        ComponentKind::Grid => 0,
+        ComponentKind::Delta => 1,
+    }]);
+    hash.finalize().into()
 }
 
 pub(crate) fn plan_au250_tiles(signature: &GgmlType19Signature) -> Result<Vec<Au250Tile>, String> {
@@ -515,6 +544,8 @@ pub(crate) fn execute_captured_with(
             xrt_jobs.push(XrtWaveJob {
                 request_id: planned.request_id,
                 cu_index: planned.cu_index,
+                matrix_key: resident_matrix_key(captured, planned.matrix_key),
+                matrix_sha256: Sha256::digest(&matrix).into(),
                 matrix,
                 input: pack_lane_input(lanes, &q8_assignments)?,
             });
@@ -1336,6 +1367,14 @@ mod tests {
                     output,
                     dispatch_to_stall_ns: 1,
                     program_bytes: 96,
+                    matrix_key: job.matrix_key,
+                    matrix_sha256: job.matrix_sha256,
+                    matrix_address: 0x1000,
+                    matrix_cache_hit: false,
+                    matrix_bytes_transferred: job.matrix.len(),
+                    program_address: 0x2000,
+                    program_sha256: [0x33; 32],
+                    program_cache_hit: false,
                 });
             }
             completions.reverse();

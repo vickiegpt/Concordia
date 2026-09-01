@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fmt;
@@ -523,6 +524,8 @@ pub(crate) struct XrtCuTarget {
 pub(crate) struct XrtWaveJob {
     pub(crate) request_id: u64,
     pub(crate) cu_index: usize,
+    pub(crate) matrix_key: [u8; 32],
+    pub(crate) matrix_sha256: [u8; 32],
     pub(crate) matrix: Arc<[u8]>,
     pub(crate) input: Vec<u8>,
 }
@@ -535,9 +538,17 @@ pub(crate) struct XrtWaveCompletion {
     pub(crate) output: Vec<u8>,
     pub(crate) dispatch_to_stall_ns: u64,
     pub(crate) program_bytes: usize,
+    pub(crate) matrix_key: [u8; 32],
+    pub(crate) matrix_sha256: [u8; 32],
+    pub(crate) matrix_address: u64,
+    pub(crate) matrix_cache_hit: bool,
+    pub(crate) matrix_bytes_transferred: usize,
+    pub(crate) program_address: u64,
+    pub(crate) program_sha256: [u8; 32],
+    pub(crate) program_cache_hit: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct QwenTraceConfig {
     mode: String,
     model_context_limit: u32,
@@ -551,6 +562,7 @@ struct XrtPoolConfig {
     num_vector_registers: u8,
     timeout_ms: u32,
     qwen_trace: Option<QwenTraceConfig>,
+    resident_matrix_cache_bytes: usize,
 }
 
 #[derive(Deserialize)]
@@ -650,8 +662,7 @@ impl XrtPoolConfig {
                 .map_err(XrtTmatmulError::Config)?;
             if !matches!(trace.mode.as_str(), "handwritten" | "compiler") {
                 return Err(XrtTmatmulError::Config(
-                    "HETGPU_IQ1S_TRACE_MODE must be exactly handwritten or compiler"
-                        .to_string(),
+                    "HETGPU_IQ1S_TRACE_MODE must be exactly handwritten or compiler".to_string(),
                 ));
             }
         }
@@ -662,6 +673,13 @@ impl XrtPoolConfig {
         fn parse_u32(name: &'static str, default: u32) -> Result<u32, XrtTmatmulError> {
             std::env::var(name).map_or(Ok(default), |text| {
                 text.parse::<u32>()
+                    .map_err(|error| XrtTmatmulError::Config(format!("{name}={text:?}: {error}")))
+            })
+        }
+
+        fn parse_u64(name: &'static str, default: u64) -> Result<u64, XrtTmatmulError> {
+            std::env::var(name).map_or(Ok(default), |text| {
+                text.parse::<u64>()
                     .map_err(|error| XrtTmatmulError::Config(format!("{name}={text:?}: {error}")))
             })
         }
@@ -687,6 +705,20 @@ impl XrtPoolConfig {
             Ok(json) if !json.trim().is_empty() => Self::parse_cu_table(&json)?,
             _ => Self::maxcores_targets(),
         };
+        let resident_matrix_cache_bytes = usize::try_from(parse_u64(
+            "HETGPU_XRT_RESIDENT_MATRIX_CACHE_BYTES",
+            512 * 1024 * 1024,
+        )?)
+        .map_err(|_| {
+            XrtTmatmulError::Config(
+                "HETGPU_XRT_RESIDENT_MATRIX_CACHE_BYTES does not fit usize".to_string(),
+            )
+        })?;
+        if resident_matrix_cache_bytes < AU250_MATRIX_BYTES {
+            return Err(XrtTmatmulError::Config(format!(
+                "HETGPU_XRT_RESIDENT_MATRIX_CACHE_BYTES must be at least {AU250_MATRIX_BYTES}"
+            )));
+        }
         let qwen_trace = if std::env::var("HETGPU_QWEN_IQ1S_STRICT").as_deref() == Ok("1") {
             let mode = std::env::var("HETGPU_IQ1S_TRACE_MODE").map_err(|_| {
                 XrtTmatmulError::Config(
@@ -710,6 +742,7 @@ impl XrtPoolConfig {
             num_vector_registers,
             timeout_ms,
             qwen_trace,
+            resident_matrix_cache_bytes,
         };
         config.validate()?;
         Ok(config)
@@ -721,6 +754,11 @@ fn expected_vector_bytes(lanes: usize) -> usize {
 }
 
 fn validate_wave_job(target: &XrtCuTarget, job: &XrtWaveJob) -> Result<(), XrtTmatmulError> {
+    if job.matrix_key == [0; 32] || job.matrix_sha256 == [0; 32] {
+        return Err(XrtTmatmulError::InvalidBuffer(
+            "matrix cache key and content SHA-256 must be nonzero".to_string(),
+        ));
+    }
     if job.matrix.len() != AU250_MATRIX_BYTES {
         return Err(XrtTmatmulError::InvalidBuffer(format!(
             "matrix has {} bytes, expected {AU250_MATRIX_BYTES}",
@@ -737,16 +775,45 @@ fn validate_wave_job(target: &XrtCuTarget, job: &XrtWaveJob) -> Result<(), XrtTm
     Ok(())
 }
 
+struct ResidentMatrixEntry {
+    bo: Handle,
+    address: u64,
+    content_sha256: [u8; 32],
+    last_used: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BoundProgramKey {
+    matrix_key: [u8; 32],
+    matrix_address: u64,
+    input_address: u64,
+    output_address: u64,
+    num_vector_registers: u8,
+    memory_group: u32,
+    lanes: usize,
+    qwen_trace: Option<QwenTraceConfig>,
+}
+
+struct BoundProgramEntry {
+    bo: Handle,
+    address: u64,
+    bytes: usize,
+    sha256: [u8; 32],
+}
+
 struct ReusableCu {
     target: XrtCuTarget,
     ip_device: Handle,
     ip_index: u32,
-    matrix_bo: Handle,
     input_bo: Handle,
     output_bo: Handle,
-    program_bo: Handle,
-    program_address: u64,
-    program_bytes: usize,
+    input_address: u64,
+    output_address: u64,
+    matrix_cache: HashMap<[u8; 32], ResidentMatrixEntry>,
+    matrix_cache_bytes: usize,
+    matrix_cache_capacity: usize,
+    cache_clock: u64,
+    program_cache: HashMap<BoundProgramKey, BoundProgramEntry>,
     release_handles: bool,
 }
 
@@ -756,8 +823,21 @@ struct Pool<O: XrtOps> {
     uuid: Xuid,
     cus: Vec<ReusableCu>,
     timeout_ms: u32,
+    num_vector_registers: u8,
+    qwen_trace: Option<QwenTraceConfig>,
     poisoned: bool,
     release_device: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedWaveJob {
+    matrix_address: u64,
+    matrix_cache_hit: bool,
+    matrix_bytes_transferred: usize,
+    program_address: u64,
+    program_bytes: usize,
+    program_sha256: [u8; 32],
+    program_cache_hit: bool,
 }
 
 pub(crate) struct XrtTmatmulPool {
@@ -830,6 +910,8 @@ impl<O: XrtOps> Pool<O> {
             uuid: [0; 16],
             cus: Vec::with_capacity(config.targets.len()),
             timeout_ms: config.timeout_ms,
+            num_vector_registers: config.num_vector_registers,
+            qwen_trace: config.qwen_trace.clone(),
             poisoned: false,
             release_device: true,
         };
@@ -879,61 +961,29 @@ impl<O: XrtOps> Pool<O> {
                 target,
                 ip_device,
                 ip_index,
-                matrix_bo: std::ptr::null_mut(),
                 input_bo: std::ptr::null_mut(),
                 output_bo: std::ptr::null_mut(),
-                program_bo: std::ptr::null_mut(),
-                program_address: 0,
-                program_bytes: 0,
+                input_address: 0,
+                output_address: 0,
+                matrix_cache: HashMap::new(),
+                matrix_cache_bytes: 0,
+                matrix_cache_capacity: config.resident_matrix_cache_bytes,
+                cache_clock: 0,
+                program_cache: HashMap::new(),
                 release_handles: true,
             });
             let cu_index = pool.cus.len() - 1;
             let group = pool.cus[cu_index].target.memory_group;
             let vector_bytes = expected_vector_bytes(pool.cus[cu_index].target.lanes);
 
-            // This ordering is the persistent form of the four-BO ABI.
-            let matrix_bo = pool.allocate_bo(AU250_MATRIX_BYTES, group, "xrtBOAlloc(matrix)")?;
-            pool.cus[cu_index].matrix_bo = matrix_bo;
+            // Input/output BOs are stable for the CU lifetime. Matrix and
+            // address-bound program BOs are populated lazily in resident caches.
             let input_bo = pool.allocate_bo(vector_bytes, group, "xrtBOAlloc(input)")?;
             pool.cus[cu_index].input_bo = input_bo;
             let output_bo = pool.allocate_bo(vector_bytes, group, "xrtBOAlloc(output)")?;
             pool.cus[cu_index].output_bo = output_bo;
-
-            let matrix_address = pool.bo_address(matrix_bo, "matrix")?;
-            let input_address = pool.bo_address(input_bo, "input")?;
-            let output_address = pool.bo_address(output_bo, "output")?;
-            let labels = bind_labels(
-                "PARAM_MATRIX",
-                "PARAM_INPUT",
-                "PARAM_OUTPUT",
-                matrix_address,
-                input_address,
-                output_address,
-            )?;
-            let replay_safe_program = if let Some(trace) = &config.qwen_trace {
-                super::iq1s_trace::build_selected_trace(
-                    &trace.mode,
-                    trace.model_context_limit,
-                    &labels,
-                    config.num_vector_registers,
-                )
-                .map_err(XrtTmatmulError::Assemble)?
-                .program
-            } else {
-                super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
-                    AU250_TMATMUL_ASSEMBLY,
-                    &labels,
-                    config.num_vector_registers,
-                )
-                .map_err(|error| XrtTmatmulError::Assemble(error.to_string()))?
-            };
-            let program = compact_xrt_program(&replay_safe_program)?;
-            validate_program(&program)?;
-            let program_bo = pool.allocate_bo(program.len(), group, "xrtBOAlloc(program)")?;
-            pool.cus[cu_index].program_bo = program_bo;
-            pool.cus[cu_index].program_address = pool.bo_address(program_bo, "program")?;
-            pool.cus[cu_index].program_bytes = program.len();
-            bo_write_and_sync(&pool.ops, program_bo, &program, "program")?;
+            pool.cus[cu_index].input_address = pool.bo_address(input_bo, "input")?;
+            pool.cus[cu_index].output_address = pool.bo_address(output_bo, "output")?;
         }
 
         Ok(pool)
@@ -962,6 +1012,203 @@ impl<O: XrtOps> Pool<O> {
         } else {
             Ok(address)
         }
+    }
+
+    fn prepare_wave_job(&mut self, job: &XrtWaveJob) -> Result<PreparedWaveJob, XrtTmatmulError> {
+        let actual_sha256: [u8; 32] = Sha256::digest(&job.matrix).into();
+        if actual_sha256 != job.matrix_sha256 {
+            return Err(XrtTmatmulError::InvalidBuffer(format!(
+                "wave job {} matrix content does not match its SHA-256 identity",
+                job.request_id
+            )));
+        }
+
+        let cu_index = job.cu_index;
+        self.cus[cu_index].cache_clock = self.cus[cu_index]
+            .cache_clock
+            .checked_add(1)
+            .ok_or_else(|| XrtTmatmulError::Config("resident cache clock overflow".to_string()))?;
+        let clock = self.cus[cu_index].cache_clock;
+        let existing = self.cus[cu_index]
+            .matrix_cache
+            .get(&job.matrix_key)
+            .map(|entry| (entry.address, entry.content_sha256));
+        let (matrix_address, matrix_cache_hit, matrix_bytes_transferred) =
+            if let Some((address, content_sha256)) = existing {
+                if content_sha256 != job.matrix_sha256 {
+                    return Err(XrtTmatmulError::InvalidBuffer(format!(
+                        "wave job {} reuses a resident matrix key with changed content",
+                        job.request_id
+                    )));
+                }
+                self.cus[cu_index]
+                    .matrix_cache
+                    .get_mut(&job.matrix_key)
+                    .expect("resident entry was just observed")
+                    .last_used = clock;
+                (address, true, 0)
+            } else {
+                while self.cus[cu_index]
+                    .matrix_cache_bytes
+                    .checked_add(job.matrix.len())
+                    .ok_or_else(|| {
+                        XrtTmatmulError::Config("resident matrix byte count overflow".to_string())
+                    })?
+                    > self.cus[cu_index].matrix_cache_capacity
+                {
+                    let evict_key = self.cus[cu_index]
+                        .matrix_cache
+                        .iter()
+                        .min_by_key(|(_, entry)| entry.last_used)
+                        .map(|(key, _)| *key)
+                        .ok_or_else(|| {
+                            XrtTmatmulError::Config(
+                                "resident matrix cache cannot fit one AU250 tile".to_string(),
+                            )
+                        })?;
+                    let evicted = self.cus[cu_index]
+                        .matrix_cache
+                        .remove(&evict_key)
+                        .expect("selected resident matrix exists");
+                    self.cus[cu_index].matrix_cache_bytes = self.cus[cu_index]
+                        .matrix_cache_bytes
+                        .checked_sub(AU250_MATRIX_BYTES)
+                        .ok_or_else(|| {
+                            XrtTmatmulError::Config(
+                                "resident matrix cache accounting underflow".to_string(),
+                            )
+                        })?;
+                    let program_keys = self.cus[cu_index]
+                        .program_cache
+                        .keys()
+                        .filter(|key| key.matrix_key == evict_key)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for key in program_keys {
+                        if let Some(program) = self.cus[cu_index].program_cache.remove(&key) {
+                            check_xrt("xrtBOFree(program eviction)", self.ops.bo_free(program.bo))?;
+                        }
+                    }
+                    check_xrt("xrtBOFree(matrix eviction)", self.ops.bo_free(evicted.bo))?;
+                }
+
+                let group = self.cus[cu_index].target.memory_group;
+                let bo =
+                    self.allocate_bo(job.matrix.len(), group, "xrtBOAlloc(resident matrix)")?;
+                let address = match self.bo_address(bo, "resident matrix") {
+                    Ok(address) => address,
+                    Err(error) => {
+                        let _ = self.ops.bo_free(bo);
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = bo_write_and_sync(&self.ops, bo, &job.matrix, "resident matrix")
+                {
+                    let _ = self.ops.bo_free(bo);
+                    return Err(error);
+                }
+                self.cus[cu_index].matrix_cache.insert(
+                    job.matrix_key,
+                    ResidentMatrixEntry {
+                        bo,
+                        address,
+                        content_sha256: job.matrix_sha256,
+                        last_used: clock,
+                    },
+                );
+                self.cus[cu_index].matrix_cache_bytes = self.cus[cu_index]
+                    .matrix_cache_bytes
+                    .checked_add(job.matrix.len())
+                    .ok_or_else(|| {
+                        XrtTmatmulError::Config("resident matrix byte count overflow".to_string())
+                    })?;
+                (address, false, job.matrix.len())
+            };
+
+        let target = self.cus[cu_index].target.clone();
+        let input_address = self.cus[cu_index].input_address;
+        let output_address = self.cus[cu_index].output_address;
+        let program_key = BoundProgramKey {
+            matrix_key: job.matrix_key,
+            matrix_address,
+            input_address,
+            output_address,
+            num_vector_registers: self.num_vector_registers,
+            memory_group: target.memory_group,
+            lanes: target.lanes,
+            qwen_trace: self.qwen_trace.clone(),
+        };
+        if let Some(program) = self.cus[cu_index].program_cache.get(&program_key) {
+            return Ok(PreparedWaveJob {
+                matrix_address,
+                matrix_cache_hit,
+                matrix_bytes_transferred,
+                program_address: program.address,
+                program_bytes: program.bytes,
+                program_sha256: program.sha256,
+                program_cache_hit: true,
+            });
+        }
+
+        let labels = bind_labels(
+            "PARAM_MATRIX",
+            "PARAM_INPUT",
+            "PARAM_OUTPUT",
+            matrix_address,
+            input_address,
+            output_address,
+        )?;
+        let replay_safe_program = if let Some(trace) = &self.qwen_trace {
+            super::iq1s_trace::build_selected_trace(
+                &trace.mode,
+                trace.model_context_limit,
+                &labels,
+                self.num_vector_registers,
+            )
+            .map_err(XrtTmatmulError::Assemble)?
+            .program
+        } else {
+            super::cxl_tmatmul::assemble_tmatmul_program_for_vector_registers(
+                AU250_TMATMUL_ASSEMBLY,
+                &labels,
+                self.num_vector_registers,
+            )
+            .map_err(|error| XrtTmatmulError::Assemble(error.to_string()))?
+        };
+        let program = compact_xrt_program(&replay_safe_program)?;
+        validate_program(&program)?;
+        let program_sha256 = Sha256::digest(&program).into();
+        let program_bo =
+            self.allocate_bo(program.len(), target.memory_group, "xrtBOAlloc(program)")?;
+        let program_address = match self.bo_address(program_bo, "program") {
+            Ok(address) => address,
+            Err(error) => {
+                let _ = self.ops.bo_free(program_bo);
+                return Err(error);
+            }
+        };
+        if let Err(error) = bo_write_and_sync(&self.ops, program_bo, &program, "program") {
+            let _ = self.ops.bo_free(program_bo);
+            return Err(error);
+        }
+        self.cus[cu_index].program_cache.insert(
+            program_key,
+            BoundProgramEntry {
+                bo: program_bo,
+                address: program_address,
+                bytes: program.len(),
+                sha256: program_sha256,
+            },
+        );
+        Ok(PreparedWaveJob {
+            matrix_address,
+            matrix_cache_hit,
+            matrix_bytes_transferred,
+            program_address,
+            program_bytes: program.len(),
+            program_sha256,
+            program_cache_hit: false,
+        })
     }
 
     fn register_read(&self, cu_index: usize, offset: u32) -> Result<u32, XrtTmatmulError> {
@@ -1022,33 +1269,51 @@ impl<O: XrtOps> Pool<O> {
             validate_wave_job(&target.target, job)?;
         }
 
+        let mut prepared = Vec::with_capacity(jobs.len());
         for job in &jobs {
+            let state = match self.prepare_wave_job(job) {
+                Ok(state) => state,
+                Err(error) => {
+                    if self.qwen_trace.is_some() {
+                        self.poisoned = true;
+                    }
+                    return Err(error);
+                }
+            };
             let cu = &self.cus[job.cu_index];
-            bo_write_and_sync(&self.ops, cu.matrix_bo, &job.matrix, "matrix")?;
-            bo_write_and_sync(&self.ops, cu.input_bo, &job.input, "input")?;
+            if let Err(error) = bo_write_and_sync(&self.ops, cu.input_bo, &job.input, "input") {
+                if self.qwen_trace.is_some() {
+                    self.poisoned = true;
+                }
+                return Err(error);
+            }
+            prepared.push(state);
         }
 
         let registers = instance_registers(0)?;
         let mut launched = Vec::with_capacity(jobs.len());
         let mut dispatch_starts = Vec::with_capacity(jobs.len());
-        for job in &jobs {
+        for (job, prepared) in jobs.iter().zip(&prepared) {
             dispatch_starts.push(Instant::now());
             launched.push(job.cu_index);
-            let cu = &self.cus[job.cu_index];
             let start_result = (|| {
                 self.register_write(job.cu_index, registers.reset, 0)?;
                 self.register_write(job.cu_index, registers.dma_control, 1)?;
                 self.register_write(
                     job.cu_index,
                     registers.dma_source_lo,
-                    cu.program_address as u32,
+                    prepared.program_address as u32,
                 )?;
                 self.register_write(
                     job.cu_index,
                     registers.dma_source_hi,
-                    (cu.program_address >> 32) as u32,
+                    (prepared.program_address >> 32) as u32,
                 )?;
-                self.register_write(job.cu_index, registers.dma_length, cu.program_bytes as u32)
+                self.register_write(
+                    job.cu_index,
+                    registers.dma_length,
+                    prepared.program_bytes as u32,
+                )
             })();
             if let Err(error) = start_result {
                 return self.fail_wave(error, &launched);
@@ -1092,7 +1357,7 @@ impl<O: XrtOps> Pool<O> {
         }
 
         let mut completions = Vec::with_capacity(jobs.len());
-        for (job_index, job) in jobs.iter().enumerate() {
+        for (job_index, (job, prepared)) in jobs.iter().zip(&prepared).enumerate() {
             let cu = &self.cus[job.cu_index];
             let mut output = vec![0u8; expected_vector_bytes(cu.target.lanes)];
             let finish_result = (|| {
@@ -1117,7 +1382,15 @@ impl<O: XrtOps> Pool<O> {
                 output,
                 dispatch_to_stall_ns: dispatch_to_stall_ns[job_index]
                     .expect("all wave jobs have dispatch timing"),
-                program_bytes: cu.program_bytes,
+                program_bytes: prepared.program_bytes,
+                matrix_key: job.matrix_key,
+                matrix_sha256: job.matrix_sha256,
+                matrix_address: prepared.matrix_address,
+                matrix_cache_hit: prepared.matrix_cache_hit,
+                matrix_bytes_transferred: prepared.matrix_bytes_transferred,
+                program_address: prepared.program_address,
+                program_sha256: prepared.program_sha256,
+                program_cache_hit: prepared.program_cache_hit,
             });
         }
         Ok(completions)
@@ -1178,7 +1451,13 @@ impl<O: XrtOps> Drop for Pool<O> {
             if !cu.release_handles {
                 continue;
             }
-            for bo in [cu.program_bo, cu.output_bo, cu.input_bo, cu.matrix_bo] {
+            for program in cu.program_cache.values() {
+                let _ = self.ops.bo_free(program.bo);
+            }
+            for matrix in cu.matrix_cache.values() {
+                let _ = self.ops.bo_free(matrix.bo);
+            }
+            for bo in [cu.output_bo, cu.input_bo] {
                 if !bo.is_null() {
                     let _ = self.ops.bo_free(bo);
                 }
@@ -1520,25 +1799,23 @@ fn submit_with_ops<O: XrtOps>(
     )?;
 
     let deadline = Instant::now() + Duration::from_millis(u64::from(config.timeout_ms));
-    let wait_result = (|| {
-        loop {
-            let mut value = 0;
-            session.register_read(
-                registers.stall,
-                &mut value,
-                "xrtKernelReadRegister(STALL)",
-                "xclRegRead(STALL)",
-            )?;
-            if value != 0 {
-                return Ok(value);
-            }
-            if Instant::now() >= deadline {
-                return Err(XrtTmatmulError::Timeout {
-                    timeout_ms: config.timeout_ms,
-                });
-            }
-            std::thread::sleep(Duration::from_millis(1));
+    let wait_result = (|| loop {
+        let mut value = 0;
+        session.register_read(
+            registers.stall,
+            &mut value,
+            "xrtKernelReadRegister(STALL)",
+            "xclRegRead(STALL)",
+        )?;
+        if value != 0 {
+            return Ok(value);
         }
+        if Instant::now() >= deadline {
+            return Err(XrtTmatmulError::Timeout {
+                timeout_ms: config.timeout_ms,
+            });
+        }
+        std::thread::sleep(Duration::from_millis(1));
     })();
     let stall_code = match wait_result {
         Ok(value) => value,
@@ -2122,11 +2399,16 @@ mod tests {
         XrtPoolConfig::maxcores_targets()
             .into_iter()
             .enumerate()
-            .map(|(cu_index, target)| XrtWaveJob {
-                request_id: 10 + cu_index as u64,
-                cu_index,
-                matrix: Arc::from(vec![0_u8; AU250_MATRIX_BYTES]),
-                input: vec![0_u8; expected_vector_bytes(target.lanes)],
+            .map(|(cu_index, target)| {
+                let matrix: Arc<[u8]> = Arc::from(vec![0_u8; AU250_MATRIX_BYTES]);
+                XrtWaveJob {
+                    request_id: 10 + cu_index as u64,
+                    cu_index,
+                    matrix_key: [0x55; 32],
+                    matrix_sha256: Sha256::digest(&matrix).into(),
+                    matrix,
+                    input: vec![0_u8; expected_vector_bytes(target.lanes)],
+                }
             })
             .collect()
     }
@@ -2139,6 +2421,7 @@ mod tests {
             num_vector_registers: 4,
             timeout_ms: 20,
             qwen_trace: None,
+            resident_matrix_cache_bytes: 2 * AU250_MATRIX_BYTES,
         }
     }
 
@@ -2197,7 +2480,11 @@ mod tests {
 
         let mut missing = exact.clone();
         missing.targets.pop();
-        assert!(missing.validate().unwrap_err().to_string().contains("exact four-CU"));
+        assert!(missing
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("exact four-CU"));
 
         let mut reordered = exact;
         reordered.targets.swap(0, 1);
@@ -2211,14 +2498,16 @@ mod tests {
     #[test]
     fn qwen_pool_program_bo_is_the_cross_checked_compiler_trace() {
         let xrt = FakeXrt::new([1, 1, 1, 1]);
-        let pool = Pool::open_with_ops(xrt, qwen_pool_test_config("compiler")).unwrap();
+        let mut pool = Pool::open_with_ops(xrt, qwen_pool_test_config("compiler")).unwrap();
+        let job = test_wave_jobs().remove(0);
+        pool.run_wave(vec![job]).unwrap();
         let labels = bind_labels(
             "PARAM_MATRIX",
             "PARAM_INPUT",
             "PARAM_OUTPUT",
+            0x9000,
             0x1000,
             0x2000,
-            0x3000,
         )
         .unwrap();
         let expected = crate::r#impl::iq1s_trace::build_selected_trace(
@@ -2234,7 +2523,7 @@ mod tests {
             .events()
             .iter()
             .find_map(|event| match event {
-                Event::BoWrite { bo: 103, bytes } => Some(bytes.clone()),
+                Event::BoWrite { bo: 109, bytes } => Some(bytes.clone()),
                 _ => None,
             })
             .unwrap();
@@ -2244,7 +2533,7 @@ mod tests {
     }
 
     #[test]
-    fn pool_loads_xclbin_once_and_allocates_four_bos_per_cu() {
+    fn pool_loads_xclbin_once_and_allocates_two_reusable_bos_per_cu() {
         let xrt = FakeXrt::new([1, 1, 1, 1]);
         let pool = Pool::open_with_ops(xrt, pool_test_config()).unwrap();
         assert_eq!(
@@ -2261,8 +2550,136 @@ mod tests {
                 .iter()
                 .filter(|event| matches!(event, Event::BoAlloc { .. }))
                 .count(),
-            16
+            8
         );
+    }
+
+    #[test]
+    fn qwen_resident_matrix_and_bound_program_are_reused_in_the_same_bank() {
+        let xrt = FakeXrt::new([1, 1]);
+        let mut pool = Pool::open_with_ops(xrt, qwen_pool_test_config("compiler")).unwrap();
+        let job = test_wave_jobs().remove(0);
+
+        pool.run_wave(vec![job.clone()]).unwrap();
+        pool.run_wave(vec![job]).unwrap();
+
+        let matrix_writes = pool
+            .ops
+            .events()
+            .iter()
+            .filter(|event| matches!(event, Event::BoWrite { bytes, .. } if bytes.len() == AU250_MATRIX_BYTES))
+            .count();
+        let program_writes = pool
+            .ops
+            .events()
+            .iter()
+            .filter(|event| matches!(event, Event::BoWrite { bytes, .. } if bytes.len() == 96))
+            .count();
+
+        assert_eq!(matrix_writes, 1);
+        assert_eq!(program_writes, 1);
+    }
+
+    #[test]
+    fn resident_matrix_is_bank_local_even_for_the_same_key() {
+        let xrt = FakeXrt::new([1, 1]);
+        let mut pool = Pool::open_with_ops(xrt, qwen_pool_test_config("handwritten")).unwrap();
+        let mut jobs = test_wave_jobs();
+        let first = jobs.remove(0);
+        let mut second = jobs.remove(0);
+        second.matrix_key = first.matrix_key;
+        second.matrix_sha256 = first.matrix_sha256;
+        second.matrix = first.matrix.clone();
+
+        pool.run_wave(vec![first]).unwrap();
+        pool.run_wave(vec![second]).unwrap();
+
+        let matrix_writes = pool
+            .ops
+            .events()
+            .iter()
+            .filter(|event| matches!(event, Event::BoWrite { bytes, .. } if bytes.len() == AU250_MATRIX_BYTES))
+            .count();
+        assert_eq!(matrix_writes, 2);
+        assert_eq!(pool.cus[0].matrix_cache.len(), 1);
+        assert_eq!(pool.cus[1].matrix_cache.len(), 1);
+    }
+
+    #[test]
+    fn handwritten_and_compiler_programs_share_one_resident_weight_cache() {
+        let xrt = FakeXrt::new([1, 1]);
+        let mut pool = Pool::open_with_ops(xrt, qwen_pool_test_config("compiler")).unwrap();
+        let job = test_wave_jobs().remove(0);
+        let compiler = pool.run_wave(vec![job.clone()]).unwrap().remove(0);
+        pool.qwen_trace.as_mut().unwrap().mode = "handwritten".to_string();
+        let handwritten = pool.run_wave(vec![job]).unwrap().remove(0);
+
+        assert!(!compiler.matrix_cache_hit);
+        assert!(!compiler.program_cache_hit);
+        assert!(handwritten.matrix_cache_hit);
+        assert!(!handwritten.program_cache_hit);
+        assert_eq!(compiler.matrix_address, handwritten.matrix_address);
+        assert_eq!(compiler.program_sha256, handwritten.program_sha256);
+        assert_ne!(compiler.program_address, handwritten.program_address);
+        assert_eq!(pool.cus[0].matrix_cache.len(), 1);
+        assert_eq!(pool.cus[0].program_cache.len(), 2);
+    }
+
+    #[test]
+    fn resident_matrix_lru_evicts_bound_program_with_the_matrix() {
+        let xrt = FakeXrt::new([1, 1, 1]);
+        let mut config = qwen_pool_test_config("compiler");
+        config.resident_matrix_cache_bytes = AU250_MATRIX_BYTES;
+        let mut pool = Pool::open_with_ops(xrt, config).unwrap();
+        let first = test_wave_jobs().remove(0);
+        let mut second = first.clone();
+        second.request_id += 100;
+        second.matrix_key = [0x66; 32];
+
+        pool.run_wave(vec![first.clone()]).unwrap();
+        pool.run_wave(vec![second]).unwrap();
+        pool.run_wave(vec![first]).unwrap();
+
+        let events = pool.ops.events();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, Event::BoWrite { bytes, .. } if bytes.len() == AU250_MATRIX_BYTES))
+                .count(),
+            3
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, Event::BoWrite { bytes, .. } if bytes.len() == 96))
+                .count(),
+            3
+        );
+        assert!(
+            events
+                .iter()
+                .filter(|event| matches!(event, Event::BoFree(_)))
+                .count()
+                >= 4
+        );
+    }
+
+    #[test]
+    fn changed_content_under_a_resident_key_poisons_strict_qwen() {
+        let xrt = FakeXrt::new([1]);
+        let mut pool = Pool::open_with_ops(xrt, qwen_pool_test_config("compiler")).unwrap();
+        let first = test_wave_jobs().remove(0);
+        pool.run_wave(vec![first.clone()]).unwrap();
+
+        let mut changed = first;
+        changed.request_id += 100;
+        let mut bytes = changed.matrix.to_vec();
+        bytes[0] = 1;
+        changed.matrix = Arc::from(bytes);
+        changed.matrix_sha256 = Sha256::digest(&changed.matrix).into();
+        let error = pool.run_wave(vec![changed]).unwrap_err();
+        assert!(error.to_string().contains("changed content"), "{error}");
+        assert!(pool.poisoned);
     }
 
     #[test]
@@ -2547,11 +2964,9 @@ mod tests {
             assert_eq!(expected_raw[lane], 64);
             assert_eq!(expected_raw[AU250_BATCH_SIZE + lane], 64);
         }
-        assert!(
-            expected_raw[2 * AU250_BATCH_SIZE..]
-                .iter()
-                .all(|value| *value == 0)
-        );
+        assert!(expected_raw[2 * AU250_BATCH_SIZE..]
+            .iter()
+            .all(|value| *value == 0));
     }
 
     #[test]
@@ -2884,11 +3299,9 @@ mod tests {
         assert_eq!(error, XrtTmatmulError::Timeout { timeout_ms: 1 });
         assert_eq!(output, [0xa5; 8]);
         let events = xrt.events();
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, Event::BoRead { .. }))
-        );
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, Event::BoRead { .. })));
         assert_eq!(
             &events[events.len() - 11..],
             &[
