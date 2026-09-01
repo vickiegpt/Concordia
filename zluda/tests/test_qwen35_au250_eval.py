@@ -480,7 +480,7 @@ def iq1s_report_proof():
         "model_load_ms": metric(1000.0, 1000.0, 1000.0, 0.0),
     }
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "pass",
         "model": {
             "size": 94155830880,
@@ -509,6 +509,13 @@ def iq1s_report_proof():
             "handwritten": {
                 "measurements": 3,
                 "metrics": hybrid_metrics,
+                "sampled_ffn_comparison": {
+                    "status": "pass", "reference_backend": "scalar_iq1s",
+                    "checked_elements": 2, "atol": 1e-4, "rtol": 1e-3,
+                    "max_absolute_error": 1e-6, "max_relative_error": 1e-6,
+                    "reference_outputs": [1.0, 2.0], "actual_outputs": [1.000001, 2.0],
+                    "phase": "pre_timed", "kernel": "iq1s",
+                },
                 "routes": {"eligible": 8, "handled": 8, "fallback": 0, "error": 0},
                 "xrt": {
                     "per_cu_completions": [4, 3, 2, 1],
@@ -519,6 +526,13 @@ def iq1s_report_proof():
             "compiler": {
                 "measurements": 3,
                 "metrics": hybrid_metrics,
+                "sampled_ffn_comparison": {
+                    "status": "pass", "reference_backend": "scalar_iq1s",
+                    "checked_elements": 2, "atol": 1e-4, "rtol": 1e-3,
+                    "max_absolute_error": 2e-6, "max_relative_error": 2e-6,
+                    "reference_outputs": [1.0, 2.0], "actual_outputs": [1.000002, 2.0],
+                    "phase": "pre_timed", "kernel": "iq1s",
+                },
                 "routes": {"eligible": 8, "handled": 8, "fallback": 0, "error": 0},
                 "xrt": {
                     "per_cu_completions": [4, 3, 2, 1],
@@ -527,12 +541,7 @@ def iq1s_report_proof():
                 },
             },
         },
-        "numerical": {
-            "cases": {
-                "single_tile": {"status": "pass", "max_absolute_error": 1e-6},
-                "tiled": {"status": "pass", "max_absolute_error": 2e-6},
-            }
-        },
+        "sampled_ffn_within_tolerance": True,
     }
 
 
@@ -543,6 +552,8 @@ def test_iq1s_report_states_mixed_format_and_physical_boundary():
     assert "IQ2_XXS, IQ3_S, and MXFP4 remained on CUDA" in report
     assert "Eligible IQ1_S operations handled by AU250: 100%" in report
     assert "Active CUs: 4/4" in report
+    assert "64-request continuous batches" in report
+    assert "Sampled FFN maximum absolute error" in report
     assert "pure TQ1_0" not in report
 
 

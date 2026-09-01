@@ -197,7 +197,7 @@ def _validate_artifacts(root):
     expected_preflight = {
         "schema_version": 1,
         "build_root": "/qwen-build",
-        "libggml_path": "/qwen-build/llama-build/bin/libggml.so",
+        "libggml_path": "/qwen-build/llama-build/bin/libggml.so.0.22.0",
         "libggml_sha256": artifacts["libggml_sha256"],
         "llama_revision": LLAMA_REVISION,
         "required_symbols": ["dequantize_row_iq1_s", "ggml_init", "ggml_free"],

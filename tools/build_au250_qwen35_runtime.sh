@@ -66,7 +66,7 @@ cargo build -p zluda --release --no-default-features \
 
 llama_server="${llama_build}/bin/llama-server"
 llama_cli="${llama_build}/bin/llama-cli"
-libggml="${llama_build}/bin/libggml.so"
+libggml="$(realpath -e "${llama_build}/bin/libggml.so")"
 nvcuda="${rust_target}/release/libnvcuda.so"
 cuda13_launch_shim="${rust_target}/release/libqwen35_cuda13_launch_shim.so"
 upstream_oracle=/qwen-build/tq1_upstream_reference

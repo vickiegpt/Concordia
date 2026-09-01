@@ -68,7 +68,7 @@ PY
         --model-verification "${proof_dir}/model-verification.json" \
         --output "${proof_dir}/model-tensor-audit.json"
 
-    libggml=/qwen-build/llama-build/bin/libggml.so
+    libggml="$(realpath -e /qwen-build/llama-build/bin/libggml.so)"
     LLAMA_SERVER="${llama_server}" LIBGGML="${libggml}" LIBNVCUDA="${libnvcuda}" \
     CUDA13_LAUNCH_SHIM="${cuda13_launch_shim}" \
     ORACLE="${oracle}" \

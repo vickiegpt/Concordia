@@ -1143,8 +1143,8 @@ def _iq1s_report_metric_rows(cuda, handwritten, compiler):
 
 
 def render_iq1s_report(normalized, proof_path):
-    if not isinstance(normalized, dict) or normalized.get("schema_version") != 2:
-        raise EvaluationError("IQ1_S report generation requires a schema-2 normalized proof")
+    if not isinstance(normalized, dict) or normalized.get("schema_version") != 3:
+        raise EvaluationError("IQ1_S report generation requires a schema-3 normalized proof")
     if normalized.get("status") != "pass":
         raise EvaluationError("IQ1_S report generation requires a passing normalized proof")
     try:
@@ -1153,7 +1153,6 @@ def render_iq1s_report(normalized, proof_path):
         cuda_mode = normalized["modes"]["cuda"]
         handwritten_mode = normalized["modes"]["handwritten"]
         compiler_mode = normalized["modes"]["compiler"]
-        numerical_cases = normalized["numerical"]["cases"]
     except (KeyError, TypeError) as error:
         raise EvaluationError(f"normalized IQ1_S proof omitted report evidence: {error}") from error
 
@@ -1249,16 +1248,29 @@ def render_iq1s_report(normalized, proof_path):
         compiler_mode.get("metrics", {}),
     )
 
+    if normalized.get("sampled_ffn_within_tolerance") is not True:
+        raise EvaluationError("normalized IQ1_S proof did not validate sampled FFN output")
     numerical_errors = {}
-    for case_name in ("single_tile", "tiled"):
+    for mode_name, mode in (("handwritten", handwritten_mode), ("compiler", compiler_mode)):
         try:
-            case = numerical_cases[case_name]
-            error = float(case["max_absolute_error"])
+            comparison = mode["sampled_ffn_comparison"]
+            error = float(comparison["max_absolute_error"])
+            relative_error = float(comparison["max_relative_error"])
         except (KeyError, TypeError, ValueError) as exception:
-            raise EvaluationError(f"normalized IQ1_S proof has invalid {case_name} numerical evidence") from exception
-        if case.get("status") != "pass" or not math.isfinite(error) or error < 0.0:
-            raise EvaluationError(f"normalized IQ1_S proof has unqualified {case_name} numerical evidence")
-        numerical_errors[case_name] = error
+            raise EvaluationError(f"normalized IQ1_S proof has invalid {mode_name} FFN evidence") from exception
+        if (
+            not isinstance(comparison, dict)
+            or comparison.get("status") != "pass"
+            or comparison.get("reference_backend") != "scalar_iq1s"
+            or comparison.get("atol") != 1.0e-4
+            or comparison.get("rtol") != 1.0e-3
+            or not math.isfinite(error)
+            or error < 0.0
+            or not math.isfinite(relative_error)
+            or relative_error < 0.0
+        ):
+            raise EvaluationError(f"normalized IQ1_S proof has unqualified {mode_name} FFN evidence")
+        numerical_errors[mode_name] = error
 
     return "\n".join(
         [
@@ -1299,9 +1311,10 @@ def render_iq1s_report(normalized, proof_path):
             "",
             "## Numerical and physical evidence",
             "",
-            f"TQ1 shared-backend qualification maximum absolute error was "
-            f"{numerical_errors['single_tile']:.6g} for the single-tile case and "
-            f"{numerical_errors['tiled']:.6g} for the tiled case.",
+            f"Sampled FFN maximum absolute error was "
+            f"{numerical_errors['handwritten']:.6g} for handwritten traces and "
+            f"{numerical_errors['compiler']:.6g} for compiler traces, with "
+            "atol=1e-4 and rtol=1e-3.",
             "",
             f"Handwritten per-CU completions: `{xrt_by_mode['handwritten'][0]}`; compiler "
             f"per-CU completions: `{xrt_by_mode['compiler'][0]}`. The normalized proof binds unique "
@@ -1310,7 +1323,7 @@ def render_iq1s_report(normalized, proof_path):
             "",
             "## Limitations",
             "",
-            "This is batch-size-one text generation on one host and one selected mixed-format "
+            "This is aggregate continuous-batch text generation on one host and one selected mixed-format "
             "checkpoint. Only the 141 audited IQ1_S routed-expert tensors were eligible for "
             "AU250 execution. The evaluation does not measure vision, multi-user serving, "
             "speculative decoding, attention offload, or a CPU-expert baseline.",

@@ -263,7 +263,7 @@ def write_proof(root, proof):
     }), encoding="utf-8")
     (root / "qwen-build-preflight.json").write_text(json.dumps({
         "schema_version": 1, "build_root": "/qwen-build",
-        "libggml_path": "/qwen-build/llama-build/bin/libggml.so",
+        "libggml_path": "/qwen-build/llama-build/bin/libggml.so.0.22.0",
         "libggml_sha256": proof["artifact_hashes"]["libggml_sha256"],
         "llama_revision": LLAMA_REVISION,
         "required_symbols": ["dequantize_row_iq1_s", "ggml_init", "ggml_free"],
