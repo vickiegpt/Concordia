@@ -136,6 +136,30 @@ impl OperationInfo {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TMatmulTreeError {
+    InvalidConfig(String),
+    InvalidOperation(String),
+    InvalidInstructionGraph(String),
+    SchedulingIncomplete { scheduled: usize, total: usize },
+}
+
+impl fmt::Display for TMatmulTreeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidConfig(message)
+            | Self::InvalidOperation(message)
+            | Self::InvalidInstructionGraph(message) => formatter.write_str(message),
+            Self::SchedulingIncomplete { scheduled, total } => write!(
+                formatter,
+                "AlgorithmTree scheduled {scheduled} of {total} instructions"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TMatmulTreeError {}
+
 /// Instruction-level vector node
 #[derive(Debug, Clone)]
 pub struct InstructionVectorNode {
@@ -261,6 +285,26 @@ impl AlgorithmTree {
         }
     }
 
+    fn validate_config(&self) -> Result<(), TMatmulTreeError> {
+        if self.config.d == 0
+            || self.config.num_cores == 0
+            || self.config.num_vector_registers == 0
+            || self.config.fixed_point_precision == 0
+            || self.config.vector_parallelism == 0
+            || self.config.tmatmul_parallelism == 0
+            || self.config.lut_parallelism == 0
+            || self.config.memory_bandwidth == 0
+            || !self.config.clock_period.is_finite()
+            || self.config.clock_period <= 0.0
+        {
+            return Err(TMatmulTreeError::InvalidConfig(
+                "AlgorithmTree configuration contains a zero or non-finite hardware limit"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Generate matrix block name from base name and indices
     pub fn matrix_name_to_block_name(base: &str, r: usize, c: usize) -> String {
         format!("{}_block_{}_{}", base, r, c)
@@ -345,30 +389,150 @@ impl AlgorithmTree {
         output_ids: Vec<usize>,
         other_info: Option<HashMap<String, OperationInfo>>,
     ) -> usize {
+        self.try_new_abstract_operation(operation, input_ids, output_ids, other_info)
+            .unwrap_or_else(|error| panic!("invalid AlgorithmTree abstract operation: {error}"))
+    }
+
+    pub fn try_new_abstract_operation(
+        &mut self,
+        operation: AbstractOperation,
+        input_ids: Vec<usize>,
+        output_ids: Vec<usize>,
+        other_info: Option<HashMap<String, OperationInfo>>,
+    ) -> Result<usize, TMatmulTreeError> {
+        self.validate_config()?;
         let info = other_info.unwrap_or_default();
 
         // Validate abstract vector IDs
         for id in &input_ids {
-            assert!(
-                *id < self.abstract_vectors.len(),
-                "Invalid abstract input vector ID"
-            );
+            if *id >= self.abstract_vectors.len() {
+                return Err(TMatmulTreeError::InvalidOperation(format!(
+                    "invalid abstract input vector ID {id}"
+                )));
+            }
         }
         for id in &output_ids {
-            assert!(
-                *id < self.abstract_vectors.len(),
-                "Invalid abstract output vector ID"
-            );
+            if *id >= self.abstract_vectors.len() {
+                return Err(TMatmulTreeError::InvalidOperation(format!(
+                    "invalid abstract output vector ID {id}"
+                )));
+            }
         }
 
         // Check for output overlap
         let output_set: HashSet<_> = output_ids.iter().collect();
+        if output_set.len() != output_ids.len() {
+            return Err(TMatmulTreeError::InvalidOperation(
+                "abstract operation repeats an output vector".to_string(),
+            ));
+        }
         for op in &self.abstract_operations {
             let existing_outputs: HashSet<_> = op.output_vector_ids.iter().collect();
-            assert!(
-                output_set.is_disjoint(&existing_outputs),
-                "Abstract output vector overlap detected"
-            );
+            if !output_set.is_disjoint(&existing_outputs) {
+                return Err(TMatmulTreeError::InvalidOperation(
+                    "abstract output vector overlap detected".to_string(),
+                ));
+            }
+        }
+
+        let sizes = |ids: &[usize]| {
+            ids.iter()
+                .map(|id| self.abstract_vectors[*id].size)
+                .collect::<Vec<_>>()
+        };
+        match operation {
+            AbstractOperation::Add | AbstractOperation::Sub | AbstractOperation::Mul => {
+                if input_ids.len() != 2
+                    || output_ids.len() != 1
+                    || sizes(&input_ids).iter().any(|size| *size == 0)
+                    || sizes(&input_ids)
+                        .iter()
+                        .any(|size| *size != sizes(&output_ids)[0])
+                {
+                    return Err(TMatmulTreeError::InvalidOperation(
+                        "binary elementwise operation requires two equal inputs and one equal output"
+                            .to_string(),
+                    ));
+                }
+            }
+            AbstractOperation::Sig | AbstractOperation::CSig | AbstractOperation::SiLU => {
+                if input_ids.len() != 1
+                    || output_ids.len() != 1
+                    || sizes(&input_ids)[0] == 0
+                    || sizes(&input_ids)[0] != sizes(&output_ids)[0]
+                {
+                    return Err(TMatmulTreeError::InvalidOperation(
+                        "unary elementwise operation requires equal nonempty input and output"
+                            .to_string(),
+                    ));
+                }
+            }
+            AbstractOperation::RmsNorm => {
+                if input_ids.len() != 1
+                    || output_ids.len() != 1
+                    || sizes(&input_ids)[0] == 0
+                    || sizes(&input_ids)[0] != sizes(&output_ids)[0]
+                {
+                    return Err(TMatmulTreeError::InvalidOperation(
+                        "RMS normalization requires one equal nonempty input and output"
+                            .to_string(),
+                    ));
+                }
+            }
+            AbstractOperation::TMatmul => {
+                if input_ids.len() != 1 || output_ids.len() != 1 {
+                    return Err(TMatmulTreeError::InvalidOperation(
+                        "tmatmul requires exactly one input and one output".to_string(),
+                    ));
+                }
+                let checked_dimension = |name: &str| -> Result<usize, TMatmulTreeError> {
+                    let value =
+                        info.get(name)
+                            .and_then(OperationInfo::as_int)
+                            .ok_or_else(|| {
+                                TMatmulTreeError::InvalidOperation(format!(
+                                    "tmatmul requires an integer {name}"
+                                ))
+                            })?;
+                    usize::try_from(value)
+                        .ok()
+                        .filter(|value| *value != 0)
+                        .ok_or_else(|| {
+                            TMatmulTreeError::InvalidOperation(format!(
+                                "tmatmul {name} must be a positive usize"
+                            ))
+                        })
+                };
+                let rows = checked_dimension("NumRows")?;
+                let columns = checked_dimension("NumColumns")?;
+                if self.abstract_vectors[input_ids[0]].size != columns
+                    || self.abstract_vectors[output_ids[0]].size != rows
+                {
+                    return Err(TMatmulTreeError::InvalidOperation(
+                        "tmatmul vector sizes do not match NumRows and NumColumns".to_string(),
+                    ));
+                }
+            }
+            AbstractOperation::Ldv => {
+                if !input_ids.is_empty()
+                    || output_ids.len() != 1
+                    || self.abstract_vectors[output_ids[0]].size == 0
+                {
+                    return Err(TMatmulTreeError::InvalidOperation(
+                        "ldv requires one nonempty output and no inputs".to_string(),
+                    ));
+                }
+            }
+            AbstractOperation::Sv => {
+                if input_ids.len() != 1
+                    || !output_ids.is_empty()
+                    || self.abstract_vectors[input_ids[0]].size == 0
+                {
+                    return Err(TMatmulTreeError::InvalidOperation(
+                        "sv requires one nonempty input and no outputs".to_string(),
+                    ));
+                }
+            }
         }
 
         match operation {
@@ -398,7 +562,7 @@ impl AlgorithmTree {
             other_info: info,
         });
 
-        self.abstract_operations.len() - 1
+        Ok(self.abstract_operations.len() - 1)
     }
 
     /// Emit element-wise operations (add, sub, mul, sig, csig, silu)
@@ -1308,7 +1472,127 @@ impl AlgorithmTree {
 
     /// Generate assembly code string
     pub fn generate_assembly(&self) -> String {
+        self.try_generate_assembly()
+            .unwrap_or_else(|error| panic!("invalid AlgorithmTree assembly: {error}"))
+    }
+
+    fn validate_instruction_graph(&self) -> Result<(), TMatmulTreeError> {
+        self.validate_config()?;
+        let vector_count = self.instruction_vectors.len();
+        let mut producer = HashMap::<usize, usize>::new();
+        for (operation_index, operation) in self.instruction_operations.iter().enumerate() {
+            if operation
+                .input_vector_ids
+                .iter()
+                .chain(&operation.output_vector_ids)
+                .any(|vector| *vector >= vector_count)
+            {
+                return Err(TMatmulTreeError::InvalidInstructionGraph(format!(
+                    "instruction {operation_index} references an invalid vector"
+                )));
+            }
+            let arity_valid = match operation.operation {
+                InstructionOperation::Add
+                | InstructionOperation::Sub
+                | InstructionOperation::Mul => {
+                    operation.input_vector_ids.len() == 2 && operation.output_vector_ids.len() == 1
+                }
+                InstructionOperation::Sig
+                | InstructionOperation::CSig
+                | InstructionOperation::SiLU
+                | InstructionOperation::RmsAccumulate
+                | InstructionOperation::TMatmulImport
+                | InstructionOperation::TMatmulGo
+                | InstructionOperation::TMatmulExport => {
+                    operation.input_vector_ids.len() == 1 && operation.output_vector_ids.len() == 1
+                }
+                InstructionOperation::RmsFinishAccumulate => {
+                    !operation.input_vector_ids.is_empty() && operation.output_vector_ids.len() == 1
+                }
+                InstructionOperation::RmsNorm => {
+                    operation.input_vector_ids.len() == 2 && operation.output_vector_ids.len() == 1
+                }
+                InstructionOperation::Ldv => {
+                    operation.input_vector_ids.is_empty() && operation.output_vector_ids.len() == 1
+                }
+                InstructionOperation::Sv => {
+                    operation.input_vector_ids.len() == 1 && operation.output_vector_ids.is_empty()
+                }
+            };
+            if !arity_valid {
+                return Err(TMatmulTreeError::InvalidInstructionGraph(format!(
+                    "instruction {operation_index} has invalid operand arity"
+                )));
+            }
+            for output in &operation.output_vector_ids {
+                if producer.insert(*output, operation_index).is_some() {
+                    return Err(TMatmulTreeError::InvalidInstructionGraph(format!(
+                        "instruction vector {output} has multiple producers"
+                    )));
+                }
+            }
+            if matches!(
+                operation.operation,
+                InstructionOperation::Ldv
+                    | InstructionOperation::Sv
+                    | InstructionOperation::TMatmulGo
+            ) && operation
+                .other_info
+                .get("address_label")
+                .and_then(OperationInfo::as_string)
+                .is_none_or(str::is_empty)
+            {
+                return Err(TMatmulTreeError::InvalidInstructionGraph(format!(
+                    "instruction {operation_index} has no checked address label"
+                )));
+            }
+        }
+
+        fn visit(
+            operation: usize,
+            operations: &[InstructionOperationNode],
+            producer: &HashMap<usize, usize>,
+            state: &mut [u8],
+        ) -> Result<(), TMatmulTreeError> {
+            if state[operation] == 1 {
+                return Err(TMatmulTreeError::InvalidInstructionGraph(
+                    "AlgorithmTree instruction graph contains a cycle".to_string(),
+                ));
+            }
+            if state[operation] == 2 {
+                return Ok(());
+            }
+            state[operation] = 1;
+            for input in &operations[operation].input_vector_ids {
+                if let Some(dependency) = producer.get(input) {
+                    visit(*dependency, operations, producer, state)?;
+                }
+            }
+            state[operation] = 2;
+            Ok(())
+        }
+
+        let mut state = vec![0u8; self.instruction_operations.len()];
+        for operation in 0..self.instruction_operations.len() {
+            visit(
+                operation,
+                &self.instruction_operations,
+                &producer,
+                &mut state,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn try_generate_assembly(&self) -> Result<String, TMatmulTreeError> {
+        self.validate_instruction_graph()?;
         let ordering = self.create_instruction_ordering();
+        if ordering.len() != self.instruction_operations.len() {
+            return Err(TMatmulTreeError::SchedulingIncomplete {
+                scheduled: ordering.len(),
+                total: self.instruction_operations.len(),
+            });
+        }
         let register_mapping = self.create_register_mapping(&ordering);
         let tokens = self.create_assembly_tokens(&ordering, &register_mapping);
 
@@ -1322,7 +1606,7 @@ impl AlgorithmTree {
             output.push_str(&line);
         }
 
-        output
+        Ok(output)
     }
 }
 
@@ -2021,5 +2305,89 @@ mod tests {
         let pattern = matcher.match_activation(&silu_seq);
         assert!(pattern.is_some());
         assert_eq!(pattern.unwrap().name, "silu");
+    }
+
+    #[test]
+    fn checked_api_rejects_invalid_vectors_shapes_and_output_overlap() {
+        let mut tree = AlgorithmTree::new(TMatmulConfig::default());
+        let input = tree.new_abstract_vector(64);
+        let output = tree.new_abstract_vector(64);
+        assert!(tree
+            .try_new_abstract_operation(AbstractOperation::Ldv, vec![], vec![99], None)
+            .unwrap_err()
+            .to_string()
+            .contains("output vector"));
+        assert!(tree
+            .try_new_abstract_operation(AbstractOperation::Add, vec![input], vec![output], None,)
+            .unwrap_err()
+            .to_string()
+            .contains("two equal inputs"));
+
+        let mut info = HashMap::new();
+        info.insert("NumRows".to_string(), OperationInfo::Int(32));
+        info.insert("NumColumns".to_string(), OperationInfo::Int(64));
+        assert!(tree
+            .try_new_abstract_operation(
+                AbstractOperation::TMatmul,
+                vec![input],
+                vec![output],
+                Some(info),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("vector sizes"));
+
+        let mut address = HashMap::new();
+        address.insert(
+            "address_label".to_string(),
+            OperationInfo::String("OUTPUT".to_string()),
+        );
+        tree.try_new_abstract_operation(
+            AbstractOperation::Ldv,
+            vec![],
+            vec![output],
+            Some(address),
+        )
+        .unwrap();
+        assert!(tree
+            .try_new_abstract_operation(AbstractOperation::Ldv, vec![], vec![output], None)
+            .unwrap_err()
+            .to_string()
+            .contains("overlap"));
+    }
+
+    #[test]
+    fn checked_assembly_rejects_invalid_config_and_mutated_graph() {
+        let mut invalid = AlgorithmTree::new(TMatmulConfig {
+            num_vector_registers: 0,
+            ..Default::default()
+        });
+        let vector = invalid.new_abstract_vector(64);
+        assert!(invalid
+            .try_new_abstract_operation(AbstractOperation::Ldv, vec![], vec![vector], None)
+            .unwrap_err()
+            .to_string()
+            .contains("configuration"));
+
+        let mut tree = AlgorithmTree::new(TMatmulConfig::default());
+        let vector = tree.new_abstract_vector(64);
+        let mut address = HashMap::new();
+        address.insert(
+            "address_label".to_string(),
+            OperationInfo::String("INPUT".to_string()),
+        );
+        tree.try_new_abstract_operation(
+            AbstractOperation::Ldv,
+            vec![],
+            vec![vector],
+            Some(address),
+        )
+        .unwrap();
+        tree.instruction_operations[0].output_vector_ids[0] = usize::MAX;
+        assert!(tree
+            .try_generate_assembly()
+            .unwrap_err()
+            .to_string()
+            .contains("invalid vector"));
     }
 }

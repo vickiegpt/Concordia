@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 pub(crate) const QWEN_MODEL_CONTEXT_LIMIT: u32 = 262_144;
-const TILE_DIM: usize = 1024;
 const HANDWRITTEN_ASSEMBLY: &str = "ldv v0, PARAM_INPUT\ntmatmul_import v0\ntmatmul_go PARAM_MATRIX\ntmatmul_export v0\nsv v0, PARAM_OUTPUT\nstall\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -65,6 +64,25 @@ fn validate_model_context_limit(limit: u32) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_iq1s_shape(input_columns: u32, output_rows: u32) -> Result<(), String> {
+    if input_columns == 0
+        || output_rows == 0
+        || !input_columns.is_multiple_of(256)
+        || !output_rows.is_multiple_of(256)
+    {
+        return Err("Qwen IQ1_S trace dimensions must be nonzero multiples of 256".to_string());
+    }
+    if !matches!(
+        (input_columns, output_rows),
+        (4096, 256) | (1024, 1024) | (1024, 256)
+    ) {
+        return Err(format!(
+            "unsupported Qwen IQ1_S trace shape {output_rows}x{input_columns}"
+        ));
+    }
+    Ok(())
+}
+
 fn executable_tokens(assembly: &str) -> Vec<Vec<String>> {
     assembly
         .lines()
@@ -101,7 +119,16 @@ pub(crate) fn semantic_sha256(instructions: &[Vec<String>]) -> [u8; 32] {
 }
 
 pub(crate) fn build_handwritten_trace(model_context_limit: u32) -> Result<TmatmulTrace, String> {
+    build_handwritten_trace_for_shape(model_context_limit, 1024, 1024)
+}
+
+pub(crate) fn build_handwritten_trace_for_shape(
+    model_context_limit: u32,
+    input_columns: u32,
+    output_rows: u32,
+) -> Result<TmatmulTrace, String> {
     validate_model_context_limit(model_context_limit)?;
+    validate_iq1s_shape(input_columns, output_rows)?;
     Ok(TmatmulTrace {
         kind: TraceKind::Handwritten,
         model_context_limit,
@@ -112,9 +139,20 @@ pub(crate) fn build_handwritten_trace(model_context_limit: u32) -> Result<Tmatmu
 }
 
 pub(crate) fn build_compiler_trace(model_context_limit: u32) -> Result<TmatmulTrace, String> {
+    build_compiler_trace_for_shape(model_context_limit, 1024, 1024)
+}
+
+pub(crate) fn build_compiler_trace_for_shape(
+    model_context_limit: u32,
+    input_columns: u32,
+    output_rows: u32,
+) -> Result<TmatmulTrace, String> {
     validate_model_context_limit(model_context_limit)?;
+    validate_iq1s_shape(input_columns, output_rows)?;
+    let tile_dim = usize::try_from(input_columns.max(output_rows))
+        .map_err(|_| "Qwen IQ1_S trace dimension does not fit usize")?;
     let mut tree = AlgorithmTree::new(TMatmulConfig {
-        d: TILE_DIM,
+        d: tile_dim,
         num_cores: 1,
         num_vector_registers: 8,
         fixed_point_precision: 16,
@@ -125,52 +163,60 @@ pub(crate) fn build_compiler_trace(model_context_limit: u32) -> Result<TmatmulTr
         memory_bandwidth: 32,
         clock_period: 1e-9,
     });
-    let input = tree.new_abstract_vector(TILE_DIM);
-    let output = tree.new_abstract_vector(TILE_DIM);
+    let input = tree.new_abstract_vector(input_columns as usize);
+    let output = tree.new_abstract_vector(output_rows as usize);
 
     let mut input_info = HashMap::new();
     input_info.insert(
         "address_label".to_string(),
         OperationInfo::String("PARAM_INPUT".to_string()),
     );
-    tree.new_abstract_operation(
+    tree.try_new_abstract_operation(
         AbstractOperation::Ldv,
         vec![],
         vec![input],
         Some(input_info),
-    );
+    )
+    .map_err(|error| error.to_string())?;
 
     let mut matrix_info = HashMap::new();
     matrix_info.insert(
         "address_label".to_string(),
         OperationInfo::String("PARAM_MATRIX".to_string()),
     );
-    matrix_info.insert("NumRows".to_string(), OperationInfo::Int(TILE_DIM as i64));
+    matrix_info.insert(
+        "NumRows".to_string(),
+        OperationInfo::Int(i64::from(output_rows)),
+    );
     matrix_info.insert(
         "NumColumns".to_string(),
-        OperationInfo::Int(TILE_DIM as i64),
+        OperationInfo::Int(i64::from(input_columns)),
     );
-    tree.new_abstract_operation(
+    tree.try_new_abstract_operation(
         AbstractOperation::TMatmul,
         vec![input],
         vec![output],
         Some(matrix_info),
-    );
+    )
+    .map_err(|error| error.to_string())?;
 
     let mut output_info = HashMap::new();
     output_info.insert(
         "address_label".to_string(),
         OperationInfo::String("PARAM_OUTPUT".to_string()),
     );
-    tree.new_abstract_operation(
+    tree.try_new_abstract_operation(
         AbstractOperation::Sv,
         vec![output],
         vec![],
         Some(output_info),
-    );
+    )
+    .map_err(|error| error.to_string())?;
 
     let algorithm_tree_instruction_count = tree.instruction_operations.len();
-    let mut assembly = tree.generate_assembly();
+    let mut assembly = tree
+        .try_generate_assembly()
+        .map_err(|error| error.to_string())?;
     assembly.push_str("    stall\n");
     let raw_instructions = executable_tokens(&assembly);
     let expected_tree_instructions = vec![
@@ -236,8 +282,27 @@ pub(crate) fn build_selected_trace(
     labels: &HashMap<String, u64>,
     num_vector_registers: u8,
 ) -> Result<SelectedTraceProgram, String> {
-    let handwritten = build_handwritten_trace(model_context_limit)?;
-    let compiler = build_compiler_trace(model_context_limit)?;
+    build_selected_trace_for_shape(
+        mode,
+        model_context_limit,
+        1024,
+        1024,
+        labels,
+        num_vector_registers,
+    )
+}
+
+pub(crate) fn build_selected_trace_for_shape(
+    mode: &str,
+    model_context_limit: u32,
+    input_columns: u32,
+    output_rows: u32,
+    labels: &HashMap<String, u64>,
+    num_vector_registers: u8,
+) -> Result<SelectedTraceProgram, String> {
+    let handwritten =
+        build_handwritten_trace_for_shape(model_context_limit, input_columns, output_rows)?;
+    let compiler = build_compiler_trace_for_shape(model_context_limit, input_columns, output_rows)?;
     let handwritten_binary = assemble_trace(&handwritten, labels, num_vector_registers)?;
     let compiler_binary = assemble_trace(&compiler, labels, num_vector_registers)?;
     if handwritten.instructions != compiler.instructions
