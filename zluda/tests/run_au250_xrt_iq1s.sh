@@ -18,10 +18,7 @@ case "$trace_mode" in
 esac
 
 if [[ ${1:-} == "--inside" ]]; then
-    export RUSTUP_HOME=/work/target/au250-runtime/rustup
-    export CARGO_HOME=/work/target/au250-runtime/cargo
-    export CARGO_TARGET_DIR=/work/target/au250-app215
-    export PATH=/work/target/au250-runtime/bin:$CARGO_HOME/bin:$PATH
+    export CARGO_TARGET_DIR="${repo_root}/target/au250-app215"
     export CARGO_INCREMENTAL=0
     export CARGO_BUILD_JOBS=32
 
@@ -50,10 +47,11 @@ if [[ ${1:-} == "--inside" ]]; then
     export HETGPU_XRT_NUM_VECTOR_REGISTERS=4
     export HETGPU_XRT_TIMEOUT_MS=10000
     export HETGPU_XRT_CU_CONFIG='{"version":1,"cus":[{"ip_name":"ternip_big:ternip_big_1","memory_group":0,"lanes":9},{"ip_name":"ternip_big:ternip_big_2","memory_group":3,"lanes":9},{"ip_name":"ternip_big:ternip_big_3","memory_group":2,"lanes":9},{"ip_name":"ternip_small:ternip_small_1","memory_group":1,"lanes":6}]}'
+    export HETGPU_XRT_BAR0_RESOURCE=/sys/bus/pci/devices/0000:64:00.1/resource0
     export HETGPU_QWEN_IQ1S_STRICT=1
     export HETGPU_IQ1S_TRACE_MODE="$trace_mode"
     export HETGPU_QWEN_MODEL_CONTEXT_LIMIT=262144
-    export HETGPU_XRT_EXECUTION_LOG="/work/target/au250-iq1s-${trace_mode}-live.jsonl"
+    export HETGPU_XRT_EXECUTION_LOG="${repo_root}/target/au250-iq1s-${trace_mode}-live.jsonl"
     rm -f "$HETGPU_XRT_EXECUTION_LOG"
 
     cargo test -p zluda --features nvidia --no-default-features \
@@ -83,7 +81,7 @@ for completion in evidence["physical_completions"]:
         raise SystemExit(f"unbound program completion: {completion}")
 PY
 
-    health_report=$(xbutil examine -d 0000:64:00.1 \
+    health_report=$(xrt-smi examine -d 0000:64:00.1 \
         -r dynamic-regions -r error -r firewall -r thermal 2>&1)
     printf "%s\n" "$health_report"
     grep -Fq "Level 0 : 0x0 (GOOD)" <<<"$health_report" || {
@@ -114,8 +112,7 @@ awk -v temperature="$temperature" 'BEGIN { exit !(temperature < 85) }' || {
     exit 1
 }
 
-"$repo_root/tools/au250_hybrid_run.sh" \
-    bash /work/zluda/tests/run_au250_xrt_iq1s.sh --inside "$trace_mode"
+bash "${repo_root}/zluda/tests/run_au250_xrt_iq1s.sh" --inside "$trace_mode"
 
 temperature="$(_au250_fpga_temp)"
 awk -v temperature="$temperature" 'BEGIN { exit !(temperature < 85) }' || {

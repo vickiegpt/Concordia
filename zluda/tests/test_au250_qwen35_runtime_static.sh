@@ -14,6 +14,7 @@ cuda13_launch_shim="${repo_root}/tools/qwen35_cuda13_launch_shim.c"
 cuda13_launch_map="${repo_root}/tools/qwen35_cuda13_launch_shim.map"
 build_preflight="${repo_root}/tools/qwen35_build_preflight.py"
 function_rs="${repo_root}/zluda/src/impl/function.rs"
+iq1s_standalone="${repo_root}/zluda/tests/run_au250_xrt_iq1s.sh"
 
 test -x "${wrapper}"
 test -x "${builder}"
@@ -129,6 +130,9 @@ grep -Fq '"${cuda13_launch_shim}:${libnvcuda}"' "${iq1s_runner}"
 test -f "${cuda13_launch_shim}"
 test -f "${cuda13_launch_map}"
 grep -Fq 'nvidia_capture_modern_iq1s_xrt_moe_mmvq' "${function_rs}"
+grep -Fq 'export CARGO_BUILD_JOBS=32' "${iq1s_standalone}"
+grep -Fq 'HETGPU_XRT_BAR0_RESOURCE=/sys/bus/pci/devices/0000:64:00.1/resource0' "${iq1s_standalone}"
+grep -Fq 'xrt-smi examine -d 0000:64:00.1' "${iq1s_standalone}"
 if grep -Fq 'if (strstr(name, "mul_mat_vec_q_moe") != NULL)' "${cuda13_launch_shim}"; then
     echo "CUDA 13 launch shim still bypasses the multi-token IQ1_S MoE kernel" >&2
     exit 1
@@ -141,6 +145,8 @@ grep -Fq 'HETGPU_XRT_COMPARE_MAX_LAUNCHES=1' "${iq1s_runner}"
 grep -Fq -- '--mode "${trace_mode}"' "${iq1s_runner}"
 grep -Fq -- '--port "${mode_port}"' "${iq1s_runner}"
 grep -Fq 'HETGPU_QWEN_MODEL_CONTEXT_LIMIT=262144' "${iq1s_runner}"
+grep -Fq 'HETGPU_XRT_BAR0_RESOURCE=/sys/bus/pci/devices/0000:64:00.1/resource0' "${iq1s_runner}"
+test "$(grep -Fc 'QWEN35_BUILD_JOBS=32 CARGO_BUILD_JOBS=32' "${iq1s_runner}")" -eq 2
 grep -Fq 'build_threads=%s' "${iq1s_runner}"
 grep -Fq '${QWEN35_BUILD_JOBS:-32}' "${iq1s_runner}"
 grep -Fq 'lspci -s "${fpga_bdf}" -vv' "${iq1s_runner}"

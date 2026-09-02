@@ -3,6 +3,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fmt;
+use std::fs::OpenOptions;
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -571,6 +573,7 @@ struct XrtPoolConfig {
     timeout_ms: u32,
     qwen_trace: Option<QwenTraceConfig>,
     resident_matrix_cache_bytes: usize,
+    bar0_resource: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -578,6 +581,112 @@ struct XrtPoolConfig {
 struct XrtCuTable {
     version: u32,
     cus: Vec<XrtCuTarget>,
+}
+
+struct Bar0Mapping {
+    address: *mut u8,
+    len: usize,
+}
+
+// SAFETY: register access is serialized by the process-global pool mutex, and
+// the mapping remains owned by the pool until all CU work has stopped.
+unsafe impl Send for Bar0Mapping {}
+
+impl Bar0Mapping {
+    fn open(path: &PathBuf) -> Result<Self, XrtTmatmulError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(|error| {
+                XrtTmatmulError::Config(format!(
+                    "cannot open HETGPU_XRT_BAR0_RESOURCE {}: {error}",
+                    path.display()
+                ))
+            })?;
+        let len = usize::try_from(
+            file.metadata()
+                .map_err(|error| {
+                    XrtTmatmulError::Config(format!(
+                        "cannot stat HETGPU_XRT_BAR0_RESOURCE {}: {error}",
+                        path.display()
+                    ))
+                })?
+                .len(),
+        )
+        .map_err(|_| XrtTmatmulError::Config("BAR0 length does not fit usize".to_string()))?;
+        let minimum = 0x0181_0000usize + RESET as usize + 4;
+        if len < minimum {
+            return Err(XrtTmatmulError::Config(format!(
+                "HETGPU_XRT_BAR0_RESOURCE has {len} bytes, expected at least {minimum}"
+            )));
+        }
+        let address = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if address == libc::MAP_FAILED {
+            return Err(XrtTmatmulError::Config(format!(
+                "cannot map HETGPU_XRT_BAR0_RESOURCE {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(Self {
+            address: address.cast(),
+            len,
+        })
+    }
+
+    fn address(&self, base: u64, offset: u32) -> Result<*mut u32, XrtTmatmulError> {
+        let absolute = base
+            .checked_add(u64::from(offset))
+            .ok_or_else(|| XrtTmatmulError::Config("BAR0 register offset overflow".to_string()))?;
+        let end = absolute
+            .checked_add(4)
+            .ok_or_else(|| XrtTmatmulError::Config("BAR0 register end overflow".to_string()))?;
+        if end > self.len as u64 || absolute % 4 != 0 {
+            return Err(XrtTmatmulError::Config(format!(
+                "BAR0 register range 0x{absolute:x}:0x{end:x} is invalid"
+            )));
+        }
+        Ok(unsafe { self.address.add(absolute as usize).cast() })
+    }
+
+    fn read(&self, base: u64, offset: u32) -> Result<u32, XrtTmatmulError> {
+        Ok(unsafe { std::ptr::read_volatile(self.address(base, offset)?) })
+    }
+
+    fn write(&self, base: u64, offset: u32, value: u32) -> Result<(), XrtTmatmulError> {
+        unsafe { std::ptr::write_volatile(self.address(base, offset)?, value) };
+        Ok(())
+    }
+}
+
+impl Drop for Bar0Mapping {
+    fn drop(&mut self) {
+        if !self.address.is_null() && self.len != 0 {
+            unsafe {
+                libc::munmap(self.address.cast(), self.len);
+            }
+        }
+    }
+}
+
+fn maxcores_register_base(ip_name: &str) -> Option<u64> {
+    match ip_name {
+        "ternip_big:ternip_big_1" => Some(0x00c1_0000),
+        "ternip_big:ternip_big_2" => Some(0x0181_0000),
+        "ternip_big:ternip_big_3" => Some(0x0141_0000),
+        "ternip_small:ternip_small_1" => Some(0x0101_0000),
+        _ => None,
+    }
 }
 
 impl XrtPoolConfig {
@@ -666,6 +775,16 @@ impl XrtPoolConfig {
                         .to_string(),
                 ));
             }
+            if let Some(resource) = &self.bar0_resource {
+                let pinned = std::path::Path::new("/sys/bus/pci/devices/0000:64:00.1/resource0");
+                if resource != pinned {
+                    return Err(XrtTmatmulError::Config(format!(
+                        "strict Qwen IQ1_S BAR0 access requires {}, got {}",
+                        pinned.display(),
+                        resource.display()
+                    )));
+                }
+            }
             super::iq1s_trace::build_handwritten_trace(trace.model_context_limit)
                 .map_err(XrtTmatmulError::Config)?;
             if !matches!(trace.mode.as_str(), "handwritten" | "compiler") {
@@ -722,6 +841,10 @@ impl XrtPoolConfig {
                 "HETGPU_XRT_RESIDENT_MATRIX_CACHE_BYTES does not fit usize".to_string(),
             )
         })?;
+        let bar0_resource = std::env::var("HETGPU_XRT_BAR0_RESOURCE")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from);
         if resident_matrix_cache_bytes < AU250_MATRIX_BYTES {
             return Err(XrtTmatmulError::Config(format!(
                 "HETGPU_XRT_RESIDENT_MATRIX_CACHE_BYTES must be at least {AU250_MATRIX_BYTES}"
@@ -751,6 +874,7 @@ impl XrtPoolConfig {
             timeout_ms,
             qwen_trace,
             resident_matrix_cache_bytes,
+            bar0_resource,
         };
         config.validate()?;
         Ok(config)
@@ -826,6 +950,7 @@ struct ReusableCu {
     target: XrtCuTarget,
     ip_device: Handle,
     ip_index: u32,
+    register_base: Option<u64>,
     input_bo: Handle,
     output_bo: Handle,
     input_address: u64,
@@ -848,6 +973,7 @@ struct Pool<O: XrtOps> {
     qwen_trace: Option<QwenTraceConfig>,
     poisoned: bool,
     release_device: bool,
+    bar0: Option<Bar0Mapping>,
 }
 
 #[derive(Debug, Clone)]
@@ -902,7 +1028,7 @@ pub(crate) fn with_persistent_pool<T>(
 impl XrtTmatmulPool {
     pub(crate) fn open_from_env() -> Result<Self, XrtTmatmulError> {
         let config = XrtPoolConfig::from_env()?;
-        let ops = RealXrt::load(true)?;
+        let ops = RealXrt::load(config.bar0_resource.is_none())?;
         Ok(Self {
             inner: Pool::open_with_ops(ops, config)?,
         })
@@ -923,6 +1049,11 @@ impl XrtTmatmulPool {
 impl<O: XrtOps> Pool<O> {
     fn open_with_ops(ops: O, config: XrtPoolConfig) -> Result<Self, XrtTmatmulError> {
         config.validate()?;
+        let bar0 = config
+            .bar0_resource
+            .as_ref()
+            .map(Bar0Mapping::open)
+            .transpose()?;
         let device = ops.device_open(config.device_index);
         if device.is_null() {
             return Err(XrtTmatmulError::NullHandle("xrtDeviceOpen"));
@@ -937,6 +1068,7 @@ impl<O: XrtOps> Pool<O> {
             qwen_trace: config.qwen_trace.clone(),
             poisoned: false,
             release_device: true,
+            bar0,
         };
 
         let xclbin = config.xclbin.to_str().ok_or_else(|| {
@@ -955,35 +1087,47 @@ impl<O: XrtOps> Pool<O> {
         )?;
 
         for target in config.targets {
-            let ip_device = pool.ops.xcl_open(config.device_index);
-            if ip_device.is_null() {
-                return Err(XrtTmatmulError::NullHandle("xclOpen"));
-            }
-            let ip_name = CString::new(target.ip_name.as_str()).map_err(|_| {
-                XrtTmatmulError::Config("XRT CU IP name contains a NUL byte".to_string())
-            })?;
-            let raw_index = pool.ops.xcl_ip_name_to_index(ip_device, &ip_name);
-            if raw_index < 0 {
-                pool.ops.xcl_close(ip_device);
-                return Err(XrtTmatmulError::Xrt {
-                    operation: "xclIPName2Index",
-                    code: raw_index,
-                });
-            }
-            let ip_index = raw_index as u32;
-            if let Err(error) = check_xrt(
-                "xclOpenContext",
-                pool.ops
-                    .xcl_open_context(ip_device, &pool.uuid, ip_index, false),
-            ) {
-                pool.ops.xcl_close(ip_device);
-                return Err(error);
-            }
+            let (ip_device, ip_index, register_base) = if pool.bar0.is_some() {
+                let base = maxcores_register_base(&target.ip_name).ok_or_else(|| {
+                    XrtTmatmulError::Config(format!(
+                        "BAR0 register access does not recognize CU {:?}",
+                        target.ip_name
+                    ))
+                })?;
+                (std::ptr::null_mut(), 0, Some(base))
+            } else {
+                let ip_device = pool.ops.xcl_open(config.device_index);
+                if ip_device.is_null() {
+                    return Err(XrtTmatmulError::NullHandle("xclOpen"));
+                }
+                let ip_name = CString::new(target.ip_name.as_str()).map_err(|_| {
+                    XrtTmatmulError::Config("XRT CU IP name contains a NUL byte".to_string())
+                })?;
+                let raw_index = pool.ops.xcl_ip_name_to_index(ip_device, &ip_name);
+                if raw_index < 0 {
+                    pool.ops.xcl_close(ip_device);
+                    return Err(XrtTmatmulError::Xrt {
+                        operation: "xclIPName2Index",
+                        code: raw_index,
+                    });
+                }
+                let ip_index = raw_index as u32;
+                if let Err(error) = check_xrt(
+                    "xclOpenContext",
+                    pool.ops
+                        .xcl_open_context(ip_device, &pool.uuid, ip_index, false),
+                ) {
+                    pool.ops.xcl_close(ip_device);
+                    return Err(error);
+                }
+                (ip_device, ip_index, None)
+            };
 
             pool.cus.push(ReusableCu {
                 target,
                 ip_device,
                 ip_index,
+                register_base,
                 input_bo: std::ptr::null_mut(),
                 output_bo: std::ptr::null_mut(),
                 input_address: 0,
@@ -1261,6 +1405,9 @@ impl<O: XrtOps> Pool<O> {
 
     fn register_read(&self, cu_index: usize, offset: u32) -> Result<u32, XrtTmatmulError> {
         let cu = &self.cus[cu_index];
+        if let (Some(bar0), Some(base)) = (&self.bar0, cu.register_base) {
+            return bar0.read(base, offset);
+        }
         let mut value = 0;
         check_xrt(
             "xclRegRead",
@@ -1277,6 +1424,9 @@ impl<O: XrtOps> Pool<O> {
         value: u32,
     ) -> Result<(), XrtTmatmulError> {
         let cu = &self.cus[cu_index];
+        if let (Some(bar0), Some(base)) = (&self.bar0, cu.register_base) {
+            return bar0.write(base, offset, value);
+        }
         check_xrt(
             "xclRegWrite",
             self.ops
@@ -1518,10 +1668,12 @@ impl<O: XrtOps> Drop for Pool<O> {
                     let _ = self.ops.bo_free(bo);
                 }
             }
-            let _ = self
-                .ops
-                .xcl_close_context(cu.ip_device, &self.uuid, cu.ip_index);
-            if !cu.ip_device.is_null() {
+            if cu.register_base.is_none() {
+                let _ = self
+                    .ops
+                    .xcl_close_context(cu.ip_device, &self.uuid, cu.ip_index);
+            }
+            if cu.register_base.is_none() && !cu.ip_device.is_null() {
                 self.ops.xcl_close(cu.ip_device);
             }
         }
@@ -2478,6 +2630,7 @@ mod tests {
             timeout_ms: 20,
             qwen_trace: None,
             resident_matrix_cache_bytes: 2 * AU250_MATRIX_BYTES,
+            bar0_resource: None,
         }
     }
 
@@ -2489,6 +2642,20 @@ mod tests {
             }),
             ..pool_test_config()
         }
+    }
+
+    #[test]
+    fn strict_qwen_rejects_unpinned_bar0_resource() {
+        let mut config = qwen_pool_test_config("compiler");
+        config.bar0_resource = Some(PathBuf::from("/tmp/resource0"));
+        assert!(matches!(
+            config.validate(),
+            Err(XrtTmatmulError::Config(message))
+                if message.contains("strict Qwen IQ1_S BAR0 access requires")
+        ));
+
+        config.bar0_resource = Some(PathBuf::from("/sys/bus/pci/devices/0000:64:00.1/resource0"));
+        config.validate().unwrap();
     }
 
     #[test]
@@ -2773,6 +2940,33 @@ mod tests {
             event,
             Event::IpRegisterWrite { .. } | Event::IpRegisterRead(_)
         )));
+    }
+
+    #[test]
+    fn bar0_pool_uses_exact_cu_base_without_legacy_contexts() {
+        use std::os::unix::fs::FileExt;
+
+        let resource = tempfile::NamedTempFile::new().unwrap();
+        resource.as_file().set_len(32 * 1024 * 1024).unwrap();
+        let xrt = FakeXrt::new([1]);
+        let mut config = pool_test_config();
+        config.bar0_resource = Some(resource.path().to_path_buf());
+        let pool = Pool::open_with_ops(xrt, config).unwrap();
+
+        assert!(!pool.ops.events().iter().any(|event| matches!(
+            event,
+            Event::XclOpen(_) | Event::OpenContext { .. } | Event::IpRegisterWrite { .. }
+        )));
+        for base in [0x00c1_0000, 0x0181_0000, 0x0141_0000, 0x0101_0000] {
+            pool.bar0.as_ref().unwrap().write(base, STALL, 1).unwrap();
+            assert_eq!(pool.bar0.as_ref().unwrap().read(base, STALL).unwrap(), 1);
+            let mut stall = [0u8; 4];
+            resource
+                .as_file()
+                .read_exact_at(&mut stall, base + u64::from(STALL))
+                .unwrap();
+            assert_eq!(u32::from_ne_bytes(stall), 1);
+        }
     }
 
     #[test]

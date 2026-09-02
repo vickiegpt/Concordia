@@ -164,6 +164,7 @@ PY
     export HETGPU_XRT_TIMEOUT_MS=10000
     export HETGPU_XRT_CLOCK_HZ=300000000
     export HETGPU_XRT_CU_CONFIG="${cu_config}"
+    export HETGPU_XRT_BAR0_RESOURCE=/sys/bus/pci/devices/0000:64:00.1/resource0
     export HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB=49152
     threads="${QWEN35_THREADS:-$(nproc)}"
 
@@ -192,11 +193,6 @@ PY
     cp "${proof_dir}/cuda-mode/cuda.json" "${proof_dir}/cuda.json"
     nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv \
         > "${proof_dir}/cuda-compute-apps-after.csv"
-
-    bash /work/zluda/tests/run_au250_xrt_iq1s.sh --inside handwritten \
-        > "${proof_dir}/standalone-handwritten.log" 2>&1
-    bash /work/zluda/tests/run_au250_xrt_iq1s.sh --inside compiler \
-        > "${proof_dir}/standalone-compiler.log" 2>&1
 
     run_hybrid_mode() {
         local trace_mode=$1
@@ -292,6 +288,13 @@ temperature="$(_au250_fpga_temp)"
     exit 1
 }
 cd "${repo_root}"
+install -d "${proof_dir}"
+QWEN35_BUILD_JOBS=32 CARGO_BUILD_JOBS=32 \
+    bash "${repo_root}/zluda/tests/run_au250_xrt_iq1s.sh" --inside handwritten \
+    > "${proof_dir}/standalone-handwritten.log" 2>&1
+QWEN35_BUILD_JOBS=32 CARGO_BUILD_JOBS=32 \
+    bash "${repo_root}/zluda/tests/run_au250_xrt_iq1s.sh" --inside compiler \
+    > "${proof_dir}/standalone-compiler.log" 2>&1
 "${repo_root}/tools/au250_qwen35_run.sh" bash /work/tools/run_qwen35_iq1s_au250_hybrid.sh \
     --inside "/work/${proof_rel}" "$(realpath "${xclbin}")"
 python3 "${iq1s_validator}" "${proof_dir}" | tee "${proof_dir}/summary.json"
