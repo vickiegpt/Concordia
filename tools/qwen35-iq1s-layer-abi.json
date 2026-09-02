@@ -64,7 +64,8 @@
     "result_bytes": 140,
     "token_map_bytes": 144,
     "program_bytes": 148,
-    "arena_manifest_bytes": 152
+    "arena_manifest_bytes": 152,
+    "cu_id": 156
   },
   "command": {
     "size": 128,

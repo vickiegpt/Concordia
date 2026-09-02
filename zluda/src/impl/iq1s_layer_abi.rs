@@ -1,7 +1,7 @@
 // Generated from tools/qwen35-iq1s-layer-abi.json; do not edit.
-// Canonical schema SHA-256: 80566119efe7e538f1b562e3b01687a4b83817b0d77aabb558b3db9651fbdec3
+// Canonical schema SHA-256: 0e88b8acb51968aaf847b17cb34fc7e5c703a4834ebcf764b0a84443247ee619
 
-pub const IQ1S_SCHEMA_SHA256: &str = "80566119efe7e538f1b562e3b01687a4b83817b0d77aabb558b3db9651fbdec3";
+pub const IQ1S_SCHEMA_SHA256: &str = "0e88b8acb51968aaf847b17cb34fc7e5c703a4834ebcf764b0a84443247ee619";
 pub const IQ1S_ABI_VERSION: u32 = 2;
 pub const IQ1S_REGISTER_MAGIC: u32 = 0x324c5149;
 pub const IQ1S_COMMAND_MAGIC: u32 = 0x32435149;
@@ -66,6 +66,7 @@ pub const IQ1S_REG_RESULT_BYTES_OFFSET: usize = 140;
 pub const IQ1S_REG_TOKEN_MAP_BYTES_OFFSET: usize = 144;
 pub const IQ1S_REG_PROGRAM_BYTES_OFFSET: usize = 148;
 pub const IQ1S_REG_ARENA_MANIFEST_BYTES_OFFSET: usize = 152;
+pub const IQ1S_REG_CU_ID_OFFSET: usize = 156;
 
 pub const IQ1S_COMMAND_BYTES: usize = 128;
 pub const IQ1S_COMMAND_MAGIC_OFFSET: usize = 0;

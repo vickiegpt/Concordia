@@ -66,6 +66,7 @@ def test_canonical_schema_layout() -> None:
     assert schema["registers"]["activation_bytes"] == 136
     assert schema["registers"]["result_bytes"] == 140
     assert schema["registers"]["token_map_bytes"] == 144
+    assert schema["registers"]["cu_id"] == 156
 
 
 def test_generator_emits_deterministic_c_rust_and_sv(tmp_path: Path) -> None:

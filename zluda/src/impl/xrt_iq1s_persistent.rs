@@ -8,6 +8,7 @@ use super::iq1s_layer_abi::{
     IQ1S_REG_COMPLETION_BASE_LO_OFFSET, IQ1S_REG_COMPLETION_CAPACITY_OFFSET,
     IQ1S_REG_COMPLETION_CONSUMER_OFFSET, IQ1S_REG_COMPLETION_PRODUCER_OFFSET,
     IQ1S_REG_CONTROL_OFFSET, IQ1S_REG_DOORBELL_OFFSET, IQ1S_REG_FAULT_CODE_OFFSET,
+    IQ1S_REG_CU_ID_OFFSET,
     IQ1S_REG_ACTIVATION_BASE_HI_OFFSET, IQ1S_REG_ACTIVATION_BASE_LO_OFFSET,
     IQ1S_REG_ACTIVATION_BYTES_OFFSET, IQ1S_REG_ARENA_MANIFEST_BASE_HI_OFFSET,
     IQ1S_REG_ARENA_MANIFEST_BASE_LO_OFFSET, IQ1S_REG_ARENA_MANIFEST_BYTES_OFFSET,
@@ -701,6 +702,7 @@ impl<O: XrtOps> PersistentIq1sPool<O> {
             (IQ1S_REG_TOKEN_MAP_BYTES_OFFSET, TOKEN_MAP_BYTES as u32),
             (IQ1S_REG_PROGRAM_BYTES_OFFSET, PROGRAM_BYTES as u32),
             (IQ1S_REG_ARENA_MANIFEST_BYTES_OFFSET, ARENA_MANIFEST_BYTES as u32),
+            (IQ1S_REG_CU_ID_OFFSET, cu as u32),
             (IQ1S_REG_CONTROL_OFFSET, CONTROL_START),
         ] {
             self.reg_write(cu, offset, value)?;
@@ -1691,6 +1693,7 @@ mod tests {
             IQ1S_REG_TOKEN_MAP_BYTES_OFFSET,
             IQ1S_REG_PROGRAM_BYTES_OFFSET,
             IQ1S_REG_ARENA_MANIFEST_BYTES_OFFSET,
+            IQ1S_REG_CU_ID_OFFSET,
         ] {
             assert_eq!(
                 events
@@ -1700,6 +1703,11 @@ mod tests {
                 4,
                 "register 0x{offset:x} must be configured on all four CUs"
             );
+        }
+        for cu in 0..4u32 {
+            assert!(events.iter().any(|event| matches!(event,
+                Event::RegisterWrite { cu: actual_cu, offset, value }
+                    if *actual_cu == cu && *offset == IQ1S_REG_CU_ID_OFFSET as u32 && *value == cu)));
         }
         assert!(events
             .iter()
