@@ -84,7 +84,7 @@ pub(crate) struct Iq1sTensorIdentity {
     pub(crate) modified_ns: u128,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Iq1sTensorSource {
     pub(crate) identity: Iq1sTensorIdentity,
 }
@@ -363,6 +363,22 @@ fn hash_file_range(file: &File, offset: u64, nbytes: u64) -> Result<[u8; 32], St
 }
 
 impl Iq1sWeightRegistry {
+    pub(crate) fn registered_sources(&self) -> Result<Vec<Arc<Iq1sTensorSource>>, String> {
+        let sources = self
+            .sources
+            .read()
+            .map_err(|_| "IQ1_S tensor registry lock poisoned".to_string())?;
+        let mut result = sources.values().cloned().collect::<Vec<_>>();
+        result.sort_by(|left, right| {
+            left.identity
+                .layer
+                .cmp(&right.identity.layer)
+                .then_with(|| left.identity.role.cmp(&right.identity.role))
+                .then_with(|| left.identity.name.cmp(&right.identity.name))
+        });
+        Ok(result)
+    }
+
     pub(crate) fn expected_roles_for_layer(
         &self,
         layer: u32,
@@ -676,6 +692,34 @@ mod tests {
                 .collect()
         );
         assert!(registry.expected_roles_for_layer(8).unwrap().is_empty());
+    }
+
+    #[test]
+    fn registered_sources_are_immutable_and_sorted_by_layer_role_and_name() {
+        let files = [tensor_file(0x31), tensor_file(0x32), tensor_file(0x33)];
+        let registry = Iq1sWeightRegistry::default();
+        for (file, name, role) in [
+            (&files[0], "blk.9.ffn_down_exps.weight", Iq1sExpertRole::Down),
+            (&files[1], "blk.2.ffn_up_exps.weight", Iq1sExpertRole::Up),
+            (&files[2], "blk.2.ffn_gate_exps.weight", Iq1sExpertRole::Gate),
+        ] {
+            registry.register(registration(file, name, role)).unwrap();
+        }
+
+        let sources = registry.registered_sources().unwrap();
+        let names = sources
+            .iter()
+            .map(|source| source.identity.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "blk.2.ffn_gate_exps.weight",
+                "blk.2.ffn_up_exps.weight",
+                "blk.9.ffn_down_exps.weight",
+            ]
+        );
+        assert!(Arc::strong_count(&sources[0]) >= 2);
     }
 
     #[test]

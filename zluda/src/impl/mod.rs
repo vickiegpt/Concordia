@@ -99,6 +99,9 @@ pub(crate) mod iq1s_tmatmul;
 pub(crate) mod iq1s_trace;
 
 #[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) mod iq1s_weight_arena;
+
+#[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) mod iq1s_weight_registry;
 
 #[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]
