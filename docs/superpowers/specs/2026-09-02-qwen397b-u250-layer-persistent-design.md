@@ -468,7 +468,8 @@ All Cargo and build commands set `CARGO_BUILD_JOBS=32` or
 
 ### RTL simulation
 
-Simulation consumes compiler-generated descriptors and program images rather
+Vivado 2026.1 xsim runs self-checking SystemVerilog benches with at most 32
+elaboration threads. Simulation consumes compiler-generated descriptors and program images rather
 than handwritten test-only encodings. It compares the native IQ1_S decoder
 and FP32 reconstruction against `iq1s_tmatmul.rs` fixtures and covers:
 
@@ -480,6 +481,12 @@ and FP32 reconstruction against `iq1s_tmatmul.rs` fixtures and covers:
 - malformed relocation, CRC, generation, bounds, and program records;
 - injected AXI response failures and timeout recovery;
 - exact completion ordering and output visibility.
+
+Any simulator-only compatibility model is explicitly selected by a compile
+define, accepts only the operation under test, and calls `$fatal` for every
+unsupported instruction. Such a bounded smoke is evidence only for the named
+control path; native decoder and persistent-kernel acceptance requires the full
+`dv/xsim/iq1s_layer_persistent` bench without a compute datapath stub.
 
 ### Hardware emulation and synthesis
 

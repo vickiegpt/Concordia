@@ -6,7 +6,7 @@
 
 **Architecture:** CUDA launch interception continues to capture exact matrix arguments while a versioned llama.cpp sideband ABI supplies layer and phase boundaries. All 55.078125 GiB of IQ1_S expert weights are row-sharded across four U250 DDR banks, and handwritten or AlgorithmTree-generated programs are executed through bank-local persistent command rings. Attention and all non-IQ1_S work stay on GPU.
 
-**Tech Stack:** Rust 2021, C/C++, CUDA 13, Python 3, SystemVerilog, cocotb, Verilator, XRT 2.21, Vitis/Vivado 2026.1, Alveo U250, Bash, pytest, Cargo.
+**Tech Stack:** Rust 2021, C/C++, CUDA 13, Python 3, SystemVerilog, Vivado xsim 2026.1, XRT 2.21, Vitis/Vivado 2026.1, Alveo U250, Bash, pytest, Cargo.
 
 ---
 
@@ -92,7 +92,7 @@ general.maxThreads to 32.
 - Create rtl/axi_iq1s_layer_persistent.sv: persistent CU integration and AXI arbitration.
 - Create rtl/axi_iq1s_layer_persistent_vivado_bd_wrapper.sv: concrete-width Vivado wrapper.
 - Create dv/config/qwen397b_iq1s_1cu.json: small one-CU simulation target.
-- Create dv/cocotb/iq1s_layer_persistent/Makefile and test_iq1s_layer_persistent.py: end-to-end RTL tests.
+- Create dv/xsim/iq1s_layer_persistent/Makefile and iq1s_layer_persistent_xsim_tb.sv: self-checking end-to-end RTL tests.
 - Create synth/pynqvivado_au250/iq1s_bd.tcl: one-bank persistent-kernel block design.
 - Create synth/pynqvivado_au250/targets/pynqvivado_au250_Qwen397B_IQ1S.json: three-big/one-small target.
 - Modify rtl/rtl.f: include persistent modules.
@@ -150,12 +150,16 @@ before changing source.
 Run:
 
     cd /home/victoryang00/hetGPU/.worktrees/ternary-qwen-iq1s-persistent-20260902
-    python3 -m pip install --user -r sw_utils/requirements.txt cocotb cocotbext-axi
-    make -C dv/cocotb/axi_ternip_batched SIM=verilator \
+    python3 -m pytest -q misc/test_xsim_axi_ternip_backend.py
+    source /mnt/disk0/2026.1/settings64.sh
+    make -C dv/xsim/axi_ternip_batched XSIM_JOBS=32 \
       TARGET=synth/pynqvivado_au250/targets/pynqvivado_au250_MaxCores_370M.json \
       KERNEL=ternip_big
 
-Expected: cocotb returns zero with no fatal AXI assertion.
+Expected: the self-checking xsim test assembles and streams a STALL instruction,
+reads asserted stall state back through AXI, emits its PASS sentinel, and returns
+zero. The bounded xsim smoke model must fail closed on every non-STALL
+instruction; production synthesis remains on the unmodified full datapath.
 
 - [ ] **Step 5: Prove toolchain, platform, and live U250 identity**
 
@@ -898,11 +902,11 @@ Expected: PASS and the legacy executor event sequences remain valid.
 - Create: rtl/iq1s_completion_ring.sv
 - Create: rtl/iq1s_fault_latch.sv
 - Create: dv/config/qwen397b_iq1s_1cu.json
-- Create: dv/cocotb/iq1s_layer_persistent/Makefile
-- Create: dv/cocotb/iq1s_layer_persistent/test_iq1s_layer_persistent.py
+- Create: dv/xsim/iq1s_layer_persistent/Makefile
+- Create: dv/xsim/iq1s_layer_persistent/iq1s_layer_persistent_xsim_tb.sv
 - Modify: rtl/rtl.f
 
-- [ ] **Step 1: Write failing cocotb control-plane tests**
+- [ ] **Step 1: Write failing self-checking xsim control-plane tests**
 
 Drive a bank-local AXI RAM and AXI-Lite registers. Test valid command fetch,
 doorbell, completion publication, ring wrap, backpressure, bad magic, bad
@@ -921,10 +925,11 @@ For a valid descriptor, assert:
 
 Run from the hardware worktree:
 
-    make -C dv/cocotb/iq1s_layer_persistent SIM=verilator \
+    source /mnt/disk0/2026.1/settings64.sh
+    make -C dv/xsim/iq1s_layer_persistent XSIM_JOBS=32 \
       TARGET=dv/config/qwen397b_iq1s_1cu.json
 
-Expected: FAIL because the RTL and cocotb target do not exist.
+Expected: FAIL because the RTL and xsim target do not exist.
 
 - [ ] **Step 3: Implement descriptor validation and fault ownership**
 
@@ -940,12 +945,13 @@ nonzero power of two. Fetch exactly 128 bytes per command. Publish a completion
 only after the result-visible input is asserted. Relocation rejects address
 addition overflow and an address outside the descriptor's declared slab.
 
-- [ ] **Step 5: Run lint and cocotb**
+- [ ] **Step 5: Run lint and xsim**
 
 Run:
 
     make lint TARGET=dv/config/qwen397b_iq1s_1cu.json
-    make -C dv/cocotb/iq1s_layer_persistent SIM=verilator \
+    source /mnt/disk0/2026.1/settings64.sh
+    make -C dv/xsim/iq1s_layer_persistent XSIM_JOBS=32 \
       TARGET=dv/config/qwen397b_iq1s_1cu.json
 
 Expected: PASS with all AXI protocol checks enabled.
@@ -956,7 +962,7 @@ Expected: PASS with all AXI protocol checks enabled.
       rtl/iq1s_program_fetch.sv rtl/iq1s_trace_relocator.sv \
       rtl/iq1s_completion_ring.sv rtl/iq1s_fault_latch.sv rtl/rtl.f \
       dv/config/qwen397b_iq1s_1cu.json \
-      dv/cocotb/iq1s_layer_persistent
+      dv/xsim/iq1s_layer_persistent
     git commit -m "feat: add IQ1S persistent command plane"
 
 ### Task 10: Implement native IQ1_S decode and scale reconstruction
@@ -968,7 +974,7 @@ Expected: PASS with all AXI protocol checks enabled.
 - Create: rtl/mem/IQ1S_GRID.memh
 - Create: rtl/mem/IQ1S_GRID.sha256
 - Modify: zluda/src/impl/iq1s_tmatmul.rs
-- Modify: dv/cocotb/iq1s_layer_persistent/test_iq1s_layer_persistent.py
+- Modify: dv/xsim/iq1s_layer_persistent/iq1s_layer_persistent_xsim_tb.sv
 
 - [ ] **Step 1: Add a deterministic Rust RTL-vector emitter test**
 
@@ -990,7 +996,8 @@ Run:
       CARGO_BUILD_JOBS=32 cargo test -p zluda --no-default-features \
       --features nvidia,evaluation emit_iq1s_rtl_vectors -- --ignored --nocapture
 
-Make cocotb load that file. Cover all odd scales 1..15, both delta signs, low
+Make the xsim preflight convert that JSON into deterministic memh records and
+make the self-checking testbench load them. Cover all odd scales 1..15, both delta signs, low
 and high grid-index bits, zero and extreme signed Q8 values, and non-finite
 scale rejection.
 
@@ -999,7 +1006,7 @@ scale rejection.
 Run:
 
     HETGPU_IQ1S_RTL_VECTORS=/tmp/qwen-iq1s-rtl-vectors.json \
-      make -C dv/cocotb/iq1s_layer_persistent SIM=verilator \
+      make -C dv/xsim/iq1s_layer_persistent XSIM_JOBS=32 \
       TARGET=dv/config/qwen397b_iq1s_1cu.json
 
 Expected: FAIL because the decoder and reconstruction pipeline are absent.
@@ -1037,7 +1044,7 @@ decoder fault.
 Run:
 
     HETGPU_IQ1S_RTL_VECTORS=/tmp/qwen-iq1s-rtl-vectors.json \
-      make -C dv/cocotb/iq1s_layer_persistent SIM=verilator \
+      make -C dv/xsim/iq1s_layer_persistent XSIM_JOBS=32 \
       TARGET=dv/config/qwen397b_iq1s_1cu.json
     CARGO_BUILD_JOBS=32 cargo test -p zluda --no-default-features \
       --features nvidia,evaluation iq1s_tmatmul -- --nocapture
@@ -1056,7 +1063,7 @@ Hardware:
 
     git add rtl/iq1s_block_decoder.sv rtl/iq1s_scale_reconstruct.sv \
       rtl/iq1s_result_writer.sv rtl/mem \
-      dv/cocotb/iq1s_layer_persistent/test_iq1s_layer_persistent.py
+      dv/xsim/iq1s_layer_persistent/iq1s_layer_persistent_xsim_tb.sv
     git commit -m "feat: decode native IQ1S weights in RTL"
 
 ### Task 11: Integrate the persistent CU and descriptor-driven AU250 build
@@ -1132,7 +1139,7 @@ Reject zero or values above 32 in Makefile. Add to both v++ link commands:
 Add set_param general.maxThreads 32 to every Vivado entry Tcl used by this
 target.
 
-- [ ] **Step 6: Run resolver, lint, and cocotb gates**
+- [ ] **Step 6: Run resolver, lint, and xsim gates**
 
 Run:
 
@@ -1142,7 +1149,8 @@ Run:
       pynqvivado_au250
     make lint TARGET=synth/pynqvivado_au250/targets/pynqvivado_au250_Qwen397B_IQ1S.json \
       KERNEL=iq1s_layer_big
-    make -C dv/cocotb/iq1s_layer_persistent SIM=verilator \
+    source /mnt/disk0/2026.1/settings64.sh
+    make -C dv/xsim/iq1s_layer_persistent XSIM_JOBS=32 \
       TARGET=synth/pynqvivado_au250/targets/pynqvivado_au250_Qwen397B_IQ1S.json \
       KERNEL=iq1s_layer_big
 
@@ -1185,7 +1193,8 @@ Run:
 
     make lint TARGET=synth/pynqvivado_au250/targets/pynqvivado_au250_Qwen397B_IQ1S.json \
       KERNEL=iq1s_layer_big
-    make -C dv/cocotb/iq1s_layer_persistent SIM=verilator \
+    source /mnt/disk0/2026.1/settings64.sh
+    make -C dv/xsim/iq1s_layer_persistent XSIM_JOBS=32 \
       TARGET=synth/pynqvivado_au250/targets/pynqvivado_au250_Qwen397B_IQ1S.json \
       KERNEL=iq1s_layer_big
 
@@ -1541,7 +1550,7 @@ Then in the hardware worktree:
     make lint TARGET=synth/pynqvivado_au250/targets/pynqvivado_au250_Qwen397B_IQ1S.json \
       KERNEL=iq1s_layer_big
     HETGPU_IQ1S_RTL_VECTORS=/tmp/qwen-iq1s-rtl-vectors.json \
-      make -C dv/cocotb/iq1s_layer_persistent SIM=verilator \
+      make -C dv/xsim/iq1s_layer_persistent XSIM_JOBS=32 \
       TARGET=synth/pynqvivado_au250/targets/pynqvivado_au250_Qwen397B_IQ1S.json \
       KERNEL=iq1s_layer_big
     git status --short
