@@ -8892,11 +8892,22 @@ fn nvidia_plan_modern_iq1s_moe_mmvq(
     {
         return Err("modern IQ1_S MoE MMVQ matrix/output channel strides do not match nrows_x".to_string());
     }
-    let expected_q8_stride = layout.ncols_x / 32;
-    if layout.stride_col_y != expected_q8_stride
-        || layout.stride_channel_y != expected_q8_stride
+    let expected_q8_channel_stride = layout.ncols_x / 32;
+    let expected_q8_column_stride = layout
+        .nchannels_y
+        .z
+        .checked_mul(expected_q8_channel_stride)
+        .ok_or("modern IQ1_S MoE MMVQ activation column stride overflow")?;
+    if layout.stride_col_y != expected_q8_column_stride
+        || layout.stride_channel_y != expected_q8_channel_stride
     {
-        return Err("modern IQ1_S MoE MMVQ activation strides do not match Q8_1 storage".to_string());
+        return Err(format!(
+            "modern IQ1_S MoE MMVQ activation strides col={} channel={} do not match Q8_1 storage col={} channel={}",
+            layout.stride_col_y,
+            layout.stride_channel_y,
+            expected_q8_column_stride,
+            expected_q8_channel_stride,
+        ));
     }
     if layout.ids_stride < grid.1 {
         return Err("modern IQ1_S MoE MMVQ ids_stride is smaller than grid.y".to_string());
@@ -11028,7 +11039,7 @@ mod nvidia_bitnet_route_tests {
             nchannels_y: super::NvidiaCudaUint3 { x: 0, y: 0, z: 8 },
             nrows_x: 1024,
             stride_row_x: 16,
-            stride_col_y: 128,
+            stride_col_y: 1024,
             stride_col_dst: 8192,
             stride_channel_x: 16384,
             stride_channel_y: 128,
@@ -11053,8 +11064,8 @@ mod nvidia_bitnet_route_tests {
         assert_eq!(plans[3].matrix_ptr, 0x1000_0000 + 1 * 16384 * 50);
         assert_eq!(plans[0].activation_ptr, 0x2000_0000);
         assert_eq!(plans[1].activation_ptr, 0x2000_0000 + 128 * 36);
-        assert_eq!(plans[2].activation_ptr, 0x2000_0000 + 128 * 36);
-        assert_eq!(plans[3].activation_ptr, 0x2000_0000 + 2 * 128 * 36);
+        assert_eq!(plans[2].activation_ptr, 0x2000_0000 + 1024 * 36);
+        assert_eq!(plans[3].activation_ptr, 0x2000_0000 + (1024 + 128) * 36);
         assert_eq!(plans[0].output_ptr, 0x3000_0000);
         assert_eq!(plans[1].output_ptr, 0x3000_0000 + 1024 * 4);
         assert_eq!(plans[2].output_ptr, 0x3000_0000 + 8192 * 4);
