@@ -8,6 +8,15 @@ use super::iq1s_layer_abi::{
     IQ1S_REG_COMPLETION_BASE_LO_OFFSET, IQ1S_REG_COMPLETION_CAPACITY_OFFSET,
     IQ1S_REG_COMPLETION_CONSUMER_OFFSET, IQ1S_REG_COMPLETION_PRODUCER_OFFSET,
     IQ1S_REG_CONTROL_OFFSET, IQ1S_REG_DOORBELL_OFFSET, IQ1S_REG_FAULT_CODE_OFFSET,
+    IQ1S_REG_ACTIVATION_BASE_HI_OFFSET, IQ1S_REG_ACTIVATION_BASE_LO_OFFSET,
+    IQ1S_REG_ACTIVATION_BYTES_OFFSET, IQ1S_REG_ARENA_MANIFEST_BASE_HI_OFFSET,
+    IQ1S_REG_ARENA_MANIFEST_BASE_LO_OFFSET, IQ1S_REG_ARENA_MANIFEST_BYTES_OFFSET,
+    IQ1S_REG_MODEL_TAG_HI_OFFSET, IQ1S_REG_MODEL_TAG_LO_OFFSET,
+    IQ1S_REG_PROGRAM_BASE_HI_OFFSET, IQ1S_REG_PROGRAM_BASE_LO_OFFSET,
+    IQ1S_REG_PROGRAM_BYTES_OFFSET, IQ1S_REG_RESULT_BASE_HI_OFFSET,
+    IQ1S_REG_RESULT_BASE_LO_OFFSET, IQ1S_REG_RESULT_BYTES_OFFSET,
+    IQ1S_REG_TOKEN_MAP_BASE_HI_OFFSET, IQ1S_REG_TOKEN_MAP_BASE_LO_OFFSET,
+    IQ1S_REG_TOKEN_MAP_BYTES_OFFSET,
     IQ1S_REG_QUIESCENT_OFFSET, IQ1S_REG_SESSION_GENERATION_HI_OFFSET,
     IQ1S_REG_SESSION_GENERATION_LO_OFFSET, IQ1S_ROLE_DOWN, IQ1S_ROLE_GATE, IQ1S_ROLE_UP,
 };
@@ -27,6 +36,9 @@ const CONTROL_START: u32 = 1;
 const CONTROL_SHUTDOWN: u32 = 2;
 const COMMAND_RING_DEFAULT_CAPACITY: u32 = 512;
 const PROGRAM_BYTES: usize = 4 * 1024 * 1024;
+const ARENA_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+const ARENA_MANIFEST_MAGIC: u32 = 0x4d41_5149;
+const ARENA_MANIFEST_RECORD_BYTES: usize = 64;
 const ACTIVATION_BYTES: usize = 256 * 1024 * 1024;
 const OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 const TOKEN_MAP_BYTES: usize = 16 * 1024 * 1024;
@@ -197,6 +209,7 @@ struct ArenaChunk {
     bytes: usize,
     bo: Handle,
     address: u64,
+    sha256: [u8; 32],
 }
 
 #[derive(Debug)]
@@ -205,11 +218,14 @@ struct PersistentCu {
     command_bo: Handle,
     completion_bo: Handle,
     program_bo: Handle,
+    arena_manifest_bo: Handle,
     activation_bo: Handle,
     output_bo: Handle,
     token_map_bo: Handle,
     command_address: u64,
     completion_address: u64,
+    program_address: u64,
+    arena_manifest_address: u64,
     activation_address: u64,
     output_address: u64,
     token_map_address: u64,
@@ -224,11 +240,12 @@ struct PersistentCu {
 }
 
 impl PersistentCu {
-    fn runtime_bos(&self) -> [Handle; 6] {
+    fn runtime_bos(&self) -> [Handle; 7] {
         [
             self.command_bo,
             self.completion_bo,
             self.program_bo,
+            self.arena_manifest_bo,
             self.activation_bo,
             self.output_bo,
             self.token_map_bo,
@@ -242,6 +259,7 @@ pub(crate) struct PersistentIq1sPool<O: XrtOps> {
     native_device: Handle,
     xclbin_uuid: Xuid,
     generation: u64,
+    model_tag: u64,
     config: PersistentIq1sConfig,
     cus: [PersistentCu; ARENA_BANK_COUNT],
     poisoned: Option<PersistentFault>,
@@ -319,6 +337,47 @@ fn merge_ranges(ranges: impl IntoIterator<Item = (usize, usize)>) -> Vec<(usize,
     merged
 }
 
+fn resident_model_tag(chunks: &[ArenaChunkSpec]) -> u64 {
+    let mut ordered = chunks.to_vec();
+    ordered.sort_by_key(|chunk| (chunk.bank, chunk.logical_offset));
+    let mut hash = Sha256::new();
+    hash.update(b"hetgpu-qwen-iq1s-resident-model-v1\0");
+    for chunk in ordered {
+        hash.update([chunk.bank]);
+        hash.update(chunk.logical_offset.to_le_bytes());
+        hash.update((chunk.bytes as u64).to_le_bytes());
+        hash.update(chunk.sha256);
+    }
+    u64::from_le_bytes(hash.finalize()[..8].try_into().expect("eight-byte model tag"))
+}
+
+fn arena_manifest(model_tag: u64, arena: &[ArenaChunk]) -> Result<Vec<u8>, PersistentError> {
+    let used = 64usize
+        .checked_add(arena.len().checked_mul(ARENA_MANIFEST_RECORD_BYTES).ok_or_else(|| {
+            PersistentError::Config("arena manifest length overflow".to_string())
+        })?)
+        .ok_or_else(|| PersistentError::Config("arena manifest length overflow".to_string()))?;
+    if used > ARENA_MANIFEST_BYTES {
+        return Err(PersistentError::Config(
+            "arena manifest exceeds its bank-local BO".to_string(),
+        ));
+    }
+    let mut bytes = vec![0u8; ARENA_MANIFEST_BYTES];
+    bytes[0..4].copy_from_slice(&ARENA_MANIFEST_MAGIC.to_le_bytes());
+    bytes[4..8].copy_from_slice(&IQ1S_ABI_VERSION.to_le_bytes());
+    bytes[8..12].copy_from_slice(&(arena.len() as u32).to_le_bytes());
+    bytes[12..16].copy_from_slice(&(ARENA_MANIFEST_RECORD_BYTES as u32).to_le_bytes());
+    bytes[16..24].copy_from_slice(&model_tag.to_le_bytes());
+    for (index, chunk) in arena.iter().enumerate() {
+        let offset = 64 + index * ARENA_MANIFEST_RECORD_BYTES;
+        bytes[offset..offset + 8].copy_from_slice(&chunk.logical_offset.to_le_bytes());
+        bytes[offset + 8..offset + 16].copy_from_slice(&(chunk.bytes as u64).to_le_bytes());
+        bytes[offset + 16..offset + 24].copy_from_slice(&chunk.address.to_le_bytes());
+        bytes[offset + 24..offset + 56].copy_from_slice(&chunk.sha256);
+    }
+    Ok(bytes)
+}
+
 impl<O: XrtOps> PersistentIq1sPool<O> {
     pub(crate) fn open(
         ops: O,
@@ -330,6 +389,12 @@ impl<O: XrtOps> PersistentIq1sPool<O> {
         if generation == 0 {
             return Err(PersistentError::Config(
                 "session generation must be nonzero".to_string(),
+            ));
+        }
+        let model_tag = resident_model_tag(chunks);
+        if model_tag == 0 {
+            return Err(PersistentError::Config(
+                "resident model identity tag must be nonzero".to_string(),
             ));
         }
         let mut by_bank: [Vec<ArenaChunkSpec>; ARENA_BANK_COUNT] =
@@ -443,6 +508,7 @@ impl<O: XrtOps> PersistentIq1sPool<O> {
             let command_bo = allocate(ring_bytes)?;
             let completion_bo = allocate(ring_bytes)?;
             let program_bo = allocate(PROGRAM_BYTES)?;
+            let arena_manifest_bo = allocate(ARENA_MANIFEST_BYTES)?;
             let activation_bo = allocate(ACTIVATION_BYTES)?;
             let output_bo = allocate(OUTPUT_BYTES)?;
             let token_map_bo = allocate(TOKEN_MAP_BYTES)?;
@@ -476,16 +542,35 @@ impl<O: XrtOps> PersistentIq1sPool<O> {
                     bytes: spec.bytes,
                     bo,
                     address,
+                    sha256: spec.sha256,
                 });
             }
+            let manifest = arena_manifest(model_tag, &arena)?;
+            checked_code(
+                "write arena manifest",
+                ops.bo_write(arena_manifest_bo, &manifest),
+            )?;
+            checked_code(
+                "sync arena manifest",
+                ops.bo_sync(
+                    arena_manifest_bo,
+                    XRT_BO_SYNC_TO_DEVICE,
+                    manifest.len(),
+                    0,
+                ),
+            )?;
             let command_address = ops.bo_address(command_bo);
             let completion_address = ops.bo_address(completion_bo);
+            let program_address = ops.bo_address(program_bo);
+            let arena_manifest_address = ops.bo_address(arena_manifest_bo);
             let activation_address = ops.bo_address(activation_bo);
             let output_address = ops.bo_address(output_bo);
             let token_map_address = ops.bo_address(token_map_bo);
             if [
                 command_address,
                 completion_address,
+                program_address,
+                arena_manifest_address,
                 activation_address,
                 output_address,
                 token_map_address,
@@ -501,11 +586,14 @@ impl<O: XrtOps> PersistentIq1sPool<O> {
                 command_bo,
                 completion_bo,
                 program_bo,
+                arena_manifest_bo,
                 activation_bo,
                 output_bo,
                 token_map_bo,
                 command_address,
                 completion_address,
+                program_address,
+                arena_manifest_address,
                 activation_address,
                 output_address,
                 token_map_address,
@@ -528,6 +616,7 @@ impl<O: XrtOps> PersistentIq1sPool<O> {
             native_device,
             xclbin_uuid,
             generation,
+            model_tag,
             config,
             cus,
             poisoned: None,
@@ -571,6 +660,12 @@ impl<O: XrtOps> PersistentIq1sPool<O> {
     fn configure_and_start(&mut self, cu: usize) -> Result<(), PersistentError> {
         let command_address = split_u64(self.cus[cu].command_address);
         let completion_address = split_u64(self.cus[cu].completion_address);
+        let program_address = split_u64(self.cus[cu].program_address);
+        let arena_manifest_address = split_u64(self.cus[cu].arena_manifest_address);
+        let activation_address = split_u64(self.cus[cu].activation_address);
+        let result_address = split_u64(self.cus[cu].output_address);
+        let token_map_address = split_u64(self.cus[cu].token_map_address);
+        let model_tag = split_u64(self.model_tag);
         let generation = split_u64(self.generation);
         for (offset, value) in [
             (IQ1S_REG_SESSION_GENERATION_LO_OFFSET, generation.0),
@@ -589,6 +684,23 @@ impl<O: XrtOps> PersistentIq1sPool<O> {
                 self.config.command_capacity,
             ),
             (IQ1S_REG_COMPLETION_CONSUMER_OFFSET, 0),
+            (IQ1S_REG_PROGRAM_BASE_LO_OFFSET, program_address.0),
+            (IQ1S_REG_PROGRAM_BASE_HI_OFFSET, program_address.1),
+            (IQ1S_REG_ARENA_MANIFEST_BASE_LO_OFFSET, arena_manifest_address.0),
+            (IQ1S_REG_ARENA_MANIFEST_BASE_HI_OFFSET, arena_manifest_address.1),
+            (IQ1S_REG_ACTIVATION_BASE_LO_OFFSET, activation_address.0),
+            (IQ1S_REG_ACTIVATION_BASE_HI_OFFSET, activation_address.1),
+            (IQ1S_REG_RESULT_BASE_LO_OFFSET, result_address.0),
+            (IQ1S_REG_RESULT_BASE_HI_OFFSET, result_address.1),
+            (IQ1S_REG_TOKEN_MAP_BASE_LO_OFFSET, token_map_address.0),
+            (IQ1S_REG_TOKEN_MAP_BASE_HI_OFFSET, token_map_address.1),
+            (IQ1S_REG_MODEL_TAG_LO_OFFSET, model_tag.0),
+            (IQ1S_REG_MODEL_TAG_HI_OFFSET, model_tag.1),
+            (IQ1S_REG_ACTIVATION_BYTES_OFFSET, ACTIVATION_BYTES as u32),
+            (IQ1S_REG_RESULT_BYTES_OFFSET, OUTPUT_BYTES as u32),
+            (IQ1S_REG_TOKEN_MAP_BYTES_OFFSET, TOKEN_MAP_BYTES as u32),
+            (IQ1S_REG_PROGRAM_BYTES_OFFSET, PROGRAM_BYTES as u32),
+            (IQ1S_REG_ARENA_MANIFEST_BYTES_OFFSET, ARENA_MANIFEST_BYTES as u32),
             (IQ1S_REG_CONTROL_OFFSET, CONTROL_START),
         ] {
             self.reg_write(cu, offset, value)?;
@@ -1561,6 +1673,34 @@ mod tests {
             4
         );
         assert_eq!(events.iter().filter(|event| matches!(event, Event::RegisterWrite { offset, value: CONTROL_START, .. } if *offset == IQ1S_REG_CONTROL_OFFSET as u32)).count(), 4);
+        for offset in [
+            IQ1S_REG_PROGRAM_BASE_LO_OFFSET,
+            IQ1S_REG_PROGRAM_BASE_HI_OFFSET,
+            IQ1S_REG_ARENA_MANIFEST_BASE_LO_OFFSET,
+            IQ1S_REG_ARENA_MANIFEST_BASE_HI_OFFSET,
+            IQ1S_REG_ACTIVATION_BASE_LO_OFFSET,
+            IQ1S_REG_ACTIVATION_BASE_HI_OFFSET,
+            IQ1S_REG_RESULT_BASE_LO_OFFSET,
+            IQ1S_REG_RESULT_BASE_HI_OFFSET,
+            IQ1S_REG_TOKEN_MAP_BASE_LO_OFFSET,
+            IQ1S_REG_TOKEN_MAP_BASE_HI_OFFSET,
+            IQ1S_REG_MODEL_TAG_LO_OFFSET,
+            IQ1S_REG_MODEL_TAG_HI_OFFSET,
+            IQ1S_REG_ACTIVATION_BYTES_OFFSET,
+            IQ1S_REG_RESULT_BYTES_OFFSET,
+            IQ1S_REG_TOKEN_MAP_BYTES_OFFSET,
+            IQ1S_REG_PROGRAM_BYTES_OFFSET,
+            IQ1S_REG_ARENA_MANIFEST_BYTES_OFFSET,
+        ] {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, Event::RegisterWrite { offset: actual, .. } if *actual == offset as u32))
+                    .count(),
+                4,
+                "register 0x{offset:x} must be configured on all four CUs"
+            );
+        }
         assert!(events
             .iter()
             .filter_map(|event| match event {

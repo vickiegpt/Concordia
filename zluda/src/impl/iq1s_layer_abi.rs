@@ -1,7 +1,7 @@
 // Generated from tools/qwen35-iq1s-layer-abi.json; do not edit.
-// Canonical schema SHA-256: a627be37a468ad9d85a0fdb2d6a92650ac33e345f1e85d393d85bda222f9577f
+// Canonical schema SHA-256: 80566119efe7e538f1b562e3b01687a4b83817b0d77aabb558b3db9651fbdec3
 
-pub const IQ1S_SCHEMA_SHA256: &str = "a627be37a468ad9d85a0fdb2d6a92650ac33e345f1e85d393d85bda222f9577f";
+pub const IQ1S_SCHEMA_SHA256: &str = "80566119efe7e538f1b562e3b01687a4b83817b0d77aabb558b3db9651fbdec3";
 pub const IQ1S_ABI_VERSION: u32 = 2;
 pub const IQ1S_REGISTER_MAGIC: u32 = 0x324c5149;
 pub const IQ1S_COMMAND_MAGIC: u32 = 0x32435149;
@@ -49,6 +49,23 @@ pub const IQ1S_REG_FAULT_CODE_OFFSET: usize = 68;
 pub const IQ1S_REG_FAULT_DETAIL_LO_OFFSET: usize = 72;
 pub const IQ1S_REG_FAULT_DETAIL_HI_OFFSET: usize = 76;
 pub const IQ1S_REG_QUIESCENT_OFFSET: usize = 80;
+pub const IQ1S_REG_PROGRAM_BASE_LO_OFFSET: usize = 88;
+pub const IQ1S_REG_PROGRAM_BASE_HI_OFFSET: usize = 92;
+pub const IQ1S_REG_ARENA_MANIFEST_BASE_LO_OFFSET: usize = 96;
+pub const IQ1S_REG_ARENA_MANIFEST_BASE_HI_OFFSET: usize = 100;
+pub const IQ1S_REG_ACTIVATION_BASE_LO_OFFSET: usize = 104;
+pub const IQ1S_REG_ACTIVATION_BASE_HI_OFFSET: usize = 108;
+pub const IQ1S_REG_RESULT_BASE_LO_OFFSET: usize = 112;
+pub const IQ1S_REG_RESULT_BASE_HI_OFFSET: usize = 116;
+pub const IQ1S_REG_TOKEN_MAP_BASE_LO_OFFSET: usize = 120;
+pub const IQ1S_REG_TOKEN_MAP_BASE_HI_OFFSET: usize = 124;
+pub const IQ1S_REG_MODEL_TAG_LO_OFFSET: usize = 128;
+pub const IQ1S_REG_MODEL_TAG_HI_OFFSET: usize = 132;
+pub const IQ1S_REG_ACTIVATION_BYTES_OFFSET: usize = 136;
+pub const IQ1S_REG_RESULT_BYTES_OFFSET: usize = 140;
+pub const IQ1S_REG_TOKEN_MAP_BYTES_OFFSET: usize = 144;
+pub const IQ1S_REG_PROGRAM_BYTES_OFFSET: usize = 148;
+pub const IQ1S_REG_ARENA_MANIFEST_BYTES_OFFSET: usize = 152;
 
 pub const IQ1S_COMMAND_BYTES: usize = 128;
 pub const IQ1S_COMMAND_MAGIC_OFFSET: usize = 0;

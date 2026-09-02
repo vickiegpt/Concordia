@@ -56,6 +56,16 @@ def test_canonical_schema_layout() -> None:
     assert field("command", "transaction_id") == (24, "u64")
     assert field("command", "arena_offset") == (64, "u64")
     assert field("completion", "status") == (8, "u32")
+    assert schema["registers"]["program_base_lo"] == 88
+    assert schema["registers"]["program_base_hi"] == 92
+    assert schema["registers"]["arena_manifest_base_lo"] == 96
+    assert schema["registers"]["activation_base_lo"] == 104
+    assert schema["registers"]["result_base_lo"] == 112
+    assert schema["registers"]["token_map_base_lo"] == 120
+    assert schema["registers"]["model_tag_lo"] == 128
+    assert schema["registers"]["activation_bytes"] == 136
+    assert schema["registers"]["result_bytes"] == 140
+    assert schema["registers"]["token_map_bytes"] == 144
 
 
 def test_generator_emits_deterministic_c_rust_and_sv(tmp_path: Path) -> None:
@@ -70,6 +80,9 @@ def test_generator_emits_deterministic_c_rust_and_sv(tmp_path: Path) -> None:
     assert "#define HETGPU_IQ1S_COMMAND_BYTES 128u" in c_header
     assert "pub const IQ1S_COMMAND_BYTES: usize = 128;" in rust_source
     assert "localparam int IQ1S_COMMAND_BYTES = 128;" in sv_source
+    assert "IQ1S_REG_PROGRAM_BASE_LO_OFFSET: usize = 88;" in rust_source
+    assert "HETGPU_IQ1S_REG_TOKEN_MAP_BASE_LO_OFFSET 120u" in c_header
+    assert "IQ1S_REG_MODEL_TAG_LO_OFFSET = 128;" in sv_source
     assert "command CRC32 is IEEE CRC32 with bytes 8..11 zeroed" in c_header
     assert schema_hash in c_header
     assert schema_hash in rust_source
