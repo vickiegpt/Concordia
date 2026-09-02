@@ -87,6 +87,12 @@ pub(crate) mod cxl_tmatmul_v3;
 pub(crate) mod batch_scheduler;
 
 #[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) mod iq1s_layer;
+
+#[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]
+pub(crate) mod iq1s_layer_abi;
+
+#[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]
 pub(crate) mod iq1s_tmatmul;
 
 #[cfg(all(unix, feature = "nvidia", not(feature = "amd"), not(feature = "intel")))]

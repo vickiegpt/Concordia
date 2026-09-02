@@ -97,6 +97,118 @@ pub unsafe extern "C" fn hetgpu_iq1s_bind_device_v1(
     .unwrap_or(crate::r#impl::iq1s_weight_registry::HETGPU_IQ1S_ERROR)
 }
 
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_iq1s_layer_begin_v2(
+    abi_version: u32,
+    layer_id: u32,
+    transaction_id: u64,
+    batch_count: u32,
+    cuda_stream: *mut ::core::ffi::c_void,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::r#impl::iq1s_layer::layer_begin(
+            abi_version,
+            layer_id,
+            transaction_id,
+            batch_count,
+            cuda_stream,
+        )
+    }))
+    .unwrap_or(crate::r#impl::iq1s_weight_registry::HETGPU_IQ1S_ERROR)
+}
+
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_iq1s_layer_set_routes_v2(
+    abi_version: u32,
+    transaction_id: u64,
+    token_ids: *const u32,
+    expert_ids: *const i32,
+    route_weights: *const f32,
+    top_k: u32,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::r#impl::iq1s_layer::layer_set_routes(
+            abi_version,
+            transaction_id,
+            token_ids,
+            expert_ids,
+            route_weights,
+            top_k,
+        )
+    }))
+    .unwrap_or(crate::r#impl::iq1s_weight_registry::HETGPU_IQ1S_ERROR)
+}
+
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub extern "C" fn hetgpu_iq1s_layer_phase_commit_v2(
+    abi_version: u32,
+    transaction_id: u64,
+    phase: u32,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::r#impl::iq1s_layer::layer_phase_commit(abi_version, transaction_id, phase)
+    }))
+    .unwrap_or(crate::r#impl::iq1s_weight_registry::HETGPU_IQ1S_ERROR)
+}
+
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub extern "C" fn hetgpu_iq1s_layer_commit_v2(
+    abi_version: u32,
+    transaction_id: u64,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::r#impl::iq1s_layer::layer_commit(abi_version, transaction_id)
+    }))
+    .unwrap_or(crate::r#impl::iq1s_weight_registry::HETGPU_IQ1S_ERROR)
+}
+
+#[cfg(all(
+    unix,
+    feature = "nvidia",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
+#[no_mangle]
+pub extern "C" fn hetgpu_iq1s_layer_abort_v2(
+    abi_version: u32,
+    transaction_id: u64,
+    reason: u32,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::r#impl::iq1s_layer::layer_abort(abi_version, transaction_id, reason)
+    }))
+    .unwrap_or(crate::r#impl::iq1s_weight_registry::HETGPU_IQ1S_ERROR)
+}
+
 // The embedded CUDA runtime shim exposes IPC entry points in every build. The
 // SIFIVE backend supplies real shared-DDR implementations; NVIDIA-only builds
 // must still provide fail-closed providers so the shim has no unresolved DT_NEEDED symbols.

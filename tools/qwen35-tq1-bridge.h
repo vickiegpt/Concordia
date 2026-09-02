@@ -12,8 +12,14 @@ extern "C" {
 #define HETGPU_TQ1_ERROR (-1)
 
 #define HETGPU_IQ1S_ABI_VERSION 1u
+#define HETGPU_IQ1S_LAYER_ABI_VERSION 2u
 #define HETGPU_IQ1S_HANDLED 1
 #define HETGPU_IQ1S_ERROR (-1)
+
+enum hetgpu_iq1s_layer_phase_v2 {
+    HETGPU_IQ1S_LAYER_PHASE_A = 1,
+    HETGPU_IQ1S_LAYER_PHASE_B = 2,
+};
 
 enum hetgpu_tq1_role_v1 {
     HETGPU_TQ1_ROLE_GATE_EXPS = 1,
@@ -90,6 +96,51 @@ typedef int (*hetgpu_tq1_register_tensor_v1_fn)(const struct hetgpu_tq1_tensor_v
 typedef int (*hetgpu_tq1_try_mul_mat_id_v1_fn)(const struct hetgpu_tq1_mul_mat_id_v1 *);
 typedef int (*hetgpu_iq1s_register_tensor_v1_fn)(const struct hetgpu_iq1s_tensor_v1 *);
 typedef int (*hetgpu_iq1s_bind_device_v1_fn)(const struct hetgpu_iq1s_device_binding_v1 *);
+typedef int (*hetgpu_iq1s_layer_begin_v2_fn)(
+    uint32_t abi_version,
+    uint32_t layer_id,
+    uint64_t transaction_id,
+    uint32_t batch_count,
+    void * cuda_stream);
+typedef int (*hetgpu_iq1s_layer_set_routes_v2_fn)(
+    uint32_t abi_version,
+    uint64_t transaction_id,
+    const uint32_t * token_ids,
+    const int32_t * expert_ids,
+    const float * route_weights,
+    uint32_t top_k);
+typedef int (*hetgpu_iq1s_layer_phase_commit_v2_fn)(
+    uint32_t abi_version,
+    uint64_t transaction_id,
+    uint32_t phase);
+typedef int (*hetgpu_iq1s_layer_commit_v2_fn)(uint32_t abi_version, uint64_t transaction_id);
+typedef int (*hetgpu_iq1s_layer_abort_v2_fn)(
+    uint32_t abi_version,
+    uint64_t transaction_id,
+    uint32_t reason);
+
+int hetgpu_iq1s_layer_begin_v2(
+    uint32_t abi_version,
+    uint32_t layer_id,
+    uint64_t transaction_id,
+    uint32_t batch_count,
+    void * cuda_stream);
+int hetgpu_iq1s_layer_set_routes_v2(
+    uint32_t abi_version,
+    uint64_t transaction_id,
+    const uint32_t * token_ids,
+    const int32_t * expert_ids,
+    const float * route_weights,
+    uint32_t top_k);
+int hetgpu_iq1s_layer_phase_commit_v2(
+    uint32_t abi_version,
+    uint64_t transaction_id,
+    uint32_t phase);
+int hetgpu_iq1s_layer_commit_v2(uint32_t abi_version, uint64_t transaction_id);
+int hetgpu_iq1s_layer_abort_v2(
+    uint32_t abi_version,
+    uint64_t transaction_id,
+    uint32_t reason);
 
 #ifdef __cplusplus
 }

@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::{c_char, c_void, CStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::os::unix::ffi::OsStringExt;
@@ -46,7 +46,7 @@ pub struct HetgpuIq1sDeviceBindingV1 {
     pub allocation_generation: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Iq1sExpertRole {
     Gate,
     Up,
@@ -363,6 +363,21 @@ fn hash_file_range(file: &File, offset: u64, nbytes: u64) -> Result<[u8; 32], St
 }
 
 impl Iq1sWeightRegistry {
+    pub(crate) fn expected_roles_for_layer(
+        &self,
+        layer: u32,
+    ) -> Result<BTreeSet<Iq1sExpertRole>, String> {
+        let sources = self
+            .sources
+            .read()
+            .map_err(|_| "IQ1_S tensor registry lock poisoned".to_string())?;
+        Ok(sources
+            .values()
+            .filter(|source| source.identity.layer == layer)
+            .map(|source| source.identity.role)
+            .collect())
+    }
+
     pub(crate) fn register(
         &self,
         registration: Iq1sTensorRegistration,
@@ -632,6 +647,35 @@ mod tests {
         assert_eq!(resolved.expert, 1);
         assert_eq!(resolved.allocation_generation, 7);
         assert_eq!(resolved.content_sha256, source.identity.content_sha256);
+    }
+
+    #[test]
+    fn reports_exact_registered_iq1s_roles_per_layer() {
+        let gate_file = tensor_file(0x31);
+        let down_file = tensor_file(0x32);
+        let registry = Iq1sWeightRegistry::default();
+        registry
+            .register(registration(
+                &gate_file,
+                "blk.7.ffn_gate_exps.weight",
+                Iq1sExpertRole::Gate,
+            ))
+            .unwrap();
+        registry
+            .register(registration(
+                &down_file,
+                "blk.7.ffn_down_exps.weight",
+                Iq1sExpertRole::Down,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            registry.expected_roles_for_layer(7).unwrap(),
+            [Iq1sExpertRole::Gate, Iq1sExpertRole::Down]
+                .into_iter()
+                .collect()
+        );
+        assert!(registry.expected_roles_for_layer(8).unwrap().is_empty());
     }
 
     #[test]
