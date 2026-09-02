@@ -46,6 +46,43 @@ grep -Fq 'hetgpu_iq1s_register_tensor_v1' "${overlay}/src/llama-model-loader.cpp
 grep -Fq 'GGML_TYPE_IQ1_S' "${overlay}/src/llama-model-loader.cpp"
 grep -Fq 'hetgpu_tq1_try_mul_mat_id_v1' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
 grep -Fq 'hetgpu_iq1s_bind_device_v1' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+for symbol in \
+    hetgpu_iq1s_layer_begin_v2 \
+    hetgpu_iq1s_layer_set_routes_v2 \
+    hetgpu_iq1s_layer_phase_commit_v2 \
+    hetgpu_iq1s_layer_commit_v2 \
+    hetgpu_iq1s_layer_abort_v2; do
+    grep -Fq "dlsym(RTLD_DEFAULT, \"${symbol}\")" \
+        "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+done
+grep -Fq 'struct hetgpu_iq1s_stream_state' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'uint32_t layer =' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'uint64_t transaction =' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'bool gate_seen =' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'bool up_seen =' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'bool down_seen =' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'state.gate_seen && state.up_seen && !state.phase_a_committed' \
+    "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'hetgpu_iq1s_commit_after_down' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'hetgpu_iq1s_note_route_weights' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'static std::atomic<uint64_t> hetgpu_iq1s_next_transaction{1}' \
+    "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'hetgpu_iq1s_graph_boundary("begin")' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'hetgpu_iq1s_graph_boundary("end")' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'hetgpu_iq1s_graph_boundary("exception")' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'hetgpu_iq1s_abort_active_for_cuda_error();' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+python3 - "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu" <<'PY'
+import pathlib
+import re
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+for member in ("begin", "set_routes", "phase_commit", "commit", "abort"):
+    calls = re.findall(rf"^.*hooks\.{member}\(.*$", source, re.MULTILINE)
+    assert calls, f"missing hooks.{member} call"
+    for call in calls:
+        assert "const int " in call and "_result =" in call, f"unchecked v2 call: {call}"
+PY
 grep -Fq 'HETGPU_QWEN_IQ1S_DISABLE_CUDA_FUSION' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
 grep -Fq 'HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
 grep -Fq 'hetgpu_qwen35_cuda_buffer_max_size' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"

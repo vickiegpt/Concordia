@@ -75,6 +75,38 @@ grep -Fq 'hetgpu_tq1_try_mul_mat_id_v1' "${builder}"
 grep -Fq 'hetgpu_tq1_evaluate_raw_v1' "${builder}"
 grep -Fq 'hetgpu_iq1s_register_tensor_v1' "${builder}"
 grep -Fq 'hetgpu_iq1s_bind_device_v1' "${builder}"
+for symbol in \
+    hetgpu_iq1s_layer_begin_v2 \
+    hetgpu_iq1s_layer_set_routes_v2 \
+    hetgpu_iq1s_layer_phase_commit_v2 \
+    hetgpu_iq1s_layer_commit_v2 \
+    hetgpu_iq1s_layer_abort_v2; do
+    grep -Fq "dlsym(RTLD_DEFAULT, \"${symbol}\")" \
+        "${repo_root}/tools/llama-qwen35-tq1-hetgpu.patch"
+done
+grep -Fq 'struct hetgpu_iq1s_stream_state' "${repo_root}/tools/llama-qwen35-tq1-hetgpu.patch"
+grep -Fq 'state.gate_seen && state.up_seen && !state.phase_a_committed' \
+    "${repo_root}/tools/llama-qwen35-tq1-hetgpu.patch"
+grep -Fq 'hetgpu_iq1s_commit_after_down' "${repo_root}/tools/llama-qwen35-tq1-hetgpu.patch"
+grep -Fq 'hetgpu_iq1s_note_route_weights' "${repo_root}/tools/llama-qwen35-tq1-hetgpu.patch"
+grep -Fq 'static std::atomic<uint64_t> hetgpu_iq1s_next_transaction{1}' \
+    "${repo_root}/tools/llama-qwen35-tq1-hetgpu.patch"
+grep -Fq 'hetgpu_iq1s_graph_boundary("exception")' \
+    "${repo_root}/tools/llama-qwen35-tq1-hetgpu.patch"
+grep -Fq 'hetgpu_iq1s_abort_active_for_cuda_error();' \
+    "${repo_root}/tools/llama-qwen35-tq1-hetgpu.patch"
+python3 - "${repo_root}/tools/llama-qwen35-tq1-hetgpu.patch" <<'PY'
+import pathlib
+import re
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+for member in ("begin", "set_routes", "phase_commit", "commit", "abort"):
+    calls = re.findall(rf"^\+.*hooks\.{member}\(.*$", source, re.MULTILINE)
+    assert calls, f"missing hooks.{member} call"
+    for call in calls:
+        assert "const int " in call and "_result =" in call, f"unchecked v2 call: {call}"
+PY
 grep -Fq 'ldd -r' "${builder}"
 grep -Fq 'tq1_upstream_reference.cpp' "${builder}"
 grep -Fq 'tq1_upstream_reference' "${builder}"
