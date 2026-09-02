@@ -361,10 +361,13 @@ def test_fake_server_preserves_identical_requests_and_fixed_counts(tmp_path):
     assert handwritten["sampled_ffn_comparison"]["checked_elements"] == 2
     assert compiler["sampled_ffn_comparison"]["checked_elements"] == 2
     assert cuda["placement"] == {"all_layers_on_gpu": True, "cpu_layers": 0}
-    for mode in ("cuda", "handwritten", "compiler"):
+    for mode, record in zip(("cuda", "handwritten", "compiler"), modes):
         command = json.loads((tmp_path / mode / "command.json").read_text(encoding="utf-8"))
         assert "--no-warmup" in command
         assert command[command.index("--parallel") + 1] == "16"
+        assert command[command.index("--ctx-size") + 1] == "8192"
+        assert record["context_tokens_per_request"] == 512
+        assert record["server_context_tokens"] == 8192
 
     records = [json.loads(line) for line in requests.read_text().splitlines()]
     assert len(records) == 3 * (2 + 64 * 4)

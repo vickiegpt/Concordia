@@ -224,6 +224,8 @@ def mode_record(mode):
         "request_count": 64,
         "max_active_requests": 16,
         "generated_tokens_per_request": 32,
+        "context_tokens_per_request": 512,
+        "server_context_tokens": 8192,
     }
 
 
@@ -287,6 +289,8 @@ def mutate_build_threads(p): p["artifact_hashes"]["build_threads"] = "33"
 def mutate_workload_count(p): p["handwritten"]["request_count"] = 63
 def mutate_concurrency(p): p["compiler"]["max_active_requests"] = 17
 def mutate_token_count(p): p["cuda"]["generated_tokens_per_request"] = 31
+def mutate_per_request_context(p): p["cuda"]["context_tokens_per_request"] = 256
+def mutate_server_context(p): p["compiler"]["server_context_tokens"] = 512
 def mutate_request_ids(p): p["handwritten"]["generated_token_ids_by_request"].pop()
 def mutate_tokens(p): p["compiler"]["generated_token_ids_by_request"][3][0] = 999
 def mutate_ffn_value(p): p["handwritten"]["sampled_ffn_comparison"]["actual_outputs"][0] = 2.0
@@ -321,7 +325,8 @@ def mutate_process(p): p["handwritten"]["process"]["exit_code"] = 1
 MUTATIONS = [
     mutate_audit_distribution, mutate_nonexpert_iq1s, mutate_model_hash, mutate_build_hash,
     mutate_source_hash, mutate_binary, mutate_build_threads, mutate_workload_count, mutate_concurrency,
-    mutate_token_count, mutate_request_ids, mutate_tokens, mutate_ffn_value,
+    mutate_token_count, mutate_per_request_context, mutate_server_context,
+    mutate_request_ids, mutate_tokens, mutate_ffn_value,
     mutate_ffn_tolerance, mutate_fallback, mutate_route_set, mutate_trace_mode,
     mutate_context_limit, mutate_semantic_hash, mutate_assembly_body, mutate_assembly_hash,
     mutate_program_hash, mutate_replay_hash, mutate_program_address, mutate_program_bytes,

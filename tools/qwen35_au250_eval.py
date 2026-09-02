@@ -25,6 +25,8 @@ REQUEST_COUNT = 64
 MAX_ACTIVE_REQUESTS = 16
 PREDICT_TOKENS = 32
 PROMPT_TOKENS = 256
+CONTEXT_TOKENS_PER_REQUEST = 512
+SERVER_CONTEXT_TOKENS = MAX_ACTIVE_REQUESTS * CONTEXT_TOKENS_PER_REQUEST
 SEMANTIC_PROMPT = "Reply with exactly OK and no other text."
 MODEL_SIZE = 94_155_830_880
 MODEL_SHA256 = "0a32c2702fbb61934960cfeef34524b81ec6d9267158f246d45fc86f5aaa7568"
@@ -866,7 +868,7 @@ def run(args):
 
     before_health = capture_health(args, proof_dir, "before")
     command = [
-        str(server), "--model", str(model), "--ctx-size", "512", "--n-gpu-layers", "999",
+        str(server), "--model", str(model), "--ctx-size", str(SERVER_CONTEXT_TOKENS), "--n-gpu-layers", "999",
         "--threads", str(args.threads), "--host", "127.0.0.1", "--port", str(args.port),
         "--seed", "42", "--parallel", "16", "--reasoning", "off", "--verbosity", "4",
         "--no-warmup", "--no-webui",
@@ -1065,6 +1067,8 @@ def run(args):
         "request_count": REQUEST_COUNT,
         "max_active_requests": MAX_ACTIVE_REQUESTS,
         "generated_tokens_per_request": PREDICT_TOKENS,
+        "context_tokens_per_request": CONTEXT_TOKENS_PER_REQUEST,
+        "server_context_tokens": SERVER_CONTEXT_TOKENS,
     }
     atomic_json(proof_dir / f"{args.mode}.json", record)
     return record

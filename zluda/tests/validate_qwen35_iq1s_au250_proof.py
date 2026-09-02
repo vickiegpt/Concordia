@@ -19,6 +19,8 @@ HYBRID_MODES = ("handwritten", "compiler")
 REQUEST_COUNT = 64
 MAX_ACTIVE = 16
 TOKENS_PER_REQUEST = 32
+CONTEXT_TOKENS_PER_REQUEST = 512
+SERVER_CONTEXT_TOKENS = MAX_ACTIVE * CONTEXT_TOKENS_PER_REQUEST
 GENERATED_TOKENS = REQUEST_COUNT * TOKENS_PER_REQUEST
 MEASUREMENT_COUNT = 3
 MIN_HYBRID_TOKENS_PER_SECOND = 15.0
@@ -471,7 +473,8 @@ def _validate_mode(mode, record, audit_sha256):
         "sampled_ffn_comparison", "semantic_hardware_gate", "routes", "xrt",
         "gpu_attention_routes", "measurements", "process", "device_health",
         "request_contract", "warmup_count", "request_count", "max_active_requests",
-        "generated_tokens_per_request",
+        "generated_tokens_per_request", "context_tokens_per_request",
+        "server_context_tokens",
     )
     _keys(record, required, mode)
     _expect(record["schema_version"], 2, f"{mode}.schema_version")
@@ -498,6 +501,8 @@ def _validate_mode(mode, record, audit_sha256):
     _expect(record["request_count"], REQUEST_COUNT, f"{mode}.request_count")
     _expect(record["max_active_requests"], MAX_ACTIVE, f"{mode}.max_active_requests")
     _expect(record["generated_tokens_per_request"], TOKENS_PER_REQUEST, f"{mode}.generated_tokens_per_request")
+    _expect(record["context_tokens_per_request"], CONTEXT_TOKENS_PER_REQUEST, f"{mode}.context_tokens_per_request")
+    _expect(record["server_context_tokens"], SERVER_CONTEXT_TOKENS, f"{mode}.server_context_tokens")
     _expect(record["warmup_count"], 1, f"{mode}.warmup_count")
     expected_contract = {
         "prompt": prompt_ids, "n_predict": 32, "temperature": 0.0, "seed": 42,
