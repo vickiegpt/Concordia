@@ -123,6 +123,10 @@ grep -Fq -- '--build-root /qwen-build' "${iq1s_runner}"
 grep -Fq 'libggml="$(realpath -e /qwen-build/llama-build/bin/libggml.so)"' "${iq1s_runner}"
 grep -Fq 'HETGPU_QWEN_IQ1S_STRICT=1' "${iq1s_runner}"
 grep -Fq 'HETGPU_QWEN_MODEL_SHA256="${model_sha256}"' "${iq1s_runner}"
+test "$(grep -Fc 'export HETGPU_QWEN_MODEL_SHA256="${model_sha256}"' "${iq1s_runner}")" -eq 1
+model_sha_line="$(grep -Fn 'export HETGPU_QWEN_MODEL_SHA256="${model_sha256}"' "${iq1s_runner}" | cut -d: -f1)"
+cuda_mode_line="$(grep -Fn 'export HETGPU_QWEN_TQ1_XRT=0' "${iq1s_runner}" | head -1 | cut -d: -f1)"
+test "${model_sha_line}" -lt "${cuda_mode_line}"
 grep -Fq 'HETGPU_LIBGGML="${verified_libggml}"' "${iq1s_runner}"
 grep -Fq 'libggml_sha256=' "${iq1s_runner}"
 grep -Fq 'libqwen35_cuda13_launch_shim.so' "${iq1s_runner}"
@@ -137,9 +141,9 @@ if grep -Fq 'if (strstr(name, "mul_mat_vec_q_moe") != NULL)' "${cuda13_launch_sh
     echo "CUDA 13 launch shim still bypasses the multi-token IQ1_S MoE kernel" >&2
     exit 1
 fi
-test "$(grep -Fc 'run_au250_xrt_iq1s.sh --inside' "${iq1s_runner}")" -eq 2
-grep -Fq 'run_au250_xrt_iq1s.sh --inside handwritten' "${iq1s_runner}"
-grep -Fq 'run_au250_xrt_iq1s.sh --inside compiler' "${iq1s_runner}"
+test "$(grep -Fc 'run_au250_xrt_iq1s.sh" --inside' "${iq1s_runner}")" -eq 2
+grep -Fq 'run_au250_xrt_iq1s.sh" --inside handwritten' "${iq1s_runner}"
+grep -Fq 'run_au250_xrt_iq1s.sh" --inside compiler' "${iq1s_runner}"
 grep -Fq 'HETGPU_IQ1S_TRACE_MODE="${trace_mode}"' "${iq1s_runner}"
 grep -Fq 'HETGPU_XRT_COMPARE_MAX_LAUNCHES=1' "${iq1s_runner}"
 grep -Fq -- '--mode "${trace_mode}"' "${iq1s_runner}"

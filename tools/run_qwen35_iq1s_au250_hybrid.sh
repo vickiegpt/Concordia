@@ -165,6 +165,7 @@ PY
     export HETGPU_XRT_CLOCK_HZ=300000000
     export HETGPU_XRT_CU_CONFIG="${cu_config}"
     export HETGPU_XRT_BAR0_RESOURCE=/sys/bus/pci/devices/0000:64:00.1/resource0
+    export HETGPU_QWEN_MODEL_SHA256="${model_sha256}"
     export HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB=49152
     threads="${QWEN35_THREADS:-$(nproc)}"
 
@@ -210,7 +211,6 @@ PY
         export HETGPU_CUDART_PRELAUNCH_NAMED_KERNEL=1
         export HETGPU_QWEN_IQ1S_DISABLE_CUDA_FUSION=1
         export HETGPU_QWEN_IQ1S_STRICT=1
-        export HETGPU_QWEN_MODEL_SHA256="${model_sha256}"
         export HETGPU_QWEN_MODEL_CONTEXT_LIMIT=262144
         export HETGPU_IQ1S_TRACE_MODE="${trace_mode}"
         export HETGPU_LIBGGML="${verified_libggml}"
