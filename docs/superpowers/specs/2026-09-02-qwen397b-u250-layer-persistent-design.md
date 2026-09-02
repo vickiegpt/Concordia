@@ -137,6 +137,11 @@ int hetgpu_iq1s_layer_set_routes_v2(
     const float *route_weights,
     uint32_t top_k);
 
+int hetgpu_iq1s_layer_phase_commit_v2(
+    uint32_t abi_version,
+    uint64_t transaction_id,
+    uint32_t phase);
+
 int hetgpu_iq1s_layer_commit_v2(
     uint32_t abi_version,
     uint64_t transaction_id);
@@ -158,22 +163,43 @@ not be reused. `batch_count` is in `1..=16`, and `top_k` must match the audited
 Qwen model. The three route pointers are CUDA device addresses on the stream
 bound by `layer_begin`. `layer_set_routes` enqueues one coalesced device-to-host
 copy into coordinator-owned staging, records a CUDA event, and returns after
-enqueue. `layer_commit` waits for that event before compiling the transaction.
-The intercepted MoE launch must expose the same expert-ID address and extent;
-otherwise strict execution aborts.
+enqueue. `layer_phase_commit(PHASE_A)` waits for that event before compiling
+the first phase. The intercepted MoE launch must expose the same expert-ID
+address and extent; otherwise strict execution aborts.
+
+`layer_phase_commit(PHASE_A)` is called after the eligible gate/up launches.
+It validates and submits Phase A, waits for its four-CU completion, and
+publishes gate/up results onto the bound CUDA stream before returning. The GPU
+can then execute SiLU and multiplication and launch the down projection.
+`layer_commit` validates and submits Phase B when the layer has an IQ1_S down
+role, waits for completion, and closes the transaction. For a layer without an
+IQ1_S down role, `layer_commit` verifies the GPU-native down path and closes the
+already completed Phase A transaction without a second U250 submission.
 
 The transaction state machine is:
 
 ```text
-EMPTY -> OPEN -> ROUTES_SET -> CAPTURING -> COMMITTED
-                               |              |
-                               +-> ABORTED <--+
+EMPTY -> OPEN -> ROUTES_SET -> PHASE_A_CAPTURE
+                                  |
+                         PHASE_A_COMMITTED
+                                  |
+                           PHASE_A_DONE
+                            /          \
+                PHASE_B_CAPTURE     GPU_DOWN_VERIFIED
+                       |                  |
+                PHASE_B_COMMITTED         |
+                       \__________________/
+                                  |
+                                CLOSED
+
+Any nonterminal state -> ABORTED
 ```
 
-Only `COMMITTED` transactions can be submitted to U250. A missing role,
-duplicate role, duplicate transaction ID, stream mismatch, invalid expert,
-unexpected launch, or commit with incomplete capture moves the transaction to
-`ABORTED` and terminates strict execution.
+Only `PHASE_A_COMMITTED` and `PHASE_B_COMMITTED` transactions can be submitted
+to U250. A missing role, duplicate role, duplicate transaction ID, stream
+mismatch, invalid expert, unexpected launch, or phase/layer commit with
+incomplete capture moves the transaction to `ABORTED` and terminates strict
+execution.
 
 ## Host software components
 
