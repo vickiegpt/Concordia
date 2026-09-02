@@ -349,12 +349,16 @@ components and many physical tile submissions. The new block decoder performs
 that expansion immediately before the TernIP datapath. Expanded symbols remain
 in FIFOs or local buffers and are never written back to DDR.
 
-The instruction set and assembler gain an explicit IQ1_S tmatmul operation.
+The layer compiler IR marks each tmatmul operation explicitly as IQ1_S and
 AlgorithmTree models its imports, dependencies, execution, export, and
-duration. The encoded operation names the descriptor/manifest relocation
-slots rather than embedding unchecked runtime pointers. RTL expands the
-operation into the exact grid/delta and block passes required by the matrix
-shape.
+duration. The shared assembler still encodes the existing 128-bit
+`tmatmul_go`; its matrix address is a checked descriptor/manifest relocation
+slot rather than an unchecked runtime pointer. The persistent descriptor's
+format field selects the IQ1_S decoder in front of the unchanged TernIP
+datapath. RTL expands the operation into the exact grid/delta and block passes
+required by the matrix shape. This preserves compatibility with the existing
+core instruction encoding while making the IQ1_S execution mode explicit and
+auditable.
 
 Proof records contain both:
 
