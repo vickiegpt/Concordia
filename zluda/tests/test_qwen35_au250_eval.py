@@ -407,6 +407,7 @@ def test_fake_server_preserves_identical_requests_and_fixed_counts(tmp_path):
         assert command[command.index("--parallel") + 1] == "16"
         assert command[command.index("--ctx-size") + 1] == "8192"
         assert command[command.index("--cache-ram") + 1] == "0"
+        assert command[command.index("--flash-attn") + 1] == "on"
         assert "--no-cache-prompt" in command
         assert command[command.index("--slot-save-path") + 1].endswith(f"/{mode}/slot-state")
         assert record["context_tokens_per_request"] == 512

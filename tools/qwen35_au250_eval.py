@@ -942,7 +942,7 @@ def run(args):
         str(server), "--model", str(model), "--ctx-size", str(SERVER_CONTEXT_TOKENS), "--n-gpu-layers", "999",
         "--threads", str(args.threads), "--host", "127.0.0.1", "--port", str(args.port),
         "--seed", "42", "--parallel", "16", "--reasoning", "off", "--verbosity", "4",
-        "--cache-ram", "0", "--no-cache-prompt", "--slot-save-path", str(slot_save_path),
+        "--cache-ram", "0", "--flash-attn", "on", "--no-cache-prompt", "--slot-save-path", str(slot_save_path),
         "--no-warmup", "--no-webui",
     ]
     (proof_dir / "command.json").write_text(json.dumps(command, indent=2) + "\n", encoding="utf-8")
