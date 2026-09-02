@@ -204,9 +204,6 @@ PY
         local trace_mode=$1
         local mode_port=$2
         local mode_dir="${proof_dir}/${trace_mode}-mode"
-        install -d "${mode_dir}"
-        nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv \
-            > "${mode_dir}/cuda-compute-apps-before.csv"
         (
         export HETGPU_QWEN_TQ1_XRT=0
         export HETGPU_QWEN_TQ1_STRICT=0

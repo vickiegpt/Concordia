@@ -105,6 +105,7 @@ grep -Fq 'sha256' "${evaluator}"
 grep -Fq 'export GGML_CUDA_DISABLE_GRAPHS=1' "${iq1s_runner}"
 grep -Fq 'export CUDA_LAUNCH_BLOCKING=1' "${iq1s_runner}"
 grep -Fq 'export CUBLAS_WORKSPACE_CONFIG=:4096:8' "${iq1s_runner}"
+test "$(grep -Fc 'install -d "${mode_dir}"' "${iq1s_runner}")" -eq 0
 test "$(grep -Fc '/qwen-build/llama-build/bin/llama-server' "${runner}")" -eq 1
 grep -Fq 'HETGPU_QWEN_TQ1_XRT=0' "${runner}"
 grep -Fq 'HETGPU_QWEN_TQ1_XRT=1' "${runner}"
