@@ -20,14 +20,14 @@ const DMACR_RESET: u32 = 1 << 2;
 const DMASR_HALTED: u32 = 1 << 0;
 const DMASR_IDLE: u32 = 1 << 1;
 const INSTRUCTION_BYTES: usize = 16;
-const XRT_BO_SYNC_TO_DEVICE: i32 = 0;
-const XRT_BO_SYNC_FROM_DEVICE: i32 = 1;
+pub(crate) const XRT_BO_SYNC_TO_DEVICE: i32 = 0;
+pub(crate) const XRT_BO_SYNC_FROM_DEVICE: i32 = 1;
 const AU250_DIM: usize = 1024;
 const AU250_MATRIX_BYTES: usize = AU250_DIM * AU250_DIM / 4;
 const AU250_TMATMUL_ASSEMBLY: &str = "ldv v0, PARAM_INPUT\ntmatmul_import v0\ntmatmul_go PARAM_MATRIX\ntmatmul_export v1\nsv v1, PARAM_OUTPUT\nstall\n";
 
-type Handle = *mut libc::c_void;
-type Xuid = [u8; 16];
+pub(crate) type Handle = *mut libc::c_void;
+pub(crate) type Xuid = [u8; 16];
 
 type DeviceOpenFn = unsafe extern "C" fn(u32) -> Handle;
 type DeviceCloseFn = unsafe extern "C" fn(Handle) -> i32;
@@ -168,7 +168,7 @@ impl XrtConfig {
     }
 }
 
-trait XrtOps {
+pub(crate) trait XrtOps {
     fn device_open(&self, index: u32) -> Handle;
     fn device_close(&self, device: Handle) -> i32;
     fn load_xclbin_file(&self, device: Handle, path: &CStr) -> i32;
@@ -242,7 +242,7 @@ impl Drop for NativeIpApi {
     }
 }
 
-struct RealXrt {
+pub(crate) struct RealXrt {
     library: Handle,
     native_ip: Option<NativeIpApi>,
     device_open: DeviceOpenFn,
@@ -263,7 +263,7 @@ struct RealXrt {
 }
 
 impl RealXrt {
-    fn load(needs_native_ip: bool) -> Result<Self, XrtTmatmulError> {
+    pub(crate) fn load(needs_native_ip: bool) -> Result<Self, XrtTmatmulError> {
         let library = open_library(&["libxrt_coreutil.so.2", "libxrt_coreutil.so"])?;
         let native_ip = match needs_native_ip.then(NativeIpApi::load).transpose() {
             Ok(api) => api,
@@ -2300,6 +2300,7 @@ mod tests {
         BoSync {
             bo: usize,
             direction: i32,
+            offset: usize,
             size: usize,
         },
         RegisterWrite {
@@ -2559,10 +2560,11 @@ mod tests {
             0
         }
 
-        fn bo_sync(&self, bo: Handle, direction: i32, size: usize, _offset: usize) -> i32 {
+        fn bo_sync(&self, bo: Handle, direction: i32, size: usize, offset: usize) -> i32 {
             self.state.borrow_mut().events.push(Event::BoSync {
                 bo: bo as usize,
                 direction,
+                offset,
                 size,
             });
             0
@@ -3316,6 +3318,7 @@ mod tests {
                 Event::BoSync {
                     bo,
                     direction,
+                    offset: _,
                     size,
                 } => Some((*bo, *direction, *size)),
                 _ => None,
