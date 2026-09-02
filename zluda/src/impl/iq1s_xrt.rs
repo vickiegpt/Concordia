@@ -115,6 +115,14 @@ pub(crate) struct XrtIq1sResult {
     pub(crate) evidence: XrtIq1sEvidence,
 }
 
+pub(crate) trait CapturedLaunchExecutor {
+    type Output;
+
+    fn execute(&mut self, captured: &CapturedLaunch) -> Result<Self::Output, String>;
+}
+
+pub(crate) struct DirectCapturedLaunchExecutor;
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SampledOutputComparison {
     pub(crate) status: &'static str,
@@ -1159,6 +1167,18 @@ pub(crate) fn execute_captured(captured: &CapturedLaunch) -> Result<XrtIq1sResul
         super::xrt_tmatmul::with_persistent_pool(|pool| execute_captured_with(captured, pool))?;
     append_execution_log_from_env(&result.evidence)?;
     Ok(result)
+}
+
+impl CapturedLaunchExecutor for DirectCapturedLaunchExecutor {
+    type Output = XrtIq1sResult;
+
+    fn execute(&mut self, captured: &CapturedLaunch) -> Result<Self::Output, String> {
+        let result = execute_captured(captured)?;
+        unsafe {
+            super::iq1s_tmatmul::copy_outputs_to_cuda(captured, &result.outputs)?;
+        }
+        Ok(result)
+    }
 }
 
 fn append_execution_log_from_env(evidence: &XrtIq1sEvidence) -> Result<(), String> {

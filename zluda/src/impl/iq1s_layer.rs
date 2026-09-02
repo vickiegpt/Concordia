@@ -48,6 +48,12 @@ pub(crate) struct CapturedProjection {
     pub(crate) launches: Vec<CapturedLaunch>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OpenLayerTransaction {
+    key: LayerKey,
+    batch_count: u16,
+}
+
 pub(crate) struct LayerTransaction {
     pub(crate) key: LayerKey,
     pub(crate) state: LayerState,
@@ -470,6 +476,74 @@ impl LayerCoordinator {
         }
     }
 
+    fn open_transaction_for_stream(
+        &self,
+        stream: usize,
+    ) -> Result<Option<OpenLayerTransaction>, String> {
+        if stream == 0 {
+            return Ok(None);
+        }
+        let transactions = self
+            .transactions
+            .lock()
+            .map_err(|_| "IQ1_S layer coordinator lock poisoned".to_string())?;
+        let mut open = transactions
+            .values()
+            .filter(|transaction| {
+                transaction.key.stream == stream
+                    && !matches!(transaction.state, LayerState::Closed | LayerState::Aborted)
+            })
+            .map(|transaction| OpenLayerTransaction {
+                key: transaction.key,
+                batch_count: transaction.batch_count,
+            });
+        let first = open.next();
+        if open.next().is_some() {
+            return Err(format!(
+                "CUDA stream {stream:#x} has more than one open IQ1_S layer transaction"
+            ));
+        }
+        Ok(first)
+    }
+
+    fn validate_projection_routes(
+        transaction: &LayerTransaction,
+        projection: &CapturedProjection,
+    ) -> Result<(), String> {
+        if projection.launches.len() != transaction.routes.len() {
+            return Err(format!(
+                "IQ1_S projection has {} expert launches, expected {}",
+                projection.launches.len(),
+                transaction.routes.len()
+            ));
+        }
+        let expert_stride = projection.weight.identity.nb[2];
+        let first_offset = projection
+            .weight
+            .expert
+            .checked_mul(expert_stride)
+            .ok_or("IQ1_S first expert offset overflow")?;
+        let tensor_base = (projection.launches[0].launch.matrix_ptr as u64)
+            .checked_sub(first_offset)
+            .ok_or("IQ1_S first expert pointer precedes its tensor base")?;
+        for (launch, route) in projection.launches.iter().zip(&transaction.routes) {
+            let relative = (launch.launch.matrix_ptr as u64)
+                .checked_sub(tensor_base)
+                .ok_or("IQ1_S expert launch pointer precedes its tensor base")?;
+            if relative % expert_stride != 0 {
+                return Err("IQ1_S expert launch pointer is not expert-aligned".to_string());
+            }
+            let expert = relative / expert_stride;
+            if expert >= u64::from(QWEN35_EXPERT_COUNT) || expert != u64::from(route.expert_id) {
+                return Err(format!(
+                    "IQ1_S captured expert {expert} does not match routed expert {}",
+                    route.expert_id
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_routes(
         &self,
         transaction: &LayerTransaction,
@@ -646,6 +720,9 @@ impl LayerCoordinator {
             if transaction.projections.contains_key(&projection.role) {
                 return Err("duplicate IQ1_S projection role in layer".to_string());
             }
+            if !transaction.routes.is_empty() {
+                Self::validate_projection_routes(transaction, &projection)?;
+            }
             match projection.role {
                 Iq1sExpertRole::Down => {
                     if transaction.state != LayerState::PhaseADone {
@@ -697,6 +774,9 @@ impl LayerCoordinator {
                 return Err(format!(
                     "IQ1_S Phase A roles are incomplete: expected {expected:?}, captured {captured:?}"
                 ));
+            }
+            for projection in transaction.projections.values() {
+                Self::validate_projection_routes(transaction, projection)?;
             }
             transaction.state = LayerState::PhaseACommitted;
             Ok(())
@@ -778,6 +858,125 @@ fn global_coordinator() -> &'static LayerCoordinator {
         LayerCoordinator::new(1, QWEN35_EXPERTS_PER_TOKEN)
             .expect("constant IQ1_S coordinator configuration")
     })
+}
+
+pub(crate) fn has_open_transaction(stream: usize) -> Result<bool, String> {
+    Ok(global_coordinator()
+        .open_transaction_for_stream(stream)?
+        .is_some())
+}
+
+pub(crate) fn resolve_captured_role(launches: &[CapturedLaunch]) -> Result<Iq1sExpertRole, String> {
+    let launch = launches
+        .first()
+        .ok_or("IQ1_S projection contains no captured launches")?;
+    let signature = &launch.launch.signature;
+    let matrix_bytes = u64::try_from(signature.matrix_storage_bytes()?)
+        .map_err(|_| "IQ1_S matrix bytes do not fit u64")?;
+    let row_stride = signature
+        .stride01
+        .checked_mul(super::iq1s_tmatmul::IQ1S_BLOCK_BYTES as u64)
+        .ok_or("IQ1_S row stride overflow")?;
+    let resolved = global_registry().resolve_launch(
+        launch.launch.matrix_ptr,
+        matrix_bytes,
+        signature.ne00,
+        signature.ne01,
+        row_stride,
+    )?;
+    Ok(resolved.identity.role)
+}
+
+fn resolve_registered_projection(
+    role: Iq1sExpertRole,
+    launches: Vec<CapturedLaunch>,
+) -> Result<CapturedProjection, String> {
+    if launches.is_empty() {
+        return Err("IQ1_S projection contains no captured launches".to_string());
+    }
+    let mut first_weight: Option<ResolvedIq1sWeight> = None;
+    let mut experts = Vec::with_capacity(launches.len());
+    for launch in &launches {
+        let signature = &launch.launch.signature;
+        let matrix_bytes = u64::try_from(signature.matrix_storage_bytes()?)
+            .map_err(|_| "IQ1_S matrix bytes do not fit u64")?;
+        let row_stride = signature
+            .stride01
+            .checked_mul(super::iq1s_tmatmul::IQ1S_BLOCK_BYTES as u64)
+            .ok_or("IQ1_S row stride overflow")?;
+        let resolved = global_registry().resolve_launch(
+            launch.launch.matrix_ptr,
+            matrix_bytes,
+            signature.ne00,
+            signature.ne01,
+            row_stride,
+        )?;
+        if resolved.identity.role != role {
+            return Err(format!(
+                "IQ1_S registered role {:?} does not match captured role {role:?}",
+                resolved.identity.role
+            ));
+        }
+        if launch.launch.allocation_generation != resolved.allocation_generation
+            || launch.launch.content_hash != resolved.content_sha256
+        {
+            return Err("IQ1_S captured launch identity is stale".to_string());
+        }
+        if let Some(first) = &first_weight {
+            if first.identity != resolved.identity
+                || first.allocation_generation != resolved.allocation_generation
+                || first.content_sha256 != resolved.content_sha256
+            {
+                return Err("IQ1_S projection spans more than one registered tensor".to_string());
+            }
+        } else {
+            first_weight = Some(resolved.clone());
+        }
+        experts.push(resolved.expert);
+    }
+    for token_experts in experts.chunks_exact(QWEN35_EXPERTS_PER_TOKEN as usize) {
+        let distinct = token_experts.iter().copied().collect::<BTreeSet<_>>();
+        if distinct.len() != QWEN35_EXPERTS_PER_TOKEN as usize {
+            return Err("IQ1_S captured token contains a duplicate expert ID".to_string());
+        }
+    }
+    if !experts
+        .len()
+        .is_multiple_of(QWEN35_EXPERTS_PER_TOKEN as usize)
+    {
+        return Err("IQ1_S projection launch count is not divisible by top_k=10".to_string());
+    }
+    Ok(CapturedProjection {
+        role,
+        weight: first_weight.expect("nonempty projection has a resolved weight"),
+        launches,
+    })
+}
+
+pub(crate) fn capture_projection(
+    stream: usize,
+    role: Iq1sExpertRole,
+    launches: Vec<CapturedLaunch>,
+) -> Result<(), String> {
+    let open = global_coordinator()
+        .open_transaction_for_stream(stream)?
+        .ok_or_else(|| format!("CUDA stream {stream:#x} has no open IQ1_S transaction"))?;
+    let expected_launches = usize::from(open.batch_count)
+        .checked_mul(QWEN35_EXPERTS_PER_TOKEN as usize)
+        .ok_or("IQ1_S projection launch count overflow")?;
+    if launches.len() != expected_launches {
+        return Err(format!(
+            "IQ1_S projection has {} expert launches, expected {expected_launches}",
+            launches.len()
+        ));
+    }
+    let projection = resolve_registered_projection(role, launches)?;
+    global_coordinator().capture_projection(
+        open.key.session_generation,
+        open.key.transaction_id,
+        stream,
+        projection,
+    )
 }
 
 pub(crate) unsafe fn layer_begin(
@@ -936,7 +1135,7 @@ mod tests {
     fn projection(
         layer: u32,
         role: Iq1sExpertRole,
-        expert: u64,
+        batch_count: u16,
         generation: u64,
     ) -> CapturedProjection {
         let role_tag = match role {
@@ -956,19 +1155,26 @@ mod tests {
             stride11: 1,
             ne0: 1,
         };
-        let launch = LogicalLaunch {
-            matrix_ptr: 0x10_0000 + role_tag * 0x1_0000 + expert as usize * 0x100,
-            activation_ptr: 0x20_0000 + role_tag * 0x1_0000,
-            output_ptr: 0x30_0000 + role_tag * 0x1_0000,
-            allocation_generation: generation,
-            content_hash,
-            signature,
-        };
         let packed_matrix = [0u8; IQ1S_BLOCK_BYTES];
         let packed_activations = vec![0u8; 2 * Q8_1_MMQ_BYTES];
         let grid: GridTable = [[0; 8]; GRID_ENTRIES];
-        let captured = capture_from_host(launch, &packed_matrix, &packed_activations, &grid)
-            .expect("synthetic projection must be valid");
+        let tensor_base = 0x10_0000 + role_tag * 0x1_0000;
+        let launches = routes(batch_count)
+            .into_iter()
+            .enumerate()
+            .map(|(route_index, route)| {
+                let launch = LogicalLaunch {
+                    matrix_ptr: tensor_base + usize::from(route.expert_id) * 50,
+                    activation_ptr: 0x20_0000 + role_tag * 0x1_0000 + route_index * 0x100,
+                    output_ptr: 0x30_0000 + role_tag * 0x1_0000 + route_index * 0x100,
+                    allocation_generation: generation,
+                    content_hash,
+                    signature: signature.clone(),
+                };
+                capture_from_host(launch, &packed_matrix, &packed_activations, &grid)
+                    .expect("synthetic projection must be valid")
+            })
+            .collect();
         let name = match role {
             Iq1sExpertRole::Gate => "gate",
             Iq1sExpertRole::Up => "up",
@@ -993,11 +1199,11 @@ mod tests {
                     inode: 2,
                     modified_ns: 3,
                 },
-                expert,
+                expert: 0,
                 allocation_generation: generation,
                 content_sha256: content_hash,
             },
-            launches: vec![captured],
+            launches,
         }
     }
 
@@ -1025,16 +1231,16 @@ mod tests {
         let coordinator = LayerCoordinator::new(7, QWEN35_EXPERTS_PER_TOKEN).unwrap();
         begin_three_role_layer(&coordinator, 100);
         coordinator
-            .capture_projection(7, 100, 0xabc0, projection(12, Iq1sExpertRole::Gate, 4, 7))
+            .capture_projection(7, 100, 0xabc0, projection(12, Iq1sExpertRole::Gate, 2, 7))
             .unwrap();
         coordinator
-            .capture_projection(7, 100, 0xabc0, projection(12, Iq1sExpertRole::Up, 4, 7))
+            .capture_projection(7, 100, 0xabc0, projection(12, Iq1sExpertRole::Up, 2, 7))
             .unwrap();
         coordinator.commit_phase_a(100).unwrap();
         assert_eq!(coordinator.state(100).unwrap(), LayerState::PhaseACommitted);
         coordinator.complete_phase_a(100).unwrap();
         coordinator
-            .capture_projection(7, 100, 0xabc0, projection(12, Iq1sExpertRole::Down, 4, 7))
+            .capture_projection(7, 100, 0xabc0, projection(12, Iq1sExpertRole::Down, 2, 7))
             .unwrap();
         coordinator.commit_layer(100).unwrap();
         assert_eq!(coordinator.state(100).unwrap(), LayerState::Closed);
@@ -1143,7 +1349,7 @@ mod tests {
             .capture_projection(5, 201, 0xabc0, projection(12, Iq1sExpertRole::Gate, 2, 5))
             .unwrap();
         assert!(coordinator
-            .capture_projection(5, 201, 0xabc0, projection(12, Iq1sExpertRole::Gate, 3, 5))
+            .capture_projection(5, 201, 0xabc0, projection(12, Iq1sExpertRole::Gate, 2, 5))
             .is_err());
         assert_eq!(coordinator.state(201).unwrap(), LayerState::Aborted);
     }
@@ -1230,12 +1436,12 @@ mod tests {
         let coordinator = LayerCoordinator::new(11, QWEN35_EXPERTS_PER_TOKEN).unwrap();
         begin_three_role_layer(&coordinator, 400);
         assert!(coordinator
-            .capture_projection(10, 400, 0xabc0, projection(12, Iq1sExpertRole::Gate, 1, 11))
+            .capture_projection(10, 400, 0xabc0, projection(12, Iq1sExpertRole::Gate, 2, 11))
             .is_err());
         assert_eq!(coordinator.state(400).unwrap(), LayerState::Aborted);
 
         begin_three_role_layer(&coordinator, 401);
-        let mut stale = projection(12, Iq1sExpertRole::Gate, 1, 10);
+        let mut stale = projection(12, Iq1sExpertRole::Gate, 2, 10);
         stale.launches[0].launch.allocation_generation = 11;
         assert!(coordinator
             .capture_projection(11, 401, 0xabc0, stale)
