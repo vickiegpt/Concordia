@@ -457,7 +457,18 @@ index 9b22cb0..32a80ca 100644
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -2562,0 +2563,15 @@ struct server_context_impl {
+@@ -1166 +1166,9 @@ struct server_context_impl {
+-        ctx_tgt_seq_rm_type = common_context_can_seq_rm(ctx_tgt);
++        const char * hetgpu_iq1s_strict = getenv("HETGPU_QWEN_IQ1S_STRICT");
++        if (hetgpu_iq1s_strict != nullptr && atoi(hetgpu_iq1s_strict) == 1) {
++            // The pinned Qwen recurrent memory requires full checkpoints. Avoid
++            // running an unmeasured two-token, full-model hardware probe here.
++            ctx_tgt_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
++            SRV_INF("%s", "HETGPU Qwen IQ1_S: using verified full sequence removal mode\n");
++        } else {
++            ctx_tgt_seq_rm_type = common_context_can_seq_rm(ctx_tgt);
++        }
+@@ -2562,0 +2570,15 @@ struct server_context_impl {
 +                    // Full recurrent sequence removal clears metadata but leaves the
 +                    // Qwen SSM backing rows intact. Once every slot is empty, zero the
 +                    // shared memory once so the next 16-request wave starts from the

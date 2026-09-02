@@ -50,6 +50,7 @@ grep -Fq 'HETGPU_QWEN_IQ1S_DISABLE_CUDA_FUSION' "${overlay}/ggml/src/ggml-cuda/g
 grep -Fq 'HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
 grep -Fq 'hetgpu_qwen35_cuda_buffer_max_size' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
 grep -Fq 'llama_memory_clear(llama_get_memory(ctx_tgt), true)' "${overlay}/tools/server/server-context.cpp"
+grep -Fq 'HETGPU Qwen IQ1_S: using verified full sequence removal mode' "${overlay}/tools/server/server-context.cpp"
 buffer_helper_line="$(grep -nF 'static size_t hetgpu_qwen35_cuda_buffer_max_size' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu" | cut -d: -f1)"
 buffer_allocator_line="$(grep -nF 'static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu" | cut -d: -f1)"
 test "${buffer_helper_line}" -lt "${buffer_allocator_line}"
