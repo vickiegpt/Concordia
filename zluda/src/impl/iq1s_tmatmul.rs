@@ -2143,7 +2143,10 @@ mod tests {
     use crate::r#impl::cxl_tmatmul_v3::{
         BufferV3, CapsV3, CommitV3, CompletionV3, SubmitV3, WaitV3,
     };
+    use serde::Serialize;
+    use sha2::{Digest, Sha256};
     use std::collections::HashMap;
+    use std::fmt::Write as _;
 
     static CAPTURE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -2217,6 +2220,195 @@ mod tests {
             | ((high_index >> 8) & 7);
         packed[34..36].copy_from_slice(&qh.to_le_bytes());
         packed
+    }
+
+    #[derive(Serialize)]
+    struct RtlGroupVector {
+        group: usize,
+        odd_scale: u8,
+        delta_sign: i8,
+        grid_indices: [usize; 4],
+        grid_values: [i8; GROUP_VALUES],
+        q8_d_bits: u32,
+        q8_s_bits: u32,
+        q8_values: [i8; GROUP_VALUES],
+        grid_dot: i64,
+        delta_dot: i64,
+        reconstructed_f32_bits: u32,
+    }
+
+    #[derive(Serialize)]
+    struct RtlBlockVector {
+        name: String,
+        block_hex: String,
+        iq1s_d_bits: u32,
+        groups: Vec<RtlGroupVector>,
+    }
+
+    #[derive(Serialize)]
+    struct RtlVectorFile {
+        format: &'static str,
+        grid_entries: usize,
+        grid_sha256: String,
+        vectors: Vec<RtlBlockVector>,
+    }
+
+    fn iq1s_grid_memh(grid: &GridTable) -> String {
+        let mut output = String::with_capacity(GRID_ENTRIES * 17);
+        for entry in grid {
+            // $readmemh places the rightmost byte in bits [7:0].
+            for value in entry.iter().rev() {
+                write!(&mut output, "{:02x}", *value as u8).unwrap();
+            }
+            output.push('\n');
+        }
+        output
+    }
+
+    fn build_rtl_vectors(grid: &GridTable) -> RtlVectorFile {
+        let mut vectors = Vec::with_capacity(16);
+        for vector_index in 0..16_usize {
+            let mut packed = [0_u8; IQ1S_BLOCK_BYTES];
+            let iq1s_d_bits: u16 = if vector_index % 2 == 0 {
+                0x3555
+            } else {
+                0xb400
+            };
+            packed[..2].copy_from_slice(&iq1s_d_bits.to_le_bytes());
+            let mut expected = Vec::with_capacity(8);
+            for group_index in 0..8_usize {
+                let odd_scale = 1 + 2 * ((vector_index + group_index) % 8) as u8;
+                let delta_sign = if (vector_index + group_index) % 2 == 0 {
+                    1
+                } else {
+                    -1
+                };
+                let indices = [
+                    (vector_index * 137 + group_index * 29) & 0x7ff,
+                    0x7ff - ((vector_index * 73 + group_index * 11) & 0x7ff),
+                    ((vector_index << 8) | (group_index * 31)) & 0x7ff,
+                    ((7 - group_index) << 8) | (255 - vector_index * 13) & 0xff,
+                ];
+                let mut qh = (u16::from((odd_scale - 1) / 2) << 12)
+                    | if delta_sign < 0 { 0x8000 } else { 0 };
+                for (position, index) in indices.iter().enumerate() {
+                    packed[2 + group_index * 4 + position] = *index as u8;
+                    qh |= (((index >> 8) & 7) as u16) << (3 * position);
+                }
+                let qh_offset = 34 + group_index * 2;
+                packed[qh_offset..qh_offset + 2].copy_from_slice(&qh.to_le_bytes());
+
+                let mut qs = [0_i8; GROUP_VALUES];
+                for (position, quant) in qs.iter_mut().enumerate() {
+                    *quant = match vector_index {
+                        0 => 0,
+                        1 => {
+                            if position % 2 == 0 {
+                                i8::MIN
+                            } else {
+                                i8::MAX
+                            }
+                        }
+                        _ => {
+                            (((position * 37 + group_index * 19 + vector_index * 11) % 255) as i16
+                                - 127) as i8
+                        }
+                    };
+                }
+                let q8 = Q8_1Block {
+                    d: [0.5_f32, -0.25, 1.5, 0.0625][(vector_index + group_index) % 4],
+                    s: [-2.0_f32, 0.0, 0.75, 4.0][(vector_index * 3 + group_index) % 4],
+                    qs,
+                };
+                let mut values = [0_i8; GROUP_VALUES];
+                for position in 0..4 {
+                    values[position * 8..(position + 1) * 8]
+                        .copy_from_slice(&grid[indices[position]]);
+                }
+                let group = Iq1sGroup {
+                    odd_scale,
+                    delta_sign,
+                    grid_indices: indices,
+                    grid_values: values,
+                };
+                let (grid_dot, delta_dot) = raw_component_dots(&group, &q8);
+                let reconstructed = reconstruct_from_raw(
+                    &group,
+                    half_to_f32(iq1s_d_bits),
+                    &q8,
+                    grid_dot << 8,
+                    delta_dot << 8,
+                )
+                .unwrap();
+                expected.push(RtlGroupVector {
+                    group: group_index,
+                    odd_scale,
+                    delta_sign,
+                    grid_indices: indices,
+                    grid_values: values,
+                    q8_d_bits: q8.d.to_bits(),
+                    q8_s_bits: q8.s.to_bits(),
+                    q8_values: qs,
+                    grid_dot,
+                    delta_dot,
+                    reconstructed_f32_bits: reconstructed.to_bits(),
+                });
+            }
+            let parsed = Iq1sBlock::parse(&packed, grid).unwrap();
+            for (actual, expected_group) in parsed.groups.iter().zip(&expected) {
+                assert_eq!(actual.odd_scale, expected_group.odd_scale);
+                assert_eq!(actual.delta_sign, expected_group.delta_sign);
+                assert_eq!(actual.grid_indices, expected_group.grid_indices);
+                assert_eq!(actual.grid_values, expected_group.grid_values);
+            }
+            vectors.push(RtlBlockVector {
+                name: format!("iq1s_{vector_index:02}"),
+                block_hex: hex(&packed),
+                iq1s_d_bits: half_to_f32(iq1s_d_bits).to_bits(),
+                groups: expected,
+            });
+        }
+        let grid_memh = iq1s_grid_memh(grid);
+        RtlVectorFile {
+            format: "hetgpu-iq1s-rtl-v1",
+            grid_entries: GRID_ENTRIES,
+            grid_sha256: hex(&Sha256::digest(grid_memh.as_bytes())),
+            vectors,
+        }
+    }
+
+    #[test]
+    #[ignore = "writes deterministic RTL fixtures when explicit output paths are set"]
+    fn emit_iq1s_rtl_vectors() {
+        let _env_lock = crate::r#impl::test_env::lock();
+        let grid = validated_grid(None).expect("recover the canonical IQ1_S grid");
+        assert!(grid
+            .iter()
+            .flatten()
+            .all(|value| matches!(value, -1 | 0 | 1)));
+        let grid_memh = iq1s_grid_memh(&grid);
+        let vectors = build_rtl_vectors(&grid);
+        assert_eq!(vectors.vectors.len(), 16);
+        assert!(vectors
+            .vectors
+            .iter()
+            .all(|vector| vector.groups.len() == 8));
+        assert_eq!(
+            vectors.grid_sha256,
+            hex(&Sha256::digest(grid_memh.as_bytes()))
+        );
+
+        if let Some(path) = std::env::var_os("HETGPU_IQ1S_GRID_OUT") {
+            std::fs::write(path, &grid_memh).expect("write IQ1_S grid memh");
+        }
+        if let Some(path) = std::env::var_os("HETGPU_IQ1S_GRID_SHA256_OUT") {
+            std::fs::write(path, format!("{}\n", vectors.grid_sha256))
+                .expect("write IQ1_S grid checksum");
+        }
+        if let Some(path) = std::env::var_os("HETGPU_RTL_VECTOR_OUT") {
+            let json = serde_json::to_vec_pretty(&vectors).expect("serialize IQ1_S RTL vectors");
+            std::fs::write(path, json).expect("write IQ1_S RTL vectors");
+        }
     }
 
     fn kimi_signature() -> GgmlType19Signature {
