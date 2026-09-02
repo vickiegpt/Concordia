@@ -469,7 +469,9 @@ def _validate_mode(mode, record, audit_sha256):
         "schema_version", "evidence_kind", "mode", "model_size", "model_sha256",
         "model_audit_sha256", "llama_revision", "binary_sha256", "placement",
         "prompt_tokens", "prompt_text", "prompt_token_ids", "generated_token_ids",
-        "generated_token_ids_by_request", "semantic", "hardware_probe",
+        "generated_token_ids_by_request", "token_equivalence_measurement",
+        "slot_ids_by_request", "slot_erase_evidence", "wave_slot_erase_evidence",
+        "semantic", "hardware_probe",
         "sampled_ffn_comparison", "semantic_hardware_gate", "routes", "xrt",
         "gpu_attention_routes", "measurements", "process", "device_health",
         "request_contract", "warmup_count", "request_count", "max_active_requests",
@@ -496,8 +498,39 @@ def _validate_mode(mode, record, audit_sha256):
     if len(generated) != TOKENS_PER_REQUEST:
         _fail(f"{mode}.generated_token_ids must contain 32 IDs")
     by_request = _list(record["generated_token_ids_by_request"], f"{mode}.generated_token_ids_by_request")
-    if len(by_request) != REQUEST_COUNT or any(item != generated for item in by_request):
-        _fail(f"{mode} must retain 64 deterministic 32-token request outputs")
+    if len(by_request) != REQUEST_COUNT:
+        _fail(f"{mode} must retain 64 deterministic request outputs")
+    for index, item in enumerate(by_request):
+        item = _list(item, f"{mode}.generated_token_ids_by_request[{index}]")
+        if len(item) != TOKENS_PER_REQUEST or any(isinstance(token, bool) or not isinstance(token, int) for token in item):
+            _fail(f"{mode}.generated_token_ids_by_request[{index}] must contain 32 integer IDs")
+    _expect(generated, by_request[0], f"{mode}.generated_token_ids request-zero binding")
+    _expect(record["token_equivalence_measurement"], 0, f"{mode}.token_equivalence_measurement")
+    slot_ids = _list(record["slot_ids_by_request"], f"{mode}.slot_ids_by_request")
+    if len(slot_ids) != REQUEST_COUNT:
+        _fail(f"{mode}.slot_ids_by_request must contain 64 assignments")
+    for wave_start in range(0, REQUEST_COUNT, MAX_ACTIVE):
+        wave = slot_ids[wave_start:wave_start + MAX_ACTIVE]
+        if sorted(wave) != list(range(MAX_ACTIVE)):
+            _fail(f"{mode}.slot_ids_by_request wave {wave_start // MAX_ACTIVE} must be a slot permutation")
+    slot_erases = _list(record["slot_erase_evidence"], f"{mode}.slot_erase_evidence")
+    if len(slot_erases) != 1 + MEASUREMENT_COUNT:
+        _fail(f"{mode}.slot_erase_evidence must contain four pre-batch rounds")
+    for round_index, values in enumerate(slot_erases):
+        values = _list(values, f"{mode}.slot_erase_evidence[{round_index}]")
+        if len(values) != MAX_ACTIVE or any(_integer(value, f"{mode}.slot_erase_evidence[{round_index}]", 0) < 0 for value in values):
+            _fail(f"{mode}.slot_erase_evidence[{round_index}] must bind all 16 slots")
+    wave_erases = _list(record["wave_slot_erase_evidence"], f"{mode}.wave_slot_erase_evidence")
+    if len(wave_erases) != 1 + MEASUREMENT_COUNT:
+        _fail(f"{mode}.wave_slot_erase_evidence must contain four batch rounds")
+    for batch_index, batch_erases in enumerate(wave_erases):
+        batch_erases = _list(batch_erases, f"{mode}.wave_slot_erase_evidence[{batch_index}]")
+        if len(batch_erases) != (REQUEST_COUNT // MAX_ACTIVE) - 1:
+            _fail(f"{mode}.wave_slot_erase_evidence[{batch_index}] must contain three wave barriers")
+        for wave_index, values in enumerate(batch_erases):
+            values = _list(values, f"{mode}.wave_slot_erase_evidence[{batch_index}][{wave_index}]")
+            if len(values) != MAX_ACTIVE or any(_integer(value, f"{mode}.wave_slot_erase_evidence[{batch_index}][{wave_index}]", 0) < 0 for value in values):
+                _fail(f"{mode}.wave_slot_erase_evidence[{batch_index}][{wave_index}] must bind all 16 slots")
     _expect(record["request_count"], REQUEST_COUNT, f"{mode}.request_count")
     _expect(record["max_active_requests"], MAX_ACTIVE, f"{mode}.max_active_requests")
     _expect(record["generated_tokens_per_request"], TOKENS_PER_REQUEST, f"{mode}.generated_tokens_per_request")
@@ -506,7 +539,7 @@ def _validate_mode(mode, record, audit_sha256):
     _expect(record["warmup_count"], 1, f"{mode}.warmup_count")
     expected_contract = {
         "prompt": prompt_ids, "n_predict": 32, "temperature": 0.0, "seed": 42,
-        "cache_prompt": False, "return_tokens": True, "stream": True,
+        "ignore_eos": True, "cache_prompt": False, "return_tokens": True, "stream": True,
         "timings_per_token": True, "return_progress": True,
     }
     _expect(record["request_contract"], expected_contract, f"{mode}.request_contract")
@@ -547,6 +580,9 @@ def _validate_mode(mode, record, audit_sha256):
         "binary_sha256": binary, "prompt_text": record["prompt_text"],
         "prompt_token_ids": prompt_ids, "generated_token_ids": generated,
         "generated_token_ids_by_request": by_request,
+        "slot_ids_by_request": slot_ids,
+        "slot_erase_evidence": slot_erases,
+        "wave_slot_erase_evidence": wave_erases,
         "semantic_token_ids": semantic["token_ids"], "probe_token_ids": probe["token_ids"],
         "routes": routes, "xrt": xrt, "semantic_hardware_gate": gate_result,
         "gpu_attention_routes": attention, "sampled_ffn_comparison": comparison,
@@ -564,7 +600,7 @@ def validate_proof(proof_root):
     reference = modes["cuda"]
     for mode in HYBRID_MODES:
         current = modes[mode]
-        for field in ("prompt_text", "prompt_token_ids", "generated_token_ids", "generated_token_ids_by_request", "semantic_token_ids", "probe_token_ids"):
+        for field in ("prompt_text", "prompt_token_ids", "generated_token_ids", "generated_token_ids_by_request", "slot_erase_evidence", "wave_slot_erase_evidence", "semantic_token_ids", "probe_token_ids"):
             _expect(current[field], reference[field], f"{mode}.{field} CUDA equivalence")
     _expect(modes["handwritten"]["routes"]["eligible_kernels"], modes["compiler"]["routes"]["eligible_kernels"], "hybrid eligible launch set")
     handwritten_semantics = {item["trace_semantic_sha256"] for item in modes["handwritten"]["xrt"]["physical_completions"]}

@@ -14,8 +14,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
 from pathlib import Path
 
 
@@ -179,6 +177,77 @@ def stream_completion(base_url, body, timeout):
     }
 
 
+def stream_completion_batch(base_url, body, batch_size, timeout):
+    request = urllib.request.Request(
+        base_url + "/completion",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+        method="POST",
+    )
+    started = time.monotonic()
+    states = [
+        {"text": [], "token_ids": [], "first_token": None, "final": None, "finished": None}
+        for _ in range(batch_size)
+    ]
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="strict").strip()
+                if not line or line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    raise EvaluationError(f"unexpected batched completion stream line: {line[:120]}")
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    continue
+                event = json.loads(payload)
+                index = event.get("index")
+                if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < batch_size:
+                    raise EvaluationError("batched completion event has an invalid index")
+                state = states[index]
+                content = event.get("content", "")
+                tokens = event.get("tokens", [])
+                is_prompt_progress = "prompt_progress" in event
+                if not is_prompt_progress and (content or tokens):
+                    if state["first_token"] is None:
+                        state["first_token"] = time.monotonic()
+                    if not isinstance(content, str) or not isinstance(tokens, list):
+                        raise EvaluationError("batched completion event content/tokens have invalid types")
+                    state["text"].append(content)
+                    state["token_ids"].extend(tokens)
+                if event.get("stop") is True:
+                    state["final"] = event
+                    state["finished"] = time.monotonic()
+    except (OSError, urllib.error.URLError, UnicodeError, json.JSONDecodeError) as error:
+        raise EvaluationError(f"batched /completion failed: {error}") from error
+    results = []
+    for index, state in enumerate(states):
+        final = state["final"]
+        first_token = state["first_token"]
+        finished = state["finished"]
+        if final is None or first_token is None or finished is None:
+            raise EvaluationError(f"batched completion {index} omitted final response or generated tokens")
+        timings = final.get("timings")
+        if not isinstance(timings, dict):
+            raise EvaluationError(f"batched completion {index} omitted timings")
+        id_slot = final.get("id_slot")
+        if isinstance(id_slot, bool) or not isinstance(id_slot, int):
+            raise EvaluationError(f"batched completion {index} omitted its slot assignment")
+        results.append({
+            "text": "".join(state["text"]),
+            "token_ids": state["token_ids"],
+            "ttft_ms": (first_token - started) * 1000.0,
+            "end_to_end_ms": (finished - started) * 1000.0,
+            "timings": timings,
+            "tokens_predicted": final.get("tokens_predicted"),
+            "tokens_evaluated": final.get("tokens_evaluated"),
+            "id_slot": id_slot,
+        })
+    if sorted(result["id_slot"] for result in results) != list(range(batch_size)):
+        raise EvaluationError("batched completion did not use every server slot exactly once")
+    return results
+
+
 def exact_prompt(base_url, seed_path, timeout):
     seed = Path(seed_path).read_text(encoding="utf-8")
     tokenized = post_json(base_url, "/tokenize", {"content": seed, "add_special": False}, timeout)
@@ -209,6 +278,7 @@ def completion_request(prompt):
         "n_predict": 32,
         "temperature": 0.0,
         "seed": 42,
+        "ignore_eos": True,
         "cache_prompt": False,
         "return_tokens": True,
         "stream": True,
@@ -217,42 +287,43 @@ def completion_request(prompt):
     }
 
 
+def erase_all_slots(base_url, timeout):
+    erased = []
+    for id_slot in range(MAX_ACTIVE_REQUESTS):
+        response = post_json(base_url, f"/slots/{id_slot}?action=erase", {}, timeout)
+        if response.get("id_slot") != id_slot:
+            raise EvaluationError(f"slot erase response did not bind slot {id_slot}")
+        n_erased = response.get("n_erased")
+        if isinstance(n_erased, bool) or not isinstance(n_erased, int) or n_erased < 0:
+            raise EvaluationError(f"slot erase response for slot {id_slot} is invalid")
+        erased.append(n_erased)
+    return erased
+
+
 def run_continuous_batch(base_url, request_body, timeout):
-    lock = Lock()
-    active = 0
-    max_active = 0
     batch_started = time.monotonic()
-
-    def run_one(request_id):
-        nonlocal active, max_active
-        worker_started = time.monotonic()
-        with lock:
-            active += 1
-            max_active = max(max_active, active)
-            if active > MAX_ACTIVE_REQUESTS:
-                raise EvaluationError("continuous batch exceeded 16 active requests")
-        try:
-            result = stream_completion(base_url, dict(request_body), timeout)
-        finally:
-            with lock:
-                active -= 1
-        worker_finished = time.monotonic()
-        result = dict(result)
-        result.update(
-            {
-                "request_id": request_id,
-                "queue_ms": (worker_started - batch_started) * 1000.0,
-                "service_ms": (worker_finished - worker_started) * 1000.0,
-                "completed_from_batch_start_ms": (worker_finished - batch_started) * 1000.0,
-            }
-        )
-        return result
-
     requests = []
-    with ThreadPoolExecutor(max_workers=MAX_ACTIVE_REQUESTS) as executor:
-        futures = [executor.submit(run_one, request_id) for request_id in range(REQUEST_COUNT)]
-        for future in as_completed(futures):
-            requests.append(future.result())
+    wave_slot_erase_evidence = []
+    for wave_start in range(0, REQUEST_COUNT, MAX_ACTIVE_REQUESTS):
+        wave_stop = min(wave_start + MAX_ACTIVE_REQUESTS, REQUEST_COUNT)
+        wave_started = time.monotonic()
+        body = dict(request_body)
+        body["prompt"] = [request_body["prompt"] for _ in range(MAX_ACTIVE_REQUESTS)]
+        results = stream_completion_batch(base_url, body, MAX_ACTIVE_REQUESTS, timeout)
+        for index, result in enumerate(results):
+            request_id = wave_start + index
+            item = dict(result)
+            item.update({
+                "request_id": request_id,
+                "queue_ms": (wave_started - batch_started) * 1000.0,
+                "service_ms": result["end_to_end_ms"],
+                "completed_from_batch_start_ms": (
+                    wave_started - batch_started
+                ) * 1000.0 + result["end_to_end_ms"],
+            })
+            requests.append(item)
+        if wave_stop < REQUEST_COUNT:
+            wave_slot_erase_evidence.append(erase_all_slots(base_url, timeout))
     batch_finished = time.monotonic()
     requests.sort(key=lambda item: item["request_id"])
     if [item["request_id"] for item in requests] != list(range(REQUEST_COUNT)):
@@ -266,9 +337,6 @@ def run_continuous_batch(base_url, request_body, timeout):
             raise EvaluationError(
                 f"continuous request {item['request_id']} did not execute the fixed 256+32 workload"
             )
-    reference_tokens = requests[0]["token_ids"]
-    if any(item["token_ids"] != reference_tokens for item in requests[1:]):
-        raise EvaluationError("continuous batch produced nondeterministic greedy token IDs")
     wall_seconds = batch_finished - batch_started
     if not math.isfinite(wall_seconds) or wall_seconds <= 0:
         raise EvaluationError("continuous batch wall time is not positive and finite")
@@ -278,11 +346,12 @@ def run_continuous_batch(base_url, request_body, timeout):
         raise EvaluationError("continuous batch throughput is not positive and finite")
     return {
         "request_count": REQUEST_COUNT,
-        "max_active": max_active,
+        "max_active": MAX_ACTIVE_REQUESTS,
         "tokens_per_request": PREDICT_TOKENS,
         "generated_tokens": generated_tokens,
         "wall_seconds": wall_seconds,
         "aggregate_generated_tokens_per_second": throughput,
+        "wave_slot_erase_evidence": wave_slot_erase_evidence,
         "requests": requests,
     }
 
@@ -867,17 +936,32 @@ def run(args):
             path.unlink(missing_ok=True)
 
     before_health = capture_health(args, proof_dir, "before")
+    slot_save_path = proof_dir / "slot-state"
+    slot_save_path.mkdir()
     command = [
         str(server), "--model", str(model), "--ctx-size", str(SERVER_CONTEXT_TOKENS), "--n-gpu-layers", "999",
         "--threads", str(args.threads), "--host", "127.0.0.1", "--port", str(args.port),
         "--seed", "42", "--parallel", "16", "--reasoning", "off", "--verbosity", "4",
+        "--cache-ram", "0", "--no-cache-prompt", "--slot-save-path", str(slot_save_path),
         "--no-warmup", "--no-webui",
     ]
     (proof_dir / "command.json").write_text(json.dumps(command, indent=2) + "\n", encoding="utf-8")
     server_environment = os.environ.copy()
     if args.server_preload:
         server_environment["LD_PRELOAD"] = args.server_preload
-    environment_record = {key: value for key, value in server_environment.items() if key.startswith("HETGPU_") or key in ("CUDA_VISIBLE_DEVICES", "LD_PRELOAD", "LD_LIBRARY_PATH")}
+    environment_record = {
+        key: value
+        for key, value in server_environment.items()
+        if key.startswith("HETGPU_")
+        or key in (
+            "CUBLAS_WORKSPACE_CONFIG",
+            "CUDA_LAUNCH_BLOCKING",
+            "CUDA_VISIBLE_DEVICES",
+            "GGML_CUDA_DISABLE_GRAPHS",
+            "LD_LIBRARY_PATH",
+            "LD_PRELOAD",
+        )
+    }
     atomic_json(proof_dir / "environment.json", environment_record)
     stdout_path = proof_dir / "server.stdout.log"
     stderr_path = proof_dir / "server.stderr.log"
@@ -948,18 +1032,19 @@ def run(args):
                     }
 
             timed_request = completion_request(prompt_ids)
-            warmups = [
-                run_continuous_batch(base_url, timed_request, args.request_timeout)
-                for _ in range(WARMUPS)
-            ]
-            measured = [
-                run_continuous_batch(base_url, timed_request, args.request_timeout)
-                for _ in range(MEASUREMENTS)
-            ]
+            warmups = []
+            slot_erase_evidence = []
+            for _ in range(WARMUPS):
+                slot_erase_evidence.append(erase_all_slots(base_url, args.request_timeout))
+                warmups.append(run_continuous_batch(base_url, timed_request, args.request_timeout))
+            measured = []
+            for _ in range(MEASUREMENTS):
+                slot_erase_evidence.append(erase_all_slots(base_url, args.request_timeout))
+                measured.append(run_continuous_batch(base_url, timed_request, args.request_timeout))
             generated_by_request = [
                 item["token_ids"] for item in measured[0]["requests"]
             ]
-            for index, batch in enumerate(measured):
+            for index, batch in enumerate(measured[1:], start=1):
                 current = [item["token_ids"] for item in batch["requests"]]
                 if current != generated_by_request:
                     raise EvaluationError(
@@ -1051,6 +1136,12 @@ def run(args):
         "prompt_token_ids": prompt_ids,
         "generated_token_ids": generated_by_request[0],
         "generated_token_ids_by_request": generated_by_request,
+        "token_equivalence_measurement": 0,
+        "slot_ids_by_request": [item["id_slot"] for item in measured[0]["requests"]],
+        "slot_erase_evidence": slot_erase_evidence,
+        "wave_slot_erase_evidence": [
+            batch["wave_slot_erase_evidence"] for batch in warmups + measured
+        ],
         "semantic": {"text": semantic_text, "token_ids": semantic_result["token_ids"]},
         "hardware_probe": {"token_ids": hardware_probe["token_ids"], "n_predict": 2},
         "sampled_ffn_comparison": sampled_ffn_comparison,

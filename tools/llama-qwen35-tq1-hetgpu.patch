@@ -454,3 +454,22 @@ index 9b22cb0..32a80ca 100644
      fver = (enum llama_fver) gguf_get_version(metadata);
  
      LLAMA_LOG_INFO("%s: loaded meta data with %d key-value pairs and %d tensors from %s (version %s)\n",
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2562,0 +2563,15 @@ struct server_context_impl {
++                    // Full recurrent sequence removal clears metadata but leaves the
++                    // Qwen SSM backing rows intact. Once every slot is empty, zero the
++                    // shared memory once so the next 16-request wave starts from the
++                    // same state as a fresh process.
++                    const bool all_slots_empty = std::all_of(
++                        slots.begin(), slots.end(), [](const server_slot & candidate) {
++                            return !candidate.is_processing() && candidate.prompt.tokens.size() == 0;
++                        });
++                    if (all_slots_empty) {
++                        llama_memory_clear(llama_get_memory(ctx_tgt), true);
++                        if (ctx_dft) {
++                            llama_memory_clear(llama_get_memory(ctx_dft), true);
++                        }
++                    }
++

@@ -12,7 +12,8 @@ for relative in \
     src/llama-mmap.h \
     src/llama-mmap.cpp \
     src/llama-model-loader.cpp \
-    ggml/src/ggml-cuda/ggml-cuda.cu; do
+    ggml/src/ggml-cuda/ggml-cuda.cu \
+    tools/server/server-context.cpp; do
     test -f "${reference}/${relative}"
 done
 
@@ -20,12 +21,13 @@ scratch="$(mktemp -d)"
 trap 'rm -rf -- "${scratch}"' EXIT
 source="${scratch}/source"
 overlay="${scratch}/overlay"
-mkdir -p "${source}/src" "${source}/ggml/src/ggml-cuda"
+mkdir -p "${source}/src" "${source}/ggml/src/ggml-cuda" "${source}/tools/server"
 for relative in \
     src/llama-mmap.h \
     src/llama-mmap.cpp \
     src/llama-model-loader.cpp \
-    ggml/src/ggml-cuda/ggml-cuda.cu; do
+    ggml/src/ggml-cuda/ggml-cuda.cu \
+    tools/server/server-context.cpp; do
     cp -- "${reference}/${relative}" "${source}/${relative}"
 done
 git -C "${source}" init -q
@@ -47,6 +49,7 @@ grep -Fq 'hetgpu_iq1s_bind_device_v1' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.c
 grep -Fq 'HETGPU_QWEN_IQ1S_DISABLE_CUDA_FUSION' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
 grep -Fq 'HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
 grep -Fq 'hetgpu_qwen35_cuda_buffer_max_size' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu"
+grep -Fq 'llama_memory_clear(llama_get_memory(ctx_tgt), true)' "${overlay}/tools/server/server-context.cpp"
 buffer_helper_line="$(grep -nF 'static size_t hetgpu_qwen35_cuda_buffer_max_size' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu" | cut -d: -f1)"
 buffer_allocator_line="$(grep -nF 'static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer' "${overlay}/ggml/src/ggml-cuda/ggml-cuda.cu" | cut -d: -f1)"
 test "${buffer_helper_line}" -lt "${buffer_allocator_line}"

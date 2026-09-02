@@ -167,6 +167,11 @@ PY
     export HETGPU_XRT_BAR0_RESOURCE=/sys/bus/pci/devices/0000:64:00.1/resource0
     export HETGPU_QWEN_MODEL_SHA256="${model_sha256}"
     export HETGPU_QWEN35_CUDA_BUFFER_MAX_MIB=49152
+    # Keep greedy reference and hybrid modes launch-ordered across fresh server
+    # processes.  The recurrent state is explicitly cleared between batches.
+    export GGML_CUDA_DISABLE_GRAPHS=1
+    export CUDA_LAUNCH_BLOCKING=1
+    export CUBLAS_WORKSPACE_CONFIG=:4096:8
     threads="${QWEN35_THREADS:-$(nproc)}"
 
     nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv \

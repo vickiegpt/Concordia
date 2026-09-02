@@ -70,6 +70,7 @@ verify_overlay() {
     grep -Fq 'hetgpu_tq1_try_mul_mat_id_v1' "${root}/ggml/src/ggml-cuda/ggml-cuda.cu"
     grep -Fq 'hetgpu_iq1s_bind_device_v1' "${root}/ggml/src/ggml-cuda/ggml-cuda.cu"
     grep -Fq 'hetgpu_qwen35_cuda_buffer_max_size' "${root}/ggml/src/ggml-cuda/ggml-cuda.cu"
+    grep -Fq 'llama_memory_clear(llama_get_memory(ctx_tgt), true)' "${root}/tools/server/server-context.cpp"
     grep -Fq 'const std::string & path() const' "${root}/src/llama-mmap.h"
     grep -Fq 'HETGPU_TQ1_ABI_VERSION' "${root}/tools/qwen35-tq1-bridge.h"
     grep -Fq 'HETGPU_IQ1S_ABI_VERSION' "${root}/tools/qwen35-tq1-bridge.h"

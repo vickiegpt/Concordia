@@ -198,6 +198,10 @@ def mode_record(mode):
         "prompt_token_ids": list(range(256)),
         "generated_token_ids": generated,
         "generated_token_ids_by_request": [generated[:] for _ in range(64)],
+        "token_equivalence_measurement": 0,
+        "slot_ids_by_request": [index % 16 for index in range(64)],
+        "slot_erase_evidence": [[0] * 16 for _ in range(4)],
+        "wave_slot_erase_evidence": [[([287] * 16) for _ in range(3)] for _ in range(4)],
         "semantic": {"text": "OK", "token_ids": [777]},
         "hardware_probe": {"token_ids": [777, 778], "n_predict": 2},
         "sampled_ffn_comparison": sampled_comparison(mode),
@@ -217,7 +221,7 @@ def mode_record(mode):
         },
         "request_contract": {
             "prompt": list(range(256)), "n_predict": 32, "temperature": 0.0,
-            "seed": 42, "cache_prompt": False, "return_tokens": True,
+            "seed": 42, "ignore_eos": True, "cache_prompt": False, "return_tokens": True,
             "stream": True, "timings_per_token": True, "return_progress": True,
         },
         "warmup_count": 1,
@@ -291,6 +295,10 @@ def mutate_concurrency(p): p["compiler"]["max_active_requests"] = 17
 def mutate_token_count(p): p["cuda"]["generated_tokens_per_request"] = 31
 def mutate_per_request_context(p): p["cuda"]["context_tokens_per_request"] = 256
 def mutate_server_context(p): p["compiler"]["server_context_tokens"] = 512
+def mutate_slot_assignment(p): p["handwritten"]["slot_ids_by_request"][17] = 2
+def mutate_slot_erase(p): p["compiler"]["slot_erase_evidence"][2].pop()
+def mutate_wave_slot_erase(p): p["compiler"]["wave_slot_erase_evidence"][1][2].pop()
+def mutate_token_equivalence_batch(p): p["cuda"]["token_equivalence_measurement"] = 1
 def mutate_request_ids(p): p["handwritten"]["generated_token_ids_by_request"].pop()
 def mutate_tokens(p): p["compiler"]["generated_token_ids_by_request"][3][0] = 999
 def mutate_ffn_value(p): p["handwritten"]["sampled_ffn_comparison"]["actual_outputs"][0] = 2.0
@@ -325,7 +333,9 @@ def mutate_process(p): p["handwritten"]["process"]["exit_code"] = 1
 MUTATIONS = [
     mutate_audit_distribution, mutate_nonexpert_iq1s, mutate_model_hash, mutate_build_hash,
     mutate_source_hash, mutate_binary, mutate_build_threads, mutate_workload_count, mutate_concurrency,
-    mutate_token_count, mutate_per_request_context, mutate_server_context,
+    mutate_token_count, mutate_per_request_context, mutate_server_context, mutate_slot_assignment,
+    mutate_slot_erase, mutate_wave_slot_erase,
+    mutate_token_equivalence_batch,
     mutate_request_ids, mutate_tokens, mutate_ffn_value,
     mutate_ffn_tolerance, mutate_fallback, mutate_route_set, mutate_trace_mode,
     mutate_context_limit, mutate_semantic_hash, mutate_assembly_body, mutate_assembly_hash,
