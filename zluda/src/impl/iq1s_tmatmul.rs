@@ -14,7 +14,7 @@ use std::hash::{Hash, Hasher};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 pub(crate) const IQ1S_BLOCK_BYTES: usize = 50;
 pub(crate) const IQ1S_BLOCK_VALUES: usize = 256;
@@ -819,28 +819,33 @@ pub(crate) struct MatrixCacheIdentity {
     pub(crate) content_hash: [u8; 32],
 }
 
+const MAX_COMPONENT_CACHE_ENTRIES: usize = 512;
+
 #[derive(Debug, Default)]
 pub(crate) struct ComponentCache {
-    identity: Option<MatrixCacheIdentity>,
-    source: Option<Arc<MatrixSource>>,
+    sources: HashMap<MatrixCacheIdentity, Weak<MatrixSource>>,
 }
 
 impl ComponentCache {
     pub(crate) fn matches(&self, identity: &MatrixCacheIdentity) -> bool {
-        self.identity.as_ref() == Some(identity)
+        self.sources
+            .get(identity)
+            .is_some_and(|source| source.strong_count() != 0)
     }
     pub(crate) fn get(&self, identity: &MatrixCacheIdentity) -> Option<Arc<MatrixSource>> {
-        self.matches(identity)
-            .then(|| self.source.clone())
-            .flatten()
+        self.sources.get(identity).and_then(Weak::upgrade)
     }
     pub(crate) fn insert(&mut self, identity: MatrixCacheIdentity, source: Arc<MatrixSource>) {
-        self.identity = Some(identity);
-        self.source = Some(source);
+        self.sources.retain(|_, source| source.strong_count() != 0);
+        if self.sources.len() >= MAX_COMPONENT_CACHE_ENTRIES
+            && !self.sources.contains_key(&identity)
+        {
+            return;
+        }
+        self.sources.insert(identity, Arc::downgrade(&source));
     }
     pub(crate) fn invalidate(&mut self) {
-        self.identity = None;
-        self.source = None;
+        self.sources.clear();
     }
 }
 
@@ -964,11 +969,13 @@ pub(crate) fn capture_from_host(
             Arc::from(packed_matrix),
             Arc::new(*grid),
         )?;
-        cache
-            .lock()
-            .map_err(|_| "component cache poisoned")?
-            .insert(identity, built.clone());
-        built
+        let mut guard = cache.lock().map_err(|_| "component cache poisoned")?;
+        if let Some(cached) = guard.get(&identity) {
+            cached
+        } else {
+            guard.insert(identity, built.clone());
+            built
+        }
     };
     Ok(CapturedLaunch {
         launch,
@@ -2763,6 +2770,51 @@ mod tests {
         let mut changed = base;
         changed.content_hash[0] ^= 1;
         assert!(!cache.matches(&changed));
+    }
+
+    #[test]
+    fn component_cache_retains_distinct_live_matrix_identities() {
+        let signature = GgmlType19Signature {
+            kernel: "mul_mat_q".into(),
+            ne00: 256,
+            ne01: 1,
+            stride01: 1,
+            ne10: 256,
+            ne11: 1,
+            stride11: 1,
+            ne0: 1,
+        };
+        let first_identity = MatrixCacheIdentity {
+            matrix_ptr: 0x1000,
+            signature: signature.clone(),
+            allocation_generation: 1,
+            content_hash: [0x11; 32],
+        };
+        let second_identity = MatrixCacheIdentity {
+            matrix_ptr: 0x2000,
+            signature: signature.clone(),
+            allocation_generation: 1,
+            content_hash: [0x22; 32],
+        };
+        let first = MatrixSource::new(
+            signature.clone(),
+            Arc::from(block(1, false, 0)),
+            Arc::new(grid()),
+        )
+        .unwrap();
+        let second = MatrixSource::new(
+            signature,
+            Arc::from(block(3, true, 1)),
+            Arc::new(grid()),
+        )
+        .unwrap();
+
+        let mut cache = ComponentCache::default();
+        cache.insert(first_identity.clone(), first.clone());
+        cache.insert(second_identity.clone(), second.clone());
+
+        assert!(Arc::ptr_eq(&cache.get(&first_identity).unwrap(), &first));
+        assert!(Arc::ptr_eq(&cache.get(&second_identity).unwrap(), &second));
     }
 
     #[test]
