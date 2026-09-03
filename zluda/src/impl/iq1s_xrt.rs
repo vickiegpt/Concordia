@@ -1491,7 +1491,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires HETGPU_XRT_AU250_IQ1S_TEST=1 and live MaxCores AU250"]
+    #[ignore = "requires HETGPU_XRT_AU250_IQ1S_TEST=1 and live persistent IQ1_S AU250"]
     fn au250_iq1s_two_by_two_tiles_match_reference() {
         assert_eq!(
             std::env::var("HETGPU_XRT_AU250_IQ1S_TEST").as_deref(),

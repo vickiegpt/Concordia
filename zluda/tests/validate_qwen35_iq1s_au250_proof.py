@@ -210,7 +210,7 @@ def _validate_artifacts(root):
     _sha(source_hash, "repository_diff_sha256", nonzero=True)
 
     xclbin = _read_text(root / "xclbin-info.txt")
-    for name in ("ternip_big_1", "ternip_big_2", "ternip_big_3", "ternip_small_1"):
+    for name in ("iq1s_layer_big_1", "iq1s_layer_big_2", "iq1s_layer_big_3", "iq1s_layer_small_1"):
         if f"Instance:        {name}" not in xclbin:
             _fail(f"xclbin topology is missing {name}")
     pcie = _read_text(root / "pcie-link.txt")

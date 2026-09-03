@@ -280,7 +280,7 @@ def write_proof(root, proof):
     (root / "repository-diff.sha256").write_text(proof["repository_diff_sha256"] + "\n", encoding="utf-8")
     (root / "pcie-link.txt").write_text(proof["pcie"], encoding="utf-8")
     (root / "xclbin-info.txt").write_text("\n".join(
-        f"Instance:        {name}" for name in ("ternip_big_1", "ternip_big_2", "ternip_big_3", "ternip_small_1")) + "\n", encoding="utf-8")
+        f"Instance:        {name}" for name in ("iq1s_layer_big_1", "iq1s_layer_big_2", "iq1s_layer_big_3", "iq1s_layer_small_1")) + "\n", encoding="utf-8")
 
 
 def mutate_audit_distribution(p): p["audit"]["routed_expert_types"]["IQ1_S"] = 140

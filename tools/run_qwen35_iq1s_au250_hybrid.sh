@@ -29,7 +29,7 @@ if [[ "${1:-}" == "--inside" ]]; then
     model_sha256=0a32c2702fbb61934960cfeef34524b81ec6d9267158f246d45fc86f5aaa7568
     llama_revision=925e1179947ea0c0ebfb0032df18af3a729822be
     fpga_bdf=0000:64:00.1
-    cu_config='{"version":1,"cus":[{"ip_name":"ternip_big:ternip_big_1","memory_group":0,"lanes":9},{"ip_name":"ternip_big:ternip_big_2","memory_group":3,"lanes":9},{"ip_name":"ternip_big:ternip_big_3","memory_group":2,"lanes":9},{"ip_name":"ternip_small:ternip_small_1","memory_group":1,"lanes":6}]}'
+    cu_config='{"version":1,"cus":[{"ip_name":"iq1s_layer_big:iq1s_layer_big_1","memory_group":0,"lanes":9},{"ip_name":"iq1s_layer_big:iq1s_layer_big_2","memory_group":3,"lanes":9},{"ip_name":"iq1s_layer_big:iq1s_layer_big_3","memory_group":2,"lanes":9},{"ip_name":"iq1s_layer_small:iq1s_layer_small_1","memory_group":1,"lanes":6}]}'
 
     for required in \
         "${model}" "${manifest}" "${llama_server}" "${libnvcuda}" "${cuda13_launch_shim}" "${oracle}" \
@@ -106,7 +106,7 @@ PY
 
     xclbin_info="$(xclbinutil --info --input "${xclbin}" 2>&1)"
     printf '%s\n' "${xclbin_info}" > "${proof_dir}/xclbin-info.txt"
-    for cu in ternip_big_1 ternip_big_2 ternip_big_3 ternip_small_1; do
+    for cu in iq1s_layer_big_1 iq1s_layer_big_2 iq1s_layer_big_3 iq1s_layer_small_1; do
         grep -Fq "Instance:        ${cu}" <<<"${xclbin_info}" || {
             echo "xclbin is missing expected compute unit ${cu}" >&2
             exit 1
@@ -291,10 +291,10 @@ temperature="$(_au250_fpga_temp)"
 }
 cd "${repo_root}"
 install -d "${proof_dir}"
-QWEN35_BUILD_JOBS=32 CARGO_BUILD_JOBS=32 \
+HETGPU_XRT_XCLBIN="${xclbin}" QWEN35_BUILD_JOBS=32 CARGO_BUILD_JOBS=32 \
     bash "${repo_root}/zluda/tests/run_au250_xrt_iq1s.sh" --inside handwritten \
     > "${proof_dir}/standalone-handwritten.log" 2>&1
-QWEN35_BUILD_JOBS=32 CARGO_BUILD_JOBS=32 \
+HETGPU_XRT_XCLBIN="${xclbin}" QWEN35_BUILD_JOBS=32 CARGO_BUILD_JOBS=32 \
     bash "${repo_root}/zluda/tests/run_au250_xrt_iq1s.sh" --inside compiler \
     > "${proof_dir}/standalone-compiler.log" 2>&1
 "${repo_root}/tools/au250_qwen35_run.sh" bash /work/tools/run_qwen35_iq1s_au250_hybrid.sh \

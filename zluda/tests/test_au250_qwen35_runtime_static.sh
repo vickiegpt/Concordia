@@ -176,6 +176,16 @@ grep -Fq 'nvidia_capture_modern_iq1s_xrt_moe_mmvq' "${function_rs}"
 grep -Fq 'export CARGO_BUILD_JOBS=32' "${iq1s_standalone}"
 grep -Fq 'HETGPU_XRT_BAR0_RESOURCE=/sys/bus/pci/devices/0000:64:00.1/resource0' "${iq1s_standalone}"
 grep -Fq 'xrt-smi examine -d 0000:64:00.1' "${iq1s_standalone}"
+grep -Fq 'xclbin=${HETGPU_XRT_XCLBIN:?' "${iq1s_standalone}"
+for cu in iq1s_layer_big_1 iq1s_layer_big_2 iq1s_layer_big_3 iq1s_layer_small_1; do
+    grep -Fq "${cu}" "${iq1s_standalone}"
+    grep -Fq "${cu}" "${iq1s_runner}"
+    grep -Fq "${cu}" "${iq1s_validator}"
+done
+if grep -Eq 'MaxCores_370M|ternip_(big|small)' "${iq1s_standalone}" "${iq1s_runner}" "${iq1s_validator}"; then
+    echo "Qwen IQ1_S workflow still references the legacy TernIP xclbin topology" >&2
+    exit 1
+fi
 if grep -Fq 'if (strstr(name, "mul_mat_vec_q_moe") != NULL)' "${cuda13_launch_shim}"; then
     echo "CUDA 13 launch shim still bypasses the multi-token IQ1_S MoE kernel" >&2
     exit 1
