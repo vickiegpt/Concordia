@@ -28,6 +28,7 @@ use super::iq1s_trace::QWEN_MODEL_CONTEXT_LIMIT;
 use super::iq1s_weight_arena::{ARENA_ALIGNMENT, ARENA_BANK_COUNT, ARENA_SUPERBLOCK_BYTES};
 use super::xrt_tmatmul::{Handle, XrtOps, Xuid, XRT_BO_SYNC_FROM_DEVICE, XRT_BO_SYNC_TO_DEVICE};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::fmt;
 use std::path::PathBuf;
@@ -37,7 +38,7 @@ const CONTROL_START: u32 = 1;
 const CONTROL_SHUTDOWN: u32 = 2;
 const COMMAND_RING_DEFAULT_CAPACITY: u32 = 512;
 const PROGRAM_BYTES: usize = 4 * 1024 * 1024;
-const ARENA_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+const ARENA_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
 const ARENA_MANIFEST_MAGIC: u32 = 0x4d41_5149;
 const ARENA_MANIFEST_RECORD_BYTES: usize = 64;
 const ACTIVATION_BYTES: usize = 256 * 1024 * 1024;
@@ -87,11 +88,25 @@ impl PersistentIq1sConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArenaShardSpec {
+    pub(crate) bank: u8,
+    pub(crate) logical_offset: u64,
+    pub(crate) bytes: usize,
+    pub(crate) layer_id: u32,
+    pub(crate) role: u16,
+    pub(crate) expert_id: u16,
+    pub(crate) row_start: u32,
+    pub(crate) row_count: u32,
+    pub(crate) sha256: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ArenaChunkSpec {
     pub(crate) bank: u8,
     pub(crate) logical_offset: u64,
     pub(crate) bytes: usize,
     pub(crate) sha256: [u8; 32],
+    pub(crate) shards: Vec<ArenaShardSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,6 +225,19 @@ struct ArenaChunk {
     bytes: usize,
     bo: Handle,
     address: u64,
+    sha256: [u8; 32],
+    shards: Vec<ResidentArenaShard>,
+}
+
+#[derive(Debug)]
+struct ResidentArenaShard {
+    address: u64,
+    bytes: usize,
+    layer_id: u32,
+    role: u16,
+    expert_id: u16,
+    row_start: u32,
+    row_count: u32,
     sha256: [u8; 32],
 }
 
@@ -348,13 +376,37 @@ fn resident_model_tag(chunks: &[ArenaChunkSpec]) -> u64 {
         hash.update(chunk.logical_offset.to_le_bytes());
         hash.update((chunk.bytes as u64).to_le_bytes());
         hash.update(chunk.sha256);
+        let mut shards = chunk.shards;
+        shards.sort_by_key(|shard| {
+            (
+                shard.logical_offset,
+                shard.layer_id,
+                shard.role,
+                shard.expert_id,
+                shard.row_start,
+            )
+        });
+        for shard in shards {
+            hash.update(shard.logical_offset.to_le_bytes());
+            hash.update((shard.bytes as u64).to_le_bytes());
+            hash.update(shard.layer_id.to_le_bytes());
+            hash.update(shard.role.to_le_bytes());
+            hash.update(shard.expert_id.to_le_bytes());
+            hash.update(shard.row_start.to_le_bytes());
+            hash.update(shard.row_count.to_le_bytes());
+            hash.update(shard.sha256);
+        }
     }
     u64::from_le_bytes(hash.finalize()[..8].try_into().expect("eight-byte model tag"))
 }
 
 fn arena_manifest(model_tag: u64, arena: &[ArenaChunk]) -> Result<Vec<u8>, PersistentError> {
+    let record_count = arena
+        .iter()
+        .try_fold(0usize, |count, chunk| count.checked_add(chunk.shards.len()))
+        .ok_or_else(|| PersistentError::Config("arena manifest record count overflow".to_string()))?;
     let used = 64usize
-        .checked_add(arena.len().checked_mul(ARENA_MANIFEST_RECORD_BYTES).ok_or_else(|| {
+        .checked_add(record_count.checked_mul(ARENA_MANIFEST_RECORD_BYTES).ok_or_else(|| {
             PersistentError::Config("arena manifest length overflow".to_string())
         })?)
         .ok_or_else(|| PersistentError::Config("arena manifest length overflow".to_string()))?;
@@ -366,15 +418,21 @@ fn arena_manifest(model_tag: u64, arena: &[ArenaChunk]) -> Result<Vec<u8>, Persi
     let mut bytes = vec![0u8; ARENA_MANIFEST_BYTES];
     bytes[0..4].copy_from_slice(&ARENA_MANIFEST_MAGIC.to_le_bytes());
     bytes[4..8].copy_from_slice(&IQ1S_ABI_VERSION.to_le_bytes());
-    bytes[8..12].copy_from_slice(&(arena.len() as u32).to_le_bytes());
+    let record_count = u32::try_from(record_count)
+        .map_err(|_| PersistentError::Config("arena manifest record count exceeds u32".to_string()))?;
+    bytes[8..12].copy_from_slice(&record_count.to_le_bytes());
     bytes[12..16].copy_from_slice(&(ARENA_MANIFEST_RECORD_BYTES as u32).to_le_bytes());
     bytes[16..24].copy_from_slice(&model_tag.to_le_bytes());
-    for (index, chunk) in arena.iter().enumerate() {
+    for (index, shard) in arena.iter().flat_map(|chunk| chunk.shards.iter()).enumerate() {
         let offset = 64 + index * ARENA_MANIFEST_RECORD_BYTES;
-        bytes[offset..offset + 8].copy_from_slice(&chunk.logical_offset.to_le_bytes());
-        bytes[offset + 8..offset + 16].copy_from_slice(&(chunk.bytes as u64).to_le_bytes());
-        bytes[offset + 16..offset + 24].copy_from_slice(&chunk.address.to_le_bytes());
-        bytes[offset + 24..offset + 56].copy_from_slice(&chunk.sha256);
+        bytes[offset..offset + 8].copy_from_slice(&shard.address.to_le_bytes());
+        bytes[offset + 8..offset + 16].copy_from_slice(&(shard.bytes as u64).to_le_bytes());
+        bytes[offset + 16..offset + 20].copy_from_slice(&shard.layer_id.to_le_bytes());
+        bytes[offset + 20..offset + 22].copy_from_slice(&shard.role.to_le_bytes());
+        bytes[offset + 22..offset + 24].copy_from_slice(&shard.expert_id.to_le_bytes());
+        bytes[offset + 24..offset + 28].copy_from_slice(&shard.row_start.to_le_bytes());
+        bytes[offset + 28..offset + 32].copy_from_slice(&shard.row_count.to_le_bytes());
+        bytes[offset + 32..offset + 64].copy_from_slice(&shard.sha256);
     }
     Ok(bytes)
 }
@@ -400,6 +458,7 @@ impl<O: XrtOps> PersistentIq1sPool<O> {
         }
         let mut by_bank: [Vec<ArenaChunkSpec>; ARENA_BANK_COUNT] =
             std::array::from_fn(|_| Vec::new());
+        let mut shard_identities = BTreeSet::new();
         for chunk in chunks {
             let bank = usize::from(chunk.bank);
             if bank >= ARENA_BANK_COUNT
@@ -407,9 +466,64 @@ impl<O: XrtOps> PersistentIq1sPool<O> {
                 || chunk.bytes as u64 > ARENA_SUPERBLOCK_BYTES
                 || chunk.logical_offset % ARENA_ALIGNMENT != 0
                 || chunk.sha256 == [0; 32]
+                || chunk.shards.is_empty()
             {
                 return Err(PersistentError::Config(
-                    "arena chunk violates bank, size, alignment, or hash contract".to_string(),
+                    "arena chunk violates bank, size, alignment, hash, or shard contract"
+                        .to_string(),
+                ));
+            }
+            let chunk_end = chunk
+                .logical_offset
+                .checked_add(chunk.bytes as u64)
+                .ok_or_else(|| PersistentError::Config("arena chunk overflow".to_string()))?;
+            let mut shard_ranges = Vec::new();
+            for shard in &chunk.shards {
+                let shard_end = shard
+                    .logical_offset
+                    .checked_add(shard.bytes as u64)
+                    .ok_or_else(|| PersistentError::Config("arena shard overflow".to_string()))?;
+                let (expected_rows, expected_bytes_per_row) = match u32::from(shard.role) {
+                    IQ1S_ROLE_GATE | IQ1S_ROLE_UP => (256u32, 800usize),
+                    IQ1S_ROLE_DOWN => (1024u32, 200usize),
+                    _ => {
+                        return Err(PersistentError::Config(
+                            "arena shard has an unsupported role".to_string(),
+                        ));
+                    }
+                };
+                let expected_bytes = usize::try_from(expected_rows)
+                    .ok()
+                    .and_then(|rows| rows.checked_mul(expected_bytes_per_row));
+                if shard.bank != chunk.bank
+                    || shard.logical_offset % ARENA_ALIGNMENT != 0
+                    || shard.logical_offset < chunk.logical_offset
+                    || shard_end > chunk_end
+                    || shard.bytes == 0
+                    || Some(shard.bytes) != expected_bytes
+                    || shard.expert_id >= 512
+                    || shard.row_count != expected_rows
+                    || shard.row_start != u32::from(shard.bank) * expected_rows
+                    || shard.sha256 == [0; 32]
+                    || !shard_identities.insert((
+                        shard.layer_id,
+                        shard.role,
+                        shard.expert_id,
+                        shard.row_start,
+                        shard.row_count,
+                    ))
+                {
+                    return Err(PersistentError::Config(
+                        "arena shard violates exact identity, shape, bounds, alignment, or hash contract"
+                            .to_string(),
+                    ));
+                }
+                shard_ranges.push((shard.logical_offset, shard_end));
+            }
+            shard_ranges.sort_unstable();
+            if shard_ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+                return Err(PersistentError::Config(
+                    "arena shards overlap within a transfer chunk".to_string(),
                 ));
             }
             by_bank[bank].push(chunk.clone());
@@ -538,12 +652,47 @@ impl<O: XrtOps> PersistentIq1sPool<O> {
                         "arena BO device address is zero or unaligned".to_string(),
                     ));
                 }
+                let mut resident_shards = Vec::with_capacity(spec.shards.len());
+                for shard in &spec.shards {
+                    let relative = usize::try_from(shard.logical_offset - spec.logical_offset)
+                        .map_err(|_| {
+                            PersistentError::Config(
+                                "arena shard relative offset exceeds usize".to_string(),
+                            )
+                        })?;
+                    let end = relative.checked_add(shard.bytes).ok_or_else(|| {
+                        PersistentError::Config("arena shard byte range overflow".to_string())
+                    })?;
+                    if end > bytes.len()
+                        || <[u8; 32]>::from(Sha256::digest(&bytes[relative..end]))
+                            != shard.sha256
+                    {
+                        return Err(PersistentError::Config(format!(
+                            "arena shard bank {} layer {} role {} expert {} failed length/hash verification",
+                            shard.bank, shard.layer_id, shard.role, shard.expert_id
+                        )));
+                    }
+                    let shard_address = address.checked_add(relative as u64).ok_or_else(|| {
+                        PersistentError::Config("arena shard physical address overflow".to_string())
+                    })?;
+                    resident_shards.push(ResidentArenaShard {
+                        address: shard_address,
+                        bytes: shard.bytes,
+                        layer_id: shard.layer_id,
+                        role: shard.role,
+                        expert_id: shard.expert_id,
+                        row_start: shard.row_start,
+                        row_count: shard.row_count,
+                        sha256: shard.sha256,
+                    });
+                }
                 arena.push(ArenaChunk {
                     logical_offset: spec.logical_offset,
                     bytes: spec.bytes,
                     bo,
                     address,
                     sha256: spec.sha256,
+                    shards: resident_shards,
                 });
             }
             let manifest = arena_manifest(model_tag, &arena)?;
@@ -1582,6 +1731,9 @@ mod tests {
                     expert_id: expert,
                     lane_mask: mask,
                     token_ids: tokens.clone(),
+                    input_offset: u64::from(expert) * 8192,
+                    output_offset: u64::from(expert) * 8192,
+                    token_map_offset: u64::from(expert) * 64,
                     row_shard: ArenaShard {
                         tensor: tensor.clone(),
                         expert,
@@ -1605,13 +1757,7 @@ mod tests {
                     ActivationRange {
                         cuda_ptr: 0x10000,
                         slab_offset: 0,
-                        bytes: 4096,
-                        stream: 1,
-                    },
-                    ActivationRange {
-                        cuda_ptr: 0x20000,
-                        slab_offset: 4096,
-                        bytes: 4096,
+                        bytes: 16384,
                         stream: 1,
                     },
                 ],
@@ -1625,12 +1771,26 @@ mod tests {
     fn pool(capacity: u32) -> PersistentIq1sPool<FakeXrt> {
         let bytes = vec![0x5a; 2 * 1024 * 1024];
         let hash: [u8; 32] = Sha256::digest(&bytes).into();
+        let shard_hash: [u8; 32] = Sha256::digest(vec![0x5a; 204_800]).into();
         let chunks = (0..4)
             .map(|bank| ArenaChunkSpec {
                 bank,
                 logical_offset: 0,
                 bytes: bytes.len(),
                 sha256: hash,
+                shards: (0..2)
+                    .map(|expert| ArenaShardSpec {
+                        bank,
+                        logical_offset: u64::from(expert) * 1024 * 1024,
+                        bytes: 204_800,
+                        layer_id: 7,
+                        role: IQ1S_ROLE_GATE as u16,
+                        expert_id: expert,
+                        row_start: u32::from(bank) * 256,
+                        row_count: 256,
+                        sha256: shard_hash,
+                    })
+                    .collect(),
             })
             .collect::<Vec<_>>();
         PersistentIq1sPool::open(
@@ -1647,6 +1807,40 @@ mod tests {
             |_| Ok(bytes.clone()),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn arena_manifest_records_exact_physical_shards() {
+        let hash = [0x5au8; 32];
+        let manifest = arena_manifest(
+            7,
+            &[ArenaChunk {
+                logical_offset: 0,
+                bytes: 800,
+                bo: core::ptr::null_mut(),
+                address: 0x1234_0000,
+                sha256: hash,
+                shards: vec![ResidentArenaShard {
+                    address: 0x1234_0000,
+                    bytes: 800,
+                    layer_id: 7,
+                    role: IQ1S_ROLE_GATE as u16,
+                    expert_id: 17,
+                    row_start: 0,
+                    row_count: 1,
+                    sha256: hash,
+                }],
+            }],
+        )
+        .unwrap();
+        assert_eq!(&manifest[64..72], &0x1234_0000u64.to_le_bytes());
+        assert_eq!(&manifest[72..80], &800u64.to_le_bytes());
+        assert_eq!(&manifest[80..84], &7u32.to_le_bytes());
+        assert_eq!(&manifest[84..86], &(IQ1S_ROLE_GATE as u16).to_le_bytes());
+        assert_eq!(&manifest[86..88], &17u16.to_le_bytes());
+        assert_eq!(&manifest[88..92], &0u32.to_le_bytes());
+        assert_eq!(&manifest[92..96], &1u32.to_le_bytes());
+        assert_eq!(&manifest[96..128], &hash);
     }
 
     #[test]

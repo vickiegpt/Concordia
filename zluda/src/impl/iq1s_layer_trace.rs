@@ -14,6 +14,8 @@ const MAX_BATCH: usize = 16;
 const Q8_1_MMQ_VALUES: u64 = 128;
 const Q8_1_MMQ_BYTES: u64 = 144;
 const F32_BYTES: u64 = 4;
+const OUTPUT_SLAB_BYTES: u64 = 256 * 1024 * 1024;
+const TOKEN_MAP_SLAB_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum LayerPhase {
@@ -62,6 +64,9 @@ pub(crate) struct SemanticIq1sCommand {
     pub(crate) expert_id: u16,
     pub(crate) lane_mask: u16,
     pub(crate) token_ids: Vec<u32>,
+    pub(crate) input_offset: u64,
+    pub(crate) output_offset: u64,
+    pub(crate) token_map_offset: u64,
     pub(crate) row_shard: ArenaShard,
 }
 
@@ -225,6 +230,114 @@ fn validate_semantic_command(
         return Err("Qwen IQ1_S command lane mask does not match its token IDs".to_string());
     }
     Ok(derived_mask)
+}
+
+fn ranges_overlap(left: (u64, u64), right: (u64, u64)) -> bool {
+    left.0 < right.1 && right.0 < left.1
+}
+
+fn semantic_buffer_ranges(
+    command: &SemanticIq1sCommand,
+) -> Result<((u64, u64), (u64, u64), (u64, u64)), String> {
+    let lane_count = u64::try_from(command.token_ids.len())
+        .map_err(|_| "Qwen IQ1_S lane count does not fit u64")?;
+    let input_bytes = (u64::from(role_input_columns(command.role)?) / Q8_1_MMQ_VALUES)
+        .checked_mul(Q8_1_MMQ_BYTES)
+        .and_then(|value| value.checked_mul(lane_count))
+        .ok_or("Qwen IQ1_S activation byte count overflow")?;
+    let output_bytes = u64::from(command.row_shard.row_count)
+        .checked_mul(F32_BYTES)
+        .and_then(|value| value.checked_mul(lane_count))
+        .ok_or("Qwen IQ1_S output byte count overflow")?;
+    let token_bytes = lane_count
+        .checked_mul(4)
+        .ok_or("Qwen IQ1_S token-map byte count overflow")?;
+    let input_end = command
+        .input_offset
+        .checked_add(input_bytes)
+        .ok_or("Qwen IQ1_S activation slab range overflow")?;
+    let output_end = command
+        .output_offset
+        .checked_add(output_bytes)
+        .ok_or("Qwen IQ1_S output slab range overflow")?;
+    let token_end = command
+        .token_map_offset
+        .checked_add(token_bytes)
+        .ok_or("Qwen IQ1_S token-map slab range overflow")?;
+    if command.input_offset % 16 != 0
+        || command.output_offset % F32_BYTES != 0
+        || command.token_map_offset % 4 != 0
+        || output_end > OUTPUT_SLAB_BYTES
+        || token_end > TOKEN_MAP_SLAB_BYTES
+    {
+        return Err("Qwen IQ1_S command buffer range is unaligned or exceeds its slab".to_string());
+    }
+    Ok((
+        (command.input_offset, input_end),
+        (command.output_offset, output_end),
+        (command.token_map_offset, token_end),
+    ))
+}
+
+fn validate_semantic_buffer_bindings(plan: &LayerPhasePlan) -> Result<(), String> {
+    let activation_ranges = plan
+        .activations
+        .iter()
+        .map(|range| {
+            range
+                .slab_offset
+                .checked_add(u64::from(range.bytes))
+                .map(|end| (range.slab_offset, end))
+                .ok_or("Qwen IQ1_S activation slab range overflow")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut by_bank: [Vec<(&SemanticIq1sCommand, (u64, u64), (u64, u64), (u64, u64))>;
+        ARENA_BANK_COUNT] = std::array::from_fn(|_| Vec::new());
+    for command in &plan.commands {
+        if usize::from(command.row_shard.bank) >= ARENA_BANK_COUNT {
+            return Err("Qwen IQ1_S command references an invalid U250 bank".to_string());
+        }
+        let (input, output, token) = semantic_buffer_ranges(command)?;
+        if !activation_ranges
+            .iter()
+            .any(|range| input.0 >= range.0 && input.1 <= range.1)
+        {
+            return Err(
+                "Qwen IQ1_S command input is not contained in the activation manifest"
+                    .to_string(),
+            );
+        }
+        by_bank[usize::from(command.row_shard.bank)].push((command, input, output, token));
+    }
+    for commands in by_bank {
+        for left in 0..commands.len() {
+            for right in left + 1..commands.len() {
+                let (left_command, left_input, left_output, left_token) = commands[left];
+                let (right_command, right_input, right_output, right_token) = commands[right];
+                if ranges_overlap(left_output, right_output) {
+                    return Err("Qwen IQ1_S output ranges overlap within one U250 bank".to_string());
+                }
+                if ranges_overlap(left_input, right_input)
+                    && left_command.token_ids != right_command.token_ids
+                {
+                    return Err(
+                        "Qwen IQ1_S activation ranges overlap for different token lanes"
+                            .to_string(),
+                    );
+                }
+                if ranges_overlap(left_token, right_token)
+                    && (left_token != right_token
+                        || left_command.token_ids != right_command.token_ids)
+                {
+                    return Err(
+                        "Qwen IQ1_S token-map ranges overlap for different token lanes"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn expanded_counts(
@@ -429,15 +542,15 @@ fn build_command(
         lane_count,
         weight_format: IQ1S_WEIGHT_FORMAT_IQ1_S as u16,
         arena_offset: semantic.row_shard.offset,
-        input_offset: 0,
-        output_offset: 0,
+        input_offset: semantic.input_offset,
+        output_offset: semantic.output_offset,
         row_start: semantic.row_shard.row_start,
         row_count: semantic.row_shard.row_count,
         input_bytes: u32::try_from(input_bytes)
             .map_err(|_| "Qwen IQ1_S input byte count does not fit u32")?,
         output_bytes: u32::try_from(output_bytes)
             .map_err(|_| "Qwen IQ1_S output byte count does not fit u32")?,
-        token_map_offset: 0,
+        token_map_offset: semantic.token_map_offset,
         dependency_fence: 0,
         completion_slot,
         reserved: 0,
@@ -463,6 +576,7 @@ pub(crate) fn compile_layer_phase(
         return Err("Qwen IQ1_S layer phase has no commands".to_string());
     }
     validate_activation_ranges(&plan.activations)?;
+    validate_semantic_buffer_bindings(plan)?;
     let mut semantic_by_bank: [Vec<SemanticIq1sCommand>; ARENA_BANK_COUNT] =
         std::array::from_fn(|_| Vec::new());
     let mut coordinates = BTreeSet::new();
@@ -755,6 +869,9 @@ mod tests {
                     expert_id: 17,
                     lane_mask: mask,
                     token_ids: token_ids.clone(),
+                    input_offset: 0,
+                    output_offset: 0,
+                    token_map_offset: 0,
                     row_shard: shard(role, 17, bank),
                 });
             }
@@ -768,6 +885,9 @@ mod tests {
                         expert_id: token_id as u16,
                         lane_mask: 1u16 << token_id,
                         token_ids: vec![token_id],
+                        input_offset: u64::from(token_id) * 64 * 1024,
+                        output_offset: u64::from(token_id) * 64 * 1024,
+                        token_map_offset: u64::from(token_id) * 64,
                         row_shard: shard(role, token_id as u16, bank),
                     });
                 }
@@ -834,6 +954,41 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn iq1s_layer_trace_assigns_disjoint_multi_matrix_outputs() {
+        let compiled = compile_layer_phase(
+            &plan(Iq1sExpertRole::Gate, 2, false),
+            "compiler",
+            QWEN_MODEL_CONTEXT_LIMIT,
+        )
+        .unwrap();
+        for bank in 0..ARENA_BANK_COUNT {
+            assert_ne!(compiled.commands[bank][0].output_offset, compiled.commands[bank][1].output_offset);
+            assert_ne!(compiled.commands[bank][0].token_map_offset, compiled.commands[bank][1].token_map_offset);
+        }
+    }
+
+    #[test]
+    fn iq1s_layer_trace_rejects_ambiguous_or_out_of_range_slab_bindings() {
+        let mut overlap = plan(Iq1sExpertRole::Gate, 2, false);
+        overlap.commands[4].output_offset = overlap.commands[0].output_offset;
+        assert!(compile_layer_phase(&overlap, "compiler", QWEN_MODEL_CONTEXT_LIMIT)
+            .unwrap_err()
+            .contains("output ranges overlap"));
+
+        let mut outside = plan(Iq1sExpertRole::Gate, 1, true);
+        outside.commands[0].input_offset = 8 * 1024 * 1024;
+        assert!(compile_layer_phase(&outside, "compiler", QWEN_MODEL_CONTEXT_LIMIT)
+            .unwrap_err()
+            .contains("activation manifest"));
+
+        let mut token_overlap = plan(Iq1sExpertRole::Gate, 2, false);
+        token_overlap.commands[4].token_map_offset = token_overlap.commands[0].token_map_offset;
+        assert!(compile_layer_phase(&token_overlap, "compiler", QWEN_MODEL_CONTEXT_LIMIT)
+            .unwrap_err()
+            .contains("token-map ranges overlap"));
     }
 
     #[test]
