@@ -146,7 +146,8 @@ fn existing_fp16_and_ordered_comparisons_are_unchanged() {
 #[test]
 #[ignore = "requires NVIDIA ptxas with sm_120 support; set HETGPU_TEST_PTXAS"]
 fn bf16_generated_ptx_all_modes_assemble_offline() {
-    // The project's PTX parser currently returns Todo for BF16 conversion.
+    // The project's PTX parser returns Todo for RELU-qualified BF16 conversion;
+    // plain RN and RZ are accepted and tested separately.
     // Use the actual NVIDIA assembler for these generated forms, not a stub
     // parser or a handwritten PTX replacement. This does not execute a GPU.
     let assembler = std::env::var_os("HETGPU_TEST_PTXAS").expect("set HETGPU_TEST_PTXAS");
@@ -168,5 +169,15 @@ fn bf16_generated_ptx_all_modes_assemble_offline() {
             "{modifier}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+}
+
+#[test]
+fn bf16_plain_rn_and_rz_are_accepted_by_the_real_parser() {
+    for modifier in ["", ".RZ"] {
+        let result = lift(&format!("F2FP.BF16.F32.PACK_AB{modifier} R5, R4, R5 ;"));
+        assert!(result.diagnostics.is_empty());
+        ptx_parser::parse_module_checked(&result.ptx)
+            .expect("ordinary BF16 RN/RZ conversion parses");
     }
 }

@@ -28,9 +28,13 @@ HETGPU_TEST_PTXAS=/path/to/ptxas cargo test -p ptx bf16_generated_ptx_all_modes_
 ```
 
 It requires ptxas with sm_120 support; it performs no GPU execution.
-The internal PTX parser still returns `Todo` for BF16 conversion. That
-parser limitation is separate from NVIDIA PTX legality and is not hidden
-by a stub parser or a claim that the complete compiler supports BF16.
+The internal PTX parser accepts ordinary RN and RZ BF16 conversion.
+It returns `Todo` specifically for RELU-qualified forms (and also flags
+`satfinite`, outside this lifter support domain). Its conversion AST has
+no RELU field. Consequently the checked SASS translation validation pass
+rejects RELU forms before downstream translation, even though direct
+text recovery followed by NVIDIA ptxas accepts them. This change does
+not implement RELU in that separate parser/backend consumer.
 
 These fixes cover the text frontend and the external cuobjdump path.
 The built-in binary decoder does not preserve all required modifiers and
