@@ -3331,6 +3331,121 @@ mod tests {
         assert!(!missing.ptx.contains("selp.b32 %r5, 0, -QNAN"));
     }
 
+    fn lift_fsel_fixture(instruction: &str) -> SassLiftResult {
+        // Define both predicates: a negated selector alone is not a predicate
+        // declaration in the existing text frontend.
+        let text = format!(
+            "Function : fsel_contract\n\
+             /*0000*/ ISETP.NE.AND P1, PT, R2, RZ, PT ;\n\
+             /*0010*/ ISETP.NE.AND P3, PT, R4, RZ, PT ;\n\
+             /*0020*/ {}\n\
+             /*0030*/ EXIT ;",
+            instruction
+        );
+        lift_sass_text_to_ptx(
+            &text,
+            SassLiftOptions {
+                sm_version: 120,
+                kernel_name: "fsel_contract".to_string(),
+                include_sass_comments: false,
+                emit_unsupported_comments: true,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sass_lifter_fsel_negative_qnan_payloads_and_registers() {
+        for (dst, src, bits) in [
+            (5, 4, 0xffc00000u32),
+            (17, 9, 0xffc01234),
+            (63, 31, 0xffe00001),
+            (12, 255, 0xffffffff),
+        ] {
+            let source = if src == 255 {
+                "RZ".to_string()
+            } else {
+                format!("R{src}")
+            };
+            let ptx_source = if src == 255 {
+                "0".to_string()
+            } else {
+                format!("%r{src}")
+            };
+            for (predicate, negate) in [("P3", false), ("!P3", true)] {
+                let result = lift_fsel_fixture(&format!(
+                    "FSEL R{dst}, {source}, -QNAN, {predicate} ; /* 0x{bits:08x}{src:02x}{dst:02x}7808 */"
+                ));
+                assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+                let (a, b) = if negate {
+                    (format!("0x{bits:08x}"), ptx_source.clone())
+                } else {
+                    (ptx_source.clone(), format!("0x{bits:08x}"))
+                };
+                assert!(
+                    result
+                        .ptx
+                        .contains(&format!("selp.b32 %r{dst}, {a}, {b}, %p3;")),
+                    "{}",
+                    result.ptx
+                );
+                ptx_parser::parse_module_checked(&result.ptx).expect("FSEL payload PTX must parse");
+            }
+        }
+    }
+
+    #[test]
+    fn sass_lifter_fsel_negative_qnan_rejects_unproved_encodings() {
+        for instruction in [
+            "FSEL R17, R9, -QNAN, P3 ;",                          // missing encoding
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xffffffff09117208 */", // register form
+            "FSEL R17, -QNAN, R9, P3 ; /* 0xffffffff09117808 */", // wrong source slot
+            "FSEL R17, R9, -QNAN, P3 ; /* 0x7fc0000009117808 */", // positive NaN
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xff80000009117808 */", // negative infinity
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xff80000109117808 */", // signaling NaN
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xbf80000009117808 */", // finite negative
+            "@P1 FSEL R17, R9, -QNAN, P3 ; /* 0xffffffff09111808 */", // unproved guarded form
+        ] {
+            let result = lift_fsel_fixture(instruction);
+            assert_eq!(
+                result.diagnostics.len(),
+                1,
+                "{instruction}: {:?}",
+                result.diagnostics
+            );
+            assert_eq!(result.diagnostics[0].opcode, "FSEL");
+            assert!(
+                !result.ptx.contains("selp.b32"),
+                "{instruction}: {}",
+                result.ptx
+            );
+        }
+    }
+
+    #[test]
+    fn sass_lifter_fsel_conventional_sources_keep_both_predicates() {
+        for (instruction, expected) in [
+            (
+                "@P1 FSEL R17, R9, R11, P3 ;",
+                "@%p1 selp.b32 %r17, %r9, %r11, %p3;",
+            ),
+            (
+                "@!P1 FSEL R17, R9, R11, !P3 ;",
+                "@!%p1 selp.b32 %r17, %r11, %r9, %p3;",
+            ),
+            (
+                "FSEL R63, RZ, 0x3f800000, P3 ;",
+                "selp.b32 %r63, 0, 1065353216, %p3;",
+            ),
+        ] {
+            let result = lift_fsel_fixture(instruction);
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+            assert!(result.ptx.contains(expected), "{}", result.ptx);
+            ptx_parser::parse_module_checked(&result.ptx)
+                .expect("conventional FSEL PTX must parse");
+        }
+    }
+
     #[test]
     fn sass_lifter_text_frontend_uses_function_name_and_sm120() {
         let text = r#"Function : vector_add
