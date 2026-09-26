@@ -145,8 +145,23 @@ fn imad_hi_keeps_ordinary_and_wide_neighbors() {
         .ptx
         .contains("mad.lo.u32"));
     let wide = lift("IMAD.WIDE.U32 R4, R6, R7, R18 ;");
-    assert!(wide.ptx.contains("mul.wide.u32 %rd15, %r6, %r7;"));
-    assert!(wide.ptx.contains("add.u64 %rd4, %rd18, %rd15;"));
+    assert!(wide.diagnostics.is_empty());
+    // A separate pair-repair change may allocate a collision-free scratch
+    // instead of the legacy fixed register. Verify its dataflow, not its name.
+    let multiply = wide
+        .ptx
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("mul.wide.u32 "))
+        .unwrap();
+    let operands: Vec<_> = multiply
+        .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .filter(|s| !s.is_empty())
+        .collect();
+    assert_eq!(operands[2..], ["%r6", "%r7"]);
+    assert!(wide
+        .ptx
+        .contains(&format!("add.u64 %rd4, %rd18, {};", operands[1])));
     assert!(!wide.ptx.contains("%imad_product"));
 }
 
