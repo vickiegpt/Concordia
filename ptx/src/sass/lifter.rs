@@ -544,9 +544,12 @@ impl<'a> LiftContext<'a> {
                 "mul.lo",
                 &data_type_suffix(inst, SassDataType::S32),
             )),
-            "IMAD" if has_modifier(inst, "HI") && !has_modifier(inst, "U32") =>
-                self.unsupported(inst, "IMAD.HI form other than U32 is not supported"),
-            "IMAD" if has_modifier(inst, "HI") => Some(imad_hi_u32_op(inst, &pred)),
+            "IMAD" if has_modifier(inst, "HI") && !has_modifier(inst, "U32") => {
+                self.unsupported(inst, "IMAD.HI form other than U32 is not supported")
+            }
+            "IMAD" if has_modifier(inst, "HI") => imad_hi_u32_op(inst, &pred).or_else(|| {
+                self.unsupported(inst, "unsupported IMAD.HI.U32 modifiers or operand layout")
+            }),
             "IMAD" if has_modifier(inst, "WIDE") => Some(imad_wide_op(inst, &pred)),
             "IMAD" => Some(imad_op(
                 inst,
@@ -939,6 +942,13 @@ impl RegisterDecls {
 }
 
 fn collect_implicit_register_pair_decl(inst: &EnhancedSassInstruction, decls: &mut RegisterDecls) {
+    if inst.opcode == "IMAD" && has_modifier(inst, "HI") && has_modifier(inst, "U32") {
+        if let Some(SassOperand::Register(reg)) = inst.src_operands.get(2) {
+            if imad_hi_pair_register(reg) {
+                decls.max_gpr = decls.max_gpr.max(reg.number + 2);
+            }
+        }
+    }
     if !is_64bit_modifier(inst) {
         return;
     }
@@ -1121,21 +1131,78 @@ fn imad_op(inst: &EnhancedSassInstruction, pred: &str, ty: &str) -> String {
     )
 }
 
-fn imad_hi_u32_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
-    let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
-    let values: Vec<String> = inst
-        .src_operands
+fn imad_hi_pair_register(reg: &SassRegister) -> bool {
+    // The confirmed register form uses an aligned pair of real GPRs. R254
+    // cannot name such a pair: its successor is RZ, not a writable register.
+    reg.prefix == "R"
+        && !reg.is_zero
+        && reg.component.is_none()
+        && reg.number <= 252
+        && reg.number % 2 == 0
+}
+
+fn imad_hi_u32_source(operand: &SassOperand) -> Option<String> {
+    match operand {
+        SassOperand::Register(reg)
+            if reg.component.is_none()
+                && ((reg.prefix == "R" && !reg.is_zero && reg.number < 255)
+                    || reg.prefix == "RZ") =>
+        {
+            Some(format_register(reg))
+        }
+        SassOperand::Immediate(value) if (0..=u32::MAX as i64).contains(value) => {
+            Some(value.to_string())
+        }
+        _ => None,
+    }
+}
+
+fn imad_hi_u32_op(inst: &EnhancedSassInstruction, pred: &str) -> Option<String> {
+    if inst
+        .modifiers
         .iter()
-        .filter_map(format_integer_data_operand)
-        .take(3)
-        .collect();
-    let src0 = values.first().cloned().unwrap_or_else(|| "0".to_string());
-    let src1 = values.get(1).cloned().unwrap_or_else(|| "0".to_string());
-    let src2 = values.get(2).cloned().unwrap_or_else(|| "0".to_string());
-    format!(
-        "{}mad.hi.u32 {}, {}, {}, {};",
-        pred, dst, src0, src1, src2
-    )
+        .any(|m| !matches!(m.to_ascii_uppercase().as_str(), "HI" | "U32"))
+        || inst.dest_operands.len() != 1
+        || inst.src_operands.len() != 3
+    {
+        return None;
+    }
+    let SassOperand::Register(dst_reg) = &inst.dest_operands[0] else {
+        return None;
+    };
+    if dst_reg.prefix != "R"
+        || dst_reg.is_zero
+        || dst_reg.number >= 255
+        || dst_reg.component.is_some()
+    {
+        return None;
+    }
+    let dst = format_register(dst_reg);
+    let src0 = imad_hi_u32_source(&inst.src_operands[0])?;
+    let src1 = imad_hi_u32_source(&inst.src_operands[1])?;
+    let addend = match &inst.src_operands[2] {
+        SassOperand::Register(reg) if reg.prefix == "RZ" && reg.component.is_none() => {
+            format!("{}mov.u64 %imad_addend, 0;", pred)
+        }
+        SassOperand::Register(reg) if imad_hi_pair_register(reg) => format!(
+            "{}mov.b64 %imad_addend, {{%r{}, %r{}}};",
+            pred,
+            reg.number,
+            reg.number + 1
+        ),
+        _ => return None,
+    };
+    // SASS HI selects high32(a*b + c64); PTX mad.hi selects high32(a*b)+c32.
+    // Capture both sources and the complete addend before writing dst, which
+    // may alias either member of c64. The block keeps temporaries per instruction.
+    Some(format!(
+        "{{\n    .reg .b64 %imad_product, %imad_addend;\n    \
+         {}mul.wide.u32 %imad_product, {}, {};\n    {}\n    \
+         {}add.u64 %imad_product, %imad_product, %imad_addend;\n    \
+         {}shr.u64 %imad_product, %imad_product, 32;\n    \
+         {}cvt.u32.u64 {}, %imad_product;\n    }}",
+        pred, src0, src1, addend, pred, pred, pred, dst
+    ))
 }
 
 fn ternary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> String {
@@ -4390,8 +4457,12 @@ Function : kernel
         let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
             .expect("IMAD.HI.U32 should lift");
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(result.ptx.contains("mad.hi.u32 %r19, %r19, %r21, %r18;"));
-        assert!(result.ptx.contains("mad.hi.u32 %r19, %r19, %r21, 0;"));
+        assert!(result.ptx.contains("mov.b64 %imad_addend, {%r18, %r19};"));
+        assert!(result.ptx.contains("mov.u64 %imad_addend, 0;"));
         assert!(!result.ptx.contains("mad.lo.u32 %r19"));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/imad_hi.rs"]
+mod imad_hi_tests;
