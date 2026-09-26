@@ -55,6 +55,8 @@ pub fn lift_instructions_to_ptx(
     }
 }
 
+/// Lift decoded textual operands, including bare even-GPR `CS2R ..., SRZ`
+/// register pairs. This does not extend the built-in binary instruction decoder.
 pub fn lift_sass_text_to_ptx(
     text: &str,
     mut options: SassLiftOptions,
@@ -78,6 +80,9 @@ pub fn lift_sass_text_to_ptx(
     Ok(lift_instructions_to_ptx(&instructions, &options))
 }
 
+/// Lift a CUBIN through cuobjdump when configured, or the limited built-in decoder.
+/// The built-in decoder does not recover CS2R special-register identity/width;
+/// those instructions are diagnosed rather than inferred from generic R operands.
 pub fn lift_cubin_to_ptx(
     cubin_data: &[u8],
     mut options: SassLiftOptions,
@@ -496,6 +501,20 @@ impl<'a> LiftContext<'a> {
     fn lift_instruction(&mut self, inst: &EnhancedSassInstruction) -> Option<String> {
         let pred = predicate_prefix(inst);
         match inst.opcode.as_str() {
+            "CS2R" if cs2r_srz_pair_destination(inst).is_some() => {
+                let dst = cs2r_srz_pair_destination(inst).unwrap();
+                Some(format!(
+                    "{}mov.u32 %r{}, 0;\n    {}mov.u32 %r{}, 0;",
+                    pred,
+                    dst.number,
+                    pred,
+                    dst.number + 1
+                ))
+            }
+            "CS2R" if !has_modifier(inst, "32") => self.unsupported(
+                inst,
+                "CS2R supports only .32 singles and bare SRZ register pairs",
+            ),
             "S2R" | "S2UR" | "CS2R" => Some(format!(
                 "{}mov.u32 {}, {};",
                 pred,
@@ -544,6 +563,12 @@ impl<'a> LiftContext<'a> {
                 "mul.lo",
                 &data_type_suffix(inst, SassDataType::S32),
             )),
+            "IMAD" if has_modifier(inst, "HI") && !has_modifier(inst, "U32") => {
+                self.unsupported(inst, "IMAD.HI form other than U32 is not supported")
+            }
+            "IMAD" if has_modifier(inst, "HI") => imad_hi_u32_op(inst, &pred).or_else(|| {
+                self.unsupported(inst, "unsupported IMAD.HI.U32 modifiers or operand layout")
+            }),
             "IMAD" if has_modifier(inst, "WIDE") => Some(imad_wide_op(inst, &pred)),
             "IMAD" => Some(imad_op(
                 inst,
@@ -624,7 +649,12 @@ impl<'a> LiftContext<'a> {
             "FRND" if has_modifier(inst, "TRUNC") => Some(frnd_trunc_op(inst, &pred)),
             "FRND" => self.unsupported(inst, "floating round mode lifting is not implemented"),
             "FMNMX" => Some(fmnmx_op(inst, &pred, self.scratch_gpr.as_deref())),
-            "FSEL" => Some(fsel_op(inst, &pred)),
+            "FSEL" => fsel_op(inst, &pred).or_else(|| {
+                self.unsupported(
+                    inst,
+                    "FSEL -QNAN requires an encoded negative quiet-NaN immediate",
+                )
+            }),
             "FABS" => Some(unary_op(
                 inst,
                 &pred,
@@ -926,6 +956,7 @@ impl RegisterDecls {
                 collect_register_decl(predicate, &mut decls);
             }
             collect_implicit_register_pair_decl(inst, &mut decls);
+            collect_implicit_cs2r_srz_pair_decl(inst, &mut decls);
             collect_implicit_r2p_predicate_decl(inst, &mut decls);
         }
         decls
@@ -941,6 +972,13 @@ impl RegisterDecls {
 }
 
 fn collect_implicit_register_pair_decl(inst: &EnhancedSassInstruction, decls: &mut RegisterDecls) {
+    if inst.opcode == "IMAD" && has_modifier(inst, "HI") && has_modifier(inst, "U32") {
+        if let Some(SassOperand::Register(reg)) = inst.src_operands.get(2) {
+            if imad_hi_pair_register(reg) {
+                decls.max_gpr = decls.max_gpr.max(reg.number + 2);
+            }
+        }
+    }
     if !is_64bit_modifier(inst) {
         return;
     }
@@ -957,6 +995,13 @@ fn collect_implicit_register_pair_decl(inst: &EnhancedSassInstruction, decls: &m
             _ => {}
         }
     }
+}
+
+fn collect_implicit_cs2r_srz_pair_decl(inst: &EnhancedSassInstruction, decls: &mut RegisterDecls) {
+    let Some(dst) = cs2r_srz_pair_destination(inst) else {
+        return;
+    };
+    decls.max_gpr = decls.max_gpr.max(dst.number + 2);
 }
 
 fn collect_implicit_r2p_predicate_decl(inst: &EnhancedSassInstruction, decls: &mut RegisterDecls) {
@@ -993,11 +1038,14 @@ fn collect_register(reg: &SassRegister, decls: &mut RegisterDecls) {
     if reg.is_zero {
         return;
     }
+    let Some(count) = reg.number.checked_add(1) else {
+        return;
+    };
     match reg.prefix.as_str() {
-        "R" => decls.max_gpr = decls.max_gpr.max(reg.number + 1),
-        "P" => decls.max_pred = decls.max_pred.max(reg.number + 1),
-        "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(reg.number + 1),
-        "UP" => decls.max_uniform_pred = decls.max_uniform_pred.max(reg.number + 1),
+        "R" => decls.max_gpr = decls.max_gpr.max(count),
+        "P" => decls.max_pred = decls.max_pred.max(count),
+        "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(count),
+        "UP" => decls.max_uniform_pred = decls.max_uniform_pred.max(count),
         _ => {}
     }
 }
@@ -1121,6 +1169,80 @@ fn imad_op(inst: &EnhancedSassInstruction, pred: &str, ty: &str) -> String {
         "{}mad.lo.{} {}, {}, {}, {};",
         pred, ty, dst, src0, src1, src2
     )
+}
+
+fn imad_hi_pair_register(reg: &SassRegister) -> bool {
+    // The confirmed register form uses an aligned pair of real GPRs. R254
+    // cannot name such a pair: its successor is RZ, not a writable register.
+    reg.prefix == "R"
+        && !reg.is_zero
+        && reg.component.is_none()
+        && reg.number <= 252
+        && reg.number % 2 == 0
+}
+
+fn imad_hi_u32_source(operand: &SassOperand) -> Option<String> {
+    match operand {
+        SassOperand::Register(reg)
+            if reg.component.is_none()
+                && ((reg.prefix == "R" && !reg.is_zero && reg.number < 255)
+                    || reg.prefix == "RZ") =>
+        {
+            Some(format_register(reg))
+        }
+        SassOperand::Immediate(value) if (0..=u32::MAX as i64).contains(value) => {
+            Some(value.to_string())
+        }
+        _ => None,
+    }
+}
+
+fn imad_hi_u32_op(inst: &EnhancedSassInstruction, pred: &str) -> Option<String> {
+    if inst
+        .modifiers
+        .iter()
+        .any(|m| !matches!(m.to_ascii_uppercase().as_str(), "HI" | "U32"))
+        || inst.dest_operands.len() != 1
+        || inst.src_operands.len() != 3
+    {
+        return None;
+    }
+    let SassOperand::Register(dst_reg) = &inst.dest_operands[0] else {
+        return None;
+    };
+    if dst_reg.prefix != "R"
+        || dst_reg.is_zero
+        || dst_reg.number >= 255
+        || dst_reg.component.is_some()
+    {
+        return None;
+    }
+    let dst = format_register(dst_reg);
+    let src0 = imad_hi_u32_source(&inst.src_operands[0])?;
+    let src1 = imad_hi_u32_source(&inst.src_operands[1])?;
+    let addend = match &inst.src_operands[2] {
+        SassOperand::Register(reg) if reg.prefix == "RZ" && reg.component.is_none() => {
+            format!("{}mov.u64 %imad_addend, 0;", pred)
+        }
+        SassOperand::Register(reg) if imad_hi_pair_register(reg) => format!(
+            "{}mov.b64 %imad_addend, {{%r{}, %r{}}};",
+            pred,
+            reg.number,
+            reg.number + 1
+        ),
+        _ => return None,
+    };
+    // SASS HI selects high32(a*b + c64); PTX mad.hi selects high32(a*b)+c32.
+    // Capture both sources and the complete addend before writing dst, which
+    // may alias either member of c64. The block keeps temporaries per instruction.
+    Some(format!(
+        "{{\n    .reg .b64 %imad_product, %imad_addend;\n    \
+         {}mul.wide.u32 %imad_product, {}, {};\n    {}\n    \
+         {}add.u64 %imad_product, %imad_product, %imad_addend;\n    \
+         {}shr.u64 %imad_product, %imad_product, 32;\n    \
+         {}cvt.u32.u64 {}, %imad_product;\n    }}",
+        pred, src0, src1, addend, pred, pred, pred, dst
+    ))
 }
 
 fn ternary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> String {
@@ -1974,18 +2096,16 @@ fn uniform_high_register_name(name: &str) -> Option<String> {
     Some(format!("%ur{}", number + 1))
 }
 
-fn fsel_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+fn fsel_op(inst: &EnhancedSassInstruction, pred: &str) -> Option<String> {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
-    let mut src0 = inst
-        .src_operands
-        .first()
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
-    let mut src1 = inst
-        .src_operands
-        .get(1)
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
+    let mut src0 = match inst.src_operands.first() {
+        Some(source) => format_fsel_source(inst, 0, source)?,
+        None => "0".to_string(),
+    };
+    let mut src1 = match inst.src_operands.get(1) {
+        Some(source) => format_fsel_source(inst, 1, source)?,
+        None => "0".to_string(),
+    };
     let (predicate, negated) = inst
         .src_operands
         .get(2)
@@ -1994,10 +2114,34 @@ fn fsel_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     if negated {
         std::mem::swap(&mut src0, &mut src1);
     }
-    format!(
+    Some(format!(
         "{}selp.b32 {}, {}, {}, {};",
         pred, dst, src0, src1, predicate
-    )
+    ))
+}
+
+fn format_fsel_source(
+    inst: &EnhancedSassInstruction,
+    index: usize,
+    source: &SassOperand,
+) -> Option<String> {
+    if matches!(source, SassOperand::Label(label) if label == "-QNAN") {
+        // cuobjdump prints different negative qNaN payloads identically as
+        // -QNAN. The encoded immediate, not that display label, identifies
+        // the exact 32-bit value selected by this FSEL instruction.
+        let encoding = extract_sass_encoding(inst)?;
+        // Both independently assembled FSEL immediate references have low
+        // 16 bits 0x7808; register-source FSEL instead has 0x7208.
+        if index != 1 || encoding & 0xffff != 0x7808 {
+            return None;
+        }
+        let bits = (encoding >> 32) as u32;
+        if bits & 0xffc0_0000 != 0xffc0_0000 {
+            return None;
+        }
+        return Some(format!("0x{:08x}", bits));
+    }
+    Some(format_operand(source))
 }
 
 fn idp_4a_s8_s8_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -2696,6 +2840,33 @@ fn has_modifier(inst: &EnhancedSassInstruction, modifier: &str) -> bool {
         .any(|m| m.eq_ignore_ascii_case(modifier))
 }
 
+fn cs2r_reads_srz(inst: &EnhancedSassInstruction) -> bool {
+    matches!(
+        inst.src_operands.as_slice(),
+        [SassOperand::SpecialRegister(name) | SassOperand::Label(name)]
+            if matches!(name.as_str(), "SRZ" | "SR_Z")
+    )
+}
+
+fn cs2r_srz_pair_destination(inst: &EnhancedSassInstruction) -> Option<&SassRegister> {
+    if inst.opcode != "CS2R"
+        || !inst.modifiers.is_empty()
+        || inst.dest_operands.len() != 1
+        || !cs2r_reads_srz(inst)
+    {
+        return None;
+    }
+    let Some(SassOperand::Register(reg)) = inst.dest_operands.first() else {
+        return None;
+    };
+    (reg.prefix == "R"
+        && !reg.is_zero
+        && reg.number % 2 == 0
+        && reg.number < 254
+        && reg.component.is_none())
+    .then_some(reg)
+}
+
 fn is_64bit_modifier(inst: &EnhancedSassInstruction) -> bool {
     has_modifier(inst, "64")
         || matches!(
@@ -3343,6 +3514,160 @@ mod tests {
     }
 
     #[test]
+    fn sass_lifter_fsel_negative_qnan_preserves_encoded_payload() {
+        let text = r#"Function : fsel_qnan
+        /*0050*/ FSEL R5, RZ, -QNAN , P0 ; /* 0xffffffffff057808 */
+                 /* 0x000fca0000000000 */
+        /*0060*/ EXIT ; /* 0x000000000000794d */
+                 /* 0x000fea0003800000 */"#;
+        let options = SassLiftOptions {
+            sm_version: 120,
+            kernel_name: "fsel_qnan".to_string(),
+            include_sass_comments: false,
+            emit_unsupported_comments: true,
+        };
+        let all_ones = lift_sass_text_to_ptx(text, options.clone()).unwrap();
+        assert!(
+            all_ones.diagnostics.is_empty(),
+            "{:?}",
+            all_ones.diagnostics
+        );
+        assert!(all_ones.ptx.contains("selp.b32 %r5, 0, 0xffffffff, %p0;"));
+
+        let canonical = lift_sass_text_to_ptx(
+            &text.replace("0xffffffffff057808", "0xffc00000ff057808"),
+            options.clone(),
+        )
+        .unwrap();
+        assert!(
+            canonical.diagnostics.is_empty(),
+            "{:?}",
+            canonical.diagnostics
+        );
+        assert!(canonical.ptx.contains("selp.b32 %r5, 0, 0xffc00000, %p0;"));
+
+        let missing =
+            lift_sass_text_to_ptx(&text.replace("/* 0xffffffffff057808 */", ""), options).unwrap();
+        assert_eq!(missing.diagnostics.len(), 1);
+        assert!(!missing.ptx.contains("selp.b32 %r5, 0, -QNAN"));
+    }
+
+    fn lift_fsel_fixture(instruction: &str) -> SassLiftResult {
+        // Define both predicates: a negated selector alone is not a predicate
+        // declaration in the existing text frontend.
+        let text = format!(
+            "Function : fsel_contract\n\
+             /*0000*/ ISETP.NE.AND P1, PT, R2, RZ, PT ;\n\
+             /*0010*/ ISETP.NE.AND P3, PT, R4, RZ, PT ;\n\
+             /*0020*/ {}\n\
+             /*0030*/ EXIT ;",
+            instruction
+        );
+        lift_sass_text_to_ptx(
+            &text,
+            SassLiftOptions {
+                sm_version: 120,
+                kernel_name: "fsel_contract".to_string(),
+                include_sass_comments: false,
+                emit_unsupported_comments: true,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sass_lifter_fsel_negative_qnan_payloads_and_registers() {
+        for (dst, src, bits) in [
+            (5, 4, 0xffc00000u32),
+            (17, 9, 0xffc01234),
+            (63, 31, 0xffe00001),
+            (12, 255, 0xffffffff),
+        ] {
+            let source = if src == 255 {
+                "RZ".to_string()
+            } else {
+                format!("R{src}")
+            };
+            let ptx_source = if src == 255 {
+                "0".to_string()
+            } else {
+                format!("%r{src}")
+            };
+            for (predicate, negate) in [("P3", false), ("!P3", true)] {
+                let result = lift_fsel_fixture(&format!(
+                    "FSEL R{dst}, {source}, -QNAN, {predicate} ; /* 0x{bits:08x}{src:02x}{dst:02x}7808 */"
+                ));
+                assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+                let (a, b) = if negate {
+                    (format!("0x{bits:08x}"), ptx_source.clone())
+                } else {
+                    (ptx_source.clone(), format!("0x{bits:08x}"))
+                };
+                assert!(
+                    result
+                        .ptx
+                        .contains(&format!("selp.b32 %r{dst}, {a}, {b}, %p3;")),
+                    "{}",
+                    result.ptx
+                );
+                ptx_parser::parse_module_checked(&result.ptx).expect("FSEL payload PTX must parse");
+            }
+        }
+    }
+
+    #[test]
+    fn sass_lifter_fsel_negative_qnan_rejects_unproved_encodings() {
+        for instruction in [
+            "FSEL R17, R9, -QNAN, P3 ;",                          // missing encoding
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xffffffff09117208 */", // register form
+            "FSEL R17, -QNAN, R9, P3 ; /* 0xffffffff09117808 */", // wrong source slot
+            "FSEL R17, R9, -QNAN, P3 ; /* 0x7fc0000009117808 */", // positive NaN
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xff80000009117808 */", // negative infinity
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xff80000109117808 */", // signaling NaN
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xbf80000009117808 */", // finite negative
+            "@P1 FSEL R17, R9, -QNAN, P3 ; /* 0xffffffff09111808 */", // unproved guarded form
+        ] {
+            let result = lift_fsel_fixture(instruction);
+            assert_eq!(
+                result.diagnostics.len(),
+                1,
+                "{instruction}: {:?}",
+                result.diagnostics
+            );
+            assert_eq!(result.diagnostics[0].opcode, "FSEL");
+            assert!(
+                !result.ptx.contains("selp.b32"),
+                "{instruction}: {}",
+                result.ptx
+            );
+        }
+    }
+
+    #[test]
+    fn sass_lifter_fsel_conventional_sources_keep_both_predicates() {
+        for (instruction, expected) in [
+            (
+                "@P1 FSEL R17, R9, R11, P3 ;",
+                "@%p1 selp.b32 %r17, %r9, %r11, %p3;",
+            ),
+            (
+                "@!P1 FSEL R17, R9, R11, !P3 ;",
+                "@!%p1 selp.b32 %r17, %r11, %r9, %p3;",
+            ),
+            (
+                "FSEL R63, RZ, 0x3f800000, P3 ;",
+                "selp.b32 %r63, 0, 1065353216, %p3;",
+            ),
+        ] {
+            let result = lift_fsel_fixture(instruction);
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+            assert!(result.ptx.contains(expected), "{}", result.ptx);
+            ptx_parser::parse_module_checked(&result.ptx)
+                .expect("conventional FSEL PTX must parse");
+        }
+    }
+
+    #[test]
     fn sass_lifter_text_frontend_uses_function_name_and_sm120() {
         let text = r#"Function : vector_add
         /*0000*/                   S2R R0, SR_TID.X ;
@@ -3675,6 +4000,23 @@ Function : kernel
             .ptx
             .contains("ld.param.u32 %ur4, [param4];\n    ld.param.u32 %ur5, [param4+4];"));
         assert!(!result.ptx.contains("c[0x0]"));
+    }
+
+    #[test]
+    fn sass_lifter_declares_implicit_high_register_for_bare_cs2r_srz_pair() {
+        let text = r#"Function : cs2r_srz_pair
+        /*0000*/                   CS2R R8, SRZ;
+        /*0010*/                   CS2R.32 R2, SRZ;
+        /*0020*/                   EXIT;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("bare CS2R SRZ pair should lift");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %r<10>;"));
+        assert!(result.ptx.contains("mov.u32 %r8, 0;\n    mov.u32 %r9, 0;"));
+        assert!(result.ptx.contains("mov.u32 %r2, 0;"));
+        assert!(!result.ptx.contains("mov.u32 %r3, 0;"));
     }
 
     #[test]
@@ -4469,8 +4811,84 @@ Function : kernel
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.ptx.contains("mul.rn.f16x2 %r7, %r14, %r7;"));
     }
+    #[test]
+    fn sass_lifter_cs2r_preserves_predicates_and_single_word_width() {
+        let text = "Function : cs2r_predicates\n\
+            /*0000*/ @P0 CS2R R30, SRZ;\n\
+            /*0010*/ @!P1 CS2R R8, SR_Z;\n\
+            /*0020*/ @P2 CS2R.32 R4, SRZ;\n\
+            /*0030*/ @P3 CS2R R252, SRZ;\n\
+            /*0040*/ EXIT;";
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default()).unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %r<254>;"));
+        for (guard, low) in [("@%p0", 30), ("@!%p1", 8), ("@%p3", 252)] {
+            for word in [low, low + 1] {
+                assert!(result
+                    .ptx
+                    .contains(&format!("{guard} mov.u32 %r{word}, 0;")));
+            }
+        }
+        assert!(result.ptx.contains("@%p2 mov.u32 %r4, 0;"));
+        assert!(!result.ptx.contains("mov.u32 %r5,"));
+    }
+
+    #[test]
+    fn sass_lifter_cs2r_rejects_ambiguous_pair_operands() {
+        for instruction in [
+            "CS2R R3, SRZ",
+            "CS2R R254, SRZ",
+            "CS2R R999, SRZ",
+            "CS2R R4294967295, SRZ",
+            "CS2R UR2, SRZ",
+            "CS2R RZ, SRZ",
+            "CS2R R4.H0, SRZ",
+            "CS2R R4, SR_CLOCKLO",
+            "CS2R R4, R0",
+            "CS2R.64 R4, SRZ",
+            "CS2R R4, SRZ, R0",
+        ] {
+            let text = format!("Function : rejected\n/*0000*/ {instruction};\n/*0010*/ EXIT;");
+            let result = lift_sass_text_to_ptx(&text, SassLiftOptions::default()).unwrap();
+            assert_eq!(result.diagnostics.len(), 1, "{instruction}");
+            assert_eq!(result.diagnostics[0].opcode, "CS2R");
+            assert!(!result.ptx.contains("mov.u32"), "{instruction}");
+        }
+    }
+
+    #[test]
+    fn sass_lifter_cs2r_does_not_guess_binary_special_register_identity() {
+        // The built-in binary decoder currently supplies generic R operands and
+        // no width modifier. An R source is not evidence for SRZ.
+        let mut decoded = EnhancedSassInstruction::new("CS2R".to_string(), 0);
+        decoded.dest_operands.push(reg(8));
+        decoded.src_operands.extend([reg(0), reg(1), reg(2)]);
+        let result = lift_instructions_to_ptx(&[decoded], &SassLiftOptions::default());
+        assert_eq!(result.diagnostics.len(), 1);
+        assert!(!result.ptx.contains("mov.u32"));
+    }
+
+    #[test]
+    fn sass_lifter_preserves_imad_hi_u32_modifiers() {
+        let text = r#"Function : imad_hi_u32
+        /*04a0*/ IMAD.HI.U32 R19, R19, R21, R18 ; /* 0x0000001513137227 */
+        /*04c0*/ IMAD.HI.U32 R19, R19, R21, RZ ; /* 0x0000001513137227 */
+        /*04d0*/ EXIT ;
+"#;
+
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("IMAD.HI.U32 should lift");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("mov.b64 %imad_addend, {%r18, %r19};"));
+        assert!(result.ptx.contains("mov.u64 %imad_addend, 0;"));
+        assert!(!result.ptx.contains("mad.lo.u32 %r19"));
+    }
 }
 
 #[cfg(test)]
 #[path = "tests/geu_bf16.rs"]
 mod geu_bf16_tests;
+
+#[cfg(test)]
+#[path = "tests/imad_hi.rs"]
+mod imad_hi_tests;
