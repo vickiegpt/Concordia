@@ -55,6 +55,8 @@ pub fn lift_instructions_to_ptx(
     }
 }
 
+/// Lift decoded textual operands, including bare even-GPR `CS2R ..., SRZ`
+/// register pairs. This does not extend the built-in binary instruction decoder.
 pub fn lift_sass_text_to_ptx(
     text: &str,
     mut options: SassLiftOptions,
@@ -78,6 +80,9 @@ pub fn lift_sass_text_to_ptx(
     Ok(lift_instructions_to_ptx(&instructions, &options))
 }
 
+/// Lift a CUBIN through cuobjdump when configured, or the limited built-in decoder.
+/// The built-in decoder does not recover CS2R special-register identity/width;
+/// those instructions are diagnosed rather than inferred from generic R operands.
 pub fn lift_cubin_to_ptx(
     cubin_data: &[u8],
     mut options: SassLiftOptions,
@@ -500,7 +505,10 @@ impl<'a> LiftContext<'a> {
                 let dst = cs2r_srz_pair_destination(inst).unwrap();
                 Some(format!(
                     "{}mov.u32 %r{}, 0;\n    {}mov.u32 %r{}, 0;",
-                    pred, dst.number, pred, dst.number + 1
+                    pred,
+                    dst.number,
+                    pred,
+                    dst.number + 1
                 ))
             }
             "CS2R" if !has_modifier(inst, "32") => self.unsupported(
@@ -1007,11 +1015,14 @@ fn collect_register(reg: &SassRegister, decls: &mut RegisterDecls) {
     if reg.is_zero {
         return;
     }
+    let Some(count) = reg.number.checked_add(1) else {
+        return;
+    };
     match reg.prefix.as_str() {
-        "R" => decls.max_gpr = decls.max_gpr.max(reg.number + 1),
-        "P" => decls.max_pred = decls.max_pred.max(reg.number + 1),
-        "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(reg.number + 1),
-        "UP" => decls.max_uniform_pred = decls.max_uniform_pred.max(reg.number + 1),
+        "R" => decls.max_gpr = decls.max_gpr.max(count),
+        "P" => decls.max_pred = decls.max_pred.max(count),
+        "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(count),
+        "UP" => decls.max_uniform_pred = decls.max_uniform_pred.max(count),
         _ => {}
     }
 }
@@ -2657,7 +2668,12 @@ fn cs2r_srz_pair_destination(inst: &EnhancedSassInstruction) -> Option<&SassRegi
     let Some(SassOperand::Register(reg)) = inst.dest_operands.first() else {
         return None;
     };
-    (reg.prefix == "R" && !reg.is_zero && reg.number % 2 == 0).then_some(reg)
+    (reg.prefix == "R"
+        && !reg.is_zero
+        && reg.number % 2 == 0
+        && reg.number < 254
+        && reg.component.is_none())
+    .then_some(reg)
 }
 
 fn is_64bit_modifier(inst: &EnhancedSassInstruction) -> bool {
@@ -3653,9 +3669,7 @@ Function : kernel
             .expect("bare CS2R SRZ pair should lift");
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.ptx.contains(".reg .b32 %r<10>;"));
-        assert!(result
-            .ptx
-            .contains("mov.u32 %r8, 0;\n    mov.u32 %r9, 0;"));
+        assert!(result.ptx.contains("mov.u32 %r8, 0;\n    mov.u32 %r9, 0;"));
         assert!(result.ptx.contains("mov.u32 %r2, 0;"));
         assert!(!result.ptx.contains("mov.u32 %r3, 0;"));
     }
@@ -4417,5 +4431,61 @@ Function : kernel
 
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.ptx.contains("mul.rn.f16x2 %r7, %r14, %r7;"));
+    }
+    #[test]
+    fn sass_lifter_cs2r_preserves_predicates_and_single_word_width() {
+        let text = "Function : cs2r_predicates\n\
+            /*0000*/ @P0 CS2R R30, SRZ;\n\
+            /*0010*/ @!P1 CS2R R8, SR_Z;\n\
+            /*0020*/ @P2 CS2R.32 R4, SRZ;\n\
+            /*0030*/ @P3 CS2R R252, SRZ;\n\
+            /*0040*/ EXIT;";
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default()).unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %r<254>;"));
+        for (guard, low) in [("@%p0", 30), ("@!%p1", 8), ("@%p3", 252)] {
+            for word in [low, low + 1] {
+                assert!(result
+                    .ptx
+                    .contains(&format!("{guard} mov.u32 %r{word}, 0;")));
+            }
+        }
+        assert!(result.ptx.contains("@%p2 mov.u32 %r4, 0;"));
+        assert!(!result.ptx.contains("mov.u32 %r5,"));
+    }
+
+    #[test]
+    fn sass_lifter_cs2r_rejects_ambiguous_pair_operands() {
+        for instruction in [
+            "CS2R R3, SRZ",
+            "CS2R R254, SRZ",
+            "CS2R R999, SRZ",
+            "CS2R R4294967295, SRZ",
+            "CS2R UR2, SRZ",
+            "CS2R RZ, SRZ",
+            "CS2R R4.H0, SRZ",
+            "CS2R R4, SR_CLOCKLO",
+            "CS2R R4, R0",
+            "CS2R.64 R4, SRZ",
+            "CS2R R4, SRZ, R0",
+        ] {
+            let text = format!("Function : rejected\n/*0000*/ {instruction};\n/*0010*/ EXIT;");
+            let result = lift_sass_text_to_ptx(&text, SassLiftOptions::default()).unwrap();
+            assert_eq!(result.diagnostics.len(), 1, "{instruction}");
+            assert_eq!(result.diagnostics[0].opcode, "CS2R");
+            assert!(!result.ptx.contains("mov.u32"), "{instruction}");
+        }
+    }
+
+    #[test]
+    fn sass_lifter_cs2r_does_not_guess_binary_special_register_identity() {
+        // The built-in binary decoder currently supplies generic R operands and
+        // no width modifier. An R source is not evidence for SRZ.
+        let mut decoded = EnhancedSassInstruction::new("CS2R".to_string(), 0);
+        decoded.dest_operands.push(reg(8));
+        decoded.src_operands.extend([reg(0), reg(1), reg(2)]);
+        let result = lift_instructions_to_ptx(&[decoded], &SassLiftOptions::default());
+        assert_eq!(result.diagnostics.len(), 1);
+        assert!(!result.ptx.contains("mov.u32"));
     }
 }
