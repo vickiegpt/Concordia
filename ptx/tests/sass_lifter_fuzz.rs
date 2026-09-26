@@ -129,9 +129,8 @@ EOF
     assert!(result.ptx.contains("mov.u32 %r0, %tid.x;"));
 }
 
-#[test]
-fn text_lifter_handles_real_sm120_roundtrip_integer_pattern() {
-    let text = r#"Function : int_add
+fn real_sm120_integer_fixture() -> &'static str {
+    r#"Function : int_add
         /*0000*/                   LDC R1, c[0x0][0x37c]                      &wr=0x0          ?trans1;           /* 0x0000df00ff017b82 */
         /*0010*/                   S2R R7, SR_TID.X                           &wr=0x1          ?trans7;           /* 0x0000000000077919 */
         /*0020*/                   S2UR UR4, SR_CTAID.X                       &wr=0x1          ?trans1;           /* 0x00000000000479c3 */
@@ -152,7 +151,12 @@ fn text_lifter_handles_real_sm120_roundtrip_integer_pattern() {
         /*0110*/                   EXIT                                                        ?trans5;           /* 0x000000000000794d */
         /*0120*/                   BRA 0x120;                                                                     /* 0xfffffffc00fc7947 */
         /*0130*/                   NOP;                                                                           /* 0x0000000000007918 */
-"#;
+"#
+}
+
+#[test]
+fn text_lifter_handles_real_sm120_roundtrip_integer_pattern() {
+    let text = real_sm120_integer_fixture();
 
     let result = lift_sass_text_to_ptx(
         text,
@@ -365,4 +369,85 @@ fn text_lifter_handles_real_sm120_shared_reverse_address_pattern() {
     assert!(result.ptx.contains("shl.b32 %r0, %r0, 2;"));
     assert!(result.ptx.contains("cvt.u64.u32 %rd14, %r0;"));
     assert!(result.ptx.contains("ld.shared.u32 %r0, [%rd14];"));
+}
+
+/// Opt-in offline assembly only; no CUDA context or GPU execution.
+/// HETGPU_TEST_PTXAS names a toolkit assembler supporting sm_120.
+/// HETGPU_TEST_PTXAS_OUTPUT_DIR optionally preserves PTX/CUBIN/logs in a new directory.
+#[test]
+#[ignore = "requires explicitly configured HETGPU_TEST_PTXAS (CUDA toolkit with sm_120 support)"]
+fn text_lifter_register_pairs_assemble_offline() {
+    let assembler = std::env::var_os("HETGPU_TEST_PTXAS")
+        .expect("set HETGPU_TEST_PTXAS to the offline assembler");
+    let temporary = tempfile::tempdir().unwrap();
+    let output_dir = if let Some(path) = std::env::var_os("HETGPU_TEST_PTXAS_OUTPUT_DIR") {
+        let path = std::path::PathBuf::from(path);
+        std::fs::create_dir(&path).expect("assembly evidence directory must be new");
+        path
+    } else {
+        temporary.path().to_path_buf()
+    };
+    let version = std::process::Command::new(&assembler)
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    std::fs::write(output_dir.join("ptxas-version.txt"), &version.stdout).unwrap();
+    let fixtures = [
+        ("int_add", real_sm120_integer_fixture()),
+        (
+            "pair_aliases",
+            "Function : pair_aliases\n\
+            /*0000*/ MOV R2, 0xffffffff;\n\
+            /*0010*/ MOV R3, 0x12345678;\n\
+            /*0020*/ UMOV UR2, 1;\n\
+            /*0030*/ UMOV UR3, 0;\n\
+            /*0040*/ ISETP.EQ.U32.AND P0, PT, R2, R3, PT;\n\
+            /*0050*/ @!P0 IADD.64 R2, R2, UR2;\n\
+            /*0060*/ @!P0 IMAD.WIDE.U32 R2, R3, UR2, R2;\n\
+            /*0070*/ @P0 IADD.64 R2, R2, R2;\n\
+            /*0080*/ EXIT;",
+        ),
+        (
+            "pair_limits",
+            "Function : pair_limits\n\
+            /*0000*/ IMAD.WIDE.U32 R252, R254, UR62, R250;\n\
+            /*0010*/ IADD.64 R252, R252, UR60;\n\
+            /*0020*/ IMAD.WIDE.U32 R2, R4, 0xffffffff, RZ;\n\
+            /*0030*/ EXIT;",
+        ),
+    ];
+    for (name, text) in fixtures {
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default()).unwrap();
+        assert!(
+            result.diagnostics.is_empty(),
+            "{name}: {:?}",
+            result.diagnostics
+        );
+        ptx_parser::parse_module_checked(&result.ptx).expect("fixture PTX should parse");
+        let input = output_dir.join(format!("{name}.ptx"));
+        let binary = output_dir.join(format!("{name}.cubin"));
+        std::fs::write(&input, result.ptx).unwrap();
+        let output = std::process::Command::new(&assembler)
+            .arg("-arch=sm_120")
+            .arg(&input)
+            .arg("-o")
+            .arg(&binary)
+            .env("CUDA_VISIBLE_DEVICES", "")
+            .output()
+            .unwrap();
+        std::fs::write(output_dir.join(format!("{name}.stdout")), &output.stdout).unwrap();
+        std::fs::write(output_dir.join(format!("{name}.stderr")), &output.stderr).unwrap();
+        std::fs::write(
+            output_dir.join(format!("{name}.status")),
+            output.status.to_string(),
+        )
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(std::fs::metadata(binary).unwrap().len() > 0);
+    }
 }
