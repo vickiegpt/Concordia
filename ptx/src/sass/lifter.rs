@@ -403,8 +403,10 @@ impl<'a> LiftContext<'a> {
         if self.uses_cuda_param_abi || self.uses_shared_memory {
             regs.max_b64 = regs.max_b64.max(16);
         }
-        if instructions.iter().any(|inst| (inst.opcode == "IADD" && is_64bit_modifier(inst))
-            || (inst.opcode == "IMAD" && has_modifier(inst, "WIDE"))) {
+        if instructions.iter().any(|inst| {
+            (inst.opcode == "IADD" && is_64bit_modifier(inst))
+                || (inst.opcode == "IMAD" && has_modifier(inst, "WIDE"))
+        }) {
             self.scratch_b64 = Some(format!("%rd{}", regs.max_b64));
             regs.max_b64 += 1;
         }
@@ -653,12 +655,20 @@ impl<'a> LiftContext<'a> {
                 "neg",
                 &data_type_suffix(inst, SassDataType::F32),
             )),
+            "LDG" if unsupported_descriptor_pair_address(inst.src_operands.first()) =>
+                self.unsupported(inst, "descriptor address requires an ordinary aligned register pair"),
             "LDG" if is_wide_memory_data(inst) => self.unsupported(inst, "wide global data load is not supported by pair repair"),
             "LDG" | "LDS" | "LDL" => Some(load_op(inst, &pred)),
             "LDC" | "LDCU" => Some(ldc_op(inst, &pred)),
+            "ST" | "STG" if is_global_memory_inst(inst)
+                && unsupported_descriptor_pair_address(inst.dest_operands.first()) =>
+                self.unsupported(inst, "descriptor address requires an ordinary aligned register pair"),
             "ST" | "STG" if is_wide_memory_data(inst) && is_global_memory_inst(inst) =>
                 self.unsupported(inst, "wide global data store is not supported by pair repair"),
             "ST" | "STG" | "STS" | "STL" => Some(store_op(inst, &pred)),
+            "ATOMG" if atomic_address_operand(inst).is_some_and(|operand| {
+                matches!(operand, SassOperand::Label(label) if label.starts_with("desc["))
+            }) => self.unsupported(inst, "descriptor atomic address lowering is not supported"),
             "ATOMG" | "ATOMS" => Some(atomic_op(inst, &pred)),
             "IDP" if is_idp_4a_s8_s8(inst) => Some(idp_4a_s8_s8_op(inst, &pred)),
             "IDP" => self.unsupported(inst, "integer dot-product mode lifting is not implemented"),
@@ -962,9 +972,15 @@ fn collect_implicit_register_pair_decl(inst: &EnhancedSassInstruction, decls: &m
     let operands: Vec<&SassOperand> = if supported_imad_wide_pair_form(inst) {
         // The destination and addend are 64-bit pairs; the two multiplicands
         // are scalar U32 and must not acquire implicit upper-word declarations.
-        inst.dest_operands.iter().chain(inst.src_operands.iter().skip(2)).collect()
+        inst.dest_operands
+            .iter()
+            .chain(inst.src_operands.iter().skip(2))
+            .collect()
     } else if is_64bit_modifier(inst) {
-        inst.dest_operands.iter().chain(inst.src_operands.iter()).collect()
+        inst.dest_operands
+            .iter()
+            .chain(inst.src_operands.iter())
+            .collect()
     } else {
         return;
     };
@@ -976,14 +992,19 @@ fn collect_implicit_register_pair_decl(inst: &EnhancedSassInstruction, decls: &m
             continue;
         }
         match reg.prefix.as_str() {
-            "R" => decls.max_gpr = decls.max_gpr.max(reg.number + 2),
-            "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(reg.number + 2),
+            "R" if reg.number < 254 => decls.max_gpr = decls.max_gpr.max(reg.number + 2),
+            "UR" if reg.number < 62 => {
+                decls.max_uniform_gpr = decls.max_uniform_gpr.max(reg.number + 2)
+            }
             _ => {}
         }
     }
 }
 
-fn collect_implicit_desc_address_pair_decl(inst: &EnhancedSassInstruction, decls: &mut RegisterDecls) {
+fn collect_implicit_desc_address_pair_decl(
+    inst: &EnhancedSassInstruction,
+    decls: &mut RegisterDecls,
+) {
     for operand in inst.dest_operands.iter().chain(inst.src_operands.iter()) {
         let SassOperand::Label(label) = operand else {
             continue;
@@ -991,7 +1012,7 @@ fn collect_implicit_desc_address_pair_decl(inst: &EnhancedSassInstruction, decls
         if !label.contains(".64") {
             continue;
         }
-        if let Some(reg) = desc_address_register_number(label) {
+        if let Some(reg) = desc_address_register_number(label).filter(|n| *n < 254 && *n % 2 == 0) {
             decls.max_gpr = decls.max_gpr.max(reg + 2);
         }
     }
@@ -1031,11 +1052,14 @@ fn collect_register(reg: &SassRegister, decls: &mut RegisterDecls) {
     if reg.is_zero {
         return;
     }
+    let Some(count) = reg.number.checked_add(1) else {
+        return;
+    };
     match reg.prefix.as_str() {
-        "R" => decls.max_gpr = decls.max_gpr.max(reg.number + 1),
-        "P" => decls.max_pred = decls.max_pred.max(reg.number + 1),
-        "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(reg.number + 1),
-        "UP" => decls.max_uniform_pred = decls.max_uniform_pred.max(reg.number + 1),
+        "R" => decls.max_gpr = decls.max_gpr.max(count),
+        "P" => decls.max_pred = decls.max_pred.max(count),
+        "UR" => decls.max_uniform_gpr = decls.max_uniform_gpr.max(count),
+        "UP" => decls.max_uniform_pred = decls.max_uniform_pred.max(count),
         _ => {}
     }
 }
@@ -1073,6 +1097,19 @@ fn binary_op(inst: &EnhancedSassInstruction, pred: &str, op: &str, ty: &str) -> 
     format!("{}{}.{} {}, {}, {};", pred, op, ty, dst, src0, src1)
 }
 
+// The repaired pair forms require two ordinary, aligned physical words.
+// Encodings R255/UR63 name the zero register, not an upper writable word.
+fn supported_pair_register(reg: &SassRegister) -> bool {
+    !reg.is_zero
+        && reg.number % 2 == 0
+        && match reg.prefix.as_str() {
+            "R" => reg.number < 254,
+            "UR" => reg.number < 62,
+            _ => false,
+        }
+        && matches!(reg.component.as_deref(), None | Some("reuse"))
+}
+
 // SASS R/UR registers are 32-bit physical words. A .64 operand consumes two
 // adjacent words; PTX %rdN is a separate virtual register, not an alias.
 fn pair_read(operand: &SassOperand, pred: &str, ur_scratch: &str) -> Option<(String, String)> {
@@ -1080,12 +1117,25 @@ fn pair_read(operand: &SassOperand, pred: &str, ur_scratch: &str) -> Option<(Str
         SassOperand::Register(reg) if reg.is_zero => Some((String::new(), "0".to_string())),
         SassOperand::Register(reg) if reg.prefix == "R" => {
             let wide = format!("%rd{}", reg.number);
-            Some((format!("{}mov.b64 {}, {{%r{}, %r{}}};", pred, wide,
-                          reg.number, reg.number + 1), wide))
+            Some((
+                format!(
+                    "{}mov.b64 {}, {{%r{}, %r{}}};",
+                    pred,
+                    wide,
+                    reg.number,
+                    reg.number + 1
+                ),
+                wide,
+            ))
         }
         SassOperand::Register(reg) if reg.prefix == "UR" => Some((
-            format!("{}mov.b64 {}, {{%ur{}, %ur{}}};", pred, ur_scratch,
-                    reg.number, reg.number + 1),
+            format!(
+                "{}mov.b64 {}, {{%ur{}, %ur{}}};",
+                pred,
+                ur_scratch,
+                reg.number,
+                reg.number + 1
+            ),
             ur_scratch.to_string(),
         )),
         _ => None,
@@ -1096,47 +1146,93 @@ fn pair_write(operand: &SassOperand, pred: &str) -> Option<String> {
     match operand {
         SassOperand::Register(reg) if reg.prefix == "R" && !reg.is_zero => Some(format!(
             "{}mov.b64 {{%r{}, %r{}}}, %rd{};",
-            pred, reg.number, reg.number + 1, reg.number
+            pred,
+            reg.number,
+            reg.number + 1,
+            reg.number
         )),
         _ => None,
     }
 }
 
 fn iadd_64_op(inst: &EnhancedSassInstruction, pred: &str, ur_scratch: &str) -> Option<String> {
-    if inst.modifiers.len() != 1 || !has_modifier(inst, "64")
-        || inst.dest_operands.len() != 1 || inst.src_operands.len() != 2
+    if inst.modifiers.len() != 1
+        || !has_modifier(inst, "64")
+        || inst.dest_operands.len() != 1
+        || inst.src_operands.len() != 2
         || !matches!(inst.dest_operands.first()?, SassOperand::Register(reg)
             if reg.prefix == "R" && !reg.is_zero)
         || !matches!(inst.src_operands.first()?, SassOperand::Register(reg)
             if reg.prefix == "R" && !reg.is_zero)
         || !matches!(inst.src_operands.get(1)?, SassOperand::Register(reg)
-            if (reg.prefix == "R" || reg.prefix == "UR") && !reg.is_zero) {
+            if (reg.prefix == "R" || reg.prefix == "UR") && !reg.is_zero)
+    {
+        return None;
+    }
+    if inst
+        .dest_operands
+        .iter()
+        .chain(&inst.src_operands)
+        .any(|operand| {
+            matches!(operand, SassOperand::Register(reg)
+            if !supported_pair_register(reg))
+        })
+    {
         return None;
     }
     let dst = inst.dest_operands.first()?;
-    if inst.src_operands.iter().take(2).filter(|operand| matches!(operand,
-        SassOperand::Register(reg) if reg.prefix == "UR" && !reg.is_zero)).count() > 1 {
+    if inst
+        .src_operands
+        .iter()
+        .take(2)
+        .filter(|operand| {
+            matches!(operand,
+        SassOperand::Register(reg) if reg.prefix == "UR" && !reg.is_zero)
+        })
+        .count()
+        > 1
+    {
         return None;
     }
     let (setup0, src0) = pair_read(inst.src_operands.first()?, pred, ur_scratch)?;
     let (setup1, src1) = pair_read(inst.src_operands.get(1)?, pred, ur_scratch)?;
     let output = pair_write(dst, pred)?;
     let wide_dst = dest_rd_operand(inst)?;
-    Some(format!("{}\n    {}\n    {}add.u64 {}, {}, {};\n    {}",
-                 setup0, setup1, pred, wide_dst, src0, src1, output))
+    Some(format!(
+        "{}\n    {}\n    {}add.u64 {}, {}, {};\n    {}",
+        setup0, setup1, pred, wide_dst, src0, src1, output
+    ))
+}
+
+fn supported_u32_multiplicand(operand: &SassOperand) -> bool {
+    match operand {
+        SassOperand::Register(reg) => {
+            (match reg.prefix.as_str() {
+                "R" => reg.number < 255 && !reg.is_zero,
+                "UR" => reg.number < 63 && !reg.is_zero,
+                "RZ" | "URZ" => reg.is_zero,
+                _ => false,
+            }) && matches!(reg.component.as_deref(), None | Some("reuse"))
+        }
+        SassOperand::Immediate(value) => u32::try_from(*value).is_ok(),
+        _ => false,
+    }
 }
 
 fn supported_imad_wide_pair_form(inst: &EnhancedSassInstruction) -> bool {
-    inst.modifiers.len() == 2 && has_modifier(inst, "WIDE") && has_modifier(inst, "U32")
-        && inst.dest_operands.len() == 1 && inst.src_operands.len() == 3
+    inst.modifiers.len() == 2
+        && has_modifier(inst, "WIDE")
+        && has_modifier(inst, "U32")
+        && inst.dest_operands.len() == 1
+        && inst.src_operands.len() == 3
         && matches!(inst.dest_operands.first(), Some(SassOperand::Register(reg))
-            if reg.prefix == "R" && !reg.is_zero)
-        && matches!(inst.src_operands.first(), Some(SassOperand::Register(reg))
-            if reg.prefix == "R" && !reg.is_zero)
-        && matches!(inst.src_operands.get(1), Some(SassOperand::Register(reg))
-            if reg.prefix == "UR" && !reg.is_zero)
+            if reg.prefix == "R" && supported_pair_register(reg) && reg.component.is_none())
+        && inst.src_operands[..2]
+            .iter()
+            .all(supported_u32_multiplicand)
         && matches!(inst.src_operands.get(2), Some(SassOperand::Register(reg))
-            if reg.prefix == "R" && !reg.is_zero)
+            if (reg.prefix == "R" && supported_pair_register(reg))
+                || (reg.prefix == "RZ" && reg.is_zero && reg.component.is_none()))
 }
 
 fn float_binary_op(
@@ -1601,13 +1697,23 @@ fn imad_wide_op(inst: &EnhancedSassInstruction, pred: &str, product_scratch: &st
         .map(|operand| wide_pair_base_operand_setup(operand, pred))
         .unwrap_or_else(|| (String::new(), "0".to_string()));
 
-    let mut lines = format!("{}mul.wide.u32 {}, {}, {};", pred, product_scratch, src0, src1);
+    let mut lines = format!(
+        "{}mul.wide.u32 {}, {}, {};",
+        pred, product_scratch, src0, src1
+    );
     if !base_setup.is_empty() {
         lines.push_str("\n    ");
         lines.push_str(&base_setup);
     }
-    lines.push_str(&format!("\n    {}add.u64 {}, {}, {};", pred, dst, base, product_scratch));
-    if let Some(unpack) = inst.dest_operands.first().and_then(|operand| pair_write(operand, pred)) {
+    lines.push_str(&format!(
+        "\n    {}add.u64 {}, {}, {};",
+        pred, dst, base, product_scratch
+    ));
+    if let Some(unpack) = inst
+        .dest_operands
+        .first()
+        .and_then(|operand| pair_write(operand, pred))
+    {
         lines.push_str("\n    ");
         lines.push_str(&unpack);
     }
@@ -1636,11 +1742,23 @@ fn wide_base_operand_setup(dst: &str, operand: &SassOperand) -> (String, String)
 fn wide_pair_base_operand_setup(operand: &SassOperand, pred: &str) -> (String, String) {
     match operand {
         SassOperand::Register(reg) if reg.prefix == "UR" && !reg.is_zero => (
-            format!("{}mov.b64 %rd{}, {{%ur{}, %ur{}}};", pred, reg.number, reg.number, reg.number + 1),
+            format!(
+                "{}mov.b64 %rd{}, {{%ur{}, %ur{}}};",
+                pred,
+                reg.number,
+                reg.number,
+                reg.number + 1
+            ),
             format!("%rd{}", reg.number),
         ),
         SassOperand::Register(reg) if reg.prefix == "R" && !reg.is_zero => (
-            format!("{}mov.b64 %rd{}, {{%r{}, %r{}}};", pred, reg.number, reg.number, reg.number + 1),
+            format!(
+                "{}mov.b64 %rd{}, {{%r{}, %r{}}};",
+                pred,
+                reg.number,
+                reg.number,
+                reg.number + 1
+            ),
             format!("%rd{}", reg.number),
         ),
         _ => (String::new(), format_rd_operand(operand)),
@@ -2258,6 +2376,20 @@ fn shared_address_setup(operand: &SassOperand) -> String {
     }
 }
 
+fn atomic_address_operand(inst: &EnhancedSassInstruction) -> Option<&SassOperand> {
+    let index = if inst
+        .dest_operands
+        .first()
+        .is_some_and(is_predicate_true_operand)
+        && inst.src_operands.len() >= 3
+    {
+        1
+    } else {
+        0
+    };
+    inst.src_operands.get(index)
+}
+
 fn atomic_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let first_dest_is_true_predicate = inst
         .dest_operands
@@ -2720,7 +2852,11 @@ fn cuda_param_load_op(
         }
         let wide = dest_rd_operand(inst).unwrap_or_else(|| "%rd0".to_string());
         let load = format!("{}ld.param.u64 {}, [{}];", pred, wide, name);
-        return match inst.dest_operands.first().and_then(|operand| pair_write(operand, pred)) {
+        return match inst
+            .dest_operands
+            .first()
+            .and_then(|operand| pair_write(operand, pred))
+        {
             Some(unpack) => format!("{}\n    {}", load, unpack),
             None => load,
         };
@@ -2767,8 +2903,18 @@ fn is_global_memory_inst(inst: &EnhancedSassInstruction) -> bool {
 }
 
 fn is_wide_memory_data(inst: &EnhancedSassInstruction) -> bool {
-    matches!(inst.data_type, Some(SassDataType::U64 | SassDataType::S64
-        | SassDataType::B64 | SassDataType::U128))
+    has_modifier(inst, "64")
+        || has_modifier(inst, "128")
+        || matches!(
+            inst.data_type,
+            Some(
+                SassDataType::U64
+                    | SassDataType::S64
+                    | SassDataType::B64
+                    | SassDataType::U128
+                    | SassDataType::B128
+            )
+        )
 }
 
 fn is_extended_iadd3(inst: &EnhancedSassInstruction) -> bool {
@@ -3055,12 +3201,27 @@ fn desc_address_register_number(label: &str) -> Option<u32> {
     digits.parse::<u32>().ok()
 }
 
+fn unsupported_descriptor_pair_address(operand: Option<&SassOperand>) -> bool {
+    matches!(operand, Some(SassOperand::Label(label))
+        if label.starts_with("desc[") && label.contains(".64")
+            && !desc_address_register_number(label).is_some_and(|n| n < 254 && n % 2 == 0))
+}
+
 fn desc_address_pair_setup(operand: &SassOperand, pred: &str) -> Option<String> {
-    let SassOperand::Label(label) = operand else { return None; };
-    if !label.contains(".64") { return None; }
+    let SassOperand::Label(label) = operand else {
+        return None;
+    };
+    if !label.contains(".64") {
+        return None;
+    }
     let reg_num = desc_address_register_number(label)?;
-    Some(format!("{}mov.b64 %rd{}, {{%r{}, %r{}}};",
-                 pred, reg_num, reg_num, reg_num + 1))
+    Some(format!(
+        "{}mov.b64 %rd{}, {{%r{}, %r{}}};",
+        pred,
+        reg_num,
+        reg_num,
+        reg_num + 1
+    ))
 }
 
 fn desc_address_to_ptx(label: &str) -> Option<String> {
@@ -4371,7 +4532,9 @@ Function : kernel
         shared.src_operands.push(reg(2));
         let options = SassLiftOptions::default();
         let mut context = LiftContext::new(&options);
-        let lowered = context.lift_instruction(&shared).expect("shared ST should retain its path");
+        let lowered = context
+            .lift_instruction(&shared)
+            .expect("shared ST should retain its path");
         assert!(context.diagnostics.is_empty(), "{:?}", context.diagnostics);
         assert!(lowered.contains("st.shared.u64"), "{lowered}");
 
@@ -4380,7 +4543,9 @@ Function : kernel
         local.memory_space = Some(SassMemorySpace::Local);
         local.dest_operands.push(mem(0, 0));
         local.src_operands.push(reg(2));
-        let lowered = context.lift_instruction(&local).expect("local ST should retain its path");
+        let lowered = context
+            .lift_instruction(&local)
+            .expect("local ST should retain its path");
         assert!(context.diagnostics.is_empty(), "{:?}", context.diagnostics);
         assert!(lowered.contains("st.local.u64"), "{lowered}");
     }
@@ -4547,17 +4712,24 @@ Function : kernel
     }
 
     #[test]
-    fn sass_lifter_lifts_kimi_global_atomic_add_bucket_op() {
+    fn sass_lifter_reports_kimi_descriptor_atomic_without_guessing_address_pair() {
         let text = r#"Function : kimi_atomic_add
         /*0310*/                   ATOMG.E.ADD.STRONG.GPU PT, R9, desc[UR6][R8.64], R3 &req={0} &wr=0x2 ?trans1; /* 0x80000003080979a8 */
         /*0320*/                   EXIT ;
 "#;
 
         let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
-            .expect("Kimi global atomic add should lift");
+            .expect("Kimi global atomic add should return an explicit diagnostic");
 
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(result.ptx.contains("atom.global.add.u32 %r9, [%rd8], %r3;"));
+        // The old lowering used an uninitialized %rd8. Preserve the real input
+        // as a rejection regression until descriptor atomics have a proven path.
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].opcode, "ATOMG");
+        assert_eq!(
+            result.diagnostics[0].message,
+            "descriptor atomic address lowering is not supported"
+        );
+        assert!(!result.ptx.contains("atom.global"));
     }
 
     #[test]
@@ -4572,5 +4744,280 @@ Function : kernel
 
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.ptx.contains("mul.rn.f16x2 %r7, %r14, %r7;"));
+    }
+    // A small interpreter for the emitted arithmetic subset, independent of the
+    // lowering helpers. Missing reads fail rather than defaulting to zero.
+    fn execute_pair_ptx(ptx: &str, values: &mut HashMap<String, u64>, predicate: bool) {
+        fn read(values: &HashMap<String, u64>, name: &str) -> u64 {
+            if name.starts_with('%') {
+                *values
+                    .get(name)
+                    .unwrap_or_else(|| panic!("uninitialized {name}"))
+            } else {
+                name.parse().unwrap()
+            }
+        }
+        for line in ptx.lines() {
+            let mut line = line.trim();
+            if line.starts_with('@') {
+                let (guard, body) = line.split_once(' ').unwrap();
+                assert!(matches!(guard, "@%p0" | "@!%p0"));
+                if predicate == guard.starts_with("@!") {
+                    continue;
+                }
+                line = body;
+            }
+            if line.is_empty()
+                || line.starts_with('.')
+                || line.starts_with("//")
+                || line.ends_with(':')
+                || matches!(line, "{" | "}" | "ret;")
+            {
+                continue;
+            }
+            let fields: Vec<_> = line
+                .split(|c: char| c.is_whitespace() || ",{};".contains(c))
+                .filter(|s| !s.is_empty())
+                .collect();
+            match fields[0] {
+                "mov.b64" if line.split_once(' ').unwrap().1.starts_with('{') => {
+                    let value = read(values, fields[3]);
+                    values.insert(fields[1].to_string(), value & 0xffff_ffff);
+                    values.insert(fields[2].to_string(), value >> 32);
+                }
+                "mov.b64" => {
+                    let low = read(values, fields[2]);
+                    let high = read(values, fields[3]);
+                    values.insert(fields[1].to_string(), low | high << 32);
+                }
+                "mul.wide.u32" => {
+                    let a = read(values, fields[2]) as u32 as u64;
+                    let b = read(values, fields[3]) as u32 as u64;
+                    values.insert(fields[1].to_string(), a * b);
+                }
+                "add.u64" => {
+                    let a = read(values, fields[2]);
+                    let b = read(values, fields[3]);
+                    values.insert(fields[1].to_string(), a.wrapping_add(b));
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn pair_fixture_values() -> HashMap<String, u64> {
+        let mut values = HashMap::new();
+        for (prefix, limit) in [("r", 255), ("ur", 63)] {
+            for n in 0..limit {
+                values.insert(format!("%{prefix}{n}"), 0xffff_ffff);
+            }
+        }
+        values
+    }
+
+    #[test]
+    fn sass_lifter_imad_wide_executes_unsigned_carry_overflow_and_aliases() {
+        // Includes the existing integration fixture's immediate operand, scalar
+        // R/UR sources, zero operands, an output high-word alias, and a distinct
+        // result/addend. u128 computes the reference without host overflow.
+        for (dst, lhs, rhs, base) in [
+            (2, "R7", "0x4", 2),
+            (8, "R1", "UR2", 4),
+            (2, "R3", "UR2", 2),
+            (30, "R31", "R30", 30),
+            (8, "RZ", "UR2", 4),
+            (8, "R1", "URZ", 4),
+            (8, "R1", "0xffffffff", 4),
+            (252, "R254", "UR62", 250),
+        ] {
+            for guard in ["", "@P0 ", "@!P0 "] {
+                for enabled in [false, true] {
+                    let text = format!("Function : wide\n/*0000*/ {guard}IMAD.WIDE.U32 R{dst}, {lhs}, {rhs}, R{base};\n/*0010*/ EXIT;");
+                    let result = lift_sass_text_to_ptx(&text, SassLiftOptions::default()).unwrap();
+                    assert!(
+                        result.diagnostics.is_empty(),
+                        "{text}: {:?}",
+                        result.diagnostics
+                    );
+                    let mut values = pair_fixture_values();
+                    if enabled {
+                        // Unequal halves catch swapped packing; the other case
+                        // uses all-ones to exercise full-width wraparound.
+                        values.insert(format!("%r{base}"), 0xffff_fffe);
+                        values.insert(format!("%r{}", base + 1), 0x1234_5678);
+                    }
+                    let before = values.clone();
+                    let scalar = |name: &str| -> u128 {
+                        match name {
+                            "RZ" | "URZ" => 0,
+                            "0x4" => 4,
+                            "0xffffffff" => u32::MAX as u128,
+                            _ => before[&format!("%{}", name.to_lowercase())] as u128,
+                        }
+                    };
+                    let base_value = before[&format!("%r{base}")] as u128
+                        | (before[&format!("%r{}", base + 1)] as u128) << 32;
+                    let active = guard.is_empty() || (enabled != guard.contains('!'));
+                    let expected = if active {
+                        (scalar(lhs) * scalar(rhs) + base_value) as u64
+                    } else {
+                        before[&format!("%r{dst}")] | before[&format!("%r{}", dst + 1)] << 32
+                    };
+                    execute_pair_ptx(&result.ptx, &mut values, enabled);
+                    assert_eq!(
+                        values[&format!("%r{dst}")],
+                        expected & 0xffff_ffff,
+                        "{text}"
+                    );
+                    assert_eq!(values[&format!("%r{}", dst + 1)], expected >> 32, "{text}");
+                    for (name, value) in before {
+                        if name != format!("%r{dst}") && name != format!("%r{}", dst + 1) {
+                            assert_eq!(values[&name], value, "clobbered {name}: {text}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sass_lifter_imad_wide_zero_addend_and_scalar_declarations() {
+        let text = "Function : zero_base\n/*0000*/ IMAD.WIDE.U32 R8, R1, UR2, RZ;\n/*0010*/ EXIT;";
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default()).unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains(".reg .b32 %r<10>;"));
+        assert!(result.ptx.contains(".reg .b32 %ur<3>;"));
+        let mut values = pair_fixture_values();
+        execute_pair_ptx(&result.ptx, &mut values, true);
+        assert_eq!(values["%r8"], 1);
+        assert_eq!(values["%r9"], 0xffff_fffe);
+    }
+
+    #[test]
+    fn sass_lifter_iadd64_executes_carry_overflow_predication_and_register_aliases() {
+        for (dst, first, second) in [
+            (2, 2, "UR2"),
+            (30, 2, "R30"),
+            (2, 4, "R2"),
+            (8, 8, "R8"),
+            (252, 250, "UR60"),
+        ] {
+            for (a, b) in [
+                (0xffff_ffff_u64, 1_u64),
+                (u64::MAX, 1),
+                (0x8000_0000_ffff_ffff, 0xffff_ffff),
+            ] {
+                for guard in ["", "@P0 ", "@!P0 "] {
+                    for enabled in [false, true] {
+                        let text = format!("Function : add64\n/*0000*/ {guard}IADD.64 R{dst}, R{first}, {second};\n/*0010*/ EXIT;");
+                        let result =
+                            lift_sass_text_to_ptx(&text, SassLiftOptions::default()).unwrap();
+                        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+                        let mut values = pair_fixture_values();
+                        values.insert(format!("%r{first}"), a & 0xffff_ffff);
+                        values.insert(format!("%r{}", first + 1), a >> 32);
+                        let (prefix, number) = if let Some(n) = second.strip_prefix("UR") {
+                            ("ur", n.parse::<u32>().unwrap())
+                        } else {
+                            ("r", second[1..].parse::<u32>().unwrap())
+                        };
+                        values.insert(format!("%{prefix}{number}"), b & 0xffff_ffff);
+                        values.insert(format!("%{prefix}{}", number + 1), b >> 32);
+                        let before = values.clone();
+                        let a = before[&format!("%r{first}")]
+                            | before[&format!("%r{}", first + 1)] << 32;
+                        let b = before[&format!("%{prefix}{number}")]
+                            | before[&format!("%{prefix}{}", number + 1)] << 32;
+                        let active = guard.is_empty() || (enabled != guard.contains('!'));
+                        let expected = if active {
+                            (a as u128 + b as u128) as u64
+                        } else {
+                            before[&format!("%r{dst}")] | before[&format!("%r{}", dst + 1)] << 32
+                        };
+                        execute_pair_ptx(&result.ptx, &mut values, enabled);
+                        assert_eq!(
+                            values[&format!("%r{dst}")],
+                            expected & 0xffff_ffff,
+                            "{text}"
+                        );
+                        assert_eq!(values[&format!("%r{}", dst + 1)], expected >> 32, "{text}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sass_lifter_pair_repair_rejects_unproven_operand_forms() {
+        for instruction in [
+            "IADD.64.X R2, R4, UR2",
+            "IADD.64 R3, R4, UR2",
+            "IADD.64 R2, R3, UR2",
+            "IADD.64 R254, R4, UR2",
+            "IADD.64 R2, R4, UR62",
+            "IADD.64 R999, R4, R2",
+            "IADD.64 R2, R4, UR999",
+            "IADD.64 R4294967295, R4, R2",
+            "IADD.64 R2, UR4, UR2",
+            "IADD.64 R2, R4, 1",
+            "IADD.64 R2, R4.H0, R6",
+            "IADD.64 UR2, R4, R6",
+            "IADD.64 R2, R4",
+            "IMAD.WIDE.S32 R2, R4, 4, R2",
+            "IMAD.WIDE.U32 R3, R4, 4, R2",
+            "IMAD.WIDE.U32 R2, R4, 4, R3",
+            "IMAD.WIDE.U32 R254, R4, 4, R2",
+            "IMAD.WIDE.U32 R2, R4, 4, R254",
+            "IMAD.WIDE.U32 R2, R999, 4, R2",
+            "IMAD.WIDE.U32 R2, R4, UR63, R2",
+            "IMAD.WIDE.U32 R2, R255, 4, R2",
+            "IMAD.WIDE.U32 R2, R4, UR999, R2",
+            "IMAD.WIDE.U32.X R2, R4, 4, R2",
+            "IMAD.WIDE.U32 R2, R4.H0, 4, R2",
+            "IMAD.WIDE.U32 R2, -R4, 4, R2",
+            "IMAD.WIDE.U32 R2, R4, 0x100000000, R2",
+            "IMAD.WIDE.U32 R2, R4, 4, UR2",
+            "IMAD.WIDE.U32 R2, R4, 4",
+        ] {
+            let text = format!("Function : negative\n/*0000*/ {instruction};\n/*0010*/ EXIT;");
+            let result = lift_sass_text_to_ptx(&text, SassLiftOptions::default()).unwrap();
+            assert_eq!(result.diagnostics.len(), 1, "{instruction}");
+            assert!(!result.ptx.contains("mul.wide.u32"), "{instruction}");
+            assert!(!result.ptx.contains("add.u64"), "{instruction}");
+        }
+    }
+
+    #[test]
+    fn sass_lifter_rejects_numeric_wide_global_memory_and_descriptor_atomics() {
+        for instruction in [
+            "LDG.E.64 R8, desc[UR2][R30.64]",
+            "LDG.E R8, desc[UR2][R999.64]",
+            "LDG.E R8, desc[UR2][R254.64]",
+            "STG.E desc[UR2][R3.64], R8",
+            "LDG.E R8, desc[UR2][R4294967295.64]",
+            "LDG.E.128 R8, [R30.64]",
+            "LDG.E.B128 R8, [R30.64]",
+            "STG.E.64 desc[UR2][R30.64], R8",
+            "STG.E.128 [R30.64], R8",
+            "ATOMG.E.ADD R8, desc[UR2][R30.64], R2",
+            "ATOMG.E.ADD PT, R8, desc[UR2][R30.64], R2",
+        ] {
+            let text = format!("Function : memory\n/*0000*/ {instruction};\n/*0010*/ EXIT;");
+            let result = lift_sass_text_to_ptx(&text, SassLiftOptions::default()).unwrap();
+            assert_eq!(result.diagnostics.len(), 1, "{instruction}");
+            assert!(!result.ptx.contains("atom.global"), "{instruction}");
+            assert!(!result.ptx.contains("ld.global"), "{instruction}");
+            assert!(!result.ptx.contains("st.global"), "{instruction}");
+        }
+        for instruction in ["ATOMG.E.ADD R8, [R30], R2", "ATOMS.ADD R8, [R30], R2"] {
+            let text = format!("Function : atomic\n/*0000*/ {instruction};\n/*0010*/ EXIT;");
+            let result = lift_sass_text_to_ptx(&text, SassLiftOptions::default()).unwrap();
+            assert!(
+                result.diagnostics.is_empty(),
+                "{instruction}: {:?}",
+                result.diagnostics
+            );
+            assert!(result.ptx.contains("atom."));
+        }
     }
 }

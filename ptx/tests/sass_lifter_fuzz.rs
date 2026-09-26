@@ -7,6 +7,23 @@ use ptx::{
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+// Decimal and PTX's exact IEEE-754 hexadecimal spelling have identical meaning.
+// Match the opcode and registers independently, then check the immediate bits.
+fn assert_f32_immediate(ptx: &str, prefix: &str, expected: f32) {
+    let literal = ptx
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(prefix))
+        .expect("expected opcode and operands")
+        .strip_suffix(';')
+        .expect("instruction terminator");
+    let actual = if let Some(bits) = literal.strip_prefix("0f") {
+        f32::from_bits(u32::from_str_radix(bits, 16).expect("f32 hex bits"))
+    } else {
+        literal.parse::<f32>().expect("f32 decimal literal")
+    };
+    assert_eq!(actual.to_bits(), expected.to_bits());
+}
+
 #[test]
 fn sass_lifter_fuzzer_is_deterministic_and_generates_parseable_ptx() {
     let config = SassLifterFuzzConfig {
@@ -148,20 +165,22 @@ fn text_lifter_handles_real_sm120_roundtrip_integer_pattern() {
     )
     .expect("real SM120 SASS text should lift");
 
+    ptx_parser::parse_module_checked(&result.ptx).expect("integer fixture PTX should parse");
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert!(result.ptx.contains(".version 8.7"));
     assert!(result.ptx.contains(".param .u64 out"));
     assert!(result.ptx.contains(".param .u64 in"));
-    assert!(result.ptx.contains(".param .u32 n"));
+    // Text disassembly supplies offsets, not the source parameter name `n`.
+    assert!(result.ptx.contains(".param .u32 param2"));
     assert!(result.ptx.contains(".reg .b32 %ur<6>;"));
-    assert!(result.ptx.contains(".reg .b64 %rd<16>;"));
-    assert!(result.ptx.contains("ld.param.u32 %ur5, [n];"));
+    assert!(result.ptx.contains(".reg .b64 %rd<17>;"));
+    assert!(result.ptx.contains("ld.param.u32 %ur5, [param2];"));
     assert!(result.ptx.contains("mov.u32 %r0, %ntid.x;"));
     assert!(result.ptx.contains("setp.ge.u32 %p0, %r7, %ur5;"));
     assert!(result.ptx.contains("ld.param.u64 %rd2, [in];"));
     assert!(result.ptx.contains("ld.param.u64 %rd4, [out];"));
-    assert!(result.ptx.contains("mul.wide.u32 %rd15, %r7, 4;"));
-    assert!(result.ptx.contains("add.u64 %rd2, %rd2, %rd15;"));
+    assert!(result.ptx.contains("mul.wide.u32 %rd16, %r7, 4;"));
+    assert!(result.ptx.contains("add.u64 %rd2, %rd2, %rd16;"));
     assert!(result.ptx.contains("ld.global.u32 %r2, [%rd2];"));
     assert!(result.ptx.contains("add.u32 %r0, %r2, 17;"));
     assert!(result.ptx.contains("xor.b32 %r7, %r0, 1515870810;"));
@@ -299,13 +318,14 @@ fn text_lifter_handles_real_sm120_float_conversion_patterns() {
     )
     .expect("real SM120 float conversion text should lift");
 
+    ptx_parser::parse_module_checked(&result.ptx).expect("float fixture PTX should parse");
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert!(result.ptx.contains("mov.b32 %r5, 0x3c23d70a;"));
     assert!(result.ptx.contains("and.b32 %r0, %r2, 1023;"));
     assert!(result.ptx.contains("cvt.rn.f32.u32 %r0, %r0;"));
-    assert!(result.ptx.contains("fma.rn.f32 %r5, %r0, %r5, 1.0;"));
+    assert_f32_immediate(&result.ptx, "fma.rn.f32 %r5, %r0, %r5, ", 1.0);
     assert!(result.ptx.contains("rsqrt.approx.ftz.f32 %r9, %r8;"));
-    assert!(result.ptx.contains("min.f32 %r0, %r4, 256.0;"));
+    assert_f32_immediate(&result.ptx, "min.f32 %r0, %r4, ", 256.0);
     assert!(result.ptx.contains("cvt.rzi.u32.f32 %r0, %r0;"));
 }
 
