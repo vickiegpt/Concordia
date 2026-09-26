@@ -634,6 +634,9 @@ impl<'a> LiftContext<'a> {
                 &data_type_suffix(inst, SassDataType::F32),
             )),
             "HFMA2" => Some(hfma2_constant_op(inst, &pred)),
+            "F2FP" if has_modifier(inst, "BF16") => f2fp_bf16_pack_ab_op(inst, &pred).or_else(|| {
+                self.unsupported(inst, "unsupported BF16 PACK_AB modifiers or operand layout")
+            }),
             "F2FP" if has_modifier(inst, "PACK_AB") => Some(f2fp_pack_ab_op(inst, &pred)),
             "F2FP" => self.unsupported(inst, "F2FP sub-operation lifting is not implemented"),
             "HADD2" => Some(hadd2_op(inst, &pred, self.scratch_gpr.as_deref())),
@@ -670,6 +673,8 @@ impl<'a> LiftContext<'a> {
             "ATOMG" | "ATOMS" => Some(atomic_op(inst, &pred)),
             "IDP" if is_idp_4a_s8_s8(inst) => Some(idp_4a_s8_s8_op(inst, &pred)),
             "IDP" => self.unsupported(inst, "integer dot-product mode lifting is not implemented"),
+            "FSETP" if has_modifier(inst, "GEU") && !is_supported_fsetp_geu(inst) =>
+                self.unsupported(inst, "FSETP.GEU requires AND, discarded second result, PT input and plain FP32 registers"),
             "ISETP" | "FSETP" => Some(setp_op(
                 inst,
                 &pred,
@@ -1316,6 +1321,72 @@ fn hfma2_constant_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         .map(|encoding| (encoding >> 32) as u32)
         .unwrap_or(0);
     format!("{}mov.b32 {}, 0x{:08x};", pred, dst, bits)
+}
+
+fn plain_f32_register(operand: &SassOperand) -> bool {
+    matches!(operand, SassOperand::Register(reg)
+        if reg.component.is_none()
+            && ((reg.prefix == "R" && !reg.is_zero && reg.number < 255)
+                || reg.prefix == "RZ"))
+}
+
+fn f2fp_bf16_pack_ab_op(inst: &EnhancedSassInstruction, pred: &str) -> Option<String> {
+    // These four forms are independently reproducible with NVIDIA ptxas:
+    // RN/RZ, each with or without RELU. Other modes are not silently rounded RN.
+    if !has_modifier(inst, "F32")
+        || !has_modifier(inst, "PACK_AB")
+        || inst.modifiers.iter().any(|m| {
+            !matches!(
+                m.to_ascii_uppercase().as_str(),
+                "BF16" | "F32" | "PACK_AB" | "RZ" | "RELU"
+            )
+        })
+        || inst.dest_operands.len() != 1
+        || inst.src_operands.len() != 2
+    {
+        return None;
+    }
+    let dst = &inst.dest_operands[0];
+    if !plain_f32_register(dst)
+        || is_zero_register_operand(dst)
+        || !inst.src_operands.iter().all(plain_f32_register)
+    {
+        return None;
+    }
+    let rounding = if has_modifier(inst, "RZ") { "rz" } else { "rn" };
+    let relu = if has_modifier(inst, "RELU") {
+        ".relu"
+    } else {
+        ""
+    };
+    Some(format!(
+        "{}cvt.{}{}.bf16x2.f32 {}, {}, {};",
+        pred,
+        rounding,
+        relu,
+        format_operand(dst),
+        format_f32_pack_operand(&inst.src_operands[0]),
+        format_f32_pack_operand(&inst.src_operands[1])
+    ))
+}
+
+fn is_supported_fsetp_geu(inst: &EnhancedSassInstruction) -> bool {
+    // A plain PT second result is discarded; AND PT leaves the comparison
+    // unchanged. Dynamic boolean inputs, FTZ and a live second result require
+    // additional semantics that this text-lifter path does not implement.
+    inst.dest_operands.len() == 1
+        && matches!(&inst.dest_operands[0], SassOperand::Register(reg)
+            if reg.prefix == "P" && reg.number < 7 && reg.component.is_none())
+        && inst.src_operands.len() == 4
+        && is_pt_register_operand(&inst.src_operands[0])
+        && plain_f32_register(&inst.src_operands[1])
+        && plain_f32_register(&inst.src_operands[2])
+        && is_pt_register_operand(&inst.src_operands[3])
+        && has_modifier(inst, "AND")
+        && inst
+            .modifiers
+            .iter()
+            .all(|m| matches!(m.to_ascii_uppercase().as_str(), "GEU" | "AND"))
 }
 
 fn f2fp_pack_ab_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -2380,7 +2451,13 @@ fn fsetp_op(
         .unwrap_or_else(|| format_f32_literal(0.0));
     let abs_src0 = src0_operand.and_then(abs_float_operand);
     let abs_src1 = src1_operand.and_then(abs_float_operand);
-    let suffix = comparison_suffix(inst);
+    // GEU is unordered: the predicate is true if either floating operand is NaN.
+    // Keep the generic comparison selector unchanged for every other form.
+    let suffix = if has_modifier(inst, "GEU") {
+        "geu".to_string()
+    } else {
+        comparison_suffix(inst)
+    };
     match (abs_src0, abs_src1) {
         (Some(abs0), Some(abs1)) => {
             let scratch0 = scratch_gpr.unwrap_or("%r0");
@@ -4513,6 +4590,40 @@ Function : kernel
     }
 
     #[test]
+    fn sass_lifter_preserves_fsetp_geu_and_other_float_comparisons() {
+        let text = r#"Function : fsetp_geu
+        /*0000*/                   FSETP.GEU.AND P0, PT, R5, R0, PT ;
+        /*0010*/                   FSETP.GE.AND P1, PT, R5, R0, PT ;
+        /*0020*/                   FSETP.EQ.AND P2, PT, R5, R0, PT ;
+        /*0030*/                   EXIT ;
+"#;
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("FSETP GEU and neighboring comparisons should lift");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.ptx.contains("setp.geu.f32 %p0, %r5, %r0;"));
+        assert!(result.ptx.contains("setp.ge.f32 %p1, %r5, %r0;"));
+        assert!(result.ptx.contains("setp.eq.f32 %p2, %r5, %r0;"));
+    }
+
+    #[test]
+    fn sass_lifter_preserves_bf16_and_f16_f2fp_pack_ab_types() {
+        let text = r#"Function : f2fp_pack_ab_types
+        /*0000*/                   F2FP.BF16.F32.PACK_AB R6, RZ, R4 ;
+        /*0010*/                   F2FP.F16.F32.PACK_AB R8, RZ, R7 ;
+        /*0020*/                   EXIT ;
+"#;
+        let result = lift_sass_text_to_ptx(text, SassLiftOptions::default())
+            .expect("BF16 and FP16 PACK_AB should lift");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result
+            .ptx
+            .contains("cvt.rn.bf16x2.f32 %r6, 0f00000000, %r4;"));
+        assert!(result
+            .ptx
+            .contains("cvt.rn.f16x2.f32 %r8, 0f00000000, %r7;"));
+    }
+
+    #[test]
     fn sass_lifter_lifts_sm120_half_and_predicate_bucket_ops() {
         let text = r#"Function : half_pred_bucket_ops
         /*0270*/                   PLOP3.LUT P0, PT, P0, P1, PT, 0xf8, 0x8f ?WAIT13_END_GROUP; /* 0x00000000008f781c */
@@ -4773,6 +4884,10 @@ Function : kernel
         assert!(!result.ptx.contains("mad.lo.u32 %r19"));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/geu_bf16.rs"]
+mod geu_bf16_tests;
 
 #[cfg(test)]
 #[path = "tests/imad_hi.rs"]
