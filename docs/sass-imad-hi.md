@@ -1,5 +1,9 @@
 # Text SASS IMAD.HI.U32 support
 
+The design and experimental evidence for this repair are **SM120-specific**.
+Operand/input coverage within SM120 is not evidence for any other SASS
+architecture. No cross-architecture support or compatibility is asserted.
+
 The text lifter lowers the confirmed unsigned high-result form as
 `high32(u32(a) * u32(b) + u64(c))`, modulo 64 bits before extraction.
 The register addend is the pair `Rn:Rn+1`, with `Rn` the low word. PTX

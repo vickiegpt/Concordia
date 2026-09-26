@@ -5553,3 +5553,16 @@ mod imad_hi_tests;
 #[cfg(test)]
 #[path = "tests/geu_bf16.rs"]
 mod geu_bf16_tests;
+
+// SM120-specific coverage for the five SM120-derived recovery repairs.
+#[cfg(test)]
+#[path = "tests/generality_integer.rs"]
+mod generality_integer_tests;
+
+#[cfg(test)]
+#[path = "tests/generality_float.rs"]
+mod generality_float_tests;
+
+#[cfg(test)]
+#[path = "tests/generality_sm120.rs"]
+mod generality_sm120_tests;

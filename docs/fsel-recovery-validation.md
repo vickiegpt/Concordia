@@ -1,5 +1,9 @@
 # FSEL negative-qNaN recovery validation
 
+The design and experimental evidence for this repair are **SM120-specific**.
+Operand/input coverage within SM120 is not evidence for any other SASS
+architecture. No cross-architecture support or compatibility is asserted.
+
 The text frontend preserves the immediate payload only for the proved FSEL
 immediate form: source slot 1, low encoding bits `0x7808`, and a negative quiet
 NaN (`bits & 0xffc00000 == 0xffc00000`). The tests deliberately reject missing

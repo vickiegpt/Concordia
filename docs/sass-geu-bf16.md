@@ -1,5 +1,9 @@
 # Text SASS GEU and BF16 packing support
 
+The design and experimental evidence for this repair are **SM120-specific**.
+Operand/input coverage within SM120 is not evidence for any other SASS
+architecture. No cross-architecture support or compatibility is asserted.
+
 `F2FP.BF16.F32.PACK_AB` supports the four independently compiler-confirmed
 combinations of default RN or explicit RZ rounding, with or without RELU.
 They map to `cvt.{rn,rz}{.relu}.bf16x2.f32`. The first source becomes the

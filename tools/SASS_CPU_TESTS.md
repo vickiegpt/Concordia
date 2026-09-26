@@ -30,3 +30,19 @@ tmatmul/backend tests are outside the subset. Report passed/failed/ignored count
 and conventional workspace build failures independently; do not label this a
 workspace or GPU PASS. A same-revision source checkout must remain available
 because this harness imports it directly.
+
+The five recent recovery repairs and their added numerical/property fixtures are
+SM120-specific. See [the SM120 validation contract](../docs/sass-sm120-validation.md)
+for supported forms, oracle methods and limits; these tests do not establish
+correctness on another architecture.
+
+To include the SM120 offline compiler/disassembler roundtrip and existing optional
+assembler checks, set both executable paths for your installation explicitly:
+
+```sh
+HETGPU_TEST_PTXAS=/your/cuda/bin/ptxas \
+HETGPU_TEST_CUOBJDUMP=/your/cuda/bin/cuobjdump \
+cargo test --manifest-path /tmp/concordia-sass-tests/Cargo.toml -- --include-ignored
+```
+
+These tools assemble/disassemble offline; this does not execute GPU kernels.
