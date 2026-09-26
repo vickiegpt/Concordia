@@ -621,7 +621,12 @@ impl<'a> LiftContext<'a> {
             "FRND" if has_modifier(inst, "TRUNC") => Some(frnd_trunc_op(inst, &pred)),
             "FRND" => self.unsupported(inst, "floating round mode lifting is not implemented"),
             "FMNMX" => Some(fmnmx_op(inst, &pred, self.scratch_gpr.as_deref())),
-            "FSEL" => Some(fsel_op(inst, &pred)),
+            "FSEL" => fsel_op(inst, &pred).or_else(|| {
+                self.unsupported(
+                    inst,
+                    "FSEL -QNAN requires an encoded negative quiet-NaN immediate",
+                )
+            }),
             "FABS" => Some(unary_op(
                 inst,
                 &pred,
@@ -1903,18 +1908,16 @@ fn uniform_high_register_name(name: &str) -> Option<String> {
     Some(format!("%ur{}", number + 1))
 }
 
-fn fsel_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
+fn fsel_op(inst: &EnhancedSassInstruction, pred: &str) -> Option<String> {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
-    let mut src0 = inst
-        .src_operands
-        .first()
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
-    let mut src1 = inst
-        .src_operands
-        .get(1)
-        .map(format_operand)
-        .unwrap_or_else(|| "0".to_string());
+    let mut src0 = match inst.src_operands.first() {
+        Some(source) => format_fsel_source(inst, 0, source)?,
+        None => "0".to_string(),
+    };
+    let mut src1 = match inst.src_operands.get(1) {
+        Some(source) => format_fsel_source(inst, 1, source)?,
+        None => "0".to_string(),
+    };
     let (predicate, negated) = inst
         .src_operands
         .get(2)
@@ -1923,10 +1926,34 @@ fn fsel_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     if negated {
         std::mem::swap(&mut src0, &mut src1);
     }
-    format!(
+    Some(format!(
         "{}selp.b32 {}, {}, {}, {};",
         pred, dst, src0, src1, predicate
-    )
+    ))
+}
+
+fn format_fsel_source(
+    inst: &EnhancedSassInstruction,
+    index: usize,
+    source: &SassOperand,
+) -> Option<String> {
+    if matches!(source, SassOperand::Label(label) if label == "-QNAN") {
+        // cuobjdump prints different negative qNaN payloads identically as
+        // -QNAN. The encoded immediate, not that display label, identifies
+        // the exact 32-bit value selected by this FSEL instruction.
+        let encoding = extract_sass_encoding(inst)?;
+        // Both independently assembled FSEL immediate references have low
+        // 16 bits 0x7808; register-source FSEL instead has 0x7208.
+        if index != 1 || encoding & 0xffff != 0x7808 {
+            return None;
+        }
+        let bits = (encoding >> 32) as u32;
+        if bits & 0xffc0_0000 != 0xffc0_0000 {
+            return None;
+        }
+        return Some(format!("0x{:08x}", bits));
+    }
+    Some(format_operand(source))
 }
 
 fn idp_4a_s8_s8_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
@@ -3262,6 +3289,160 @@ mod tests {
             offset,
             index: None,
             scale: 1,
+        }
+    }
+
+    #[test]
+    fn sass_lifter_fsel_negative_qnan_preserves_encoded_payload() {
+        let text = r#"Function : fsel_qnan
+        /*0050*/ FSEL R5, RZ, -QNAN , P0 ; /* 0xffffffffff057808 */
+                 /* 0x000fca0000000000 */
+        /*0060*/ EXIT ; /* 0x000000000000794d */
+                 /* 0x000fea0003800000 */"#;
+        let options = SassLiftOptions {
+            sm_version: 120,
+            kernel_name: "fsel_qnan".to_string(),
+            include_sass_comments: false,
+            emit_unsupported_comments: true,
+        };
+        let all_ones = lift_sass_text_to_ptx(text, options.clone()).unwrap();
+        assert!(
+            all_ones.diagnostics.is_empty(),
+            "{:?}",
+            all_ones.diagnostics
+        );
+        assert!(all_ones.ptx.contains("selp.b32 %r5, 0, 0xffffffff, %p0;"));
+
+        let canonical = lift_sass_text_to_ptx(
+            &text.replace("0xffffffffff057808", "0xffc00000ff057808"),
+            options.clone(),
+        )
+        .unwrap();
+        assert!(
+            canonical.diagnostics.is_empty(),
+            "{:?}",
+            canonical.diagnostics
+        );
+        assert!(canonical.ptx.contains("selp.b32 %r5, 0, 0xffc00000, %p0;"));
+
+        let missing =
+            lift_sass_text_to_ptx(&text.replace("/* 0xffffffffff057808 */", ""), options).unwrap();
+        assert_eq!(missing.diagnostics.len(), 1);
+        assert!(!missing.ptx.contains("selp.b32 %r5, 0, -QNAN"));
+    }
+
+    fn lift_fsel_fixture(instruction: &str) -> SassLiftResult {
+        // Define both predicates: a negated selector alone is not a predicate
+        // declaration in the existing text frontend.
+        let text = format!(
+            "Function : fsel_contract\n\
+             /*0000*/ ISETP.NE.AND P1, PT, R2, RZ, PT ;\n\
+             /*0010*/ ISETP.NE.AND P3, PT, R4, RZ, PT ;\n\
+             /*0020*/ {}\n\
+             /*0030*/ EXIT ;",
+            instruction
+        );
+        lift_sass_text_to_ptx(
+            &text,
+            SassLiftOptions {
+                sm_version: 120,
+                kernel_name: "fsel_contract".to_string(),
+                include_sass_comments: false,
+                emit_unsupported_comments: true,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sass_lifter_fsel_negative_qnan_payloads_and_registers() {
+        for (dst, src, bits) in [
+            (5, 4, 0xffc00000u32),
+            (17, 9, 0xffc01234),
+            (63, 31, 0xffe00001),
+            (12, 255, 0xffffffff),
+        ] {
+            let source = if src == 255 {
+                "RZ".to_string()
+            } else {
+                format!("R{src}")
+            };
+            let ptx_source = if src == 255 {
+                "0".to_string()
+            } else {
+                format!("%r{src}")
+            };
+            for (predicate, negate) in [("P3", false), ("!P3", true)] {
+                let result = lift_fsel_fixture(&format!(
+                    "FSEL R{dst}, {source}, -QNAN, {predicate} ; /* 0x{bits:08x}{src:02x}{dst:02x}7808 */"
+                ));
+                assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+                let (a, b) = if negate {
+                    (format!("0x{bits:08x}"), ptx_source.clone())
+                } else {
+                    (ptx_source.clone(), format!("0x{bits:08x}"))
+                };
+                assert!(
+                    result
+                        .ptx
+                        .contains(&format!("selp.b32 %r{dst}, {a}, {b}, %p3;")),
+                    "{}",
+                    result.ptx
+                );
+                ptx_parser::parse_module_checked(&result.ptx).expect("FSEL payload PTX must parse");
+            }
+        }
+    }
+
+    #[test]
+    fn sass_lifter_fsel_negative_qnan_rejects_unproved_encodings() {
+        for instruction in [
+            "FSEL R17, R9, -QNAN, P3 ;",                          // missing encoding
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xffffffff09117208 */", // register form
+            "FSEL R17, -QNAN, R9, P3 ; /* 0xffffffff09117808 */", // wrong source slot
+            "FSEL R17, R9, -QNAN, P3 ; /* 0x7fc0000009117808 */", // positive NaN
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xff80000009117808 */", // negative infinity
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xff80000109117808 */", // signaling NaN
+            "FSEL R17, R9, -QNAN, P3 ; /* 0xbf80000009117808 */", // finite negative
+            "@P1 FSEL R17, R9, -QNAN, P3 ; /* 0xffffffff09111808 */", // unproved guarded form
+        ] {
+            let result = lift_fsel_fixture(instruction);
+            assert_eq!(
+                result.diagnostics.len(),
+                1,
+                "{instruction}: {:?}",
+                result.diagnostics
+            );
+            assert_eq!(result.diagnostics[0].opcode, "FSEL");
+            assert!(
+                !result.ptx.contains("selp.b32"),
+                "{instruction}: {}",
+                result.ptx
+            );
+        }
+    }
+
+    #[test]
+    fn sass_lifter_fsel_conventional_sources_keep_both_predicates() {
+        for (instruction, expected) in [
+            (
+                "@P1 FSEL R17, R9, R11, P3 ;",
+                "@%p1 selp.b32 %r17, %r9, %r11, %p3;",
+            ),
+            (
+                "@!P1 FSEL R17, R9, R11, !P3 ;",
+                "@!%p1 selp.b32 %r17, %r11, %r9, %p3;",
+            ),
+            (
+                "FSEL R63, RZ, 0x3f800000, P3 ;",
+                "selp.b32 %r63, 0, 1065353216, %p3;",
+            ),
+        ] {
+            let result = lift_fsel_fixture(instruction);
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+            assert!(result.ptx.contains(expected), "{}", result.ptx);
+            ptx_parser::parse_module_checked(&result.ptx)
+                .expect("conventional FSEL PTX must parse");
         }
     }
 
