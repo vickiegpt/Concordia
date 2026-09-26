@@ -609,6 +609,9 @@ impl<'a> LiftContext<'a> {
                 &data_type_suffix(inst, SassDataType::F32),
             )),
             "HFMA2" => Some(hfma2_constant_op(inst, &pred)),
+            "F2FP" if has_modifier(inst, "BF16") => f2fp_bf16_pack_ab_op(inst, &pred).or_else(|| {
+                self.unsupported(inst, "unsupported BF16 PACK_AB modifiers or operand layout")
+            }),
             "F2FP" if has_modifier(inst, "PACK_AB") => Some(f2fp_pack_ab_op(inst, &pred)),
             "F2FP" => self.unsupported(inst, "F2FP sub-operation lifting is not implemented"),
             "HADD2" => Some(hadd2_op(inst, &pred, self.scratch_gpr.as_deref())),
@@ -640,6 +643,8 @@ impl<'a> LiftContext<'a> {
             "ATOMG" | "ATOMS" => Some(atomic_op(inst, &pred)),
             "IDP" if is_idp_4a_s8_s8(inst) => Some(idp_4a_s8_s8_op(inst, &pred)),
             "IDP" => self.unsupported(inst, "integer dot-product mode lifting is not implemented"),
+            "FSETP" if has_modifier(inst, "GEU") && !is_supported_fsetp_geu(inst) =>
+                self.unsupported(inst, "FSETP.GEU requires AND, discarded second result, PT input and plain FP32 registers"),
             "ISETP" | "FSETP" => Some(setp_op(
                 inst,
                 &pred,
@@ -1196,6 +1201,72 @@ fn hfma2_constant_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     format!("{}mov.b32 {}, 0x{:08x};", pred, dst, bits)
 }
 
+fn plain_f32_register(operand: &SassOperand) -> bool {
+    matches!(operand, SassOperand::Register(reg)
+        if reg.component.is_none()
+            && ((reg.prefix == "R" && !reg.is_zero && reg.number < 255)
+                || reg.prefix == "RZ"))
+}
+
+fn f2fp_bf16_pack_ab_op(inst: &EnhancedSassInstruction, pred: &str) -> Option<String> {
+    // These four forms are independently reproducible with NVIDIA ptxas:
+    // RN/RZ, each with or without RELU. Other modes are not silently rounded RN.
+    if !has_modifier(inst, "F32")
+        || !has_modifier(inst, "PACK_AB")
+        || inst.modifiers.iter().any(|m| {
+            !matches!(
+                m.to_ascii_uppercase().as_str(),
+                "BF16" | "F32" | "PACK_AB" | "RZ" | "RELU"
+            )
+        })
+        || inst.dest_operands.len() != 1
+        || inst.src_operands.len() != 2
+    {
+        return None;
+    }
+    let dst = &inst.dest_operands[0];
+    if !plain_f32_register(dst)
+        || is_zero_register_operand(dst)
+        || !inst.src_operands.iter().all(plain_f32_register)
+    {
+        return None;
+    }
+    let rounding = if has_modifier(inst, "RZ") { "rz" } else { "rn" };
+    let relu = if has_modifier(inst, "RELU") {
+        ".relu"
+    } else {
+        ""
+    };
+    Some(format!(
+        "{}cvt.{}{}.bf16x2.f32 {}, {}, {};",
+        pred,
+        rounding,
+        relu,
+        format_operand(dst),
+        format_f32_pack_operand(&inst.src_operands[0]),
+        format_f32_pack_operand(&inst.src_operands[1])
+    ))
+}
+
+fn is_supported_fsetp_geu(inst: &EnhancedSassInstruction) -> bool {
+    // A plain PT second result is discarded; AND PT leaves the comparison
+    // unchanged. Dynamic boolean inputs, FTZ and a live second result require
+    // additional semantics that this text-lifter path does not implement.
+    inst.dest_operands.len() == 1
+        && matches!(&inst.dest_operands[0], SassOperand::Register(reg)
+            if reg.prefix == "P" && reg.number < 7 && reg.component.is_none())
+        && inst.src_operands.len() == 4
+        && is_pt_register_operand(&inst.src_operands[0])
+        && plain_f32_register(&inst.src_operands[1])
+        && plain_f32_register(&inst.src_operands[2])
+        && is_pt_register_operand(&inst.src_operands[3])
+        && has_modifier(inst, "AND")
+        && inst
+            .modifiers
+            .iter()
+            .all(|m| matches!(m.to_ascii_uppercase().as_str(), "GEU" | "AND"))
+}
+
 fn f2fp_pack_ab_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
     let dst = dest_operand(inst).unwrap_or_else(|| "%r0".to_string());
     let src0 = inst
@@ -1208,15 +1279,7 @@ fn f2fp_pack_ab_op(inst: &EnhancedSassInstruction, pred: &str) -> String {
         .get(1)
         .map(format_f32_pack_operand)
         .unwrap_or_else(|| "0f00000000".to_string());
-    let packed_type = if has_modifier(inst, "BF16") {
-        "bf16x2"
-    } else {
-        "f16x2"
-    };
-    format!(
-        "{}cvt.rn.{}.f32 {}, {}, {};",
-        pred, packed_type, dst, src0, src1
-    )
+    format!("{}cvt.rn.f16x2.f32 {}, {}, {};", pred, dst, src0, src1)
 }
 
 fn hadd2_op(inst: &EnhancedSassInstruction, pred: &str, scratch_gpr: Option<&str>) -> String {
@@ -4407,3 +4470,7 @@ Function : kernel
         assert!(result.ptx.contains("mul.rn.f16x2 %r7, %r14, %r7;"));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/geu_bf16.rs"]
+mod geu_bf16_tests;
