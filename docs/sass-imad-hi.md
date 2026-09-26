@@ -20,7 +20,7 @@ Supported text operands:
 - Product sources: plain GPRs, RZ, or unsigned 32-bit immediates.
 - Addend: RZ or an aligned real GPR pair starting at R0–R252.
 
-Other types, extra modifiers/carry inputs, missing operands, constants,
+Other types, extra modifiers/carry inputs, missing operands, constant-bank operands,
 negation/absolute/component modifiers, uniform pairs, immediate addends,
 and pairs crossing the real-register boundary produce diagnostics.
 No operand is silently dropped or replaced by a zero.
