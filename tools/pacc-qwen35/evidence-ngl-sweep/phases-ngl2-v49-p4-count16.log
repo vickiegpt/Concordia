@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/srv/lanxin/qwen35-a3b/bin/bench-qwen-requests.py", line 81, in <module>
+    raise RuntimeError(f'server exited {server.returncode}')
+RuntimeError: server exited -6

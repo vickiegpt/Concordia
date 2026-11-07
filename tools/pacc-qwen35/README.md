@@ -153,3 +153,30 @@ fast-math. No current throughput improvement is established for JIT O3 alone.
 
 See `docs/pacc-xm-compiler-options-20261107.md` and
 `evidence-compiler-options/` for the measured comparisons and limitations.
+
+## Increasing offload depth
+
+The fifth argument to `run-xm-qwen-benchmark.sh` is now `ngl` (default 1).
+The Python harness also accepts `--ngl`, records it in the result, refuses
+to overwrite prior runs, and saves failure results with null TPS. Its bounded
+startup/request timeouts can be set with `--startup-timeout` and
+`--request-timeout`. CPU mode always selects ngl=0 and `--device none`.
+
+```sh
+bash bin/run-xm-qwen-benchmark.sh ngl2-check 0x20031 4 count16 2
+bash bin/run-xm-qwen-benchmark.sh ngl3-check 0x20031 4 count16 3
+```
+
+These larger depths are experiments, not validated working configurations.
+Both currently fail before readiness: a Q8_0 x Q8_1 MMVQ takes the generic
+ELF path and needs 23,549,120 bytes against the 2,097,152-byte owned payload.
+The Q6_K-only native tiled interception does not cover this type. Do not
+increase the advertised shared size beyond the actual allocation or enable
+success-on-error. Real Q8 tiling/ABI and numerical validation are required.
+
+The fixed expected job count applies only to ngl=1. Other depths still require
+correct tokens, successful process exit, firmware build matching, complete
+observed job-5 phase sets and no ring-index gaps, but have no established total
+job count. The profiler tracks job-5 compute phases, not all kernel types;
+zero job-5 completions does not imply no other device work executed.
+See `docs/pacc-qwen-ngl-sweep-20261107.md` and `evidence-ngl-sweep/`.

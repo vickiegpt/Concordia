@@ -1,0 +1,177 @@
+[
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/phases-ngl1-v49-regression-p4-count16.json",
+    "size": 58510083,
+    "sha256": "858061f252efd41c40c38d0faa0dffe94cabe8fb75336c1dd8d026aad1d68f05"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/phases-ngl1-v49-regression-p4-count16.log",
+    "size": 854,
+    "sha256": "7826f5586804d2daece5477d65221cfb8cbee54507f386beef4df436d0bd003e"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/phases-ngl2-v49-p4-count16.json",
+    "size": 238750,
+    "sha256": "4ae627856f6b9baeb988b1068a493d186c9fd607ef9b71648b0e06fed39723cc"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/phases-ngl2-v49-p4-count16.log",
+    "size": 208,
+    "sha256": "d97cc2ab91e82fff9298d25e392c90c6d8fdde19a1e5405b8d83f57764de646b"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/phases-ngl3-v49-p4-count16.json",
+    "size": 279145,
+    "sha256": "7e896d051a7f939296abbb7adf54664ee989c4d825d3f3487ba2ccf330a4fb13"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/phases-ngl3-v49-p4-count16.log",
+    "size": 208,
+    "sha256": "d97cc2ab91e82fff9298d25e392c90c6d8fdde19a1e5405b8d83f57764de646b"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/ngl1-v49-regression-p4-count16.json",
+    "size": 6707,
+    "sha256": "316fedbb2925192958d301f61a015475d4be45c5686660edc14220a8a3dd2331"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/ngl1-v49-regression-p4-count16.server.log",
+    "size": 1252024,
+    "sha256": "9833c03386af6e8fd12212aec1366ceeea57f524bf93b421b3b07c843ee858fe"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/lx500_pacc_qwen35_pacc0_v49_vlen1024.bin",
+    "size": 31716408,
+    "sha256": "5d2b98105f48811be216adfeba6edc5e5ea546e299473b489dded2d03b3fc0a3"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/lx500_pacc_qwen35_pacc0_v49_vlen1024.bin.json",
+    "size": 16195,
+    "sha256": "71674cf4c65f6ff56dc755f48c1a52b329d6c862927f1ec5fba46b7cdd510945"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/hetgpu_pacc_jobd.c",
+    "size": 622975,
+    "sha256": "2d467620cbaf853259c0d6c39a9d2df16b6b06a920c1afa611a2cfd477954560"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/q6k-batch-xm.c",
+    "size": 9698,
+    "sha256": "4cca7d66130e139e7fd7af181b900c6a1d7e3376f47aef15b2dfbefa4ce46874"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/q6k-xm-workers.c",
+    "size": 3852,
+    "sha256": "b5cde2c273a75fe74a8a5ce04780a6816c553ed55ef150560e7ca14738fde930"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/q6k-xm-profile.h",
+    "size": 285,
+    "sha256": "80e9d239191bb23840739f5f89b3c45d88c768826e7c45d73ffa04c1099cf597"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/payload-copy-rvv.c",
+    "size": 971,
+    "sha256": "d57b1de3f3460dfd5f9aaad3672a0f365233dfd4937893645af74ece205bd56b"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/xsfmm_native_bf16.c",
+    "size": 3416,
+    "sha256": "3020f4f9d466ab4eb0ec319e1fbb142b7653bd264bb1db70b8dc9b4e01431f47"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/build-xm-batch-jobd.sh",
+    "size": 4881,
+    "sha256": "99e8a02f8ab9b257575f253150078f8005f996b035cb837b4754e577aca7feba"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/bench-qwen-requests.py",
+    "size": 6397,
+    "sha256": "a24407cf9dd5c4348d8b5f7bf855e7222eb6f4761506291ce0ce20cb53b96753"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/run-xm-qwen-benchmark.sh",
+    "size": 1747,
+    "sha256": "e4656c52b49a72c36f6f17963e37bbc4bdd07a1118dd9efade58a43b0a3a0fd0"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/profile-jobd-phases.py",
+    "size": 8071,
+    "sha256": "aa4b6e5cdc7d363c16138ab18d8cfb5aa566c9946b88e98146f667197504ba42"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/run-xm-validation.sh",
+    "size": 1163,
+    "sha256": "935795941a43e61234ed874286fba1c8adbaf78a5fb1227cfe6f728ef9417556"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/summarize-xm-detail.py",
+    "size": 2114,
+    "sha256": "c1934c2c5e6c1c683b2fad925ef0823433b52759bf6e2a989e7a8bbbdf3b2f34"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/summarize-jobd-phases.py",
+    "size": 2173,
+    "sha256": "dacda09b315307214bd05e4e828590237a12cf92c981ea7214ce47bfffdf063f"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/collect-xm-performance-evidence.py",
+    "size": 3860,
+    "sha256": "7130c9d4c81fa761d540aba2c38274db89ffea8ddae4e53f6b124cdc7868876b"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/test-payload-copy.c",
+    "size": 1643,
+    "sha256": "8f6d3edd077569c8d81a85755014e59935478ce7a57680f60daa0d3917d074e4"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/test-xm-reject.c",
+    "size": 1467,
+    "sha256": "1832cefba4645380f76dd0d73fccad49c107ba4f4c040cc510e6b6527c769528"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/test_jobd_q6k.c",
+    "size": 5051,
+    "sha256": "4a1c88224be86944eecb06199749cfb565dcbb26b7b13527b6a258c18f0bcdf3"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/hetgpu_pacc_jobd_v46_xm_reduce",
+    "size": 986584,
+    "sha256": "4f1ae08702fd67e2da9c351e36672a8af35b5509d9c314e95ecba209c04ebd16"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/ngl2-v49-p4-count16.json",
+    "size": 700,
+    "sha256": "3db0b5df13f862078fe6857fc829d395f3bf227e0078f7c99dca1b1463cdd945"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/ngl3-v49-p4-count16.json",
+    "size": 700,
+    "sha256": "e96c6b5db6d35ab65ae98a0ba4487b7c2145e9a4a54721c5ec490dbd649addee"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/ngl2-v49-p4-count16.server.log",
+    "size": 39435,
+    "sha256": "33198512887214b5cb662eaf10f5b4adbe040e65d2e0292668530e80b5ed162f"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/ngl3-v49-p4-count16.server.log",
+    "size": 41570,
+    "sha256": "82ddc4bcf3db15792383b60d4a1149d60ee77b5855058e5fd6c4f2eb7c5487c5"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/hetgpu_pacc_jobd_v49_vlen1024",
+    "size": 1003064,
+    "sha256": "1eb88c3bf9cd6a0ea717698bf94e03d54187b9e3ea63cd65016e0c827a51ea33"
+  },
+  {
+    "path": "/home/ubuntu/Concordia/zluda/src/impl/function.rs",
+    "size": 685016,
+    "sha256": "b50ddd8607b4f7810e45c83754889249e1d6ecc6d02ecabcc2f1f94ba7b3f5c2"
+  },
+  {
+    "path": "/home/ubuntu/Concordia/ext/sifive_runtime-sys/src/lib.rs",
+    "size": 523176,
+    "sha256": "0699f0586f697603aa43b932e6809c74c0cd15f1d13897e8ec224a1af16631df"
+  }
+]

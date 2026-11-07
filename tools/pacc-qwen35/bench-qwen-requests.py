@@ -13,18 +13,28 @@ import urllib.request
 p = argparse.ArgumentParser()
 p.add_argument('--mode', choices=['cpu', 'pacc'], required=True)
 p.add_argument('--parallel', type=int, default=4)
+p.add_argument('--ngl', type=int, default=1)
+p.add_argument('--request-timeout', type=float, default=600)
+p.add_argument('--startup-timeout', type=float, default=300)
 p.add_argument('--prefix', required=True)
 p.add_argument('--workload', choices=['arithmetic', 'count16', 'count64'], default='arithmetic')
 args = p.parse_args()
 if not 1 <= args.parallel <= 8:
     p.error('initial validated batch range is 1..8')
+if args.ngl < 0:
+    p.error('ngl must be nonnegative')
+if not 0 < args.request_timeout <= 900 or not 0 < args.startup_timeout <= 900:
+    p.error('timeouts must be in (0, 900] seconds')
+ngl = args.ngl if args.mode == 'pacc' else 0
+if Path(args.prefix+'.json').exists() or Path(args.prefix+'.server.log').exists():
+    p.error('refusing to overwrite an existing benchmark')
 root = Path('/srv/lanxin/qwen35-a3b')
 with socket.socket() as sock:
     sock.bind(('127.0.0.1', 0))
     port = sock.getsockname()[1]
 command = [str(root/'llama.cpp/build-pacc-cuda-gcc14/bin/llama-server'),
            '-m',str(root/'models/Qwen3.5-35B-A3B-Q4_K_M.gguf'),
-           '-ngl','1' if args.mode=='pacc' else '0', '-np',str(args.parallel),
+           '-ngl',str(ngl), '-np',str(args.parallel),
            '-c',str(256*args.parallel), '-b','256','-ub',str(args.parallel),
            '-t','8','-tb','8','-fa','off','--no-warmup','--host','127.0.0.1',
            '--port',str(port),'--chat-template-kwargs','{"enable_thinking":false}']
@@ -48,7 +58,7 @@ def request(i):
           data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
     barrier.wait(timeout=30)
     started = time.perf_counter()
-    with urllib.request.urlopen(req,timeout=600) as response:
+    with urllib.request.urlopen(req,timeout=args.request_timeout) as response:
         data = json.load(response)
     finished = time.perf_counter()
     text = data['choices'][0]['message']['content'].strip()
@@ -65,7 +75,7 @@ def request(i):
 with open(args.prefix+'.server.log','w') as log:
     server = subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT)
     try:
-        deadline = time.monotonic()+300
+        deadline = time.monotonic()+args.startup_timeout
         while True:
             if server.poll() is not None:
                 raise RuntimeError(f'server exited {server.returncode}')
@@ -83,7 +93,7 @@ with open(args.prefix+'.server.log','w') as log:
         wall = max(r['finish'] for r in results)-min(r['start'] for r in results)
         tokens = sum(r['completion_tokens'] for r in results)
         correct = all(r['correct'] for r in results)
-        report = {'mode':args.mode,'parallel':args.parallel,'batch':256,'ubatch':args.parallel,
+        report = {'mode':args.mode,'ngl':ngl,'parallel':args.parallel,'batch':256,'ubatch':args.parallel,
                   'command':command,
                   'workload':args.workload,
                   'all_correct':correct,'wall_s':wall,'completion_tokens':tokens,
@@ -94,6 +104,17 @@ with open(args.prefix+'.server.log','w') as log:
         print(json.dumps({k:v for k,v in report.items() if k!='requests'},indent=2),flush=True)
         if not correct:
             raise RuntimeError('Incorrect response: aggregate TPS rejected')
+    except Exception as exc:
+        # Preserve incorrect-response reports; record startup/transport failures too.
+        if not Path(args.prefix+'.json').exists():
+            Path(args.prefix+'.json').write_text(json.dumps({
+                'mode':args.mode, 'ngl':ngl, 'parallel':args.parallel,
+                'batch':256, 'ubatch':args.parallel, 'command':command,
+                'workload':args.workload, 'all_correct':False,
+                'aggregate_output_tps':None, 'error':str(exc),
+                'server_returncode':server.poll(),
+            }, indent=2)+'\n')
+        raise
     finally:
         server.terminate()
         try:

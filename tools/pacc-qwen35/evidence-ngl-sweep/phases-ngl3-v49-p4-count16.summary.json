@@ -1,0 +1,39 @@
+{
+  "command": [
+    "python3",
+    "bin/bench-qwen-requests.py",
+    "--mode",
+    "pacc",
+    "--parallel",
+    "4",
+    "--workload",
+    "count16",
+    "--ngl",
+    "3",
+    "--prefix",
+    "/srv/lanxin/qwen35-a3b/logs/ngl3-v49-p4-count16"
+  ],
+  "returncode": 1,
+  "timed_out": false,
+  "sample_ms": 1.0,
+  "max_sample_gap_ms": 3.2480630034115165,
+  "recent_event_limit": 768,
+  "complete_submissions": 0,
+  "incomplete_submissions": {},
+  "observed_index_gaps": [],
+  "phases_us": {},
+  "capabilities": {},
+  "limitations": [
+    "Double-read stability is not a source-side atomic snapshot guarantee.",
+    "Completion publish excludes subsequent diagnostic writes.",
+    "Host/device elapsed differences include dispatch and polling, not IRQ alone."
+  ],
+  "expected_submissions": null,
+  "expected_count_matches": false,
+  "build_matches": true,
+  "capture_valid": false,
+  "build_values": [],
+  "capability_events": [],
+  "source_sha256": "7e896d051a7f939296abbb7adf54664ee989c4d825d3f3487ba2ccf330a4fb13",
+  "diagnostic_coverage": "incomplete; do not use as a complete timing breakdown"
+}
