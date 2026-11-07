@@ -31,6 +31,12 @@
 #include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
+#ifdef HETGPU_PACC_Q6K_XM_BATCH
+#include "q6k-xm-profile.h"
+#ifndef HETGPU_PACC_XM_BUILD_ID
+#define HETGPU_PACC_XM_BUILD_ID 0x20027
+#endif
+#endif
 #ifdef HETGPU_PACC_XM_CONFIG_PROBE
 #include "xm-config-probe.h"
 #endif
@@ -1493,6 +1499,17 @@ static void log_msg(const char *fmt, ...) {
     va_end(ap);
 }
 
+static void dispatch_log_msg(const char *fmt, ...) {
+    va_list ap;
+#ifdef HETGPU_PACC_QUIET_DISPATCH
+    if (!env_flag_true(getenv("HETGPU_PACC_JOBD_DISPATCH_LOG"))) return;
+#endif
+    if (!jobd_log_enabled()) return;
+    va_start(ap, fmt);
+    emit_msg(fmt, ap);
+    va_end(ap);
+}
+
 static int jobd_enable_xsfmm_context(void) {
 #if defined(HETGPU_PACC_HAVE_XSFMM_BF16)
     cpu_set_t set;
@@ -2259,7 +2276,13 @@ static int read_phys_mmap_copy(int fd, uint64_t phys, size_t len, uint8_t **out)
         unmap_phys(&map);
         return (int)0xffff5e04u;
     }
-    memcpy(buf, map.ptr, len);
+#ifdef HETGPU_PACC_RVV_PAYLOAD_COPY
+    if (phys_is_shared_ddr(phys, len) && phys-g_ddr_info.ddr_base >= 0x200000u) {
+        extern void pacc_payload_copy_rvv(void *, const void *, size_t);
+        pacc_payload_copy_rvv(buf, map.ptr, len);
+    } else
+#endif
+        memcpy(buf, map.ptr, len);
     jobd_io_fence();
     unmap_phys(&map);
     *out = buf;
@@ -8878,7 +8901,7 @@ static int run_mmvf(int fd, const struct MmvfJob *job, uint64_t seq) {
     g_mmvf_timing.seq = seq;
     g_mmvf_timing.start_us = monotonic_us();
 #ifdef HETGPU_PACC_Q6K_XM_BATCH
-    mirror_diag_event(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5330, 0x20026);
+    mirror_diag_event(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5330, HETGPU_PACC_XM_BUILD_ID);
 #elif defined(HETGPU_PACC_Q6K_RVV_BATCH)
     mirror_diag_event(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5330, 0x10025);
 #else
@@ -8970,6 +8993,18 @@ static int run_mmvf(int fd, const struct MmvfJob *job, uint64_t seq) {
         ? run_q6k_q8_1(job, mx.ptr, my.ptr, (float *)md.ptr)
         : run_mmvf_ctx(&ctx, job->x_bytes, job->y_bytes, "MMVF");
     g_mmvf_timing.compute_us = monotonic_us() - phase_start;
+#ifdef HETGPU_PACC_Q6K_XM_BATCH
+    if (job->x_type == 5) {
+        const uint64_t timings[] = {q6k_xm_profile.activation, q6k_xm_profile.weights,
+                                   q6k_xm_profile.matrix, q6k_xm_profile.reduce};
+        for (unsigned i = 0; i < 4; ++i)
+            mirror_diag_event(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5500+i,
+                              timings[i]/1000 > UINT32_MAX ? UINT32_MAX : (uint32_t)(timings[i]/1000));
+        mirror_diag_event(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5504,
+                          q6k_xm_profile.calls > UINT32_MAX ? UINT32_MAX : (uint32_t)q6k_xm_profile.calls);
+        mirror_diag_event(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5505, q6k_xm_profile.workers);
+    }
+#endif
     mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, status == 0 ? 0x5143 : (uint32_t)status);
     phase_start = monotonic_us();
     if (status == 0) {
@@ -13787,7 +13822,7 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
     ctl->status = 1;
     __sync_synchronize();
     mirror_diag_progress_status(fd, job_id, seq, 0x510e);
-    log_msg("new doorbell: job_id=%u/%s seq=%" PRIu64,
+    dispatch_log_msg("new doorbell: job_id=%u/%s seq=%" PRIu64,
             job_id, job_name(job_id), seq);
     trace_msg("new doorbell: job_id=%u/%s seq=%" PRIu64,
               job_id, job_name(job_id), seq);
@@ -13813,7 +13848,7 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
             g_preloaded_completion_status = 0;
             write_jobd_beacon(fd, job_id, seq, 0x511f, 0);
             g_response_irq_pending = true;
-            log_msg("preloaded noop complete: job_id=%u/%s seq=%" PRIu64,
+            dispatch_log_msg("preloaded noop complete: job_id=%u/%s seq=%" PRIu64,
                     job_id, job_name(job_id), seq);
             trace_msg("preloaded noop complete: job_id=%u/%s seq=%" PRIu64,
                       job_id, job_name(job_id), seq);
@@ -13855,7 +13890,7 @@ static enum DispatchPollResult maybe_dispatch_preloaded_job(
         g_preloaded_completion_seq = seq;
         g_preloaded_completion_status = (uint32_t)status;
         g_response_irq_pending = true;
-        log_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+        (status ? log_msg : dispatch_log_msg)("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
                 job_id, job_name(job_id), seq, (uint32_t)status);
         trace_msg("dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
                   job_id, job_name(job_id), seq, (uint32_t)status);
@@ -14070,7 +14105,7 @@ static enum DispatchPollResult maybe_dispatch_arg_slot_job(
     ctl->seq = header.seq;
     jobd_io_fence();
 
-    log_msg("arg-slot dispatch recovery: job_id=%u/%s seq=%" PRIu64
+    dispatch_log_msg("arg-slot dispatch recovery: job_id=%u/%s seq=%" PRIu64
             " arg_len=%" PRIu64,
             header.job_id, job_name(header.job_id), header.seq, header.arg_len);
     trace_msg("arg-slot dispatch recovery: job_id=%u/%s seq=%" PRIu64
@@ -14111,7 +14146,7 @@ static enum DispatchPollResult maybe_dispatch_arg_slot_job(
         g_preloaded_completion_seq = header.seq;
         g_preloaded_completion_status = (uint32_t)status;
         g_response_irq_pending = true;
-        log_msg("arg-slot dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
+        (status ? log_msg : dispatch_log_msg)("arg-slot dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
                 header.job_id, job_name(header.job_id), header.seq, (uint32_t)status);
         trace_msg("arg-slot dispatch done: job_id=%u/%s seq=%" PRIu64 " status=0x%x",
                   header.job_id, job_name(header.job_id), header.seq, (uint32_t)status);
@@ -15721,6 +15756,7 @@ int main(int argc, char **argv) {
         }
         write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, initial_seq, 0x6ac0, initial_detail);
     }
+    uint64_t hot_scan_until = 0;
     for (;;) {
         enum DispatchPollResult poll_result;
         volatile struct Doorbell *dispatch_ctl = ctl;
@@ -15730,6 +15766,9 @@ int main(int argc, char **argv) {
 
         poll_result = maybe_dispatch_gemm_arg_slot_direct(map_fd, &last_seq);
         if (poll_result == DISPATCH_HANDLED) {
+#ifdef HETGPU_PACC_HOT_SCAN_US
+            hot_scan_until = monotonic_us() + HETGPU_PACC_HOT_SCAN_US;
+#endif
             write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
                               0x7007, (uint32_t)poll_result);
             continue;
@@ -15741,6 +15780,9 @@ int main(int argc, char **argv) {
                                                   &last_seq,
                                                   &last_table_seq);
         if (poll_result == DISPATCH_HANDLED) {
+#ifdef HETGPU_PACC_HOT_SCAN_US
+            hot_scan_until = monotonic_us() + HETGPU_PACC_HOT_SCAN_US;
+#endif
             write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
                               0x7007, (uint32_t)poll_result);
             continue;
@@ -15748,7 +15790,7 @@ int main(int argc, char **argv) {
         if (jobd_skip_irq_poll_enabled()) {
             write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
                               0x70a0, 0);
-            sleep_when_idle();
+            if (monotonic_us() >= hot_scan_until) sleep_when_idle();
             continue;
         }
 
@@ -15779,7 +15821,7 @@ int main(int argc, char **argv) {
                               g_preloaded_completion_seq,
                               g_preloaded_completion_status == 0 ? 0x511b : g_preloaded_completion_status,
                               g_preloaded_completion_status);
-            sleep_when_idle();
+            if (monotonic_us() >= hot_scan_until) sleep_when_idle();
             continue;
         }
         if (g_kernel_completion_beacon_sticky && !pending_job) {
@@ -15792,7 +15834,7 @@ int main(int argc, char **argv) {
                               g_kernel_completion_beacon_seq,
                               g_kernel_completion_beacon_status == 0 ? 0x511b : g_kernel_completion_beacon_status,
                               g_kernel_completion_beacon_status == 0 ? 0 : g_kernel_completion_beacon_status);
-            sleep_when_idle();
+            if (monotonic_us() >= hot_scan_until) sleep_when_idle();
             continue;
         }
         mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7001);
@@ -15837,7 +15879,7 @@ after_response_irq:
 
             while (!pending_job && monotonic_us() < deadline) {
                 jobd_io_fence();
-                if (sleep_step != 0) {
+                if (sleep_step != 0 && monotonic_us() >= hot_scan_until) {
                     sleep_us(sleep_step);
                 }
                 pending_job = control_has_pending_job(map_fd, last_seq, last_kernel_seq);
@@ -15852,7 +15894,8 @@ after_response_irq:
                                   (uint32_t)(scans & 0xffffffffu));
             }
         }
-        if (jobd_wait_for_control_enabled() && jobd_mbox_poll_enabled() && !pending_job) {
+        if (jobd_wait_for_control_enabled() && jobd_mbox_poll_enabled() && !pending_job &&
+            monotonic_us() >= hot_scan_until) {
             woke_from_poll = wait_for_control(mbox_fd);
             mirror_progress_status(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7003);
             write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq, 0x7003, 0);
@@ -15950,8 +15993,11 @@ after_response_irq:
         write_jobd_beacon(map_fd, PACC_KERNEL_JOB_ID, last_kernel_seq,
                           0x7007, (uint32_t)poll_result);
         if (poll_result == DISPATCH_HANDLED) {
+#ifdef HETGPU_PACC_HOT_SCAN_US
+            hot_scan_until = monotonic_us() + HETGPU_PACC_HOT_SCAN_US;
+#endif
         } else if (!jobd_mbox_poll_enabled() || woke_from_poll) {
-            sleep_when_idle();
+            if (monotonic_us() >= hot_scan_until) sleep_when_idle();
         }
     }
 }

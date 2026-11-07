@@ -1,0 +1,793 @@
+{
+  "command": [
+    "bin/test_jobd_q6k",
+    "--hardware-large"
+  ],
+  "returncode": 0,
+  "timed_out": false,
+  "complete_submissions": 493,
+  "incomplete_submissions": {},
+  "observed_index_gaps": [],
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 6361,
+      "p50_us": 13,
+      "p99_us": 18,
+      "max_us": 51
+    },
+    "input_copy": {
+      "sum_us": 593416,
+      "p50_us": 1045,
+      "p99_us": 5207,
+      "max_us": 11950
+    },
+    "compute": {
+      "sum_us": 4565507,
+      "p50_us": 9211,
+      "p99_us": 10193,
+      "max_us": 22387
+    },
+    "output_copy": {
+      "sum_us": 26053,
+      "p50_us": 51,
+      "p99_us": 72,
+      "max_us": 343
+    },
+    "cleanup": {
+      "sum_us": 1020,
+      "p50_us": 2,
+      "p99_us": 3,
+      "max_us": 5
+    },
+    "completion_publish": {
+      "sum_us": 2433,
+      "p50_us": 5,
+      "p99_us": 7,
+      "max_us": 7
+    },
+    "device_before_publish": {
+      "sum_us": 5355475,
+      "p50_us": 10487,
+      "p99_us": 20001,
+      "max_us": 65500
+    }
+  },
+  "capabilities": {
+    "0x5320": 2101549,
+    "0x5321": 4,
+    "0x5322": 395017,
+    "0x5323": 1,
+    "0x532b": 63,
+    "0x532c": 64,
+    "0x532d": 64,
+    "0x532e": 54640,
+    "0x532f": 0,
+    "0x5324": 4,
+    "0x5325": 128,
+    "0x5326": 0,
+    "0x5327": 0,
+    "0x5328": 0,
+    "0x5329": 0,
+    "0x532a": 0
+  },
+  "limitations": [
+    "Double-read stability is not a source-side atomic snapshot guarantee.",
+    "Completion publish excludes subsequent diagnostic writes.",
+    "Host/device elapsed differences include dispatch and polling, not IRQ alone."
+  ],
+  "expected_submissions": 493,
+  "expected_count_matches": true,
+  "build_matches": true,
+  "capture_valid": true,
+  "build_values": [
+    131113
+  ],
+  "capability_events": [
+    {
+      "index": 106165,
+      "seq": 7348540947802513409,
+      "status": 21280,
+      "job": 5,
+      "aux": 2101549,
+      "observed_seconds": 0.9746571519935969
+    },
+    {
+      "index": 106166,
+      "seq": 7348540947802513409,
+      "status": 21281,
+      "job": 5,
+      "aux": 4,
+      "observed_seconds": 0.9746571519935969
+    },
+    {
+      "index": 106167,
+      "seq": 7348540947802513409,
+      "status": 21282,
+      "job": 5,
+      "aux": 395017,
+      "observed_seconds": 0.9746571519935969
+    },
+    {
+      "index": 106168,
+      "seq": 7348540947802513409,
+      "status": 21283,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 0.9746571519935969
+    },
+    {
+      "index": 106176,
+      "seq": 7348540947802513409,
+      "status": 21291,
+      "job": 5,
+      "aux": 63,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106177,
+      "seq": 7348540947802513409,
+      "status": 21292,
+      "job": 5,
+      "aux": 64,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106178,
+      "seq": 7348540947802513409,
+      "status": 21293,
+      "job": 5,
+      "aux": 64,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106179,
+      "seq": 7348540947802513409,
+      "status": 21294,
+      "job": 5,
+      "aux": 54640,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106180,
+      "seq": 7348540947802513409,
+      "status": 21295,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106169,
+      "seq": 7348540947802513409,
+      "status": 21284,
+      "job": 5,
+      "aux": 4,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106170,
+      "seq": 7348540947802513409,
+      "status": 21285,
+      "job": 5,
+      "aux": 128,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106171,
+      "seq": 7348540947802513409,
+      "status": 21286,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106172,
+      "seq": 7348540947802513409,
+      "status": 21287,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106173,
+      "seq": 7348540947802513409,
+      "status": 21288,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106174,
+      "seq": 7348540947802513409,
+      "status": 21289,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106175,
+      "seq": 7348540947802513409,
+      "status": 21290,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0330953329976182
+    },
+    {
+      "index": 106181,
+      "seq": 7348540947802513409,
+      "status": 21504,
+      "job": 5,
+      "aux": 6,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106182,
+      "seq": 7348540947802513409,
+      "status": 21505,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106183,
+      "seq": 7348540947802513409,
+      "status": 21506,
+      "job": 5,
+      "aux": 1480,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106184,
+      "seq": 7348540947802513409,
+      "status": 21507,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106185,
+      "seq": 7348540947802513409,
+      "status": 21508,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106186,
+      "seq": 7348540947802513409,
+      "status": 21509,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106187,
+      "seq": 7348540947802513409,
+      "status": 21510,
+      "job": 5,
+      "aux": 67016,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106188,
+      "seq": 7348540947802513409,
+      "status": 21511,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106189,
+      "seq": 7348540947802513409,
+      "status": 21512,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106190,
+      "seq": 7348540947802513409,
+      "status": 21513,
+      "job": 5,
+      "aux": 71112,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106191,
+      "seq": 7348540947802513409,
+      "status": 21514,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106192,
+      "seq": 7348540947802513409,
+      "status": 21515,
+      "job": 5,
+      "aux": 2,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106193,
+      "seq": 7348540947802513409,
+      "status": 21516,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106194,
+      "seq": 7348540947802513409,
+      "status": 21517,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106195,
+      "seq": 7348540947802513409,
+      "status": 21518,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106196,
+      "seq": 7348540947802513409,
+      "status": 21519,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106197,
+      "seq": 7348540947802513409,
+      "status": 21520,
+      "job": 5,
+      "aux": 6,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106198,
+      "seq": 7348540947802513409,
+      "status": 21521,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106199,
+      "seq": 7348540947802513409,
+      "status": 21522,
+      "job": 5,
+      "aux": 1224,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106200,
+      "seq": 7348540947802513409,
+      "status": 21523,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106201,
+      "seq": 7348540947802513409,
+      "status": 21524,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106202,
+      "seq": 7348540947802513409,
+      "status": 21525,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106203,
+      "seq": 7348540947802513409,
+      "status": 21526,
+      "job": 5,
+      "aux": 66760,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106204,
+      "seq": 7348540947802513409,
+      "status": 21527,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106205,
+      "seq": 7348540947802513409,
+      "status": 21528,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106206,
+      "seq": 7348540947802513409,
+      "status": 21529,
+      "job": 5,
+      "aux": 70856,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106207,
+      "seq": 7348540947802513409,
+      "status": 21530,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106208,
+      "seq": 7348540947802513409,
+      "status": 21531,
+      "job": 5,
+      "aux": 2,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106209,
+      "seq": 7348540947802513409,
+      "status": 21532,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106210,
+      "seq": 7348540947802513409,
+      "status": 21533,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106211,
+      "seq": 7348540947802513409,
+      "status": 21534,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106212,
+      "seq": 7348540947802513409,
+      "status": 21535,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106213,
+      "seq": 7348540947802513409,
+      "status": 21536,
+      "job": 5,
+      "aux": 6,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106214,
+      "seq": 7348540947802513409,
+      "status": 21537,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106215,
+      "seq": 7348540947802513409,
+      "status": 21538,
+      "job": 5,
+      "aux": 721,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106216,
+      "seq": 7348540947802513409,
+      "status": 21539,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106217,
+      "seq": 7348540947802513409,
+      "status": 21540,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106218,
+      "seq": 7348540947802513409,
+      "status": 21541,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106219,
+      "seq": 7348540947802513409,
+      "status": 21542,
+      "job": 5,
+      "aux": 66257,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106220,
+      "seq": 7348540947802513409,
+      "status": 21543,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106221,
+      "seq": 7348540947802513409,
+      "status": 21544,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106222,
+      "seq": 7348540947802513409,
+      "status": 21545,
+      "job": 5,
+      "aux": 68305,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106223,
+      "seq": 7348540947802513409,
+      "status": 21546,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106224,
+      "seq": 7348540947802513409,
+      "status": 21547,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106225,
+      "seq": 7348540947802513409,
+      "status": 21548,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106226,
+      "seq": 7348540947802513409,
+      "status": 21549,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106227,
+      "seq": 7348540947802513409,
+      "status": 21550,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106228,
+      "seq": 7348540947802513409,
+      "status": 21551,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106229,
+      "seq": 7348540947802513409,
+      "status": 21552,
+      "job": 5,
+      "aux": 6,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106230,
+      "seq": 7348540947802513409,
+      "status": 21553,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106231,
+      "seq": 7348540947802513409,
+      "status": 21554,
+      "job": 5,
+      "aux": 1728,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106232,
+      "seq": 7348540947802513409,
+      "status": 21555,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106233,
+      "seq": 7348540947802513409,
+      "status": 21556,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106234,
+      "seq": 7348540947802513409,
+      "status": 21557,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106235,
+      "seq": 7348540947802513409,
+      "status": 21558,
+      "job": 5,
+      "aux": 67264,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106236,
+      "seq": 7348540947802513409,
+      "status": 21559,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106237,
+      "seq": 7348540947802513409,
+      "status": 21560,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106238,
+      "seq": 7348540947802513409,
+      "status": 21561,
+      "job": 5,
+      "aux": 71360,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106239,
+      "seq": 7348540947802513409,
+      "status": 21562,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106240,
+      "seq": 7348540947802513409,
+      "status": 21563,
+      "job": 5,
+      "aux": 2,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106241,
+      "seq": 7348540947802513409,
+      "status": 21564,
+      "job": 5,
+      "aux": 1,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106242,
+      "seq": 7348540947802513409,
+      "status": 21565,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106243,
+      "seq": 7348540947802513409,
+      "status": 21566,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106244,
+      "seq": 7348540947802513409,
+      "status": 21567,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106245,
+      "seq": 7348540947802513409,
+      "status": 21568,
+      "job": 5,
+      "aux": 2,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106246,
+      "seq": 7348540947802513409,
+      "status": 21569,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0384435779997148
+    },
+    {
+      "index": 106247,
+      "seq": 7348540947802513409,
+      "status": 21570,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0438820729905274
+    },
+    {
+      "index": 106248,
+      "seq": 7348540947802513409,
+      "status": 21571,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0438820729905274
+    },
+    {
+      "index": 106249,
+      "seq": 7348540947802513409,
+      "status": 21572,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0438820729905274
+    },
+    {
+      "index": 106250,
+      "seq": 7348540947802513409,
+      "status": 21573,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0438820729905274
+    },
+    {
+      "index": 106251,
+      "seq": 7348540947802513409,
+      "status": 21574,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0438820729905274
+    },
+    {
+      "index": 106252,
+      "seq": 7348540947802513409,
+      "status": 21575,
+      "job": 5,
+      "aux": 0,
+      "observed_seconds": 1.0438820729905274
+    }
+  ],
+  "source_sha256": "8c8f1090a30b68683dbf42362d95d4a11d4fa43990b413fe5cb2de554bfea193",
+  "diagnostic_coverage": "complete"
+}

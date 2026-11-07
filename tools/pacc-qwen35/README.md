@@ -1,4 +1,4 @@
-# PACC0 XM context and Qwen35 diagnostic release
+# PACC0 XM context and Qwen35 performance harness
 
 This directory is a reproducible **experiment harness**, not a new production
 default. `hetgpu_pacc_jobd.c` is the exact legacy jobd source used by the running
@@ -28,6 +28,15 @@ are included without the original working tree's unrelated CXL routing edits.
    The XM build returns errors; it does not select RVV or host matmul on failure.
 5. `test-xm-pack-reference.c` is a **host-only test double** for packed layout
    tests. The firmware link command does not include it.
+6. v46 adds RVV operand unpacking and exact scale reduction, aligned RVV copies
+   only inside the owned payload aperture, and four persistent XM workers inside
+   PACC0. This is not four PACC devices. Matrix products still execute on XM.
+7. Routine dispatch console output is disabled in the performance image;
+   errors and the shared-memory diagnostic ring remain enabled. Restore routine
+   output with guest `HETGPU_PACC_JOBD_DISPATCH_LOG=1`. A bounded 2 ms hot-scan
+   window returns to the normal idle policy; host busy polling is not enabled.
+8. `test-xm-reject.c` injects invalid leaf results in a host-only unit test.
+   NaN, infinity, fractional/out-of-range dots and a leaf error fail closed.
 
 ## Deployment constraints
 
@@ -38,7 +47,8 @@ directory. The build uses its existing vendor patcher under
 vendor firmware backup, Clang 20 and libfdt. Test input dequantization uses the
 existing llama.cpp `libggml-base.so`.
 
-`build-xm-batch-jobd.sh` creates v38 and runs host layout tests before linking.
+`build-xm-batch-jobd.sh` creates v46 and runs host layout, fault-injection and
+copy boundary tests before linking. It refuses to overwrite an existing build.
 The resulting image is specific to the pinned 4 MiB allocation at
 `0x2075d000000`. **Do not reuse that address after a host reboot.** The loader
 checks the exact boot ID, owned allocation, image SHA, original firmware SHA,
@@ -50,9 +60,9 @@ deployment; it is not a persistent boot-firmware upgrade.
 ```sh
 python3 bin/test-xm-diagnostics.py
 bash bin/build-xm-batch-jobd.sh
-sudo python3 bin/load-pacc0-v26-dynamic.py --version v38_q6k_xm
+sudo python3 bin/load-pacc0-v26-dynamic.py --version v46_xm_reduce
 # Only after the dry-run checks and a PACC0 maintenance window:
-sudo python3 bin/load-pacc0-v26-dynamic.py --version v38_q6k_xm --apply
+sudo python3 bin/load-pacc0-v26-dynamic.py --version v46_xm_reduce --apply
 ```
 
 For hardware tests, use `source bin/pacc-env.sh`, the verified owned DDR base and
@@ -60,10 +70,10 @@ size, bootstrap=0, and strict completion (ASYNC_NO_WAIT=0, SKIP_JOB_WAIT=0).
 Bootstrap=0 skips an obsolete startup handshake, not job completion.
 
 ```sh
-python3 bin/profile-jobd-phases.py --output logs/xm-validation.json \
-  --timeout 180 --expected-submissions 493 --require-build 0x20026 \
-  -- bin/test_jobd_q6k --hardware-large
-python3 bin/decode-xm-config.py logs/profile-v38-q6k-xm.json
+bash bin/run-xm-validation.sh xm-validation 0x2002e
+bash bin/run-xm-validation.sh xm-worker-tails 0x2002e --hardware-workers
+bash bin/run-xm-qwen-benchmark.sh xm-count16-p4 0x2002e 4 count16
+bash bin/run-xm-qwen-benchmark.sh xm-count64-p8 0x2002e 8 count64
 ```
 
 Capability events occur only on the first MMVF after guest boot, so later
@@ -83,6 +93,9 @@ are emitted on every MMVF. Probe stages, faults and 64-call results are at
   output guards; includes complete 248320x1x2048 output projection.
 - `compute` includes unpacking, BF16 staging, XM leaf calls and scale reduction.
   Do not interpret it as a device matrix-unit busy counter.
+- Detailed 0x5500..0x5503 timings sum worker elapsed time and overlap across
+  workers. Do not add those values to device wall time. 0x5504 counts XM leaf
+  calls and 0x5505 reports the number of workers.
 - Completion publish timing excludes diagnostic publication. The host residual
   includes dispatch, polling, scheduling and diagnostics, not just interrupts.
 - The telemetry reader uses two identical reads, not a source-side atomic
@@ -92,7 +105,12 @@ are emitted on every MMVF. Probe stages, faults and 64-call results are at
   or `max_us` rather than their old small-sample p99 values.
 - Token throughput is accepted only after every response matches the expected
   text. The count16 test is token-capped, not a full answer through ten.
+- count64 requires exactly 64 output tokens, a length stop, and an exact prefix
+  of the requested comma-separated integers. It is a longer single concurrent
+  cohort, not a repeated arrival-rate or saturation benchmark.
 
-The report in `docs/pacc-xm-context-qwen35-20261107.md` records the measured
-results and remaining bottlenecks. Original large raw logs remain under
-`/srv/lanxin/qwen35-a3b/logs`; the evidence manifest hashes them.
+`docs/pacc-xm-context-qwen35-20261107.md` and `evidence/` preserve the original
+v38 measurements. `docs/pacc-xm-performance-qwen35-20261107.md` and
+`evidence-performance/` record
+v39-v46. Original large raw logs remain under `/srv/lanxin/qwen35-a3b/logs`;
+manifests hash them. Do not regenerate the old evidence manifest with new sources.

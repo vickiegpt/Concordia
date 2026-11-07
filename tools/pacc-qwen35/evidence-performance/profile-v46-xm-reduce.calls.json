@@ -1,0 +1,139 @@
+{
+  "source": "logs/profile-v46-xm-reduce.json",
+  "calls": [
+    {
+      "m": 17,
+      "n": 1,
+      "k": 256,
+      "tiles": 1,
+      "elapsed_ms": 790.308,
+      "host_us": {
+        "pack": 4,
+        "write": 28,
+        "submit_wait": 790127,
+        "readback": 34
+      },
+      "device_us": {
+        "dst_prepare": 18,
+        "input_copy": 23,
+        "compute": 89,
+        "output_copy": 16,
+        "cleanup": 3,
+        "completion_publish": 5,
+        "device_before_publish": 65526
+      },
+      "wait_residual_us": 724596
+    },
+    {
+      "m": 1031,
+      "n": 2,
+      "k": 2048,
+      "tiles": 3,
+      "elapsed_ms": 17.862,
+      "host_us": {
+        "pack": 1325,
+        "write": 743,
+        "submit_wait": 15448,
+        "readback": 127
+      },
+      "device_us": {
+        "dst_prepare": 48,
+        "input_copy": 5124,
+        "compute": 6687,
+        "output_copy": 205,
+        "cleanup": 6,
+        "completion_publish": 15,
+        "device_before_publish": 12629
+      },
+      "wait_residual_us": 2804
+    },
+    {
+      "m": 3,
+      "n": 1,
+      "k": 8192,
+      "tiles": 1,
+      "elapsed_ms": 1.632,
+      "host_us": {
+        "pack": 2,
+        "write": 37,
+        "submit_wait": 1521,
+        "readback": 30
+      },
+      "device_us": {
+        "dst_prepare": 8,
+        "input_copy": 51,
+        "compute": 384,
+        "output_copy": 20,
+        "cleanup": 2,
+        "completion_publish": 5,
+        "device_before_publish": 645
+      },
+      "wait_residual_us": 871
+    },
+    {
+      "m": 1031,
+      "n": 8,
+      "k": 2048,
+      "tiles": 3,
+      "elapsed_ms": 15.878,
+      "host_us": {
+        "pack": 798,
+        "write": 698,
+        "submit_wait": 14191,
+        "readback": 138
+      },
+      "device_us": {
+        "dst_prepare": 87,
+        "input_copy": 2244,
+        "compute": 8094,
+        "output_copy": 689,
+        "cleanup": 6,
+        "completion_publish": 15,
+        "device_before_publish": 11679
+      },
+      "wait_residual_us": 2497
+    },
+    {
+      "m": 248320,
+      "n": 1,
+      "k": 2048,
+      "tiles": 485,
+      "elapsed_ms": 2252.206,
+      "host_us": {
+        "pack": 72908,
+        "write": 169969,
+        "submit_wait": 1990756,
+        "readback": 16840
+      },
+      "device_us": {
+        "dst_prepare": 6009,
+        "input_copy": 493902,
+        "compute": 998341,
+        "output_copy": 24885,
+        "cleanup": 1074,
+        "completion_publish": 2354,
+        "device_before_publish": 1614885
+      },
+      "wait_residual_us": 373517
+    }
+  ],
+  "capabilities": {
+    "0x5320": 2101549,
+    "0x5321": 4,
+    "0x5322": 395017,
+    "0x5323": 1,
+    "0x5324": 4,
+    "0x5325": 128,
+    "0x5326": 0,
+    "0x5327": 0,
+    "0x5328": 0,
+    "0x5329": 0,
+    "0x532a": 0,
+    "0x532b": 63,
+    "0x532c": 64,
+    "0x532d": 64,
+    "0x532e": 54597,
+    "0x532f": 0
+  },
+  "limitations": "Residual includes dispatch, host polling and diagnostics; not isolated IRQ latency."
+}

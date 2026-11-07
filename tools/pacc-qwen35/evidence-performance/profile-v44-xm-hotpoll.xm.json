@@ -1,0 +1,19 @@
+{
+  "activation_pack_us": 51523,
+  "weight_unpack_us": 2492257,
+  "xm_leaf_us": 629389,
+  "reduce_us": 1188283,
+  "xm_calls": 1002256,
+  "workers_range": [
+    1,
+    4
+  ],
+  "detail_timing_semantics": "Sum of worker elapsed durations; overlaps when workers > 1. compute_us is serial dispatch wall time.",
+  "source": "logs/profile-v44-xm-hotpoll.json",
+  "jobs": 493,
+  "build_ids": [
+    131116
+  ],
+  "input_copy_us": 536988,
+  "compute_us": 1223923
+}

@@ -1,0 +1,12 @@
+PACC Q6_K profile pack_us=18 write_us=39 submit_wait_us=1867 readback_us=42
+PACC Q6_KxQ8_1 dev=0 m=128 n=3 k=256 tiles=1 elapsed_ms=2.073 completion=verified
+PACC Q6_K profile pack_us=166 write_us=115 submit_wait_us=18133 readback_us=30
+PACC Q6_KxQ8_1 dev=0 m=129 n=5 k=2048 tiles=1 elapsed_ms=18.543 completion=verified
+PACC Q6_K profile pack_us=673 write_us=360 submit_wait_us=12418 readback_us=86
+PACC Q6_KxQ8_1 dev=0 m=513 n=7 k=2048 tiles=2 elapsed_ms=13.753 completion=verified
+PACC Q6_K profile pack_us=145 write_us=119 submit_wait_us=4139 readback_us=26
+PACC Q6_KxQ8_1 dev=0 m=31 n=3 k=8192 tiles=1 elapsed_ms=4.473 completion=verified
+PASS mode=PACC m=128 n=3 k=256 max_abs_error=7.72117637e-05 elapsed_us=2735
+PASS mode=PACC m=129 n=5 k=2048 max_abs_error=0.000494920183 elapsed_us=23811
+PASS mode=PACC m=513 n=7 k=2048 max_abs_error=0.000818398315 elapsed_us=41818
+PASS mode=PACC m=31 n=3 k=8192 max_abs_error=0.00108351884 elapsed_us=7787

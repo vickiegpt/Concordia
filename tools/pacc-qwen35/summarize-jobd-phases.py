@@ -2,16 +2,22 @@
 import json
 from pathlib import Path
 import re
-import sys
+import argparse
 
-for filename in sys.argv[1:]:
+p = argparse.ArgumentParser()
+p.add_argument('captures', nargs='+')
+p.add_argument('--host-log', type=Path)
+args = p.parse_args()
+if args.host_log and len(args.captures) != 1:
+    p.error('--host-log requires exactly one capture')
+for filename in args.captures:
     path = Path(filename)
     data = json.loads(path.read_text())
     rows = [value for key, value in sorted(data['submissions'].items(), key=lambda item: int(item[0]))]
     cursor = 0
     host = None
     calls = []
-    for line in path.with_suffix('.log').read_text().splitlines():
+    for line in (args.host_log or path.with_suffix('.log')).read_text().splitlines():
         match = re.search(r'profile pack_us=(\d+) write_us=(\d+) submit_wait_us=(\d+) readback_us=(\d+)', line)
         if match:
             host = dict(zip(('pack', 'write', 'submit_wait', 'readback'), map(int, match.groups())))

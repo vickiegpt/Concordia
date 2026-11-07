@@ -1,0 +1,19 @@
+{
+  "activation_pack_us": 55561,
+  "weight_unpack_us": 2511461,
+  "xm_leaf_us": 624323,
+  "reduce_us": 1182659,
+  "xm_calls": 1002256,
+  "workers_range": [
+    1,
+    4
+  ],
+  "detail_timing_semantics": "Sum of worker elapsed durations; overlaps when workers > 1. compute_us is serial dispatch wall time.",
+  "source": "logs/profile-v45-xm-quiet.json",
+  "jobs": 493,
+  "build_ids": [
+    131117
+  ],
+  "input_copy_us": 548510,
+  "compute_us": 1190374
+}

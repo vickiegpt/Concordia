@@ -1,0 +1,84 @@
+{
+  "command": [
+    "python3",
+    "bin/bench-qwen-requests.py",
+    "--mode",
+    "pacc",
+    "--parallel",
+    "4",
+    "--workload",
+    "count16",
+    "--prefix",
+    "/srv/lanxin/qwen35-a3b/logs/concurrent-count16-v46-p4"
+  ],
+  "returncode": 0,
+  "timed_out": false,
+  "complete_submissions": 8245,
+  "incomplete_submissions": {},
+  "observed_index_gaps": [
+    [
+      356956,
+      356959
+    ]
+  ],
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 167559,
+      "p50_us": 20,
+      "p99_us": 28,
+      "max_us": 75
+    },
+    "input_copy": {
+      "sum_us": 9089061,
+      "p50_us": 1047,
+      "p99_us": 3226,
+      "max_us": 8190
+    },
+    "compute": {
+      "sum_us": 18596557,
+      "p50_us": 2265,
+      "p99_us": 2353,
+      "max_us": 3423
+    },
+    "output_copy": {
+      "sum_us": 1363534,
+      "p50_us": 172,
+      "p99_us": 197,
+      "max_us": 228
+    },
+    "cleanup": {
+      "sum_us": 16987,
+      "p50_us": 2,
+      "p99_us": 3,
+      "max_us": 6
+    },
+    "completion_publish": {
+      "sum_us": 40482,
+      "p50_us": 5,
+      "p99_us": 6,
+      "max_us": 38
+    },
+    "device_before_publish": {
+      "sum_us": 30796707,
+      "p50_us": 3709,
+      "p99_us": 5844,
+      "max_us": 10877
+    }
+  },
+  "capabilities": {},
+  "limitations": [
+    "Double-read stability is not a source-side atomic snapshot guarantee.",
+    "Completion publish excludes subsequent diagnostic writes.",
+    "Host/device elapsed differences include dispatch and polling, not IRQ alone."
+  ],
+  "expected_submissions": 8245,
+  "expected_count_matches": true,
+  "build_matches": true,
+  "capture_valid": true,
+  "build_values": [
+    131118
+  ],
+  "capability_events": [],
+  "source_sha256": "3f9ed68fdec3334634fee0d3fbf292074cc2f9d0e7a6ab69cac29abe5d71e688",
+  "diagnostic_coverage": "incomplete; do not use as a complete timing breakdown"
+}

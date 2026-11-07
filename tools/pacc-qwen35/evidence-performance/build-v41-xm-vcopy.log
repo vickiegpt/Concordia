@@ -1,0 +1,17 @@
+PASS mode=unit m=17 n=1 k=256 max_abs_error=1.82166696e-05 elapsed_us=80
+PASS mode=unit m=1031 n=2 k=2048 max_abs_error=0.000624079257 elapsed_us=30726
+PASS mode=unit m=3 n=1 k=8192 max_abs_error=0.000831996556 elapsed_us=247
+PASS mode=unit m=1031 n=8 k=2048 max_abs_error=0.000838597771 elapsed_us=95881
+PASS RVV payload copy: 648 alignment/length cases, 514 guard-page tails
+/usr/bin/ld: /tmp/hetgpu_pacc_jobd-3bc515.o: in function `load_kernel_image':
+hetgpu_pacc_jobd.c:(.text+0x1d6a8): warning: Using 'dlopen' in statically linked applications requires at runtime the shared libraries from the glibc version used for linking
+patched outer:home/root/pacc_skl_test: 985640 bytes into 2305208-byte slot
+patched outer:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched outer:etc/skel/.bashrc: 145 bytes into 410-byte slot
+patched inner:home/root/pacc_skl_test: 985640 bytes into 2305208-byte slot
+patched inner:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched inner:etc/skel/.bashrc: 145 bytes into 410-byte slot
+wrote firmware/lx500_pacc_qwen35_pacc0_v41_xm_vcopy_raw.bin (31716408 bytes)
+{"fdt_offset": 126976, "fdt_size": 14213, "changed_offsets": [128109, 128110, 128119, 128120, 128130, 128131, 128142, 128143, 128154, 128155, 128793, 128794, 128803, 128804, 128814, 128815, 128826, 128827, 128838, 128839, 130129, 130130, 130139, 130140, 130150, 130151, 130162, 130163, 130174, 130175, 130813, 130814, 130823, 130824, 130834, 130835, 130846, 130847, 130858, 130859, 132149, 132150, 132159, 132160, 132170, 132171, 132182, 132183, 132194, 132195, 132833, 132834, 132843, 132844, 132854, 132855, 132866, 132867, 132878, 132879, 134169, 134170, 134179, 134180, 134190, 134191, 134202, 134203, 134214, 134215, 134853, 134854, 134863, 134864, 134874, 134875, 134886, 134887, 134898, 134899], "source_sha256": "c9c7015d5ae56945bf823179d0cc4dc1556329149ae689b0e5af80070697170f", "output_sha256": "bfc0ffbe068ec50cec6a1b615ce4f5f3add1114c79c84e8bc0feae01d93ce3d9"}
+bfc0ffbe068ec50cec6a1b615ce4f5f3add1114c79c84e8bc0feae01d93ce3d9  firmware/lx500_pacc_qwen35_pacc0_v41_xm_vcopy.bin
+3d9fe680c688297d6b7b94e9040482ad91bc2d5115973d0cc67441e5f004ef68  bin/hetgpu_pacc_jobd.c

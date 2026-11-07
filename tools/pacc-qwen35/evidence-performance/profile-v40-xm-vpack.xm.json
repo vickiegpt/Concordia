@@ -1,0 +1,14 @@
+{
+  "activation_pack_us": 11840,
+  "weight_unpack_us": 2809101,
+  "xm_leaf_us": 492230,
+  "reduce_us": 1172239,
+  "xm_calls": 1002256,
+  "source": "/srv/lanxin/qwen35-a3b/logs/profile-v40-xm-vpack.json",
+  "jobs": 493,
+  "build_ids": [
+    131112
+  ],
+  "input_copy_us": 5174893,
+  "compute_us": 4569037
+}

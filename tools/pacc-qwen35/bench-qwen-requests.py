@@ -14,7 +14,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--mode', choices=['cpu', 'pacc'], required=True)
 p.add_argument('--parallel', type=int, default=4)
 p.add_argument('--prefix', required=True)
-p.add_argument('--workload', choices=['arithmetic', 'count16'], default='arithmetic')
+p.add_argument('--workload', choices=['arithmetic', 'count16', 'count64'], default='arithmetic')
 args = p.parse_args()
 if not 1 <= args.parallel <= 8:
     p.error('initial validated batch range is 1..8')
@@ -28,6 +28,8 @@ command = [str(root/'llama.cpp/build-pacc-cuda-gcc14/bin/llama-server'),
            '-c',str(256*args.parallel), '-b','256','-ub',str(args.parallel),
            '-t','8','-tb','8','-fa','off','--no-warmup','--host','127.0.0.1',
            '--port',str(port),'--chat-template-kwargs','{"enable_thinking":false}']
+if args.mode == 'cpu':
+    command += ['--device', 'none']
 barrier = threading.Barrier(args.parallel)
 def request(i):
     a, b = i+2, i+3
@@ -36,6 +38,9 @@ def request(i):
     if args.workload == 'count16':
         prompt = 'Write the numbers from one to ten in English, separated by commas. Do not add an explanation.'
         expected, token_limit = 'one, two, three, four, five, six, seven, eight,', 16
+    if args.workload == 'count64':
+        prompt = 'Write the integers from 1 to 100 in ascending order, separated by a comma and a space. Do not add an explanation.'
+        expected, token_limit = ', '.join(str(number) for number in range(1, 101)), 64
     payload = {'messages':[{'role':'user','content':prompt}],
                'max_tokens':token_limit,'temperature':0,'seed':42,'cache_prompt':False,
                'chat_template_kwargs':{'enable_thinking':False}}
@@ -47,8 +52,14 @@ def request(i):
         data = json.load(response)
     finished = time.perf_counter()
     text = data['choices'][0]['message']['content'].strip()
+    correct = text == expected
+    if args.workload == 'count64':
+        # A token-capped answer can stop partway through the next integer.
+        correct = (len(text) >= 32 and expected.startswith(text) and
+                   data['usage']['completion_tokens'] == token_limit and
+                   data['choices'][0]['finish_reason'] == 'length')
     return {'index':i,'start':started,'finish':finished,'latency_s':finished-started,
-            'text':text,'expected':expected,'correct':text==expected,
+            'text':text,'expected':expected,'correct':correct,
             'completion_tokens':data['usage']['completion_tokens'],'response':data}
 
 with open(args.prefix+'.server.log','w') as log:
@@ -73,6 +84,7 @@ with open(args.prefix+'.server.log','w') as log:
         tokens = sum(r['completion_tokens'] for r in results)
         correct = all(r['correct'] for r in results)
         report = {'mode':args.mode,'parallel':args.parallel,'batch':256,'ubatch':args.parallel,
+                  'command':command,
                   'workload':args.workload,
                   'all_correct':correct,'wall_s':wall,'completion_tokens':tokens,
                   'aggregate_output_tps':tokens/wall if correct else None,

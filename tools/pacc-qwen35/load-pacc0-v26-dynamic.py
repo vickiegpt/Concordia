@@ -26,6 +26,14 @@ IMAGES = {
     "v36_isa_alias": "d6d94b15f91082dc7d786962405be0e286a41ec370f3961d4485bd38fd129252",
     "v37_xm_batch": "5f85c7abc8f74e0571ff0621d36ecb8e25ca679645f3e66d2bc8d7989eac7f24",
     "v38_q6k_xm": "45b7b88ca8447bebfc54dae84c1aed3475fe8a50acc3dff9af32fa93e4ce77fe",
+    "v39_xm_profile": "3b722717375edb371ff74d8d00a6c1f2563562565da6f3f46e5fea578f7a460b",
+    "v40_xm_vpack": "91cf12388b48ea3f580c59cefced73d3cb803ead77b7e989acc6cfa37fda4476",
+    "v41_xm_vcopy": "bfc0ffbe068ec50cec6a1b615ce4f5f3add1114c79c84e8bc0feae01d93ce3d9",
+    "v42_xm_fpack": "7b1fc1d306cf5e673a4ca925444f94d68d04b9c32e7a4c1f8521ac8cc5235eda",
+    "v43_xm_workers": "0fe139a38a24b08228fbb30d119d8ce87899f3377997d84fc00eacf3f1efdec5",
+    "v44_xm_hotpoll": "602bb8cb5b4f911803da24a2684b69dc84e20b6999bbd52381d846f0e0146eae",
+    "v45_xm_quiet": "2aaaa8cd60b7c424cec005f29f357eb0be09a1753d5aed8b5e3673c645d92bde",
+    "v46_xm_reduce": "f502ba83c312cbe121cac3cc4144e63815537bb21592f5e84604fc036507bf59",
 }
 
 

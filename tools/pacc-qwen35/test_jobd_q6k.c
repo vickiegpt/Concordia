@@ -16,7 +16,8 @@ static uint32_t next_random(void) {
 
 int main(int argc, char **argv) {
     bool large = argc == 2 && strcmp(argv[1], "--hardware-large") == 0;
-    bool hardware = large || (argc == 2 && strcmp(argv[1], "--hardware") == 0);
+    bool workers = argc == 2 && strcmp(argv[1], "--hardware-workers") == 0;
+    bool hardware = large || workers || (argc == 2 && strcmp(argv[1], "--hardware") == 0);
     const char *ggml_path = getenv("GGML_BASE_LIBRARY");
     if (!ggml_path) ggml_path = "/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so";
     void *ggml = dlopen(ggml_path, RTLD_NOW);
@@ -32,8 +33,10 @@ int main(int argc, char **argv) {
         assert(submit);
     }
     const unsigned shapes[][3] = {{17, 1, 256}, {1031, 2, 2048}, {3, 1, 8192}, {1031, 8, 2048}, {248320, 1, 2048}};
+    const unsigned worker_shapes[][3] = {{128,3,256}, {129,5,2048}, {513,7,2048}, {31,3,8192}};
     for (unsigned test = 0; test < (large ? 5u : 4u); ++test) {
-        unsigned m = shapes[test][0], n = shapes[test][1], k = shapes[test][2];
+        const unsigned *shape = workers ? worker_shapes[test] : shapes[test];
+        unsigned m = shape[0], n = shape[1], k = shape[2];
         size_t xb = k / 256 * 210, yb = k / 32 * 36;
         size_t sx = xb + 16, sy = yb + 16, sd = m + 5;
         uint8_t *x = calloc(m, sx), *y = calloc(n, sy);

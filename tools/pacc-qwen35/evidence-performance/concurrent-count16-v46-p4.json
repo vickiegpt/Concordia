@@ -1,0 +1,198 @@
+{
+  "mode": "pacc",
+  "parallel": 4,
+  "batch": 256,
+  "ubatch": 4,
+  "workload": "count16",
+  "all_correct": true,
+  "wall_s": 61.5326568899909,
+  "completion_tokens": 64,
+  "aggregate_output_tps": 1.0400981078132259,
+  "measurement": "one concurrent cohort; includes request prefill, excludes server startup; short correctness smoke, not capacity benchmark",
+  "requests": [
+    {
+      "index": 0,
+      "start": 135352.685274915,
+      "finish": 135414.216978557,
+      "latency_s": 61.531703641987406,
+      "text": "one, two, three, four, five, six, seven, eight,",
+      "expected": "one, two, three, four, five, six, seven, eight,",
+      "correct": true,
+      "completion_tokens": 16,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "one, two, three, four, five, six, seven, eight,"
+            }
+          }
+        ],
+        "created": 1794078953,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 32,
+          "total_tokens": 48,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-pMUAanhiBTb0oe2L5dZcvZrQWLMYwduw",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 32,
+          "prompt_ms": 17011.599,
+          "prompt_per_token_ms": 531.61246875,
+          "prompt_per_second": 1.8810694985227434,
+          "predicted_n": 16,
+          "predicted_ms": 44514.439,
+          "predicted_per_token_ms": 2967.6292666666664,
+          "predicted_per_second": 0.3369693146082331
+        }
+      }
+    },
+    {
+      "index": 1,
+      "start": 135352.685464597,
+      "finish": 135414.215683528,
+      "latency_s": 61.53021893100231,
+      "text": "one, two, three, four, five, six, seven, eight,",
+      "expected": "one, two, three, four, five, six, seven, eight,",
+      "correct": true,
+      "completion_tokens": 16,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "one, two, three, four, five, six, seven, eight,"
+            }
+          }
+        ],
+        "created": 1794078953,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 32,
+          "total_tokens": 48,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-ZUPUz0sBA8SEMoCT5fTQzqz3skJqSjHL",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 32,
+          "prompt_ms": 17005.633,
+          "prompt_per_token_ms": 531.42603125,
+          "prompt_per_second": 1.8817294245971319,
+          "predicted_n": 16,
+          "predicted_ms": 44518.81,
+          "predicted_per_token_ms": 2967.9206666666664,
+          "predicted_per_second": 0.33693622987676447
+        }
+      }
+    },
+    {
+      "index": 2,
+      "start": 135352.685651348,
+      "finish": 135414.216362963,
+      "latency_s": 61.53071161499247,
+      "text": "one, two, three, four, five, six, seven, eight,",
+      "expected": "one, two, three, four, five, six, seven, eight,",
+      "correct": true,
+      "completion_tokens": 16,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "one, two, three, four, five, six, seven, eight,"
+            }
+          }
+        ],
+        "created": 1794078953,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 32,
+          "total_tokens": 48,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-gmElPVTpYnstB1eyQAoL0O2699dOdvtw",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 32,
+          "prompt_ms": 17008.549,
+          "prompt_per_token_ms": 531.51715625,
+          "prompt_per_second": 1.881406814890559,
+          "predicted_n": 16,
+          "predicted_ms": 44516.712,
+          "predicted_per_token_ms": 2967.7808,
+          "predicted_per_second": 0.33695210913150997
+        }
+      }
+    },
+    {
+      "index": 3,
+      "start": 135352.685059023,
+      "finish": 135414.217715913,
+      "latency_s": 61.5326568899909,
+      "text": "one, two, three, four, five, six, seven, eight,",
+      "expected": "one, two, three, four, five, six, seven, eight,",
+      "correct": true,
+      "completion_tokens": 16,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "one, two, three, four, five, six, seven, eight,"
+            }
+          }
+        ],
+        "created": 1794078953,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 32,
+          "total_tokens": 48,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-YM5LUw0Hs8ldLgSbfKaG32JQUEeSZr19",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 32,
+          "prompt_ms": 17014.399,
+          "prompt_per_token_ms": 531.69996875,
+          "prompt_per_second": 1.8807599375094,
+          "predicted_n": 16,
+          "predicted_ms": 44512.503,
+          "predicted_per_token_ms": 2967.5002,
+          "predicted_per_second": 0.33698397054867935
+        }
+      }
+    }
+  ]
+}

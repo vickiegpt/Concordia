@@ -1,0 +1,412 @@
+{
+  "mode": "cpu",
+  "parallel": 8,
+  "batch": 256,
+  "ubatch": 8,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/llama-server",
+    "-m",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "-ngl",
+    "0",
+    "-np",
+    "8",
+    "-c",
+    "2048",
+    "-b",
+    "256",
+    "-ub",
+    "8",
+    "-t",
+    "8",
+    "-tb",
+    "8",
+    "-fa",
+    "off",
+    "--no-warmup",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "48617",
+    "--chat-template-kwargs",
+    "{\"enable_thinking\":false}",
+    "--device",
+    "none"
+  ],
+  "workload": "count64",
+  "all_correct": true,
+  "wall_s": 60.506874357000925,
+  "completion_tokens": 512,
+  "aggregate_output_tps": 8.46184843360297,
+  "measurement": "one concurrent cohort; includes request prefill, excludes server startup; short correctness smoke, not capacity benchmark",
+  "requests": [
+    {
+      "index": 0,
+      "start": 136235.794838698,
+      "finish": 136296.297646825,
+      "latency_s": 60.5028081269993,
+      "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1",
+      "expected": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100",
+      "correct": true,
+      "completion_tokens": 64,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1"
+            }
+          }
+        ],
+        "created": 1794079835,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 64,
+          "prompt_tokens": 41,
+          "total_tokens": 105,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-Mdz6YKxuazTNJUy9YXOmSF562JWfPz3T",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 41,
+          "prompt_ms": 21808.495,
+          "prompt_per_token_ms": 531.9145121951219,
+          "prompt_per_second": 1.8800013480985276,
+          "predicted_n": 64,
+          "predicted_ms": 38687.314,
+          "predicted_per_token_ms": 614.0843492063492,
+          "predicted_per_second": 1.6284407855246814
+        }
+      }
+    },
+    {
+      "index": 1,
+      "start": 136235.795643704,
+      "finish": 136296.299899471,
+      "latency_s": 60.50425576698035,
+      "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1",
+      "expected": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100",
+      "correct": true,
+      "completion_tokens": 64,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1"
+            }
+          }
+        ],
+        "created": 1794079835,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 64,
+          "prompt_tokens": 41,
+          "total_tokens": 105,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-fOsxxjjXOSWAKh8foBhqnVNFA4cCzT9c",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 41,
+          "prompt_ms": 21817.368,
+          "prompt_per_token_ms": 532.1309268292682,
+          "prompt_per_second": 1.879236762197897,
+          "predicted_n": 64,
+          "predicted_ms": 38680.728,
+          "predicted_per_token_ms": 613.9798095238095,
+          "predicted_per_second": 1.6287180530831786
+        }
+      }
+    },
+    {
+      "index": 2,
+      "start": 136235.795837775,
+      "finish": 136296.298415151,
+      "latency_s": 60.50257737599895,
+      "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1",
+      "expected": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100",
+      "correct": true,
+      "completion_tokens": 64,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1"
+            }
+          }
+        ],
+        "created": 1794079835,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 64,
+          "prompt_tokens": 41,
+          "total_tokens": 105,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-et4WlRiUDFuA0a4oHQPJ1wIWxsNmiRtw",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 41,
+          "prompt_ms": 21811.335,
+          "prompt_per_token_ms": 531.9837804878049,
+          "prompt_per_second": 1.8797565577714523,
+          "predicted_n": 64,
+          "predicted_ms": 38685.247,
+          "predicted_per_token_ms": 614.0515396825398,
+          "predicted_per_second": 1.62852779510494
+        }
+      }
+    },
+    {
+      "index": 3,
+      "start": 136235.795054439,
+      "finish": 136296.29696123,
+      "latency_s": 60.50190679100342,
+      "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1",
+      "expected": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100",
+      "correct": true,
+      "completion_tokens": 64,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1"
+            }
+          }
+        ],
+        "created": 1794079835,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 64,
+          "prompt_tokens": 41,
+          "total_tokens": 105,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-UvXes3En7ijsN2DIklWuGQhGMD1yb83p",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 41,
+          "prompt_ms": 21805.301,
+          "prompt_per_token_ms": 531.8366097560976,
+          "prompt_per_second": 1.880276727205004,
+          "predicted_n": 64,
+          "predicted_ms": 38689.716,
+          "predicted_per_token_ms": 614.1224761904762,
+          "predicted_per_second": 1.6283396859258412
+        }
+      }
+    },
+    {
+      "index": 4,
+      "start": 136235.795242691,
+      "finish": 136296.299085576,
+      "latency_s": 60.50384288499481,
+      "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1",
+      "expected": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100",
+      "correct": true,
+      "completion_tokens": 64,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1"
+            }
+          }
+        ],
+        "created": 1794079835,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 64,
+          "prompt_tokens": 41,
+          "total_tokens": 105,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-5pEzM0T21mw9225zVPEgS8Bi7eWVaPjh",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 41,
+          "prompt_ms": 21814.554,
+          "prompt_per_token_ms": 532.0622926829268,
+          "prompt_per_second": 1.8794791770668333,
+          "predicted_n": 64,
+          "predicted_ms": 38682.784,
+          "predicted_per_token_ms": 614.0124444444444,
+          "predicted_per_second": 1.628631486296333
+        }
+      }
+    },
+    {
+      "index": 5,
+      "start": 136235.796082817,
+      "finish": 136296.300776728,
+      "latency_s": 60.504693911003415,
+      "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1",
+      "expected": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100",
+      "correct": true,
+      "completion_tokens": 64,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1"
+            }
+          }
+        ],
+        "created": 1794079835,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 64,
+          "prompt_tokens": 41,
+          "total_tokens": 105,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-XhPhal3b9LDtvVd0ieDBimxsrZz9RAjC",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 41,
+          "prompt_ms": 21820.178,
+          "prompt_per_token_ms": 532.1994634146341,
+          "prompt_per_second": 1.8789947543049375,
+          "predicted_n": 64,
+          "predicted_ms": 38678.673,
+          "predicted_per_token_ms": 613.9471904761905,
+          "predicted_per_second": 1.6288045869619154
+        }
+      }
+    },
+    {
+      "index": 6,
+      "start": 136235.795439622,
+      "finish": 136296.301494613,
+      "latency_s": 60.506054991012206,
+      "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1",
+      "expected": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100",
+      "correct": true,
+      "completion_tokens": 64,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1"
+            }
+          }
+        ],
+        "created": 1794079835,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 64,
+          "prompt_tokens": 41,
+          "total_tokens": 105,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-6O9j33x6o65vU7She6Nn33mtkkFQHitN",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 41,
+          "prompt_ms": 21823.404,
+          "prompt_per_token_ms": 532.2781463414634,
+          "prompt_per_second": 1.878716995753733,
+          "predicted_n": 64,
+          "predicted_ms": 38676.24,
+          "predicted_per_token_ms": 613.9085714285713,
+          "predicted_per_second": 1.628907049909712
+        }
+      }
+    },
+    {
+      "index": 7,
+      "start": 136235.794620256,
+      "finish": 136296.296313175,
+      "latency_s": 60.50169291900238,
+      "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1",
+      "expected": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100",
+      "correct": true,
+      "completion_tokens": 64,
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1"
+            }
+          }
+        ],
+        "created": 1794079835,
+        "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "system_fingerprint": "b1-d222767",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 64,
+          "prompt_tokens": 41,
+          "total_tokens": 105,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-q8ZFeeDdAhoVAyQz2HtMBZiNUtR9afgr",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 41,
+          "prompt_ms": 21802.457,
+          "prompt_per_token_ms": 531.767243902439,
+          "prompt_per_second": 1.8805219980482017,
+          "predicted_n": 64,
+          "predicted_ms": 38691.751,
+          "predicted_per_token_ms": 614.1547777777777,
+          "predicted_per_second": 1.6282540430904768
+        }
+      }
+    }
+  ]
+}

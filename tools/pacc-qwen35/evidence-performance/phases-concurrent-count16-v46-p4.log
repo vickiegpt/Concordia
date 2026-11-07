@@ -1,0 +1,12 @@
+{
+  "mode": "pacc",
+  "parallel": 4,
+  "batch": 256,
+  "ubatch": 4,
+  "workload": "count16",
+  "all_correct": true,
+  "wall_s": 61.5326568899909,
+  "completion_tokens": 64,
+  "aggregate_output_tps": 1.0400981078132259,
+  "measurement": "one concurrent cohort; includes request prefill, excludes server startup; short correctness smoke, not capacity benchmark"
+}

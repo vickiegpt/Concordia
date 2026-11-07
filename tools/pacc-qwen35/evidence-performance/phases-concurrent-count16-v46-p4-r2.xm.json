@@ -1,0 +1,19 @@
+{
+  "activation_pack_us": 2815686,
+  "weight_unpack_us": 45071705,
+  "xm_leaf_us": 10997560,
+  "reduce_us": 10299541,
+  "xm_calls": 16885760,
+  "workers_range": [
+    4,
+    4
+  ],
+  "detail_timing_semantics": "Sum of worker elapsed durations; overlaps when workers > 1. compute_us is serial dispatch wall time.",
+  "source": "logs/phases-concurrent-count16-v46-p4-r2.json",
+  "jobs": 8245,
+  "build_ids": [
+    131118
+  ],
+  "input_copy_us": 8807834,
+  "compute_us": 18726729
+}
