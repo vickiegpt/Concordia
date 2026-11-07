@@ -2021,7 +2021,7 @@ static uint64_t shared_ddr_sifive_phys(uint64_t phys, size_t len) {
 }
 
 static bool phys_is_shared_ddr_control(uint64_t phys, size_t len) {
-    if (!phys_is_shared_ddr(phys, len)) {
+    if (len > HETGPU_SIFIVE_CONTROL_BYTES || !phys_is_shared_ddr(phys, len)) {
         return false;
     }
     uint64_t control_start = g_sifive_id * HETGPU_SIFIVE_CONTROL_BYTES;
@@ -7617,6 +7617,62 @@ static int run_mmvf_ctx(struct MmvfNativeCtx *ctx,
     return status;
 }
 
+/* Packed Q6_K x Q8_1 extension: x_type=5, reserved0=6. Input strides are bytes. */
+static int run_q6k_q8_1(const struct MmvfJob *job, const uint8_t *x,
+                       const uint8_t *y, float *dst) {
+    if (job->reserved0 != 6 || job->ncols2 <= 0 || job->ncols2 % 128 ||
+        job->grid_y != 1 || job->grid_z != 1 || !job->ncols_dst ||
+        job->ncols_dst > 8 || job->stride_row <= 0 || job->stride_col_y2 <= 0 ||
+        job->stride_col_dst < (int64_t)job->grid_x) return 0xffff5010;
+    const size_t nb = (size_t)job->ncols2 / 128;
+    if ((uint64_t)job->stride_row < nb * 210 ||
+        (uint64_t)job->stride_col_y2 < nb * 8 * 36 ||
+        (uint64_t)(job->grid_x - 1) * job->stride_row + nb * 210 > job->x_bytes ||
+        (uint64_t)(job->ncols_dst - 1) * job->stride_col_y2 + nb * 8 * 36 > job->y_bytes ||
+        ((uint64_t)(job->ncols_dst - 1) * job->stride_col_dst + job->grid_x) * 4 > job->dst_bytes)
+        return 0xffff5011;
+#ifdef HETGPU_SIFIVE_Q6K_RVV_BATCH
+    extern int hetgpu_q6k_q8_1_batch_rvv(const uint8_t *, const uint8_t *, float *,
+                                       size_t, size_t, size_t, size_t, size_t, size_t);
+    return hetgpu_q6k_q8_1_batch_rvv(x, y, dst, job->grid_x, job->ncols_dst, nb,
+                                   job->stride_row, job->stride_col_y2, job->stride_col_dst)
+        ? (int)0xffff5012u : 0;
+#endif
+    sifive_prepare_f16_table();
+    for (uint32_t col = 0; col < job->ncols_dst; ++col) {
+        for (uint32_t row = 0; row < job->grid_x; ++row) {
+            float sum = 0;
+            for (size_t b = 0; b < nb; ++b) {
+                const uint8_t *xb = x + (size_t)row * job->stride_row + b * 210;
+                const uint8_t *yb = y + (size_t)col * job->stride_col_y2 + b * 8 * 36;
+                uint16_t dh;
+                memcpy(&dh, xb + 208, 2);
+                const float d = sifive_f16_to_f32(dh);
+                const int8_t *scales = (const int8_t *)(xb + 192);
+                for (unsigned h = 0; h < 2; ++h) {
+                    for (unsigned g = 0; g < 4; ++g) {
+                        const uint8_t *yq = yb + (h * 4 + g) * 36;
+                        uint16_t dyh;
+                        memcpy(&dyh, yq, 2);
+                        int32_t dot = 0;
+                        for (unsigned l = 0; l < 32; ++l) {
+                            unsigned ql = xb[h * 64 + (g % 2) * 32 + l];
+                            unsigned qh = xb[128 + h * 32 + l];
+                            int q = (int)(((ql >> ((g / 2) * 4)) & 15) |
+                                          (((qh >> (g * 2)) & 3) << 4)) - 32;
+                            dot += q * scales[h * 8 + g * 2 + l / 16] * (int8_t)yq[4 + l];
+                        }
+                        sum += (d * sifive_f16_to_f32(dyh)) * (float)dot;
+                    }
+                }
+            }
+            if (!isfinite(sum)) return 0xffff5012;
+            dst[(size_t)col * job->stride_col_dst + row] = sum;
+        }
+    }
+    return 0;
+}
+
 static int run_mmvf(int fd, const struct MmvfJob *job, uint64_t seq) {
     mirror_progress_status(fd, HETGPU_SIFIVE_JOB_MMVF, seq, 0x5140);
     if (!job || !job->x_addr || !job->y_addr || !job->dst_addr ||
@@ -7629,7 +7685,7 @@ static int run_mmvf(int fd, const struct MmvfJob *job, uint64_t seq) {
     }
 
     struct Map mx = {0}, my = {0}, md = {0};
-    bool copy_io = jobd_mmvf_copy_io_enabled();
+    bool copy_io = job->x_type == 5 || jobd_mmvf_copy_io_enabled();
     bool compute = jobd_mmvf_compute_enabled();
     mirror_progress_status(fd, HETGPU_SIFIVE_JOB_MMVF, seq, 0x5141);
     if (map_phys_for_mmvf(fd, job->dst_addr, (size_t)job->dst_bytes, &md, copy_io)) {
@@ -7694,7 +7750,9 @@ static int run_mmvf(int fd, const struct MmvfJob *job, uint64_t seq) {
     ctx.y_type = mmvf_type_from_job_field(job->reserved0);
 
     mirror_progress_status(fd, HETGPU_SIFIVE_JOB_MMVF, seq, 0x5142);
-    int status = run_mmvf_ctx(&ctx, job->x_bytes, job->y_bytes, "MMVF");
+    int status = job->x_type == 5
+        ? run_q6k_q8_1(job, mx.ptr, my.ptr, (float *)md.ptr)
+        : run_mmvf_ctx(&ctx, job->x_bytes, job->y_bytes, "MMVF");
     mirror_progress_status(fd, HETGPU_SIFIVE_JOB_MMVF, seq, status == 0 ? 0x5143 : (uint32_t)status);
     if (status == 0) {
         if (flush_map_to_phys(&md) != 0) {

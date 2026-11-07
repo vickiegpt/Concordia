@@ -2,6 +2,8 @@ use crate::pass::{self, TranslateError};
 use ptx_parser as ast;
 
 mod sass_debug_mapping;
+// These execution tests require the HIP runtime, unavailable on SiFive hosts.
+#[cfg(not(feature = "sifive"))]
 mod spirv_run;
 
 #[cfg(not(feature = "ci_build"))]

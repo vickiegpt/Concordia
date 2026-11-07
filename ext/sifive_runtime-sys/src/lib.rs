@@ -935,9 +935,30 @@ fn poll_fd_response(fd: RawFd, label: &str, timeout_ms: u64) -> std::io::Result<
     }
 }
 
+fn direct_device_path_for_sifive(id: usize) -> String {
+    let configured = std::env::var("HETGPU_SIFIVE_DEVICE_PATH")
+        .or_else(|_| std::env::var("HETGPU_PACC_DEVICE"));
+    if let Ok(path) = configured {
+        if path.contains("{}") {
+            return path.replace("{}", &id.to_string());
+        }
+        if path.contains("%d") {
+            return path.replace("%d", &id.to_string());
+        }
+        return path;
+    }
+
+    let pacc = format!("/dev/pacc{}", id);
+    if std::path::Path::new(&pacc).exists() {
+        pacc
+    } else {
+        format!("/dev/sifive{}", id)
+    }
+}
+
 impl SifiveDevice {
     pub fn open(id: usize) -> std::io::Result<Self> {
-        let path = format!("/dev/sifive{}", id);
+        let path = direct_device_path_for_sifive(id);
         let helper = helper_path_for_sifive(id);
         let prefer_helper = prefer_mailbox_helper();
         let (file, is_mbox_helper) = if prefer_helper {
@@ -1150,7 +1171,7 @@ impl SifiveDevice {
                 helper_err.raw_os_error(),
                 Some(libc::ENOTTY | libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)
             ) {
-                let sifive_path = format!("/dev/sifive{}", self.id);
+                let sifive_path = direct_device_path_for_sifive(self.id);
                 if let Ok(sifive_file) = OpenOptions::new().read(true).write(true).open(&sifive_path) {
                     let sifive_fd = sifive_file.as_raw_fd();
                     irq_cmd = IOC_ZLUDA_IRQ;
@@ -1179,8 +1200,8 @@ impl SifiveDevice {
             if zluda_irq_mock_enabled() {
                 if zluda_irq_trace_enabled() {
                     eprintln!(
-                        "SIFIVE ZLUDA IRQ mock: shared-DDR ioctl 0x{:x} on /dev/sifive{} failed: {}; using CPU-side firmware mock",
-                        irq_cmd, self.id, with_ddr_err
+                        "SIFIVE ZLUDA IRQ mock: shared-DDR ioctl 0x{:x} on {} failed: {}; using CPU-side firmware mock",
+                        irq_cmd, direct_device_path_for_sifive(self.id), with_ddr_err
                     );
                 }
                 return Ok(());
@@ -1188,8 +1209,8 @@ impl SifiveDevice {
             return Err(Error::new(
                 with_ddr_err.kind(),
                 format!(
-                    "SIFIVE ZLUDA IRQ shared-DDR ioctl 0x{:x} failed on /dev/sifive{}: {}",
-                    irq_cmd, self.id, with_ddr_err
+                    "SIFIVE ZLUDA IRQ shared-DDR ioctl 0x{:x} failed on {}: {}",
+                    irq_cmd, direct_device_path_for_sifive(self.id), with_ddr_err
                 ),
             ));
         }
@@ -1203,7 +1224,7 @@ impl SifiveDevice {
     }
 
     pub fn poll_response(&self, timeout_ms: u64) -> std::io::Result<()> {
-        poll_fd_response(self.fd, &format!("/dev/sifive{}", self.id), timeout_ms)
+        poll_fd_response(self.fd, &direct_device_path_for_sifive(self.id), timeout_ms)
     }
 
     fn release_device_fd_before_wait(&self) {
@@ -4271,7 +4292,7 @@ fn shared_ddr_bo_sifive_id() -> usize {
 }
 
 fn open_sifive_device_no_boot(id: usize) -> std::io::Result<SifiveDevice> {
-    let path = format!("/dev/sifive{}", id);
+    let path = direct_device_path_for_sifive(id);
     let file = OpenOptions::new().read(true).write(true).open(&path)?;
     let fd = file.as_raw_fd();
     Ok(SifiveDevice {
@@ -4438,7 +4459,7 @@ fn helper_path_for_sifive(sifive_id: usize) -> String {
     std::env::var("HETGPU_SIFIVE_MBOX_DEVICE").map_or_else(
         |_| {
             if direct_sifive_shared_ddr() {
-                return format!("/dev/sifive{}", sifive_id);
+                return direct_device_path_for_sifive(sifive_id);
             }
             let per_sifive_ddr_coh = format!("/dev/hetgpu_sifive_mbox_ddr_coh{}", sifive_id);
             if std::path::Path::new(&per_sifive_ddr_coh).exists() {
@@ -4478,7 +4499,7 @@ fn helper_path_for_sifive(sifive_id: usize) -> String {
             } else if std::path::Path::new("/dev/hetgpu_sifive_mbox").exists() {
                 "/dev/hetgpu_sifive_mbox".to_string()
             } else {
-                format!("/dev/sifive{}", sifive_id)
+                direct_device_path_for_sifive(sifive_id)
             }
         },
         |dev| {
@@ -4502,7 +4523,7 @@ fn mailbox_helper_path_for_sifive(sifive_id: usize) -> String {
             } else if std::path::Path::new("/dev/hetgpu_sifive_mbox").exists() {
                 "/dev/hetgpu_sifive_mbox".to_string()
             } else {
-                format!("/dev/sifive{}", sifive_id)
+                direct_device_path_for_sifive(sifive_id)
             }
         },
         |dev| {
@@ -5988,11 +6009,15 @@ impl SifiveComm {
         for id in 0..4 {
             match SifiveDevice::open(id) {
                 Ok(dev) => {
-                    eprintln!("SIFIVE: opened /dev/sifive{}", id);
+                    eprintln!("SIFIVE: opened {}", direct_device_path_for_sifive(id));
                     devices.push(Arc::new(Mutex::new(dev)));
                 }
                 Err(e) => {
-                    eprintln!("SIFIVE: failed to open /dev/sifive{}: {}", id, e);
+                    eprintln!(
+                        "SIFIVE: failed to open {}: {}",
+                        direct_device_path_for_sifive(id),
+                        e
+                    );
                     return Err(SifiveError::Io(e));
                 }
             }
@@ -11886,6 +11911,110 @@ pub unsafe extern "C" fn hetgpu_sifive_submit_rmsnorm_bf16(
         eps,
         SifiveDataType::Bfloat16 as i32,
     )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_sifive_submit_q6k_q8_1_tiled(
+    dev_id: i32, x: *const u8, y: *const u8, dst: *mut f32,
+    m: u32, n: u32, k: u32, x_stride: u32, y_stride: u32, dst_stride: u32,
+) -> i32 {
+    let result = (|| -> std::io::Result<()> {
+        if dev_id < 0 || x.is_null() || y.is_null() || dst.is_null() || m == 0 ||
+            m > i32::MAX as u32 || n == 0 || n > 8 || k == 0 || k > 32768 || k % 256 != 0 ||
+            dst_stride < m || env_flag_enabled("HETGPU_SIFIVE_MMVF_ASYNC_NO_WAIT") ||
+            env_flag_enabled("HETGPU_SIFIVE_SKIP_JOB_WAIT") || mmvf_output_timeout_assume_success_enabled() {
+            return Err(Error::new(ErrorKind::InvalidInput, "Q6_K invalid shape or unsafe completion policy"));
+        }
+        let (m, n, k) = (m as usize, n as usize, k as usize);
+        let xb = k / 256 * 210;
+        let yb = k / 32 * 36;
+        if (x_stride as usize) < xb || (y_stride as usize) < yb {
+            return Err(Error::new(ErrorKind::InvalidInput, "Q6_K packed input stride too short"));
+        }
+        let base = shared_ddr_base();
+        let payload = shared_ddr_payload_base_off();
+        let capacity = shared_ddr_payload_bytes();
+        let y_space = (yb * n + 63) & !63;
+        let rows = capacity.saturating_sub(y_space + 128) / (xb + n * 4);
+        let rows = rows.min(parse_env_usize("HETGPU_SIFIVE_MMVQ_TILE_ROWS", 512).max(1)).min(m);
+        if base == 0 || rows == 0 {
+            return Err(Error::new(ErrorKind::OutOfMemory, "Q6_K tile cannot fit owned shared DDR"));
+        }
+        let x_off = payload + y_space as u64;
+        let dst_off = align_up_u64(x_off + (rows * xb) as u64, 64)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "Q6_K offset overflow"))?;
+        if dst_off - payload + (rows * n * 4) as u64 > capacity as u64 {
+            return Err(Error::new(ErrorKind::OutOfMemory, "Q6_K tile exceeds payload"));
+        }
+        let _guard = lock_shared_ddr_stage(0, "Q6_K tiled matvec")?;
+        let mut file = open_shared_ddr_window_file(dev_id as usize);
+        let mut ys = vec![0u8; yb * n];
+        for col in 0..n {
+            ys[col * yb..(col + 1) * yb].copy_from_slice(
+                std::slice::from_raw_parts(y.add(col * y_stride as usize), yb));
+        }
+        write_shared_ddr_window_cached(&mut file, payload, &ys)?;
+        let one = HetgpuSifiveUint3 { x: 1, y: 1, z: 1 };
+        let start = std::time::Instant::now();
+        let mut tiles = 0;
+        let mut pack_us = 0u128;
+        let mut write_us = 0u128;
+        let mut submit_wait_us = 0u128;
+        let mut readback_us = 0u128;
+        for row0 in (0..m).step_by(rows) {
+            let pack_start = std::time::Instant::now();
+            let count = rows.min(m - row0);
+            let mut xs = vec![0u8; count * xb];
+            for row in 0..count {
+                xs[row * xb..(row + 1) * xb].copy_from_slice(
+                    std::slice::from_raw_parts(x.add((row0 + row) * x_stride as usize), xb));
+            }
+            pack_us += pack_start.elapsed().as_micros();
+            let write_start = std::time::Instant::now();
+            write_shared_ddr_window_cached(&mut file, x_off, &xs)?;
+            write_us += write_start.elapsed().as_micros();
+            let job = HetgpuSifiveMmvfJob {
+                x_addr: base + x_off, y_addr: base + payload, dst_addr: base + dst_off,
+                x_bytes: xs.len() as u64, y_bytes: ys.len() as u64, dst_bytes: (count * n * 4) as u64,
+                grid_x: count as u32, grid_y: 1, grid_z: 1, ncols_dst: n as u32,
+                x_type: 5, reserved0: 6, ncols2: (k / 2) as i32,
+                nchannels_y: one, channel_ratio: one, sample_ratio: one,
+                stride_row: xb as i32, stride_col_y2: yb as i32, stride_col_dst: count as i32,
+                ..HetgpuSifiveMmvfJob::default()
+            };
+            let submit_start = std::time::Instant::now();
+            if hetgpu_sifive_submit_mmvf_on(dev_id, &job) != 0 {
+                return Err(Error::new(ErrorKind::Other, format!("Q6_K hardware tile failed at row {}", row0)));
+            }
+            submit_wait_us += submit_start.elapsed().as_micros();
+            let readback_start = std::time::Instant::now();
+            let mut out = vec![0u8; count * n * 4];
+            read_shared_ddr_window_cached(&mut file, dst_off, &mut out)?;
+            for col in 0..n {
+                for row in 0..count {
+                    let off = (col * count + row) * 4;
+                    let value = f32::from_ne_bytes(out[off..off + 4].try_into().unwrap());
+                    if !value.is_finite() || out[off..off + 4] == [0xa5; 4] {
+                        return Err(Error::new(ErrorKind::InvalidData, "Q6_K invalid or untouched output"));
+                    }
+                    dst.add(col * dst_stride as usize + row0 + row).write(value);
+                }
+            }
+            readback_us += readback_start.elapsed().as_micros();
+            tiles += 1;
+        }
+        if env_flag_enabled("HETGPU_SIFIVE_MMVQ_PROFILE") {
+            eprintln!("PACC Q6_K profile pack_us={} write_us={} submit_wait_us={} readback_us={}",
+                      pack_us, write_us, submit_wait_us, readback_us);
+        }
+        eprintln!("PACC Q6_KxQ8_1 dev={} m={} n={} k={} tiles={} elapsed_ms={:.3} completion=verified",
+                  dev_id, m, n, k, tiles, start.elapsed().as_secs_f64() * 1000.0);
+        Ok(())
+    })();
+    match result {
+        Ok(()) => 0,
+        Err(e) => { eprintln!("PACC Q6_K tiled matvec: {}", e); -1 }
+    }
 }
 
 #[no_mangle]

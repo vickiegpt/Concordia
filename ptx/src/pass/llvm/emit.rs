@@ -36,6 +36,89 @@ use ptx_parser::{CpAsyncArgs, CpAsyncDetails, FunnelShiftMode, Mul24Control, Shf
 
 struct Builder(LLVMBuilderRef);
 
+#[cfg(feature = "sifive")]
+unsafe fn build_sifive_dp4a(
+    context: LLVMContextRef,
+    builder: LLVMBuilderRef,
+    a: LLVMValueRef,
+    b: LLVMValueRef,
+    c: LLVMValueRef,
+    a_signed: bool,
+    b_signed: bool,
+    name: *const c_char,
+) -> LLVMValueRef {
+    let i32_type = LLVMInt32TypeInContext(context);
+    let i8_type = LLVMInt8TypeInContext(context);
+    let mut sum = c;
+    // PTX dp4a extends each packed byte independently; accumulation wraps at 32 bits.
+    for lane in 0..4 {
+        let shift = LLVMConstInt(i32_type, lane * 8, 0);
+        let a_byte = LLVMBuildTrunc(builder,
+            LLVMBuildLShr(builder, a, shift, LLVM_UNNAMED.as_ptr()),
+            i8_type, LLVM_UNNAMED.as_ptr());
+        let b_byte = LLVMBuildTrunc(builder,
+            LLVMBuildLShr(builder, b, shift, LLVM_UNNAMED.as_ptr()),
+            i8_type, LLVM_UNNAMED.as_ptr());
+        let extend_a = if a_signed { LLVMBuildSExt } else { LLVMBuildZExt };
+        let extend_b = if b_signed { LLVMBuildSExt } else { LLVMBuildZExt };
+        let a_value = extend_a(builder, a_byte, i32_type, LLVM_UNNAMED.as_ptr());
+        let b_value = extend_b(builder, b_byte, i32_type, LLVM_UNNAMED.as_ptr());
+        let product = LLVMBuildMul(builder, a_value, b_value, LLVM_UNNAMED.as_ptr());
+        sum = LLVMBuildAdd(builder, sum, product,
+                          if lane == 3 { name } else { LLVM_UNNAMED.as_ptr() });
+    }
+    sum
+}
+
+#[cfg(all(test, feature = "sifive"))]
+mod sifive_dp4a_tests {
+    use super::*;
+
+    #[test]
+    fn packed_byte_signs_and_accumulator_wrap() {
+        unsafe {
+            let context = LLVMContextCreate();
+            let builder = LLVMCreateBuilderInContext(context);
+            let ty = LLVMInt32TypeInContext(context);
+            let mut seed = 0x91ab7c35u32;
+            let mut next = || {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                seed
+            };
+            for a_signed in [false, true] {
+                for b_signed in [false, true] {
+                    let fixed = [
+                        (0x80808080, 0x7f7f7f7f, 0),
+                        (0xffffffff, 0xffffffff, u32::MAX),
+                        (0x01020304, 0x05060708, 0x7fffffff),
+                        (0x80007fff, 0xff807f00, 0x80000000),
+                    ];
+                    let random: Vec<_> = (0..1024).map(|_| (next(), next(), next())).collect();
+                    for (a, b, c) in fixed.into_iter().chain(random) {
+                        let mut expected = c;
+                        for lane in 0..4 {
+                            let aa = (a >> (lane * 8)) as u8;
+                            let bb = (b >> (lane * 8)) as u8;
+                            let aa = if a_signed { aa as i8 as i32 } else { aa as i32 };
+                            let bb = if b_signed { bb as i8 as i32 } else { bb as i32 };
+                            expected = expected.wrapping_add((aa * bb) as u32);
+                        }
+                        let actual = build_sifive_dp4a(context, builder,
+                            LLVMConstInt(ty, a as u64, 0),
+                            LLVMConstInt(ty, b as u64, 0),
+                            LLVMConstInt(ty, c as u64, 0),
+                            a_signed, b_signed, LLVM_UNNAMED.as_ptr());
+                        assert_eq!(LLVMConstIntGetZExtValue(actual) as u32, expected,
+                            "a={a:08x} b={b:08x} c={c:08x} signs={a_signed}/{b_signed}");
+                    }
+                }
+            }
+            LLVMDisposeBuilder(builder);
+            LLVMContextDispose(context);
+        }
+    }
+}
+
 impl Builder {
     fn new(ctx: &Context) -> Self {
         Self::new_raw(ctx.get())
@@ -3441,6 +3524,30 @@ impl<'a> MethodEmitContext<'a> {
         Ok(())
     }
 
+    #[cfg(feature = "sifive")]
+    fn emit_dp4a(
+        &mut self,
+        data: ast::Dp4aDetails,
+        arguments: ast::Dp4aArgs<SpirvWord>,
+    ) -> Result<(), TranslateError> {
+        if !matches!(data.atype, ast::ScalarType::U32 | ast::ScalarType::S32)
+            || !matches!(data.btype, ast::ScalarType::U32 | ast::ScalarType::S32) {
+            return Err(error_unreachable());
+        }
+        let a = self.resolver.value(arguments.src1)?;
+        let b = self.resolver.value(arguments.src2)?;
+        let c = self.resolver.value(arguments.src3)?;
+        let context = self.context;
+        let builder = self.builder;
+        self.resolver.with_result(arguments.dst, |name| unsafe {
+            build_sifive_dp4a(context, builder, a, b, c,
+                data.atype == ast::ScalarType::S32,
+                data.btype == ast::ScalarType::S32, name)
+        });
+        Ok(())
+    }
+
+    #[cfg(not(feature = "sifive"))]
     fn emit_dp4a(
         &mut self,
         data: ast::Dp4aDetails,

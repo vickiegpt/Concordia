@@ -9083,7 +9083,7 @@ fn sifive_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
         return Some(22 + sifive_bin_bcast_fuse_count(kernel_name));
     }
     if name.contains("rope_norm") || name.contains("rope_neox") || name.contains("rope_multi") {
-        return Some(21);
+        return Some(23);
     }
     if name.contains("unary_op_kernel") {
         return Some(3);
@@ -9846,23 +9846,26 @@ fn sifive_kernel_arg_size(kernel_name: &str, index: usize) -> usize {
             return 12;
         }
     } else if name.contains("rope_norm") || name.contains("rope_neox") {
-        if matches!(index, 2..=11 | 13..=15 | 17 | 20) {
+        if matches!(index, 2..=12 | 14..=16 | 18 | 21) {
             return 4;
         }
-        if index == 16 {
+        if index == 17 {
             return 8;
+        }
+        if index == 22 {
+            return 1;
         }
     } else if name.contains("rope_multi") {
-        if matches!(index, 2..=11 | 13..=15 | 17) {
+        if matches!(index, 2..=12 | 14..=16 | 18) {
             return 4;
         }
-        if index == 16 {
+        if index == 17 {
             return 8;
         }
-        if index == 19 {
+        if index == 20 {
             return 16;
         }
-        if index == 20 {
+        if matches!(index, 21 | 22) {
             return 1;
         }
     } else if name.contains("scale_f32") && matches!(index, 2 | 3) {
@@ -13585,6 +13588,7 @@ unsafe fn sifive_rope_multi_binding_metadata(
     grid_dim_x: u32,
     index: usize,
 ) -> Option<(u64, u32)> {
+    let is_multi = kernel_name.to_ascii_lowercase().contains("rope_multi");
     let (src_elem_size, dst_elem_size) = sifive_rope_element_sizes(kernel_name);
     let ne00 = read_param_i32(kernel_params, 2)?.max(0) as u64;
     let ne01 = read_param_i32(kernel_params, 3)?.max(0) as u64;
@@ -13617,15 +13621,15 @@ unsafe fn sifive_rope_multi_binding_metadata(
             dst_bytes,
             sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
-        12 => (
+        13 => (
             pos_bytes,
             sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
-        18 => (
+        19 => (
             freq_bytes,
             sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
-        19 if kernel_name.contains("rope_norm") || kernel_name.contains("rope_neox") => (
+        20 if !is_multi => (
             row_indices_bytes,
             sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT,
         ),
@@ -14261,7 +14265,8 @@ unsafe fn execute_quantize_q8_1_host_fallback(
     let ne2 = read_param_uint3_z(kernel_params, 8)? as i64;
     let grid_z = (grid_dim_z as i64).max(1);
 
-    if ne00 < 0 || s01 < 0 || s02 < 0 || s03 < 0 || ne0 <= 0 || ne1 <= 0 || ne2 <= 0 {
+    if ne00 < 0 || s01 < 0 || s02 < 0 || s03 < 0 || ne0 <= 0 || ne1 <= 0 || ne2 <= 0
+        || ne00 > ne0 || ne0 % 32 != 0 {
         return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
     }
 
@@ -14320,6 +14325,10 @@ unsafe fn execute_quantize_q8_1_host_fallback(
                     } else {
                         0.0
                     };
+                    if !value.is_finite() {
+                        eprintln!("[SIFIVE Backend] Q8_1 rejected non-finite input at row={} column={}", i1, src_i0);
+                        return Some(Err(cuda_types::cuda::CUerror::UNKNOWN));
+                    }
                     vals[lane] = value;
                     amax = amax.max(value.abs());
                     sum += value;
@@ -14331,10 +14340,11 @@ unsafe fn execute_quantize_q8_1_host_fallback(
                     } else {
                         (vals[lane] / d).round().clamp(-128.0, 127.0) as i8
                     };
-                    block.add(lane).write_unaligned(q as u8);
+                    block.add(4 + lane).write_unaligned(q as u8);
                 }
-                (block.add(32) as *mut u16).write_unaligned(sifive_f32_to_f16(d));
-                (block.add(34) as *mut u16).write_unaligned(sifive_f32_to_f16(sum));
+                // ggml block_q8_1 is { fp16 d, fp16 s, int8 qs[32] }.
+                (block as *mut u16).write_unaligned(sifive_f32_to_f16(d));
+                (block.add(2) as *mut u16).write_unaligned(sifive_f32_to_f16(sum));
                 i0 += 32;
             }
         }
@@ -18384,7 +18394,11 @@ unsafe fn execute_get_rows_float_fallback(
     let dst = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 2)?)?;
     let ne00 = read_param_i64(kernel_params, 3)?.max(0) as usize;
     let ne11 = read_param_i64(kernel_params, 4)?.max(0) as usize;
-    let ne12 = read_param_i64(kernel_params, 5)?.max(0) as usize;
+    let ne12 = if kernel_name.contains("5uint3") {
+        read_param_uint3_z(kernel_params, 5)? as usize
+    } else {
+        read_param_i64(kernel_params, 5)?.max(0) as usize
+    };
     let s1 = read_param_u64(kernel_params, 6)? as usize;
     let s2 = read_param_u64(kernel_params, 7)? as usize;
     let s3 = read_param_u64(kernel_params, 8)? as usize;
@@ -18969,6 +18983,48 @@ unsafe fn try_offload_named_sifive_kernel(
         ) {
             return Some(result);
         }
+    }
+    if name_lower.contains("mul_mat_vec_q") && !name_lower.contains("mul_mat_vec_q_moe")
+        && sifive_parse_mmvq_type(kernel_name) == Some(14)
+    {
+        // Exact packed Q6_K weights, Q8_1 activations; arithmetic runs in PACC jobd.
+        // Reject other ABI variants instead of invoking incomplete warp emulation.
+        let unsupported = || Some(Err(CUerror::NOT_SUPPORTED));
+        let cols = sifive_parse_mmvq_ncols_dst(kernel_name)?;
+        if cols == 0 || cols > 8 || !kernel_name.contains("ELb0ELb0ELb0EE") ||
+            !kernel_name.contains("ggml_cuda_mm_fusion_args_device") ||
+            grid_dim_x == 0 || grid_dim_y != 1 || grid_dim_z != 1 {
+            return unsupported();
+        }
+        let x = read_param_u64(kernel_params, 0)?;
+        let y = read_param_u64(kernel_params, 1)?;
+        let ids = read_param_u64(kernel_params, 2)?;
+        let dst = read_param_u64(kernel_params, 4)?;
+        let k = read_param_u32(kernel_params, 5)?;
+        let sx = read_param_u32(kernel_params, 7)?.checked_mul(210)?;
+        let sy = read_param_u32(kernel_params, 8)?.checked_mul(36)?;
+        let sd = read_param_u32(kernel_params, 9)?;
+        let rows = sd;
+        let fusion = read_mmvf_fusion_args(kernel_params, 3)?;
+        let rows_per_block = if cols == 1 { 1 } else { 2 };
+        if ids != 0 || k == 0 || k % 256 != 0 || k > 32768 || rows == 0 ||
+            rows.div_ceil(rows_per_block) != grid_dim_x ||
+            fusion.x_bias != 0 || fusion.gate != 0 || fusion.gate_bias != 0 {
+            return unsupported();
+        }
+        let xb = (rows as u64 - 1) * sx as u64 + (k as u64 / 256) * 210;
+        let y_row = k as u64 / 32 * 36;
+        let yb = (cols as u64 - 1) * sy as u64 + y_row;
+        if (sx as u64) < k as u64 / 256 * 210 || (sy as u64) < y_row ||
+            !sifive_host_or_cuda_alloc_has_bytes(x, xb as usize, false) ||
+            !sifive_host_or_cuda_alloc_has_bytes(y, yb as usize, false) ||
+            !sifive_host_or_cuda_alloc_has_bytes(dst, rows as usize * cols as usize * 4, true) {
+            return unsupported();
+        }
+        let rc = sifive_runtime_sys::hetgpu_sifive_submit_q6k_q8_1_tiled(
+            current_sifive_device_id_or_zero(), x as *const u8, y as *const u8,
+            dst as *mut f32, rows, cols, k, sx, sy, sd);
+        return Some(if rc == 0 { Ok(()) } else { Err(CUerror::UNKNOWN) });
     }
     if name_lower.contains("mul_mat_vec_q")
         && sifive_env_truthy("HETGPU_SIFIVE_MMVQ_NAMED_FAIL_OPEN")
