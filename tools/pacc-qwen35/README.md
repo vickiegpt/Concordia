@@ -180,3 +180,38 @@ observed job-5 phase sets and no ring-index gaps, but have no established total
 job count. The profiler tracks job-5 compute phases, not all kernel types;
 zero job-5 completions does not imply no other device work executed.
 See `docs/pacc-qwen-ngl-sweep-20261107.md` and `evidence-ngl-sweep/`.
+
+## Native Q8 tiled transport (v50)
+
+v50 adds native Q8_0 x Q8_1 to the same bounded transfer path as Q6_K.
+The host sends packed Q8 blocks in row tiles, waits for real completion,
+validates finite/non-sentinel output, then reuses the slot. There is no
+per-tile ELF staging or host matmul. The 2 MiB payload size is unchanged.
+Device ABI is `x_type=4, reserved0=6`; existing Q8_0/BF16 jobs are unaffected.
+Q8 uses one XM worker initially; Q6 retains its four-worker path.
+
+```sh
+VERSION=v50_q8_tiles BUILD_ID=0x20032 COMPILER_PROFILE=vlen1024 \
+    bash bin/build-xm-batch-jobd.sh
+# Use the checked loader in a PACC0 maintenance window, as above.
+sudo python3 bin/load-pacc0-v26-dynamic.py --version v50_q8_tiles --apply
+CONCORDIA_RELEASE=/srv/lanxin/qwen35-a3b/runtime-q8 \
+Q8_TEST_LIBRARY=/srv/lanxin/qwen35-a3b/runtime-q8/libnvcuda.so \
+    bash bin/run-q8-validation.sh q8-check 0x20032
+CONCORDIA_RELEASE=/srv/lanxin/qwen35-a3b/runtime-q8 \
+    bash bin/run-xm-qwen-benchmark.sh q8-ngl2 0x20032 4 count16 2
+```
+
+The candidate runtime directory contains a rebuilt libnvcuda and unchanged
+companion libraries. It is selected per command, not installed over the
+default runtime. Build with rustup Cargo, `LLVM_ZLUDA_PREBUILT=/usr/lib/llvm-20`
+and `--release -p zluda --no-default-features --features sifive,embed_cudart`.
+The validated binary was built from the existing original checkout, whose
+unrelated edits were preserved; this is not a clean release-branch build.
+
+All four Q8 numerical hardware cases passed (21 tiles), including the
+8192x2x2048 kernel previously blocked by the payload limit. ngl=2 now completes
+that operation but stops at a subsequent hidden=256 RMSNorm layout/policy
+gate. It still has no valid token throughput. Do not disable shape validation
+or enable host fallback to label it a successful PACC run.
+See `docs/pacc-q8-tiles-20261107.md` and `evidence-q8-tiles/`.

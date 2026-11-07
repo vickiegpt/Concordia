@@ -54,6 +54,13 @@ clang-20 -O2 -ffp-contract=off -pthread -DHETGPU_PACC_Q6K_XM_BATCH \
     bin/test_jobd_q6k.c "$TEST_Q6_OBJECT" "$TEST_WORKER_OBJECT" bin/test-xm-pack-reference.c \
     -ldl -lm -o bin/test_q6k_xm_pack_reference
 bin/test_q6k_xm_pack_reference
+clang-20 -O2 -ffp-contract=off -pthread -DHETGPU_PACC_Q6K_XM_BATCH \
+    bin/test_jobd_q8.c "$TEST_Q6_OBJECT" "$TEST_WORKER_OBJECT" bin/test-xm-pack-reference.c \
+    -ldl -lm -o bin/test_q8_xm_pack_reference
+bin/test_q8_xm_pack_reference
+clang-20 -O2 bin/test-q8-xm-faults.c "$TEST_Q6_OBJECT" -lm -o bin/test_q8_xm_faults
+bin/test_q8_xm_faults
+clang-20 -O2 -pthread bin/test_jobd_q8.c -ldl -lm -o bin/test_jobd_q8
 clang-20 -O2 -pthread bin/test-xm-reject.c "$TEST_Q6_OBJECT" \
     "$TEST_WORKER_OBJECT" -lm -o bin/test_xm_reject
 bin/test_xm_reject

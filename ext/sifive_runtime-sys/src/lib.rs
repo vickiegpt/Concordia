@@ -11918,15 +11918,33 @@ pub unsafe extern "C" fn hetgpu_sifive_submit_q6k_q8_1_tiled(
     dev_id: i32, x: *const u8, y: *const u8, dst: *mut f32,
     m: u32, n: u32, k: u32, x_stride: u32, y_stride: u32, dst_stride: u32,
 ) -> i32 {
+    submit_packed_q8_1_tiled(dev_id, x, y, dst, m, n, k, x_stride, y_stride, dst_stride, false)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_sifive_submit_q8_0_q8_1_tiled(
+    dev_id: i32, x: *const u8, y: *const u8, dst: *mut f32,
+    m: u32, n: u32, k: u32, x_stride: u32, y_stride: u32, dst_stride: u32,
+) -> i32 {
+    submit_packed_q8_1_tiled(dev_id, x, y, dst, m, n, k, x_stride, y_stride, dst_stride, true)
+}
+
+unsafe fn submit_packed_q8_1_tiled(
+    dev_id: i32, x: *const u8, y: *const u8, dst: *mut f32,
+    m: u32, n: u32, k: u32, x_stride: u32, y_stride: u32, dst_stride: u32,
+    q8: bool,
+) -> i32 {
+    let label = if q8 { "Q8_0" } else { "Q6_K" };
+    let block = if q8 { 32 } else { 256 };
     let result = (|| -> std::io::Result<()> {
         if dev_id < 0 || x.is_null() || y.is_null() || dst.is_null() || m == 0 ||
-            m > i32::MAX as u32 || n == 0 || n > 8 || k == 0 || k > 32768 || k % 256 != 0 ||
+            m > i32::MAX as u32 || n == 0 || n > 8 || k == 0 || k > 32768 || k % block != 0 ||
             dst_stride < m || env_flag_enabled("HETGPU_SIFIVE_MMVF_ASYNC_NO_WAIT") ||
             env_flag_enabled("HETGPU_SIFIVE_SKIP_JOB_WAIT") || mmvf_output_timeout_assume_success_enabled() {
             return Err(Error::new(ErrorKind::InvalidInput, "Q6_K invalid shape or unsafe completion policy"));
         }
         let (m, n, k) = (m as usize, n as usize, k as usize);
-        let xb = k / 256 * 210;
+        let xb = if q8 { k / 32 * 34 } else { k / 256 * 210 };
         let yb = k / 32 * 36;
         if (x_stride as usize) < xb || (y_stride as usize) < yb {
             return Err(Error::new(ErrorKind::InvalidInput, "Q6_K packed input stride too short"));
@@ -11977,7 +11995,7 @@ pub unsafe extern "C" fn hetgpu_sifive_submit_q6k_q8_1_tiled(
                 x_addr: base + x_off, y_addr: base + payload, dst_addr: base + dst_off,
                 x_bytes: xs.len() as u64, y_bytes: ys.len() as u64, dst_bytes: (count * n * 4) as u64,
                 grid_x: count as u32, grid_y: 1, grid_z: 1, ncols_dst: n as u32,
-                x_type: 5, reserved0: 6, ncols2: (k / 2) as i32,
+                x_type: if q8 { 4 } else { 5 }, reserved0: 6, ncols2: (k / 2) as i32,
                 nchannels_y: one, channel_ratio: one, sample_ratio: one,
                 stride_row: xb as i32, stride_col_y2: yb as i32, stride_col_dst: count as i32,
                 ..HetgpuSifiveMmvfJob::default()
@@ -12004,16 +12022,16 @@ pub unsafe extern "C" fn hetgpu_sifive_submit_q6k_q8_1_tiled(
             tiles += 1;
         }
         if env_flag_enabled("HETGPU_SIFIVE_MMVQ_PROFILE") {
-            eprintln!("PACC Q6_K profile pack_us={} write_us={} submit_wait_us={} readback_us={}",
+            eprintln!("PACC {label} profile pack_us={} write_us={} submit_wait_us={} readback_us={}",
                       pack_us, write_us, submit_wait_us, readback_us);
         }
-        eprintln!("PACC Q6_KxQ8_1 dev={} m={} n={} k={} tiles={} elapsed_ms={:.3} completion=verified",
+        eprintln!("PACC {label}xQ8_1 dev={} m={} n={} k={} tiles={} elapsed_ms={:.3} completion=verified",
                   dev_id, m, n, k, tiles, start.elapsed().as_secs_f64() * 1000.0);
         Ok(())
     })();
     match result {
         Ok(()) => 0,
-        Err(e) => { eprintln!("PACC Q6_K tiled matvec: {}", e); -1 }
+        Err(e) => { eprintln!("PACC {label} tiled matvec: {}", e); -1 }
     }
 }
 

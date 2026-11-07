@@ -18985,10 +18985,12 @@ unsafe fn try_offload_named_sifive_kernel(
         }
     }
     if name_lower.contains("mul_mat_vec_q") && !name_lower.contains("mul_mat_vec_q_moe")
-        && sifive_parse_mmvq_type(kernel_name) == Some(14)
+        && matches!(sifive_parse_mmvq_type(kernel_name), Some(8 | 14))
     {
-        // Exact packed Q6_K weights, Q8_1 activations; arithmetic runs in PACC jobd.
+        // Exact packed weights, Q8_1 activations; arithmetic runs in PACC jobd.
         // Reject other ABI variants instead of invoking incomplete warp emulation.
+        let q8 = sifive_parse_mmvq_type(kernel_name) == Some(8);
+        let (block, block_bytes) = if q8 { (32u32, 34u32) } else { (256, 210) };
         let unsupported = || Some(Err(CUerror::NOT_SUPPORTED));
         let cols = sifive_parse_mmvq_ncols_dst(kernel_name)?;
         if cols == 0 || cols > 8 || !kernel_name.contains("ELb0ELb0ELb0EE") ||
@@ -19001,27 +19003,30 @@ unsafe fn try_offload_named_sifive_kernel(
         let ids = read_param_u64(kernel_params, 2)?;
         let dst = read_param_u64(kernel_params, 4)?;
         let k = read_param_u32(kernel_params, 5)?;
-        let sx = read_param_u32(kernel_params, 7)?.checked_mul(210)?;
+        let sx = read_param_u32(kernel_params, 7)?.checked_mul(block_bytes)?;
         let sy = read_param_u32(kernel_params, 8)?.checked_mul(36)?;
         let sd = read_param_u32(kernel_params, 9)?;
         let rows = sd;
         let fusion = read_mmvf_fusion_args(kernel_params, 3)?;
         let rows_per_block = if cols == 1 { 1 } else { 2 };
-        if ids != 0 || k == 0 || k % 256 != 0 || k > 32768 || rows == 0 ||
+        if ids != 0 || k == 0 || k % block != 0 || k > 32768 || rows == 0 ||
             rows.div_ceil(rows_per_block) != grid_dim_x ||
             fusion.x_bias != 0 || fusion.gate != 0 || fusion.gate_bias != 0 {
             return unsupported();
         }
-        let xb = (rows as u64 - 1) * sx as u64 + (k as u64 / 256) * 210;
+        let row_bytes = (k as u64 / block as u64) * block_bytes as u64;
+        let xb = (rows as u64 - 1) * sx as u64 + row_bytes;
         let y_row = k as u64 / 32 * 36;
         let yb = (cols as u64 - 1) * sy as u64 + y_row;
-        if (sx as u64) < k as u64 / 256 * 210 || (sy as u64) < y_row ||
+        if (sx as u64) < row_bytes || (sy as u64) < y_row ||
             !sifive_host_or_cuda_alloc_has_bytes(x, xb as usize, false) ||
             !sifive_host_or_cuda_alloc_has_bytes(y, yb as usize, false) ||
             !sifive_host_or_cuda_alloc_has_bytes(dst, rows as usize * cols as usize * 4, true) {
             return unsupported();
         }
-        let rc = sifive_runtime_sys::hetgpu_sifive_submit_q6k_q8_1_tiled(
+        let submit = if q8 { sifive_runtime_sys::hetgpu_sifive_submit_q8_0_q8_1_tiled }
+                     else { sifive_runtime_sys::hetgpu_sifive_submit_q6k_q8_1_tiled };
+        let rc = submit(
             current_sifive_device_id_or_zero(), x as *const u8, y as *const u8,
             dst as *mut f32, rows, cols, k, sx, sy, sd);
         return Some(if rc == 0 { Ok(()) } else { Err(CUerror::UNKNOWN) });

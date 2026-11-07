@@ -1,0 +1,99 @@
+{
+  "source": "/srv/lanxin/qwen35-a3b/logs/q8-v50-hardware.json",
+  "calls": [
+    {
+      "m": 33,
+      "n": 1,
+      "k": 32,
+      "tiles": 1,
+      "elapsed_ms": 1.931,
+      "host_us": {
+        "pack": 1,
+        "write": 25,
+        "submit_wait": 1767,
+        "readback": 32
+      },
+      "device_us": {
+        "dst_prepare": 14,
+        "input_copy": 14,
+        "compute": 12,
+        "output_copy": 15,
+        "cleanup": 1,
+        "completion_publish": 5,
+        "device_before_publish": 236
+      },
+      "wait_residual_us": 1526
+    },
+    {
+      "m": 1031,
+      "n": 8,
+      "k": 2048,
+      "tiles": 3,
+      "elapsed_ms": 40.661,
+      "host_us": {
+        "pack": 1712,
+        "write": 834,
+        "submit_wait": 37716,
+        "readback": 142
+      },
+      "device_us": {
+        "dst_prepare": 89,
+        "input_copy": 3879,
+        "compute": 30155,
+        "output_copy": 690,
+        "cleanup": 5,
+        "completion_publish": 17,
+        "device_before_publish": 35395
+      },
+      "wait_residual_us": 2304
+    },
+    {
+      "m": 3,
+      "n": 3,
+      "k": 32768,
+      "tiles": 1,
+      "elapsed_ms": 4.093,
+      "host_us": {
+        "pack": 13,
+        "write": 73,
+        "submit_wait": 3933,
+        "readback": 27
+      },
+      "device_us": {
+        "dst_prepare": 7,
+        "input_copy": 277,
+        "compute": 2670,
+        "output_copy": 21,
+        "cleanup": 2,
+        "completion_publish": 5,
+        "device_before_publish": 3161
+      },
+      "wait_residual_us": 767
+    },
+    {
+      "m": 8192,
+      "n": 2,
+      "k": 2048,
+      "tiles": 16,
+      "elapsed_ms": 174.07,
+      "host_us": {
+        "pack": 4043,
+        "write": 6619,
+        "submit_wait": 162795,
+        "readback": 511
+      },
+      "device_us": {
+        "dst_prepare": 243,
+        "input_copy": 21124,
+        "compute": 124601,
+        "output_copy": 1487,
+        "cleanup": 27,
+        "completion_publish": 80,
+        "device_before_publish": 150495
+      },
+      "wait_residual_us": 12220
+    }
+  ],
+  "capabilities": {},
+  "limitations": "Residual includes dispatch, host polling and diagnostics; not isolated IRQ latency."
+}

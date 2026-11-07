@@ -42,6 +42,70 @@ static uint16_t integer_bf16(int value) {
     return bits >> 16;
 }
 
+/* Q8 integers are exact BF16 and a 32-term dot is exact FP32. Keep block
+ * scales outside XM instead of rounding dequantized operands to BF16. */
+int hetgpu_q8_0_q8_1_xm(const uint8_t *x, const uint8_t *y, float *dst,
+                       size_t m, size_t n, size_t nb, size_t sx, size_t sy, size_t sd) {
+    memset(&q6k_xm_profile, 0, sizeof(q6k_xm_profile));
+    q6k_xm_profile.workers = 1;
+    if (!x || !y || !dst || !m || !n || n > 8 || !nb || nb > 1024 ||
+        sx < nb*34 || sy < nb*36 || sd < m) return -1;
+    uint64_t begin = now_ns();
+    uint16_t *yb = malloc(nb*32*n*sizeof(*yb));
+    float *dy = malloc(nb*n*sizeof(*dy));
+    if (!yb || !dy) { free(yb); free(dy); return -1; }
+    for (size_t b = 0; b < nb; ++b)
+        for (size_t col = 0; col < n; ++col) {
+            const uint8_t *src = y+col*sy+b*36;
+            uint16_t h; memcpy(&h, src, 2);
+            dy[b*n+col] = half_float(h);
+            if (!isfinite(dy[b*n+col])) { free(yb); free(dy); return -1; }
+            for (size_t lane = 0; lane < 32; ++lane)
+                yb[(b*32+lane)*n+col] = integer_bf16((int8_t)src[4+lane]);
+        }
+    q6k_xm_profile.activation += now_ns()-begin;
+    for (size_t row0 = 0; row0 < m; row0 += 32) {
+        size_t rows = m-row0 < 32 ? m-row0 : 32;
+        float sums[32*8] = {0}, dots[32*8], dx[32];
+        uint16_t xb[32*32];
+        for (size_t b = 0; b < nb; ++b) {
+            begin = now_ns();
+            for (size_t row = 0; row < rows; ++row) {
+                const uint8_t *src = x+(row0+row)*sx+b*34;
+                uint16_t h; memcpy(&h, src, 2);
+                dx[row] = half_float(h);
+                if (!isfinite(dx[row])) { free(yb); free(dy); return -1; }
+                for (size_t lane = 0; lane < 32; ++lane)
+                    xb[lane*rows+row] = integer_bf16((int8_t)src[2+lane]);
+            }
+            q6k_xm_profile.weights += now_ns()-begin;
+            begin = now_ns();
+            if (xsfmm_native_bf16(xb, yb+b*32*n, dots, rows, n, 32)) {
+                free(yb); free(dy); return -1;
+            }
+            ++q6k_xm_profile.calls;
+            q6k_xm_profile.matrix += now_ns()-begin;
+            begin = now_ns();
+            for (size_t row = 0; row < rows; ++row)
+                for (size_t col = 0; col < n; ++col) {
+                    float dot = dots[row*n+col];
+                    if (!isfinite(dot) || fabsf(dot) > 524288 || dot != (float)(int32_t)dot) {
+                        free(yb); free(dy); return -1;
+                    }
+                    sums[row*n+col] += (dx[row]*dy[b*n+col])*dot;
+                }
+            q6k_xm_profile.reduce += now_ns()-begin;
+        }
+        for (size_t row = 0; row < rows; ++row)
+            for (size_t col = 0; col < n; ++col) {
+                if (!isfinite(sums[row*n+col])) { free(yb); free(dy); return -1; }
+                dst[col*sd+row0+row] = sums[row*n+col];
+            }
+    }
+    free(yb); free(dy);
+    return 0;
+}
+
 /* Integers [-128,127] are exact BF16. Apply Q6 scales after two K=16
  * XM dots so no rounded BF16 weight*scale product enters the computation. */
 int hetgpu_q6k_q8_1_xm_serial(const uint8_t *restrict x, const uint8_t *restrict y,

@@ -1,0 +1,246 @@
+[SIFIVE Backend] exposing 1 CUDA-visible SIFIVE device(s): [0]
+[hetGPU] Checkpoint handler installed (Ctrl+C to checkpoint)
+[hetGPU] Note: Checkpoint will be saved at the next GPU sync point
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+0.00.004.565 W Setting 'enable_thinking' via --chat-template-kwargs is deprecated. Use --reasoning on / --reasoning off instead.
+0.00.004.816 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.005.143 W srv  llama_server: -----------------
+0.00.005.154 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.005.155 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.005.156 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.005.156 W srv  llama_server: -----------------
+0.00.006.609 I srv    load_model: loading model '/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf'
+0.05.412.780 W resolve_fused_ops: layer 0 is assigned to device CPU but fused Gated Delta Net (chunked) is assigned to device CUDA0 (usually due to missing support)
+0.05.412.796 W resolve_fused_ops: fused Gated Delta Net (chunked) not supported, set to disabled
+0.05.455.455 I cmn          init: llama threadpool init, n_threads = 8
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] Fallback-matched function 0x7fffb529aa28 to registered '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' via candidate=0x7fffb529aa2c dist=0x4 image=/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0 sym=<unknown>
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(128,1,1)
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] Fallback-matched function 0x7fffb53934e0 to registered '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' via candidate=0x7fffb53934e0 dist=0x0 image=/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0 sym=<unknown>
+[SIFIVE Backend] Launching kernel '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1)
+[SIFIVE Backend] launch ABI prepared for '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' args=23 pointer_like=3
+sifive_LaunchKernel: kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1) elf_bytes=329200
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=2097152 slot_off=0x200000 required=395840
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=0 host=0x555574b70980 shared=0x2075d250a00 size=32768 flags=0x100
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=1 host=0x555574b70980 shared=0x2075d258a00 size=32768 flags=0x200
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=13 host=0x555574b78d80 shared=0x2075d260a00 size=32 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' bytes=330240 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' seq=7348566658414993409 shared=0x2075d200000 submit=330240 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' elf=329200 bytes submit=330240 bytes args=23 bindings=3 raw=0 bytes on sifive0
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(128,1,1)
+[SIFIVE Backend] Launching kernel '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1)
+[SIFIVE Backend] launch ABI prepared for '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' args=23 pointer_like=3
+sifive_LaunchKernel: kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1) elf_bytes=329200
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=2097152 slot_off=0x200000 required=395840
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=0 host=0x555574b70980 shared=0x2075d250a00 size=32768 flags=0x100
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=1 host=0x555574b70980 shared=0x2075d258a00 size=32768 flags=0x200
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=13 host=0x555574b78d80 shared=0x2075d260a00 size=32 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' bytes=330240 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' seq=7348566658680729602 shared=0x2075d200000 submit=330240 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' elf=329200 bytes submit=330240 bytes args=23 bindings=3 raw=0 bytes on sifive0
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(128,1,1)
+[SIFIVE Backend] Launching kernel '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1)
+[SIFIVE Backend] launch ABI prepared for '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' args=23 pointer_like=3
+sifive_LaunchKernel: kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1) elf_bytes=329200
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=2097152 slot_off=0x200000 required=395840
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=0 host=0x555574b70980 shared=0x2075d250a00 size=32768 flags=0x100
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=1 host=0x555574b70980 shared=0x2075d258a00 size=32768 flags=0x200
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=13 host=0x555574b78d80 shared=0x2075d260a00 size=32 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' bytes=330240 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' seq=7348566658914865155 shared=0x2075d200000 submit=330240 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' elf=329200 bytes submit=330240 bytes args=23 bindings=3 raw=0 bytes on sifive0
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(128,1,1)
+[SIFIVE Backend] Launching kernel '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1)
+[SIFIVE Backend] launch ABI prepared for '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' args=23 pointer_like=3
+sifive_LaunchKernel: kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1) elf_bytes=329200
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=2097152 slot_off=0x200000 required=395840
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=0 host=0x555574b70980 shared=0x2075d250a00 size=32768 flags=0x100
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=1 host=0x555574b70980 shared=0x2075d258a00 size=32768 flags=0x200
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=13 host=0x555574b78d80 shared=0x2075d260a00 size=32 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' bytes=330240 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' seq=7348566659149205508 shared=0x2075d200000 submit=330240 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' elf=329200 bytes submit=330240 bytes args=23 bindings=3 raw=0 bytes on sifive0
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(128,1,1)
+[SIFIVE Backend] Launching kernel '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1)
+[SIFIVE Backend] launch ABI prepared for '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' args=23 pointer_like=3
+sifive_LaunchKernel: kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1) elf_bytes=329200
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=2097152 slot_off=0x200000 required=395840
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=0 host=0x555574b70980 shared=0x2075d250a00 size=32768 flags=0x100
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=1 host=0x555574b70980 shared=0x2075d258a00 size=32768 flags=0x200
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=13 host=0x555574b78d80 shared=0x2075d260a00 size=32 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' bytes=330240 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' seq=7348566659383582725 shared=0x2075d200000 submit=330240 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' elf=329200 bytes submit=330240 bytes args=23 bindings=3 raw=0 bytes on sifive0
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(128,1,1)
+[SIFIVE Backend] Launching kernel '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1)
+[SIFIVE Backend] launch ABI prepared for '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' args=23 pointer_like=3
+sifive_LaunchKernel: kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1) elf_bytes=329200
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=2097152 slot_off=0x200000 required=395840
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=0 host=0x555574b70980 shared=0x2075d250a00 size=32768 flags=0x100
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=1 host=0x555574b70980 shared=0x2075d258a00 size=32768 flags=0x200
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=13 host=0x555574b78d80 shared=0x2075d260a00 size=32 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' bytes=330240 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' seq=7348566659617288198 shared=0x2075d200000 submit=330240 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' elf=329200 bytes submit=330240 bytes args=23 bindings=3 raw=0 bytes on sifive0
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(128,1,1)
+[SIFIVE Backend] Launching kernel '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1)
+[SIFIVE Backend] launch ABI prepared for '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' args=23 pointer_like=3
+sifive_LaunchKernel: kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1) elf_bytes=329200
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=2097152 slot_off=0x200000 required=395840
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=0 host=0x555574b70980 shared=0x2075d250a00 size=32768 flags=0x100
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=1 host=0x555574b70980 shared=0x2075d258a00 size=32768 flags=0x200
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=13 host=0x555574b78d80 shared=0x2075d260a00 size=32 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' bytes=330240 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' seq=7348566659851644935 shared=0x2075d200000 submit=330240 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' elf=329200 bytes submit=330240 bytes args=23 bindings=3 raw=0 bytes on sifive0
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(128,1,1)
+[SIFIVE Backend] Launching kernel '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1)
+[SIFIVE Backend] launch ABI prepared for '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' args=23 pointer_like=3
+sifive_LaunchKernel: kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1) elf_bytes=329200
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=2097152 slot_off=0x200000 required=395840
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=0 host=0x555574b70980 shared=0x2075d250a00 size=32768 flags=0x100
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=1 host=0x555574b70980 shared=0x2075d258a00 size=32768 flags=0x200
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=13 host=0x555574b78d80 shared=0x2075d260a00 size=32 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' bytes=330240 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' seq=7348566660085325832 shared=0x2075d200000 submit=330240 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' elf=329200 bytes submit=330240 bytes args=23 bindings=3 raw=0 bytes on sifive0
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(128,1,1)
+[SIFIVE Backend] Launching kernel '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1)
+[SIFIVE Backend] launch ABI prepared for '_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' args=23 pointer_like=3
+sifive_LaunchKernel: kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' grid=(32,1,1) block=(1,256,1) elf_bytes=329200
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=2097152 slot_off=0x200000 required=395840
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=0 host=0x555574b70980 shared=0x2075d250a00 size=32768 flags=0x100
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=1 host=0x555574b70980 shared=0x2075d258a00 size=32768 flags=0x200
+sifive_LaunchKernel: staged kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' arg=13 host=0x555574b78d80 shared=0x2075d260a00 size=32 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' bytes=330240 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' seq=7348566660318384137 shared=0x2075d200000 submit=330240 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb' elf=329200 bytes submit=330240 bytes args=23 bindings=3 raw=0 bytes on sifive0
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(1,16,2) block=(64,2,1)
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] Fallback-matched function 0x7fffb53b80d0 to registered '_ZL15unary_op_kernelIXadL_ZL10op_sigmoidfEEfEvPKT0_PS0_i' via candidate=0x7fffb53b80d2 dist=0x2 image=/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0 sym=<unknown>
+[SIFIVE Backend] Launching kernel '_ZL15unary_op_kernelIXadL_ZL10op_sigmoidfEEfEvPKT0_PS0_i' grid=(1,1,1) block=(256,1,1)
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_mulffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(8,2,1) block=(128,1,1)
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] Fallback-matched function 0x7fffb529c9b0 to registered '_ZL11k_bin_bcastIXadL_ZL6op_addffEEfffJPKfS1_EEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' via candidate=0x7fffb529c9b4 dist=0x4 image=/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0 sym=<unknown>
+[SIFIVE Backend] Launching kernel '_ZL11k_bin_bcastIXadL_ZL6op_addffEEfffJPKfS1_EEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' grid=(16,1,1) block=(128,1,1)
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] Fallback-matched function 0x7fffb538bf18 to registered '_ZL12rms_norm_f32ILi1024ELb1ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_' via candidate=0x7fffb538bf1e dist=0x6 image=/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0 sym=<unknown>
+[SIFIVE Backend] Launching kernel '_ZL12rms_norm_f32ILi1024ELb1ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_' grid=(2,1,1) block=(1024,1,1)
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] Fallback-matched function 0x7fffb538f6e8 to registered '_ZL13quantize_q8_1PKfPvlllllj5uint3' via candidate=0x7fffb538f6e8 dist=0x0 image=/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0 sym=<unknown>
+sifive_LoadProgramPtx: PTX parse failed for module.ptx: [UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_\n()\n.noreturn;"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_()\n.noreturn                               // -- Begin function _ZL14no_device_codePKciS0_iS0_\n                                        // @_ZL14no_device_codePKciS0_iS0_\n{\n\t.local .align 8 .b8 \t__local_depot8[40];\n\t.reg .b64 \t%SP;\n\t.reg .b64 \t%SPL;\n\t.reg .b32 \t%r<5>;\n\t.reg .b64 \t%rd<11>;\n\n// %bb.0:\n\tmov.u64 \t%SPL, __local_depot8;\n\tcvta.local.u64 \t%SP, %SPL;\n\tadd.u64 \t%rd1, %SP, 0;\n\tadd.u64 \t%rd2, %SPL, 0;\n\tmov.u64 \t%rd3, _$_str;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd4, %rd3;\n\tst.local.u64 \t[%rd2], %rd4;\n\tmov.b32 \t%r1, 329;\n\tst.local.u32 \t[%rd2+8], %r1;\n\tmov.u64 \t%rd5, __FUNCTION___$__ZL18quantize_mmq_nvfp4ILb1ELb1EEvPKfPKiPvPfllllllli;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd6, %rd5;\n\tst.local.u64 \t[%rd2+16], %rd6;\n\tmov.b32 \t%r2, 800;\n\tst.local.u32 \t[%rd2+24], %r2;\n\tmov.u64 \t%rd7, _$_str1;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd8, %rd7;\n\tst.local.u64 \t[%rd2+32], %rd8;\n\tmov.u64 \t%rd9, _$_str2;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd10, %rd9;\n\t{ // callseq 1, 0\n\t.param .b64 param0;\n\tst.param.b64 \t[param0], %rd10;\n\t.param .b64 param1;\n\tst.param.b64 \t[param1], %rd1;\n\t.param .b32 retval0;\n\tcall.uni (retval0), \n\tvprintf, \n\t(\n\tparam0, \n\tparam1\n\t);\n\tld.param.b32 \t%r3, [retval0];\n\t} // callseq 1\n\t// begin inline asm\n\ttrap;\n\t// end inline asm\n\tret;\n                                        // -- End function\n}"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);")]
+[SIFIVE Backend] sifive_LoadProgramPtx failed: -1 (ptx_parse: module.ptx: [UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_\n()\n.noreturn;"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_()\n.noreturn                               // -- Begin function _ZL14no_device_codePKciS0_iS0_\n                                        // @_ZL14no_device_codePKciS0_iS0_\n{\n\t.local .align 8 .b8 \t__local_depot8[40];\n\t.reg .b64 \t%SP;\n\t.reg .b64 \t%SPL;\n\t.reg .b32 \t%r<5>;\n\t.reg .b64 \t%rd<11>;\n\n// %bb.0:\n\tmov.u64 \t%SPL, __local_depot8;\n\tcvta.local.u64 \t%SP, %SPL;\n\tadd.u64 \t%rd1, %SP, 0;\n\tadd.u64 \t%rd2, %SPL, 0;\n\tmov.u64 \t%rd3, _$_str;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd4, %rd3;\n\tst.local.u64 \t[%rd2], %rd4;\n\tmov.b32 \t%r1, 329;\n\tst.local.u32 \t[%rd2+8], %r1;\n\tmov.u64 \t%rd5, __FUNCTION___$__ZL18quantize_mmq_nvfp4ILb1ELb1EEvPKfPKiPvPfllllllli;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd6, %rd5;\n\tst.local.u64 \t[%rd2+16], %rd6;\n\tmov.b32 \t%r2, 800;\n\tst.local.u32 \t[%rd2+24], %r2;\n\tmov.u64 \t%rd7, _$_str1;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd8, %rd7;\n\tst.local.u64 \t[%rd2+32], %rd8;\n\tmov.u64 \t%rd9, _$_str2;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd10, %rd9;\n\t{ // callseq 1, 0\n\t.param .b64 param0;\n\tst.param.b64 \t[param0], %rd10;\n\t.param .b64 param1;\n\tst.param.b64 \t[param1], %rd1;\n\t.param .b32 retval0;\n\tcall.uni (retval0), \n\tvprintf, \n\t(\n\tparam0, \n\tparam1\n\t);\n\tld.param.b32 \t%r3, [retval0];\n\t} // callseq 1\n\t// begin inline asm\n\ttrap;\n\t// end inline asm\n\tret;\n                                        // -- End function\n}"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);")])
+[SIFIVE Backend] Launching kernel '_ZL13quantize_q8_1PKfPvlllllj5uint3' grid=(8,2,1) block=(256,1,1)
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] Fallback-matched function 0x7fffb53735a0 to registered '_ZL13mul_mat_vec_qIL9ggml_type8ELi2ELb0ELb0ELb0EEvPKvS2_PKi31ggml_cuda_mm_fusion_args_devicePfj5uint3jjjS7_jjjS7_jjjj' via candidate=0x7fffb53735a6 dist=0x6 image=/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0 sym=<unknown>
+[SIFIVE Backend] Launching kernel '_ZL13mul_mat_vec_qIL9ggml_type8ELi2ELb0ELb0ELb0EEvPKvS2_PKi31ggml_cuda_mm_fusion_args_devicePfj5uint3jjjS7_jjjS7_jjjj' grid=(4096,1,1) block=(32,4,1)
+PACC Q8_0 profile pack_us=3125 write_us=7654 submit_wait_us=164446 readback_us=1000
+PACC Q8_0xQ8_1 dev=0 m=8192 n=2 k=2048 tiles=16 elapsed_ms=176.346 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] Fallback-matched function 0x7fffb538bda8 to registered '_ZL12rms_norm_f32ILi256ELb1ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_' via candidate=0x7fffb538bdae dist=0x6 image=/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0 sym=<unknown>
+[SIFIVE Backend] Launching kernel '_ZL12rms_norm_f32ILi256ELb1ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_' grid=(16,2,1) block=(256,1,1)
+[SIFIVE Backend] RMSNorm '_ZL12rms_norm_f32ILi256ELb1ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_' cannot be parsed for named offload; refusing normal launch to avoid skipped/empty-ELF output
+/srv/lanxin/qwen35-a3b/llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu:107: CUDA error
+0.06.880.698 E CUDA error: cudaErrorUnknown
+0.06.880.713 E   current device: 0, in function ggml_cuda_kernel_launch at /srv/lanxin/qwen35-a3b/llama.cpp/ggml/src/ggml-cuda/common.cuh:1674
+0.06.880.714 E   cudaGetLastError()
+[New LWP 1182950]
+[New LWP 1182949]
+[New LWP 1182948]
+[New LWP 1182947]
+[New LWP 1182946]
+[New LWP 1182945]
+[New LWP 1182944]
+[New LWP 1182870]
+[New LWP 1182869]
+[New LWP 1182868]
+[New LWP 1182867]
+[New LWP 1182866]
+[New LWP 1182865]
+[New LWP 1182864]
+[New LWP 1182863]
+[New LWP 1182862]
+[New LWP 1182861]
+[New LWP 1182860]
+[New LWP 1182859]
+[New LWP 1182858]
+[New LWP 1182857]
+[New LWP 1182856]
+[New LWP 1182855]
+[New LWP 1182854]
+[New LWP 1182853]
+[New LWP 1182852]
+[New LWP 1182851]
+[New LWP 1182850]
+[New LWP 1182849]
+[New LWP 1182848]
+[New LWP 1182847]
+[New LWP 1182846]
+[New LWP 1182845]
+[New LWP 1182844]
+[New LWP 1182843]
+[New LWP 1182842]
+[New LWP 1182841]
+[New LWP 1182840]
+[New LWP 1182839]
+[New LWP 1182838]
+[New LWP 1182837]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/riscv64-linux-gnu/libthread_db.so.1".
+0x00007fffb7134be6 in __GI___wait4 (pid=<optimized out>, stat_loc=0x0, options=<optimized out>, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+warning: 30	../sysdeps/unix/sysv/linux/wait4.c: No such file or directory
+#0  0x00007fffb7134be6 in __GI___wait4 (pid=<optimized out>, stat_loc=0x0, options=<optimized out>, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+30	in ../sysdeps/unix/sysv/linux/wait4.c
+#1  0x00007fffb6cf22cc in ggml_print_backtrace () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so.0
+#2  0x00007fffb6cf23ea in ggml_abort () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so.0
+#3  0x00007fffb52ed0d6 in ggml_cuda_error(char const*, char const*, char const*, int, char const*) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0
+#4  0x00007fffb538bdae in void ggml_cuda_kernel_launch<void (*)(float const*, float*, int, long, long, long, float, float const*, long, long, long, uint3, uint3, uint3, uint3, float const*, long, long, long, uint3, uint3, uint3, uint3), float const*&, float*&, int const&, long const&, long const&, long const&, float const&, float const*&, long const&, long const&, long const&, uint3 const&, uint3 const&, uint3 const&, uint3 const&, decltype(nullptr), int, int, int, uint3, uint3, uint3, uint3>(void (*)(float const*, float*, int, long, long, long, float, float const*, long, long, long, uint3, uint3, uint3, uint3, float const*, long, long, long, uint3, uint3, uint3, uint3), ggml_cuda_kernel_launch_params const&, float const*&, float*&, int const&, long const&, long const&, long const&, float const&, float const*&, long const&, long const&, long const&, uint3 const&, uint3 const&, uint3 const&, uint3 const&, decltype(nullptr)&&, int&&, int&&, int&&, uint3&&, uint3&&, uint3&&, uint3&&) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0
+#5  0x00007fffb538a162 in rms_norm_mul_f32_cuda(float const*, float const*, float const*, float*, int, int, int, int, long, long, long, long, long, long, unsigned int, unsigned int, unsigned int, unsigned int, long, long, long, unsigned int, unsigned int, unsigned int, unsigned int, float, CUstream_st*) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0
+#6  0x00007fffb5389a24 in ggml_cuda_op_rms_norm_fused(ggml_backend_cuda_context&, ggml_tensor*, ggml_tensor*) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0
+#7  0x00007fffb52f4c7a in ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context*, ggml_cgraph*, bool, bool, void const*) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0
+#8  0x00007fffb52f17c0 in ggml_backend_cuda_graph_compute(ggml_backend*, ggml_cgraph*) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0
+#9  0x00007fffb6d09e5c in ggml_backend_sched_graph_compute_async () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so.0
+#10 0x00007fffb60bfbc8 in llama_context::graph_compute(ggml_cgraph*, bool) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libllama.so.0
+#11 0x00007fffb60c2470 in llama_context::process_ubatch(llama_ubatch const&, llm_graph_type, llama_memory_context_i*, ggml_status&) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libllama.so.0
+#12 0x00007fffb60c5728 in llama_context::decode(llama_batch const&) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libllama.so.0
+#13 0x00007fffb60c66ae in llama_decode () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libllama.so.0
+#14 0x00007fffb6760c0a in common_context_can_seq_rm(llama_context*) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libllama-common.so.0
+#15 0x00007fffb6efa1be in server_context_impl::load_model(common_params&) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libllama-server-impl.so
+#16 0x00007fffb6e87aae in llama_server(common_params&, int, char**) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libllama-server-impl.so
+#17 0x00007fffb6e89aee in llama_server(int, char**) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libllama-server-impl.so
+#18 0x00007fffb70a77cc in __libc_start_call_main (main=main@entry=0x55556ce97f80 <main>, argc=argc@entry=26, argv=argv@entry=0x7fffc6210308) at ../sysdeps/nptl/libc_start_call_main.h:58
+warning: 58	../sysdeps/nptl/libc_start_call_main.h: No such file or directory
+#19 0x00007fffb70a7878 in __libc_start_main_impl (main=0x55556ce97f80 <main>, argc=26, argv=0x7fffc6210308, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=<optimized out>) at ./csu/libc-start.c:360
+warning: 360	./csu/libc-start.c: No such file or directory
+#20 0x000055556ce97fa4 in _start ()
+[Inferior 1 (process 1182835) detached]

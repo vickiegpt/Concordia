@@ -8787,6 +8787,31 @@ static int run_mmvf_ctx(struct MmvfNativeCtx *ctx,
     return status;
 }
 
+/* Packed Q8_0 x Q8_1 extension: x_type=4, reserved0=6. */
+static int run_q8_0_q8_1(const struct MmvfJob *job, const uint8_t *x,
+                        const uint8_t *y, float *dst) {
+    if (job->reserved0 != 6 || !job->grid_x || job->ncols2 <= 0 ||
+        job->ncols2 > 16384 || job->ncols2 % 16 || job->grid_y != 1 ||
+        job->grid_z != 1 || !job->ncols_dst || job->ncols_dst > 8 ||
+        job->stride_row <= 0 || job->stride_col_y2 <= 0 ||
+        job->stride_col_dst < (int64_t)job->grid_x) return 0xffff5020;
+    size_t nb = (size_t)job->ncols2 / 16;
+    if ((uint64_t)job->stride_row < nb*34 || (uint64_t)job->stride_col_y2 < nb*36 ||
+        (uint64_t)(job->grid_x-1)*job->stride_row+nb*34 > job->x_bytes ||
+        (uint64_t)(job->ncols_dst-1)*job->stride_col_y2+nb*36 > job->y_bytes ||
+        ((uint64_t)(job->ncols_dst-1)*job->stride_col_dst+job->grid_x)*4 > job->dst_bytes)
+        return 0xffff5021;
+#ifdef HETGPU_PACC_Q6K_XM_BATCH
+    extern int hetgpu_q8_0_q8_1_xm(const uint8_t *, const uint8_t *, float *,
+                                  size_t, size_t, size_t, size_t, size_t, size_t);
+    return hetgpu_q8_0_q8_1_xm(x, y, dst, job->grid_x, job->ncols_dst, nb,
+                              job->stride_row, job->stride_col_y2, job->stride_col_dst)
+        ? (int)0xffff5022u : 0;
+#else
+    return 0xffff5023;
+#endif
+}
+
 /* Packed Q6_K x Q8_1 extension: x_type=5, reserved0=6. Input strides are bytes. */
 static int run_q6k_q8_1(const struct MmvfJob *job, const uint8_t *x,
                        const uint8_t *y, float *dst) {
@@ -8919,7 +8944,8 @@ static int run_mmvf(int fd, const struct MmvfJob *job, uint64_t seq) {
     }
 
     struct Map mx = {0}, my = {0}, md = {0};
-    bool copy_io = job->x_type == 5 || jobd_mmvf_copy_io_enabled();
+    bool packed_q8 = job->x_type == 4 && job->reserved0 == 6;
+    bool copy_io = job->x_type == 5 || packed_q8 || jobd_mmvf_copy_io_enabled();
     bool compute = jobd_mmvf_compute_enabled();
     mirror_progress_status(fd, HETGPU_PACC_JOB_MMVF, seq, 0x5141);
     uint64_t phase_start = monotonic_us();
@@ -8991,10 +9017,11 @@ static int run_mmvf(int fd, const struct MmvfJob *job, uint64_t seq) {
     phase_start = monotonic_us();
     int status = job->x_type == 5
         ? run_q6k_q8_1(job, mx.ptr, my.ptr, (float *)md.ptr)
+        : packed_q8 ? run_q8_0_q8_1(job, mx.ptr, my.ptr, (float *)md.ptr)
         : run_mmvf_ctx(&ctx, job->x_bytes, job->y_bytes, "MMVF");
     g_mmvf_timing.compute_us = monotonic_us() - phase_start;
 #ifdef HETGPU_PACC_Q6K_XM_BATCH
-    if (job->x_type == 5) {
+    if (job->x_type == 5 || packed_q8) {
         const uint64_t timings[] = {q6k_xm_profile.activation, q6k_xm_profile.weights,
                                    q6k_xm_profile.matrix, q6k_xm_profile.reduce};
         for (unsigned i = 0; i < 4; ++i)

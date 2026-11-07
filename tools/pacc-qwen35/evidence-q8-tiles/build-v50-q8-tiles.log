@@ -1,0 +1,24 @@
+compiler_profile=vlen1024 hot=-O3 -march=rv64gcv_zvl1024b -mrvv-vector-bits=1024 jobd=-O3 -march=rv64gcv_zvl1024b -mrvv-vector-bits=1024 workers=-O3 -march=rv64gcv_zvl1024b -mrvv-vector-bits=1024
+Host VLEN=128: run VLA layout tests only; VLS1024 requires PACC validation
+PASS mode=unit m=17 n=1 k=256 max_abs_error=1.82166696e-05 elapsed_us=66
+PASS mode=unit m=1031 n=2 k=2048 max_abs_error=0.000624079257 elapsed_us=21859
+PASS mode=unit m=3 n=1 k=8192 max_abs_error=0.000831996556 elapsed_us=230
+PASS mode=unit m=1031 n=8 k=2048 max_abs_error=0.000838597771 elapsed_us=71085
+PASS Q8 mode=unit m=33 n=1 k=32 max_abs_error=7.15255737e-07 elapsed_us=37
+PASS Q8 mode=unit m=1031 n=8 k=2048 max_abs_error=0.000284342095 elapsed_us=91461
+PASS Q8 mode=unit m=3 n=3 k=32768 max_abs_error=0.00673043542 elapsed_us=2138
+PASS Q8 mode=unit m=8192 n=2 k=2048 max_abs_error=0.000336939469 elapsed_us=231272
+PASS XM rejection: seven invalid values, leaf error, invalid shape, valid zero
+PASS RVV payload copy: 648 alignment/length cases, 514 guard-page tails
+/usr/bin/ld: /tmp/hetgpu_pacc_jobd-d21e81.o: in function `load_kernel_image':
+hetgpu_pacc_jobd.c:(.text+0x20ed4): warning: Using 'dlopen' in statically linked applications requires at runtime the shared libraries from the glibc version used for linking
+patched outer:home/root/pacc_skl_test: 1003144 bytes into 2305208-byte slot
+patched outer:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched outer:etc/skel/.bashrc: 145 bytes into 410-byte slot
+patched inner:home/root/pacc_skl_test: 1003144 bytes into 2305208-byte slot
+patched inner:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched inner:etc/skel/.bashrc: 145 bytes into 410-byte slot
+wrote firmware/lx500_pacc_qwen35_pacc0_v50_q8_tiles_raw.bin (31716408 bytes)
+{"fdt_offset": 126976, "fdt_size": 14213, "changed_offsets": [128109, 128110, 128119, 128120, 128130, 128131, 128142, 128143, 128154, 128155, 128793, 128794, 128803, 128804, 128814, 128815, 128826, 128827, 128838, 128839, 130129, 130130, 130139, 130140, 130150, 130151, 130162, 130163, 130174, 130175, 130813, 130814, 130823, 130824, 130834, 130835, 130846, 130847, 130858, 130859, 132149, 132150, 132159, 132160, 132170, 132171, 132182, 132183, 132194, 132195, 132833, 132834, 132843, 132844, 132854, 132855, 132866, 132867, 132878, 132879, 134169, 134170, 134179, 134180, 134190, 134191, 134202, 134203, 134214, 134215, 134853, 134854, 134863, 134864, 134874, 134875, 134886, 134887, 134898, 134899], "source_sha256": "03309bf87d4179809b817409b19bac7c3b4939e111516260a3604dce769f3bae", "output_sha256": "bfc733006cf66d4d7f01e46d9634186bb4f4ff345f91e5d705382d99ea0a5a01"}
+bfc733006cf66d4d7f01e46d9634186bb4f4ff345f91e5d705382d99ea0a5a01  firmware/lx500_pacc_qwen35_pacc0_v50_q8_tiles.bin
+3481272fd6082ad7e4f1cb7aeb3c446c50fb099dc2782dc4f93e952bc417939c  bin/hetgpu_pacc_jobd.c
