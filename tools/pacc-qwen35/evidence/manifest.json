@@ -1,0 +1,157 @@
+[
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/profile-v35-xm-config.json",
+    "size": 445600,
+    "sha256": "c7c2ef7a902367bd8977fac2d22cf9dedcba98b500fe2922766b909edb64e316"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/profile-v35-xm-config.log",
+    "size": 960,
+    "sha256": "bc58c83caabfbd3261e2498265f6be86df83d7fcf6a45f62d7033a412e021d79"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/profile-v36-isa-alias.json",
+    "size": 379711,
+    "sha256": "74fbbf55f6c1f60166ec15293a44792452bb3510642c7a0a530d86b6d2542f6a"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/profile-v36-isa-alias.log",
+    "size": 960,
+    "sha256": "08411613430bdc3a74ad9c70df38ef379e606a7ea2eeb16316fe13141691f7ef"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/profile-v37-xm-batch.json",
+    "size": 502367,
+    "sha256": "c56249365afdce0fea4d3e0319086f0b68ebb55c11e1e7154f887de4d4881775"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/profile-v37-xm-batch.log",
+    "size": 963,
+    "sha256": "5e89401c192f6c50d7e6e020110308f40d3aed1a9f4492d386e4d2dbb3b666ac"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/profile-v38-q6k-xm.json",
+    "size": 389227,
+    "sha256": "57c72f8b4c4061d9192386d7a8efb9c4afa5e049be34e57e435e9d9559bec6ee"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/profile-v38-q6k-xm.log",
+    "size": 958,
+    "sha256": "b3640726378e4567c3e7d3c7780d9f0b11c9b7ee034ded0b98084893a382ebdf"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/profile-v38-xm-large.json",
+    "size": 2805277,
+    "sha256": "77beaab0c4d4dc6cf7e6bae5e5fd50560ab05ff4c4b54b5a0c66c05b9bd77e40"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/profile-v38-xm-large.log",
+    "size": 1218,
+    "sha256": "440414075c4691550dd92089014051ae13215505fc775061e877fbfd21f7c5ce"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/phases-v38-xm-count16-p4.json",
+    "size": 48048858,
+    "sha256": "98c83677b7d43ceb88da51d6977bfb00196a7984ae0e942f43c757446662ef03"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/concurrent-count16-v38-xm-p4.json",
+    "size": 6231,
+    "sha256": "c3585f10d6d11ee3779bdb5a0d18270e6bf2fa0182594de1a38b81a6fb5cf052"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/concurrent-count16-v34-pacc-p4.json",
+    "size": 6212,
+    "sha256": "69df8d22333f252aba0c3b8a6e1b1042ceda50ee48f7fa59b2f556f87cf3f23e"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/concurrent-count16-cpu-p4.json",
+    "size": 6200,
+    "sha256": "c4ab2c7aa20a442212882774c8467c538d2b99ebf27b3048c907aa71ab580edc"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/profile-v38-xm-large.summary.json",
+    "size": 2710,
+    "sha256": "ad2050b8cdc12d3603cfb8a01fdfe40152075b1aa157f9cd8b233f37716823e6"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/concurrent-count16-v38-xm-p4.server.log",
+    "size": 1252058,
+    "sha256": "dfd5d1db64bfde895c51991989bf6b05bb72bd300633cdaf362ca73ceb459271"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/logs/build-v38-q6k-xm.log",
+    "size": 2099,
+    "sha256": "3353148012d5905cb59e7084489bb3579790bb783f727c6756ccf1fdd6330a40"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/lx500_pacc_qwen35_pacc0_v35_xm_config.bin",
+    "size": 31716408,
+    "sha256": "3f7b2f5b025b54ba2e574f411ea7db579dc8f33e4b3bf5ec7580d2026c059b46"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/lx500_pacc_qwen35_pacc0_v36_isa_alias.bin",
+    "size": 31716408,
+    "sha256": "d6d94b15f91082dc7d786962405be0e286a41ec370f3961d4485bd38fd129252"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/lx500_pacc_qwen35_pacc0_v36_isa_alias.bin.json",
+    "size": 16195,
+    "sha256": "b66dd6a5c3789350402b1b52f406751ef42cb0ba2e370582ad8522a7a89e71cf"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/lx500_pacc_qwen35_pacc0_v37_xm_batch.bin",
+    "size": 31716408,
+    "sha256": "5f85c7abc8f74e0571ff0621d36ecb8e25ca679645f3e66d2bc8d7989eac7f24"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/lx500_pacc_qwen35_pacc0_v37_xm_batch.bin.json",
+    "size": 16195,
+    "sha256": "10a023433faf534ab44fe723526692b557a7f9074bfd1b421ad9260e6ae9fc79"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/lx500_pacc_qwen35_pacc0_v38_q6k_xm.bin",
+    "size": 31716408,
+    "sha256": "45b7b88ca8447bebfc54dae84c1aed3475fe8a50acc3dff9af32fa93e4ce77fe"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/lx500_pacc_qwen35_pacc0_v38_q6k_xm.bin.json",
+    "size": 16195,
+    "sha256": "b2fc869650ed982d39dcd4e65929795c204fb642490e60b69b18ba69714be930"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/hetgpu_pacc_jobd.c",
+    "size": 620861,
+    "sha256": "adb4dd45b6cae6658058386276b4526d9ee351881f3daa83f01bd4e5308b5e40"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/q6k-batch-xm.c",
+    "size": 4541,
+    "sha256": "2faaf2df602e9472c778ced6d3e20d42507ff1aa9d0a7ca137c522ce4797bc18"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/xsfmm_native_bf16.c",
+    "size": 3416,
+    "sha256": "3020f4f9d466ab4eb0ec319e1fbb142b7653bd264bb1db70b8dc9b4e01431f47"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/xm-user-probe.c",
+    "size": 5936,
+    "sha256": "7f8a031e6bc9a9ee23731d21b19430f3191d2d1bd9402f3be8725afdf2f1f145"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/xm-config-probe.c",
+    "size": 4266,
+    "sha256": "e67e4c5f01ecd7db0f8b09ade2618ceb1366f768f2803d712563121251b14e7d"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/bin/build-xm-batch-jobd.sh",
+    "size": 1974,
+    "sha256": "c8b4dd60be0579b4ffa1c2b24777b137f9dad94f60f7260e8e5c8bd2a1923242"
+  },
+  {
+    "path": "/srv/lanxin/qwen35-a3b/firmware/hetgpu_pacc_jobd_v38_q6k_xm",
+    "size": 985392,
+    "sha256": "0d2c859b02ce2700f70fd8ab7ec07048c9aaee202e988575f7e918e5e4d2810b"
+  }
+]

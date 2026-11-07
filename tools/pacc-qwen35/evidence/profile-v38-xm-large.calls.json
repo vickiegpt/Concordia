@@ -1,0 +1,122 @@
+{
+  "source": "/srv/lanxin/qwen35-a3b/logs/profile-v38-xm-large.json",
+  "calls": [
+    {
+      "m": 17,
+      "n": 1,
+      "k": 256,
+      "tiles": 1,
+      "elapsed_ms": 1.967,
+      "host_us": {
+        "pack": 4,
+        "write": 28,
+        "submit_wait": 1795,
+        "readback": 30
+      },
+      "device_us": {
+        "dst_prepare": 10,
+        "input_copy": 64,
+        "compute": 100,
+        "output_copy": 13,
+        "cleanup": 2,
+        "completion_publish": 4,
+        "device_before_publish": 285
+      },
+      "wait_residual_us": 1506
+    },
+    {
+      "m": 1031,
+      "n": 2,
+      "k": 2048,
+      "tiles": 3,
+      "elapsed_ms": 78.939,
+      "host_us": {
+        "pack": 1328,
+        "write": 698,
+        "submit_wait": 76611,
+        "readback": 110
+      },
+      "device_us": {
+        "dst_prepare": 184,
+        "input_copy": 29345,
+        "compute": 39813,
+        "output_copy": 196,
+        "cleanup": 6,
+        "completion_publish": 15,
+        "device_before_publish": 74078
+      },
+      "wait_residual_us": 2518
+    },
+    {
+      "m": 3,
+      "n": 1,
+      "k": 8192,
+      "tiles": 1,
+      "elapsed_ms": 6.137,
+      "host_us": {
+        "pack": 2,
+        "write": 29,
+        "submit_wait": 6037,
+        "readback": 25
+      },
+      "device_us": {
+        "dst_prepare": 9,
+        "input_copy": 397,
+        "compute": 4754,
+        "output_copy": 13,
+        "cleanup": 0,
+        "completion_publish": 4,
+        "device_before_publish": 5277
+      },
+      "wait_residual_us": 756
+    },
+    {
+      "m": 1031,
+      "n": 8,
+      "k": 2048,
+      "tiles": 3,
+      "elapsed_ms": 104.035,
+      "host_us": {
+        "pack": 776,
+        "write": 665,
+        "submit_wait": 102397,
+        "readback": 131
+      },
+      "device_us": {
+        "dst_prepare": 542,
+        "input_copy": 30450,
+        "compute": 67601,
+        "output_copy": 679,
+        "cleanup": 4,
+        "completion_publish": 15,
+        "device_before_publish": 99615
+      },
+      "wait_residual_us": 2767
+    },
+    {
+      "m": 248320,
+      "n": 1,
+      "k": 2048,
+      "tiles": 485,
+      "elapsed_ms": 14769.347,
+      "host_us": {
+        "pack": 73908,
+        "write": 180069,
+        "submit_wait": 14493153,
+        "readback": 20345
+      },
+      "device_us": {
+        "dst_prepare": 15399,
+        "input_copy": 5281013,
+        "compute": 8686956,
+        "output_copy": 25089,
+        "cleanup": 854,
+        "completion_publish": 2420,
+        "device_before_publish": 14062181
+      },
+      "wait_residual_us": 428552
+    }
+  ],
+  "capabilities": {},
+  "limitations": "Residual includes dispatch, host polling and diagnostics; not isolated IRQ latency."
+}
