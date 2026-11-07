@@ -21,6 +21,8 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
+pub mod rmsnorm_layout;
+pub use rmsnorm_layout::RmsNormLayout;
 use std::ffi::CStr;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
@@ -11858,6 +11860,33 @@ pub unsafe extern "C" fn hetgpu_sifive_submit_rmsnorm_on(
         dtype as u32,
         "hetgpu_sifive_submit_rmsnorm",
     )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hetgpu_sifive_submit_rmsnorm_strided_f32(
+    dev_id: i32, x: *const f32, weight: *const f32, dst: *mut f32,
+    layout: *const RmsNormLayout,
+) -> i32 {
+    if dev_id < 0 || x.is_null() || dst.is_null() || layout.is_null() ||
+        env_flag_enabled("HETGPU_SIFIVE_RMSNORM_HOST_FALLBACK") ||
+        env_flag_enabled("HETGPU_SIFIVE_SKIP_JOB_WAIT") ||
+        rmsnorm_output_timeout_assume_success_enabled() ||
+        std::env::var("HETGPU_SIFIVE_RMSNORM_STAGE_SHARED_DDR").ok().as_deref() == Some("0") {
+        return -1;
+    }
+    let layout = *layout;
+    let Some((xs, ws, _)) = layout.spans(!weight.is_null()) else { return -1; };
+    let input = std::slice::from_raw_parts(x, xs);
+    let weights = if weight.is_null() { None } else { Some(std::slice::from_raw_parts(weight, ws)) };
+    let result = rmsnorm_layout::pack_and_run(&layout, input, weights, |a, w, out, rows| {
+        hetgpu_sifive_submit_rmsnorm_on(dev_id, a.as_ptr().cast(),
+            w.map_or(std::ptr::null(), |v| v.as_ptr().cast()), out.as_mut_ptr().cast(),
+            rows as u64, layout.hidden, layout.eps, SifiveDataType::Float32 as i32) == 0
+    });
+    match result {
+        Ok(out) => { std::ptr::copy_nonoverlapping(out.as_ptr(), dst, out.len()); 0 }
+        Err(e) => { eprintln!("PACC strided RMSNorm: {e}"); -1 }
+    }
 }
 
 #[no_mangle]

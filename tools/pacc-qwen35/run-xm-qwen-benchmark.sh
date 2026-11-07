@@ -6,6 +6,13 @@ BUILD_ID=${2:?verified firmware build marker required}
 PARALLEL=${3:-4}
 WORKLOAD=${4:-count16}
 NGL=${5:-1}
+PLACEMENT=${6:-default}
+PLACEMENT_ARGS=()
+case "$PLACEMENT" in
+    default) ;;
+    cpu-kv-ffn) PLACEMENT_ARGS=(--cpu-kv-ffn) ;;
+    *) exit 2 ;;
+esac
 [[ "$PREFIX" =~ ^[A-Za-z0-9_-]+$ ]] || exit 2
 [[ "$PARALLEL" =~ ^[1-8]$ ]] || exit 2
 [[ "$BUILD_ID" =~ ^0x[0-9a-fA-F]+$ ]] || exit 2
@@ -16,7 +23,7 @@ case "$WORKLOAD" in
     *) echo 'supported workloads: count16, count64' >&2; exit 2 ;;
 esac
 EXPECTED_ARGS=()
-if [[ "$NGL" == 1 ]]; then
+if [[ "$NGL" == 1 && "$PLACEMENT" == default ]]; then
     EXPECTED_ARGS=(--expected-submissions "$SUBMISSIONS")
 fi
 test ! -e "logs/phases-$PREFIX.json"
@@ -35,4 +42,4 @@ unset HETGPU_SIFIVE_RESPONSE_POLL HETGPU_SIFIVE_STATUS_POLL_SLEEP_US
 python3 bin/profile-jobd-phases.py --output "logs/phases-$PREFIX.json" \
     --timeout 900 --sample-ms 1 "${EXPECTED_ARGS[@]}" --require-build "$BUILD_ID" \
     -- python3 bin/bench-qwen-requests.py --mode pacc --parallel "$PARALLEL" \
-    --workload "$WORKLOAD" --ngl "$NGL" --prefix "/srv/lanxin/qwen35-a3b/logs/$PREFIX"
+    --workload "$WORKLOAD" --ngl "$NGL" "${PLACEMENT_ARGS[@]}" --prefix "/srv/lanxin/qwen35-a3b/logs/$PREFIX"

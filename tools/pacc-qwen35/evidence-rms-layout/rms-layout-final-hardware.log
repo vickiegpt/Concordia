@@ -1,0 +1,149 @@
+PACC safety preflight passed: boot_id=89a6c374-059a-40da-8c4f-c00179fd48d4; firmware identity, completion and numerical correctness remain unverified.
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972241338369 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out for job_id=3 seq=7348575972241338369; continuing shared-DDR completion wait; completion slot magic=0x0 version=0 job_id=0 status=0x0 seq=0 raw=[00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00]
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972281233410 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972281233410
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972288286723 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out for job_id=3 seq=7348575972288286723; continuing shared-DDR completion wait; completion slot magic=0x4847505550414343 version=1 job_id=3 status=0x0 seq=7348575972281233410 raw=[43,43,41,50,55,50,47,48,01,00,00,00,03,00,00,00,00,00,00,00,00,00,00,00,02,30,cb,90,e9,62,fb,65]
+SIFIVE ZLUDA IRQ: dev=0 stale completion got_job_id=3 got_seq=7348575972281233410 want_job_id=3 want_seq=7348575972288286723; waiting on shared-DDR status without re-poll
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972308307972 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972308307972
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972315144197 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out for job_id=3 seq=7348575972315144197; continuing shared-DDR completion wait; completion slot magic=0x4847505550414343 version=1 job_id=3 status=0x0 seq=7348575972308307972 raw=[43,43,41,50,55,50,47,48,01,00,00,00,03,00,00,00,00,00,00,00,00,00,00,00,04,50,68,92,e9,62,fb,65]
+SIFIVE ZLUDA IRQ: dev=0 stale completion got_job_id=3 got_seq=7348575972308307972 want_job_id=3 want_seq=7348575972315144197; waiting on shared-DDR status without re-poll
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972335456262 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972335456262
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972342333447 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out for job_id=3 seq=7348575972342333447; continuing shared-DDR completion wait; completion slot magic=0x4847505550414343 version=1 job_id=3 status=0x0 seq=7348575972335456262 raw=[43,43,41,50,55,50,47,48,01,00,00,00,03,00,00,00,00,00,00,00,00,00,00,00,06,90,06,94,e9,62,fb,65]
+SIFIVE ZLUDA IRQ: dev=0 stale completion got_job_id=3 got_seq=7348575972335456262 want_job_id=3 want_seq=7348575972342333447; waiting on shared-DDR status without re-poll
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972362534920 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972362534920
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972369391625 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out for job_id=3 seq=7348575972369391625; continuing shared-DDR completion wait; completion slot magic=0x4847505550414343 version=1 job_id=3 status=0x0 seq=7348575972362534920 raw=[43,43,41,50,55,50,47,48,01,00,00,00,03,00,00,00,00,00,00,00,00,00,00,00,08,c0,a3,95,e9,62,fb,65]
+SIFIVE ZLUDA IRQ: dev=0 stale completion got_job_id=3 got_seq=7348575972362534920 want_job_id=3 want_seq=7348575972369391625; waiting on shared-DDR status without re-poll
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972389392394 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972389392394
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972396240907 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out for job_id=3 seq=7348575972396240907; continuing shared-DDR completion wait; completion slot magic=0x4847505550414343 version=1 job_id=3 status=0x0 seq=7348575972389392394 raw=[43,43,41,50,55,50,47,48,01,00,00,00,03,00,00,00,00,00,00,00,00,00,00,00,0a,90,3d,97,e9,62,fb,65]
+SIFIVE ZLUDA IRQ: dev=0 stale completion got_job_id=3 got_seq=7348575972389392394 want_job_id=3 want_seq=7348575972396240907; waiting on shared-DDR status without re-poll
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972407320588 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972407320588
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972414033933 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972414033933
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972420821006 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972420821006
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972427493391 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972427493391
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972434268176 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972434268176
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972440940561 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972440940561
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972447649810 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972447649810
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972454400019 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972454400019
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972461096980 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972461096980
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972467937301 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972467937301
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972474732566 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972474732566
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972481601559 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972481601559
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972488282136 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972488282136
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972494925849 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972494925849
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972501741594 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972501741594
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972508430363 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972508430363
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972515110940 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972515110940
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972521922589 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972521922589
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972528545822 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972528545822
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972535119903 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972535119903
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972541763616 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972541763616
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972548530209 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972548530209
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972555870242 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972555870242
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972562522147 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972562522147
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972569210916 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972569210916
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972575776805 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972575776805
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972582608934 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972582608934
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972589367335 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972589367335
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972596072488 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972596072488
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972602761257 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972602761257
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972609343530 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972609343530
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972616200235 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972616200235
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972622901292 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972622901292
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972629545005 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out but completion is ready job_id=3 seq=7348575972629545005
+SIFIVE ZLUDA IRQ: dev=0 shared_ddr_base=0x2075d000000 shared_ddr_size=0x400000 via ioctl 0x40107005
+SIFIVE ZLUDA IRQ: dev=0 poll-wait job_id=3 seq=7348575972636725294 poll_ms=1
+SIFIVE ZLUDA IRQ: dev=0 poll timed out for job_id=3 seq=7348575972636725294; continuing shared-DDR completion wait; completion slot magic=0x0 version=0 job_id=0 status=0x0 seq=0 raw=[00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00]
+PASS RMS hardware case=0 rows=32 hidden=256 max_abs_error=1.15795692e-07
+PASS RMS hardware case=1 rows=32 hidden=256 max_abs_error=1.15795692e-07
+PASS RMS hardware case=2 rows=12 hidden=7 max_abs_error=8.93754595e-08
+PASS RMS hardware case=3 rows=4 hidden=2048 max_abs_error=1.07935459e-07
+PASS RMS unsafe completion/host policy rejected without output writes

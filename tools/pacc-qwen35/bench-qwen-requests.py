@@ -14,6 +14,7 @@ p = argparse.ArgumentParser()
 p.add_argument('--mode', choices=['cpu', 'pacc'], required=True)
 p.add_argument('--parallel', type=int, default=4)
 p.add_argument('--ngl', type=int, default=1)
+p.add_argument('--cpu-kv-ffn', action='store_true', help='explicit CPU KV/FFN placement, not failure fallback')
 p.add_argument('--request-timeout', type=float, default=600)
 p.add_argument('--startup-timeout', type=float, default=300)
 p.add_argument('--prefix', required=True)
@@ -40,6 +41,8 @@ command = [str(root/'llama.cpp/build-pacc-cuda-gcc14/bin/llama-server'),
            '--port',str(port),'--chat-template-kwargs','{"enable_thinking":false}']
 if args.mode == 'cpu':
     command += ['--device', 'none']
+elif args.cpu_kv_ffn:
+    command += ['--no-kv-offload', '--override-tensor', r'blk\.[0-9]+\.ffn.*=CPU']
 barrier = threading.Barrier(args.parallel)
 def request(i):
     a, b = i+2, i+3
@@ -95,6 +98,7 @@ with open(args.prefix+'.server.log','w') as log:
         correct = all(r['correct'] for r in results)
         report = {'mode':args.mode,'ngl':ngl,'parallel':args.parallel,'batch':256,'ubatch':args.parallel,
                   'command':command,
+                  'cpu_kv_ffn':args.cpu_kv_ffn,
                   'workload':args.workload,
                   'all_correct':correct,'wall_s':wall,'completion_tokens':tokens,
                   'aggregate_output_tps':tokens/wall if correct else None,
@@ -110,6 +114,7 @@ with open(args.prefix+'.server.log','w') as log:
             Path(args.prefix+'.json').write_text(json.dumps({
                 'mode':args.mode, 'ngl':ngl, 'parallel':args.parallel,
                 'batch':256, 'ubatch':args.parallel, 'command':command,
+                'cpu_kv_ffn':args.cpu_kv_ffn,
                 'workload':args.workload, 'all_correct':False,
                 'aggregate_output_tps':None, 'error':str(exc),
                 'server_returncode':server.poll(),

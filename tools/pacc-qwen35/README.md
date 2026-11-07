@@ -167,8 +167,8 @@ bash bin/run-xm-qwen-benchmark.sh ngl2-check 0x20031 4 count16 2
 bash bin/run-xm-qwen-benchmark.sh ngl3-check 0x20031 4 count16 3
 ```
 
-These larger depths are experiments, not validated working configurations.
-Both currently fail before readiness: a Q8_0 x Q8_1 MMVQ takes the generic
+In the original depth sweep, both larger depths failed before readiness:
+a Q8_0 x Q8_1 MMVQ took the generic
 ELF path and needs 23,549,120 bytes against the 2,097,152-byte owned payload.
 The Q6_K-only native tiled interception does not cover this type. Do not
 increase the advertised shared size beyond the actual allocation or enable
@@ -211,7 +211,42 @@ unrelated edits were preserved; this is not a clean release-branch build.
 
 All four Q8 numerical hardware cases passed (21 tiles), including the
 8192x2x2048 kernel previously blocked by the payload limit. ngl=2 now completes
-that operation but stops at a subsequent hidden=256 RMSNorm layout/policy
-gate. It still has no valid token throughput. Do not disable shape validation
+that operation but the Q8-only candidate stops at a subsequent hidden=256
+RMSNorm layout/policy gate. That configuration has no valid token throughput.
+The later RMSNorm/hybrid experiment below is a separate configuration.
+Do not disable shape validation
 or enable host fallback to label it a successful PACC run.
 See `docs/pacc-q8-tiles-20261107.md` and `evidence-q8-tiles/`.
+
+## Strided RMSNorm and explicit hybrid placement
+
+The strided F32 GGML RMSNorm ABI now gathers rows using all three input
+strides and repeats weights according to their declared shape. Normalization
+runs on PACC; the host only packs/unpacks the data. Output is committed only
+after successful, finite device results. Fused add is not supported by this
+new path. Host RMS fallback, skipped completion and timeout-assumed-success
+policies are rejected. Four real-device layout tests and host layout/failure
+tests cover this path.
+
+Full ngl=2 offload still fails later at the FP16 attention `mul_mat_f` path.
+The sixth shell argument `cpu-kv-ffn` explicitly sets `--no-kv-offload` and
+`--override-tensor 'blk\.[0-9]+\.ffn.*=CPU'`. This is a mixed CPU/PACC run:
+model blocks outside the offload depth, KV attention and FFN stay on CPU;
+Q8 QKV/attention output projections and the Q6 final projection execute on
+PACC0 XM. Some shim pointwise/activation-quantization operations also run on
+the host. This is not full-PACC inference or automatic CPU matmul fallback.
+
+On the already-qualified v50 device, without rebooting or reloading firmware:
+
+```sh
+gcc -O2 bin/test-rms-layout.c -ldl -lm -o bin/test-rms-hardware
+CONCORDIA_RELEASE=/srv/lanxin/qwen35-a3b/runtime-rms \
+    bash bin/run-rms-validation.sh
+CONCORDIA_RELEASE=/srv/lanxin/qwen35-a3b/runtime-rms \
+    bash bin/run-xm-qwen-benchmark.sh rms-hybrid-unique 0x20032 8 count64 2 cpu-kv-ffn
+```
+
+Use a new prefix for each run. These scripts are tied to the checked current
+host boot and owned DDR allocation. See
+`docs/pacc-rms-layout-qwen-tps-20261107.md` and `evidence-rms-layout/` for
+correct-token throughput, remaining limitations and binary provenance.

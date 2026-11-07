@@ -19112,6 +19112,42 @@ unsafe fn try_offload_named_sifive_kernel(
     }
 
     if name_lower.contains("rmsnorm") || name_lower.contains("rms_norm") {
+        if name_lower.contains("rms_norm_f32") && kernel_name.contains("5uint3") {
+            let result = (|| -> Option<cuda_types::cuda::CUresult> {
+                let (multiply, add) = rmsnorm_named_offload_template_mode(kernel_name);
+                if add { return Some(Err(CUerror::NOT_SUPPORTED)); }
+                let x = read_param_u64(kernel_params, 0)?;
+                let dst = read_param_u64(kernel_params, 1)?;
+                let hidden = u64::try_from(read_param_i32(kernel_params, 2)?).ok()?;
+                let stride = |i| u64::try_from(read_param_i64(kernel_params, i)?).ok();
+                let weight = if multiply { read_param_u64(kernel_params, 7)? } else { 0 };
+                if multiply && weight == 0 { return Some(Err(CUerror::INVALID_VALUE)); }
+                let layout = sifive_runtime_sys::RmsNormLayout {
+                    hidden, dims: [grid_dim_x as u64, grid_dim_y as u64, grid_dim_z as u64],
+                    x_strides: [stride(3)?, stride(4)?, stride(5)?],
+                    w_shape: if multiply { [read_param_uint3_z(kernel_params, 11)? as u64,
+                        read_param_uint3_z(kernel_params, 12)? as u64,
+                        read_param_uint3_z(kernel_params, 13)? as u64,
+                        read_param_uint3_z(kernel_params, 14)? as u64] } else { [1;4] },
+                    w_strides: if multiply { [stride(8)?, stride(9)?, stride(10)?] } else { [0;3] },
+                    eps: read_param_f32(kernel_params, 6)?,
+                };
+                let (xs, ws, count) = layout.spans(multiply)?;
+                if !sifive_host_or_cuda_alloc_has_bytes(x, xs.checked_mul(4)?, false) ||
+                    !sifive_host_or_cuda_alloc_has_bytes(dst, count.checked_mul(4)?, true) ||
+                    (multiply && !sifive_host_or_cuda_alloc_has_bytes(weight, ws.checked_mul(4)?, false)) {
+                    return Some(Err(CUerror::INVALID_VALUE));
+                }
+                if sifive_env_truthy("HETGPU_SIFIVE_LOG_NAMED_OFFLOADS") {
+                    eprintln!("PACC strided RMSNorm layout={layout:?}");
+                }
+                let rc = sifive_runtime_sys::hetgpu_sifive_submit_rmsnorm_strided_f32(
+                    current_sifive_device_id_or_zero(), x as *const f32, weight as *const f32,
+                    dst as *mut f32, &layout);
+                Some(if rc == 0 { Ok(()) } else { Err(CUerror::UNKNOWN) })
+            })();
+            return Some(result.unwrap_or(Err(CUerror::NOT_SUPPORTED)));
+        }
         let allow_normal_fallback = std::env::var("HETGPU_SIFIVE_RMSNORM_ALLOW_NORMAL_FALLBACK")
             .ok()
             .as_deref()
