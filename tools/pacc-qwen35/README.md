@@ -114,3 +114,42 @@ v38 measurements. `docs/pacc-xm-performance-qwen35-20261107.md` and
 `evidence-performance/` record
 v39-v46. Original large raw logs remain under `/srv/lanxin/qwen35-a3b/logs`;
 manifests hash them. Do not regenerate the old evidence manifest with new sources.
+
+## Compiler and VLEN experiments
+
+The live host has VLEN=128 bits; the PACC guest reports `vlenb=128` bytes,
+which is VLEN=1024 bits. Do not use host `-march=native` for guest kernels.
+The existing JIT target already includes `zvl1024b`; this minimum VLEN is not
+the same as requesting fixed-length 1024-bit compiler optimization.
+
+`COMPILER_PROFILE=vlen1024` compiles jobd, workers, operand packing/reduction
+and payload copying with `-O3 -march=rv64gcv_zvl1024b
+-mrvv-vector-bits=1024`. The native XM assembly leaf is unchanged. The build
+probes host VLEN and uses separate VLA objects for host-only reference tests
+when it is not 1024; those tests do not qualify the fixed-length firmware.
+Real PACC numerical/completion tests remain mandatory.
+
+```sh
+VERSION=v49_vlen1024 BUILD_ID=0x20031 COMPILER_PROFILE=vlen1024 \
+    bash bin/build-xm-batch-jobd.sh
+# Existing images are never overwritten. Use a new version for a rebuild.
+sudo python3 bin/load-pacc0-v26-dynamic.py --version v49_vlen1024
+# After the same maintenance checks as above:
+sudo python3 bin/load-pacc0-v26-dynamic.py --version v49_vlen1024 --apply
+bash bin/run-xm-validation.sh v49-large 0x20031
+bash bin/run-xm-validation.sh v49-workers 0x20031 --hardware-workers
+bash bin/run-xm-qwen-benchmark.sh v49-p4 0x20031 4 count16
+```
+
+The COMGR change makes final code generation explicitly `-O3`, including the
+large-bitcode path that skips preoptimization. Set
+`HETGPU_SIFIVE_CODEGEN_OPT_LEVEL=0`, `1`, `2` or `3` for controlled comparisons.
+The ELF cache version is bumped and includes this setting. This source fix
+was tested through an isolated equivalent `clang-sifive-o3.py` wrapper, not
+installed as a rebuilt production runtime; the full release build is blocked
+by an absent LLVM submodule. The wrapper uses a distinct compiler path/cache
+and records compiler inputs, flags, duration and output size. It does not enable
+fast-math. No current throughput improvement is established for JIT O3 alone.
+
+See `docs/pacc-xm-compiler-options-20261107.md` and
+`evidence-compiler-options/` for the measured comparisons and limitations.

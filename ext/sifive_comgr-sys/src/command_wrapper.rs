@@ -1257,6 +1257,22 @@ fn compile_bc_to_sifive_object(
     }
 }
 
+fn sifive_codegen_opt_flag(level: Option<&str>) -> io::Result<String> {
+    match level.unwrap_or("3") {
+        value @ ("0" | "1" | "2" | "3") => Ok(format!("-O{value}")),
+        value => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("HETGPU_SIFIVE_CODEGEN_OPT_LEVEL must be 0, 1, 2 or 3, got {value:?}"),
+        )),
+    }
+}
+
+fn add_sifive_codegen_optimization(cmd: &mut Command) -> io::Result<()> {
+    let level = std::env::var("HETGPU_SIFIVE_CODEGEN_OPT_LEVEL").ok();
+    cmd.arg(sifive_codegen_opt_flag(level.as_deref())?);
+    Ok(())
+}
+
 fn compile_bc_to_xm_object(
     input_file: &Path,
     output_file: &Path,
@@ -1303,6 +1319,7 @@ fn compile_bc_to_xm_object(
             .arg(format!("--gcc-toolchain={}", gcc_toolchain));
     }
 
+    add_sifive_codegen_optimization(&mut cmd)?;
     match run_command(&mut cmd, "LLVM bitcode -> RISC-V object") {
         Ok(()) => Ok(()),
         Err(err) => {
@@ -1362,6 +1379,7 @@ fn compile_bc_to_xm_assembly(
             .arg(format!("--gcc-toolchain={}", gcc_toolchain));
     }
 
+    add_sifive_codegen_optimization(&mut cmd)?;
     run_command(&mut cmd, "LLVM bitcode -> RISC-V assembly")
 }
 
@@ -1415,6 +1433,7 @@ fn compile_bc_to_xm_object_via_sanitized_ll(
             .arg(format!("--gcc-toolchain={}", gcc_toolchain));
     }
 
+    add_sifive_codegen_optimization(&mut cmd)?;
     match run_command(&mut cmd, "sanitized LLVM IR -> RISC-V object") {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -1444,6 +1463,7 @@ fn compile_sanitized_ll_to_xm_object_with_llc(
         .arg(input_ll)
         .arg("-o")
         .arg(output_file);
+    add_sifive_codegen_optimization(&mut cmd)?;
     run_command(&mut cmd, "sanitized LLVM IR -> RISC-V object via llc")
 }
 
@@ -1566,6 +1586,22 @@ fn sanitize_llvm23_ir_for_llvm20(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codegen_optimization_is_explicit_and_validated() {
+        assert_eq!(super::sifive_codegen_opt_flag(None).unwrap(), "-O3");
+        for value in ["0", "1", "2", "3"] {
+            assert_eq!(
+                super::sifive_codegen_opt_flag(Some(value)).unwrap(),
+                format!("-O{value}")
+            );
+        }
+        for value in ["", "fast", "-O3", "3 -ffast-math", "4"] {
+            assert_eq!(
+                super::sifive_codegen_opt_flag(Some(value)).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+    }
     use super::{riscv_march_with_required_extensions, sanitize_llvm23_ir_for_llvm20};
 
     #[test]

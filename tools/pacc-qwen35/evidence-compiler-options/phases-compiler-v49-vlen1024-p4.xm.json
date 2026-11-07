@@ -1,0 +1,19 @@
+{
+  "activation_pack_us": 2769562,
+  "weight_unpack_us": 44307669,
+  "xm_leaf_us": 11246314,
+  "reduce_us": 10358427,
+  "xm_calls": 16885760,
+  "workers_range": [
+    4,
+    4
+  ],
+  "detail_timing_semantics": "Sum of worker elapsed durations; overlaps when workers > 1. compute_us is serial dispatch wall time.",
+  "source": "/srv/lanxin/qwen35-a3b/logs/phases-compiler-v49-vlen1024-p4.json",
+  "jobs": 8245,
+  "build_ids": [
+    131121
+  ],
+  "input_copy_us": 8940938,
+  "compute_us": 18548144
+}

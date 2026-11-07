@@ -1,0 +1,74 @@
+{
+  "command": [
+    "bin/test_jobd_q6k",
+    "--hardware-workers"
+  ],
+  "returncode": 0,
+  "timed_out": false,
+  "sample_ms": 5,
+  "max_sample_gap_ms": 5.442446010420099,
+  "recent_event_limit": 768,
+  "complete_submissions": 5,
+  "incomplete_submissions": {},
+  "observed_index_gaps": [],
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 111,
+      "p50_us": 18,
+      "p99_us": 50,
+      "max_us": 50
+    },
+    "input_copy": {
+      "sum_us": 4185,
+      "p50_us": 305,
+      "p99_us": 3428,
+      "max_us": 3428
+    },
+    "compute": {
+      "sum_us": 7665,
+      "p50_us": 858,
+      "p99_us": 3788,
+      "max_us": 3788
+    },
+    "output_copy": {
+      "sum_us": 506,
+      "p50_us": 66,
+      "p99_us": 299,
+      "max_us": 299
+    },
+    "cleanup": {
+      "sum_us": 11,
+      "p50_us": 2,
+      "p99_us": 4,
+      "max_us": 4
+    },
+    "completion_publish": {
+      "sum_us": 26,
+      "p50_us": 5,
+      "p99_us": 6,
+      "max_us": 6
+    },
+    "device_before_publish": {
+      "sum_us": 13439,
+      "p50_us": 1507,
+      "p99_us": 6569,
+      "max_us": 6569
+    }
+  },
+  "capabilities": {},
+  "limitations": [
+    "Double-read stability is not a source-side atomic snapshot guarantee.",
+    "Completion publish excludes subsequent diagnostic writes.",
+    "Host/device elapsed differences include dispatch and polling, not IRQ alone."
+  ],
+  "expected_submissions": 5,
+  "expected_count_matches": true,
+  "build_matches": true,
+  "capture_valid": true,
+  "build_values": [
+    131121
+  ],
+  "capability_events": [],
+  "source_sha256": "368219d89e01feb24d810b9cd00d1356d7776255c1d2447507d17dbd6baa2fdb",
+  "diagnostic_coverage": "complete"
+}

@@ -1,0 +1,185 @@
+warning: type `sifive_comgr_status_s` should have an upper camel case name
+  --> src/lib.rs:12:12
+   |
+12 | pub struct sifive_comgr_status_s(pub NonZeroU32);
+   |            ^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrStatusS`
+   |
+   = note: `#[warn(non_camel_case_types)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: type `sifive_comgr_status_t` should have an upper camel case name
+  --> src/lib.rs:13:10
+   |
+13 | pub type sifive_comgr_status_t = Result<(), self::sifive_comgr_status_s>;
+   |          ^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrStatusT`
+
+warning: type `sifive_comgr_language_s` should have an upper camel case name
+  --> src/lib.rs:30:12
+   |
+30 | pub struct sifive_comgr_language_s(pub c_uint);
+   |            ^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrLanguageS`
+
+warning: type `sifive_comgr_language_t` should have an upper camel case name
+  --> src/lib.rs:31:10
+   |
+31 | pub type sifive_comgr_language_t = sifive_comgr_language_s;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrLanguageT`
+
+warning: type `sifive_comgr_data_kind_s` should have an upper camel case name
+  --> src/lib.rs:44:12
+   |
+44 | pub struct sifive_comgr_data_kind_s(pub c_uint);
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrDataKindS`
+
+warning: type `sifive_comgr_data_kind_t` should have an upper camel case name
+  --> src/lib.rs:45:10
+   |
+45 | pub type sifive_comgr_data_kind_t = sifive_comgr_data_kind_s;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrDataKindT`
+
+warning: type `sifive_comgr_data_s` should have an upper camel case name
+  --> src/lib.rs:65:12
+   |
+65 | pub struct sifive_comgr_data_s {
+   |            ^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrDataS`
+
+warning: type `sifive_comgr_data_t` should have an upper camel case name
+  --> src/lib.rs:68:10
+   |
+68 | pub type sifive_comgr_data_t = sifive_comgr_data_s;
+   |          ^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrDataT`
+
+warning: type `sifive_comgr_data_set_s` should have an upper camel case name
+  --> src/lib.rs:71:12
+   |
+71 | pub struct sifive_comgr_data_set_s {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrDataSetS`
+
+warning: type `sifive_comgr_data_set_t` should have an upper camel case name
+  --> src/lib.rs:74:10
+   |
+74 | pub type sifive_comgr_data_set_t = sifive_comgr_data_set_s;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrDataSetT`
+
+warning: type `sifive_comgr_action_info_s` should have an upper camel case name
+  --> src/lib.rs:77:12
+   |
+77 | pub struct sifive_comgr_action_info_s {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrActionInfoS`
+
+warning: type `sifive_comgr_action_info_t` should have an upper camel case name
+  --> src/lib.rs:80:10
+   |
+80 | pub type sifive_comgr_action_info_t = sifive_comgr_action_info_s;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrActionInfoT`
+
+warning: type `sifive_comgr_metadata_node_s` should have an upper camel case name
+  --> src/lib.rs:82:12
+   |
+82 | pub struct sifive_comgr_metadata_node_s {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrMetadataNodeS`
+
+warning: type `sifive_comgr_metadata_node_t` should have an upper camel case name
+  --> src/lib.rs:85:10
+   |
+85 | pub type sifive_comgr_metadata_node_t = sifive_comgr_metadata_node_s;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrMetadataNodeT`
+
+warning: type `sifive_comgr_symbol_s` should have an upper camel case name
+  --> src/lib.rs:87:12
+   |
+87 | pub struct sifive_comgr_symbol_s {
+   |            ^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrSymbolS`
+
+warning: type `sifive_comgr_symbol_t` should have an upper camel case name
+  --> src/lib.rs:90:10
+   |
+90 | pub type sifive_comgr_symbol_t = sifive_comgr_symbol_s;
+   |          ^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrSymbolT`
+
+warning: type `sifive_comgr_metadata_kind_s` should have an upper camel case name
+  --> src/lib.rs:93:12
+   |
+93 | pub struct sifive_comgr_metadata_kind_s(pub c_uint);
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrMetadataKindS`
+
+warning: type `sifive_comgr_metadata_kind_t` should have an upper camel case name
+  --> src/lib.rs:94:10
+   |
+94 | pub type sifive_comgr_metadata_kind_t = sifive_comgr_metadata_kind_s;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrMetadataKindT`
+
+warning: type `sifive_comgr_action_kind_s` should have an upper camel case name
+   --> src/lib.rs:111:12
+    |
+111 | pub struct sifive_comgr_action_kind_s(pub c_uint);
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrActionKindS`
+
+warning: type `sifive_comgr_action_kind_t` should have an upper camel case name
+   --> src/lib.rs:112:10
+    |
+112 | pub type sifive_comgr_action_kind_t = sifive_comgr_action_kind_s;
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrActionKindT`
+
+warning: type `sifive_comgr_symbol_type_s` should have an upper camel case name
+   --> src/lib.rs:137:12
+    |
+137 | pub struct sifive_comgr_symbol_type_s(pub c_int);
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrSymbolTypeS`
+
+warning: type `sifive_comgr_symbol_type_t` should have an upper camel case name
+   --> src/lib.rs:138:10
+    |
+138 | pub type sifive_comgr_symbol_type_t = sifive_comgr_symbol_type_s;
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrSymbolTypeT`
+
+warning: type `sifive_comgr_symbol_info_s` should have an upper camel case name
+   --> src/lib.rs:152:12
+    |
+152 | pub struct sifive_comgr_symbol_info_s(pub c_uint);
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrSymbolInfoS`
+
+warning: type `sifive_comgr_symbol_info_t` should have an upper camel case name
+   --> src/lib.rs:153:10
+    |
+153 | pub type sifive_comgr_symbol_info_t = sifive_comgr_symbol_info_s;
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrSymbolInfoT`
+
+warning: type `sifive_comgr_code_object_info_s` should have an upper camel case name
+   --> src/lib.rs:168:12
+    |
+168 | pub struct sifive_comgr_code_object_info_s {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrCodeObjectInfoS`
+
+warning: type `sifive_comgr_code_object_info_t` should have an upper camel case name
+   --> src/lib.rs:173:10
+    |
+173 | pub type sifive_comgr_code_object_info_t = sifive_comgr_code_object_info_s;
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `SifiveComgrCodeObjectInfoT`
+
+warning: field `language` is never read
+  --> src/command_wrapper.rs:55:5
+   |
+52 | struct ActionContext {
+   |        ------------- field in this struct
+...
+55 |     language: sifive_comgr_language_s,
+   |     ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `sifive_comgr_sys` (lib test) generated 27 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/sifive_comgr_sys-07c8c62e8821b7f9)
+
+running 8 tests
+test command_wrapper::tests::codegen_optimization_is_explicit_and_validated ... ok
+test command_wrapper::tests::riscv_march_adds_zbb_for_backend_orc_b_selection ... ok
+test command_wrapper::tests::sanitize_drops_wave_barrier_lines ... ok
+test command_wrapper::tests::sanitize_attribute_group_does_not_duplicate_attributes_keyword ... ok
+test command_wrapper::tests::sanitize_materializes_dynamic_shared_memory_symbol ... ok
+test command_wrapper::tests::sanitize_materializes_named_dynamic_shared_memory_symbol ... ok
+test command_wrapper::tests::sanitize_rewrites_amdgpu_datalayout_for_riscv_cpu_pointers ... ok
+test command_wrapper::tests::sanitize_rewrites_module_target_triple_before_riscv_opt ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

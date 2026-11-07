@@ -12350,7 +12350,7 @@ unsafe fn set_program_compile_error(
     sifive_Result_Error
 }
 
-const HETGPU_SIFIVE_ELF_CACHE_VERSION: &[u8] = b"hetgpu-sifive-elf-cache-v5";
+const HETGPU_SIFIVE_ELF_CACHE_VERSION: &[u8] = b"hetgpu-sifive-elf-cache-v6-optimized-codegen";
 
 fn sifive_program_load_logs_enabled() -> bool {
     std::env::var("HETGPU_SIFIVE_LOG_PROGRAM_LOADS")
@@ -12395,6 +12395,7 @@ fn compute_sifive_elf_cache_key(
     hash = fnv1a64_with_len(hash, target_arch.to_bytes());
     for var in [
         "HETGPU_SIFIVE_CODEGEN_MARCH",
+        "HETGPU_SIFIVE_CODEGEN_OPT_LEVEL",
         "HETGPU_SIFIVE_DIRECT_BC",
         "HETGPU_SIFIVE_CLANG",
     ] {

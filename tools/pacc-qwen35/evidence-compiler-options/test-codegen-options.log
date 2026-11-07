@@ -1,0 +1,17 @@
+error: failed to load manifest for workspace member `/srv/lanxin/qwen35-a3b/Concordia-xm-release/comgr`
+referenced by workspace at `/srv/lanxin/qwen35-a3b/Concordia-xm-release/Cargo.toml`
+
+Caused by:
+  failed to load manifest for dependency `ptx`
+
+Caused by:
+  failed to load manifest for dependency `llvm_zluda`
+
+Caused by:
+  failed to load manifest for dependency `llvm-sys`
+
+Caused by:
+  failed to read `/srv/lanxin/qwen35-a3b/Concordia-xm-release/ext/llvm-project/llvm-sys/Cargo.toml`
+
+Caused by:
+  No such file or directory (os error 2)
