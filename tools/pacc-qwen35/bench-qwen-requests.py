@@ -18,14 +18,14 @@ p.add_argument('--cpu-kv-ffn', action='store_true', help='explicit CPU KV/FFN pl
 p.add_argument('--request-timeout', type=float, default=600)
 p.add_argument('--startup-timeout', type=float, default=300)
 p.add_argument('--prefix', required=True)
-p.add_argument('--workload', choices=['arithmetic', 'count16', 'count64'], default='arithmetic')
+p.add_argument('--workload', choices=['arithmetic', 'count16', 'count64', 'rawmath'], default='arithmetic')
 args = p.parse_args()
 if not 1 <= args.parallel <= 8:
     p.error('initial validated batch range is 1..8')
 if args.ngl < 0:
     p.error('ngl must be nonnegative')
-if not 0 < args.request_timeout <= 900 or not 0 < args.startup_timeout <= 900:
-    p.error('timeouts must be in (0, 900] seconds')
+if not 0 < args.request_timeout <= 7200 or not 0 < args.startup_timeout <= 1800:
+    p.error('request timeout must be in (0, 7200], startup timeout in (0, 1800] seconds')
 ngl = args.ngl if args.mode == 'pacc' else 0
 if Path(args.prefix+'.json').exists() or Path(args.prefix+'.server.log').exists():
     p.error('refusing to overwrite an existing benchmark')
@@ -57,15 +57,23 @@ def request(i):
     payload = {'messages':[{'role':'user','content':prompt}],
                'max_tokens':token_limit,'temperature':0,'seed':42,'cache_prompt':False,
                'chat_template_kwargs':{'enable_thinking':False}}
-    req = urllib.request.Request(f'http://127.0.0.1:{port}/v1/chat/completions',
+    endpoint='/v1/chat/completions'
+    if args.workload=='rawmath':
+        expected,token_limit='2',1
+        payload={'prompt':'1+1=','n_predict':1,'temperature':0,'seed':42,'cache_prompt':False}
+        endpoint='/completion'
+    req = urllib.request.Request(f'http://127.0.0.1:{port}{endpoint}',
           data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
     barrier.wait(timeout=30)
     started = time.perf_counter()
     with urllib.request.urlopen(req,timeout=args.request_timeout) as response:
         data = json.load(response)
     finished = time.perf_counter()
-    text = data['choices'][0]['message']['content'].strip()
+    text = data['content'].strip() if args.workload=='rawmath' else data['choices'][0]['message']['content'].strip()
+    completion_tokens=data['tokens_predicted'] if args.workload=='rawmath' else data['usage']['completion_tokens']
     correct = text == expected
+    if args.workload == 'rawmath':
+        correct = correct and completion_tokens == token_limit
     if args.workload == 'count64':
         # A token-capped answer can stop partway through the next integer.
         correct = (len(text) >= 32 and expected.startswith(text) and
@@ -73,7 +81,7 @@ def request(i):
                    data['choices'][0]['finish_reason'] == 'length')
     return {'index':i,'start':started,'finish':finished,'latency_s':finished-started,
             'text':text,'expected':expected,'correct':correct,
-            'completion_tokens':data['usage']['completion_tokens'],'response':data}
+            'completion_tokens':completion_tokens,'response':data}
 
 with open(args.prefix+'.server.log','w') as log:
     server = subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT)

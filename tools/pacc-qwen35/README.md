@@ -250,3 +250,13 @@ Use a new prefix for each run. These scripts are tied to the checked current
 host boot and owned DDR allocation. See
 `docs/pacc-rms-layout-qwen-tps-20261107.md` and `evidence-rms-layout/` for
 correct-token throughput, remaining limitations and binary provenance.
+
+## Full-layer Qwen bring-up
+
+See [pacc-ngl99-bringup.md](pacc-ngl99-bringup.md) for the full-layer CUDA ABI
+repairs, bounded ELF cache, evidence gates and remaining limitations.
+`run-ngl99-validation.sh PREFIX BUILD_ID kernels` runs device numerical tests;
+`run-ngl99-direct.sh PREFIX BUILD_ID` compares actual greedy token IDs and text
+against a CPU reference using direct libllama generation. Both require an explicit
+`CONCORDIA_RELEASE` and an already qualified, idle PACC0. Neither loads firmware
+nor reboots the host. Do not equate a kernel-only pass with end-to-end inference.

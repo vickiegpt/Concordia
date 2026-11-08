@@ -2126,8 +2126,12 @@ static CUfunction lookup_registered_function_exact(const void *func, const char 
 }
 
 static CUfunction lookup_registered_function(const void *func, const char **func_name) {
-    CUfunction exact = lookup_registered_function_exact(func, func_name);
-    if (exact) {
+    const char *matched_name = NULL;
+    CUfunction exact = lookup_registered_function_exact(func, &matched_name);
+    // A registered kernel can be awaiting lazy PTX compilation. Its identity is
+    // still authoritative; resolving a preceding symbol may select another template.
+    if (matched_name) {
+        if (func_name) *func_name = matched_name;
         return exact;
     }
 

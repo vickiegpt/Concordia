@@ -38,6 +38,9 @@ IMAGES = {
     "v48_x280_tune": "4a3ea984ac76d381290024d28a4b6b4f7c52859f39e4b62694757cb405c8dccb",
     "v49_vlen1024": "5d2b98105f48811be216adfeba6edc5e5ea546e299473b489dded2d03b3fc0a3",
     "v50_q8_tiles": "bfc733006cf66d4d7f01e46d9634186bb4f4ff345f91e5d705382d99ea0a5a01",
+    "v51_completion_owner": "676ac581327b0afa0cbfbbdcf51be5ad24fccdd84d59ac97f5ec65d36d32d626",
+    "v52_persistent_diag": "125b1632ef94ea919f1b69dc182e76bcf205be0a0516efb3b87564bfc1d3a95f",
+    "v53_bounded_elf": "b6e1b133a71c34820c55250a6cab341a0de9ec4c784980791606061e4adf9129",
 }
 
 

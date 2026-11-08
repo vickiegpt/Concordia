@@ -20,6 +20,21 @@ use ze_runtime_sys::*;
 ))]
 use sifive_runtime_sys;
 use std::ptr;
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[path = "sifive_gdn.rs"]
+mod sifive_gdn;
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[path = "sifive_topk.rs"]
+mod sifive_topk;
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[path = "sifive_q4k.rs"]
+mod sifive_q4k;
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[path = "sifive_mmvf.rs"]
+mod sifive_mmvf;
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[path = "sifive_softmax.rs"]
+mod sifive_softmax;
 #[cfg(all(
     feature = "sifive",
     not(feature = "amd"),
@@ -8861,6 +8876,7 @@ pub(crate) fn launch_kernel(
             grid_dim_x,
             grid_dim_y,
             grid_dim_z,
+            [block_dim_x, block_dim_y, block_dim_z],
             kernel_params,
         )
     } {
@@ -9064,6 +9080,12 @@ fn sifive_known_kernel_param_count(kernel_name: &str) -> Option<usize> {
     if name.contains("concat_f32_non_cont") {
         return Some(27);
     }
+    if name.contains("concat_cont") {
+        return Some(9);
+    }
+    if name.contains("concat_non_cont") {
+        return Some(27);
+    }
     if name.contains("concat_f32_dim") {
         return Some(5);
     }
@@ -9221,6 +9243,7 @@ pub(crate) unsafe fn launch_named_kernel_c(
             grid_dim_x,
             grid_dim_y,
             grid_dim_z,
+            [block_dim_x, block_dim_y, block_dim_z],
             kernel_params,
         ) {
             Some(Ok(())) => 0,
@@ -9765,7 +9788,7 @@ fn sifive_kernel_arg_can_be_pointer(kernel_name: &str, index: usize) -> bool {
     if name.contains("k_set_rows_quant") || name.contains("k_set_rows") {
         return index <= 2;
     }
-    if name.contains("concat_f32") {
+    if name.contains("concat_f32") || name.contains("concat_cont") || name.contains("concat_non_cont") {
         return index <= 2;
     }
     if name.contains("op_clamp_kernel") {
@@ -9996,7 +10019,10 @@ unsafe fn sifive_kernel_binding_metadata(
     if name.contains("convert_unary") {
         return sifive_convert_unary_binding_metadata(kernel_name, kernel_params, index);
     }
-    if name.contains("concat_f32_non_cont") {
+    if name.contains("concat_cont") {
+        return sifive_concat_cont_binding_metadata(kernel_name, kernel_params, index);
+    }
+    if name.contains("concat_f32_non_cont") || name.contains("concat_non_cont") {
         return sifive_concat_non_cont_binding_metadata(
             kernel_params,
             grid_dim_x,
@@ -11804,9 +11830,6 @@ unsafe fn sifive_set_rows_binding_metadata(
 ) -> Option<(u64, u32)> {
     let (src_elem, idx_elem, dst_elem) = sifive_set_rows_element_sizes(kernel_name)?;
     let ne_total = read_param_i64(kernel_params, 3)?.max(0) as u64;
-    let ne10 = read_param_i64(kernel_params, 4)?.max(0) as u64;
-    let ne11 = read_param_i64(kernel_params, 5)?.max(0) as u64;
-    let ne12 = read_param_i64(kernel_params, 6)?.max(0) as u64;
     let s01 = read_param_i64(kernel_params, 8)?.max(0) as u64;
     let s02 = read_param_i64(kernel_params, 9)?.max(0) as u64;
     let s03 = read_param_i64(kernel_params, 10)?.max(0) as u64;
@@ -11826,10 +11849,21 @@ unsafe fn sifive_set_rows_binding_metadata(
 
     let src0_bytes =
         sifive_strided_extent_bytes([ne00, ne01, ne02, ne03], [1, s01, s02, s03], src_elem);
-    let src1_bytes =
-        sifive_strided_extent_bytes([ne01, ne11_fd, ne12_fd, 1], [s10, s11, s12, 0], idx_elem);
+    let src1_bytes = sifive_strided_extent_bytes(
+        [ne01, ne02.min(ne11_fd), ne03.min(ne12_fd), 1], [s10, s11, s12, 0], idx_elem);
+    let indices=read_param_u64(kernel_params,1)?;
+    if ne_total==0 || ne_total>u32::MAX as u64 ||
+        !sifive_host_or_cuda_alloc_has_bytes(indices,usize::try_from(src1_bytes).ok()?,false){return None;}
+    let mut max_row=0u64;
+    for plane in 0..ne03.min(ne12_fd){for head in 0..ne02.min(ne11_fd){for row in 0..ne01{
+        let off=plane.checked_mul(s12)?.checked_add(head.checked_mul(s11)?)?.checked_add(row.checked_mul(s10)?)?.checked_mul(idx_elem)?;
+        let p=indices.checked_add(off)? as *const u8;
+        let value=if idx_elem==8{(p as *const i64).read_unaligned()}else{(p as *const i32).read_unaligned() as i64};
+        max_row=max_row.max(u64::try_from(value).ok()?);
+    }}}
+    // Scatter only changes selected rows; all gaps and older KV rows are inputs.
     let dst_bytes = sifive_strided_extent_bytes(
-        [ne00, ne10, ne11.max(1), ne12.max(1)],
+        [ne00, max_row.checked_add(1)?, ne02, ne03],
         [1, s1, s2, s3],
         dst_elem,
     );
@@ -11845,11 +11879,12 @@ unsafe fn sifive_set_rows_binding_metadata(
         ),
         2 => (
             dst_bytes,
-            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
+            sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT | sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT,
         ),
         _ => return None,
     };
-    let bytes = sifive_binding_bytes_for_host_ptr(kernel_params, index, bytes)?;
+    let ptr=read_param_u64(kernel_params,index)?;
+    if !sifive_host_or_cuda_alloc_has_bytes(ptr,usize::try_from(bytes).ok()?,index==2){return None;}
     Some((bytes, flags))
 }
 
@@ -14020,6 +14055,29 @@ unsafe fn sifive_bin_bcast_binding_metadata(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn sifive_concat_cont_binding_metadata(
+    name: &str, params: *mut *mut ::core::ffi::c_void, index: usize,
+) -> Option<(u64, u32)> {
+    if index > 2 { return None; }
+    let after = name.split("concat_contI").nth(1)?;
+    let element: u64 = match after.as_bytes().first()? { b'j' | b'f' => 4, b't' => 2, b'm' => 8, _ => return None };
+    let dim = after.split("Li").nth(1)?.split('E').next()?.parse::<usize>().ok()?;
+    if dim > 2 { return None; }
+    let mut a = [0u64; 3];
+    let mut d = [0u64; 3];
+    for i in 0..3 {
+        a[i] = u64::try_from(read_param_i64(params, 3+i)?).ok()?;
+        d[i] = u64::try_from(read_param_i64(params, 6+i)?).ok()?;
+        if a[i] > d[i] || (i != dim && a[i] != d[i]) { return None; }
+    }
+    let mut shape = if index == 0 { a } else { d };
+    if index == 1 { shape[dim] = d[dim].checked_sub(a[dim])?; }
+    let bytes = shape.iter().try_fold(element, |n, v| n.checked_mul(*v))?;
+    Some((bytes, if index == 2 { sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_OUTPUT }
+          else { sifive_runtime_sys::SIFIVE_KERNEL_ARG_FLAG_BUFFER_INPUT }))
+}
+
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
 fn sifive_parse_concat_dim(kernel_name: &str) -> Option<u32> {
     if kernel_name.contains("concat_f32_dim0") || kernel_name.contains("concat_f32_non_contILi0") {
         Some(0)
@@ -18902,6 +18960,7 @@ unsafe fn try_offload_named_sifive_kernel(
     grid_dim_x: ::core::ffi::c_uint,
     grid_dim_y: ::core::ffi::c_uint,
     grid_dim_z: ::core::ffi::c_uint,
+    block: [u32;3],
     kernel_params: *mut *mut ::core::ffi::c_void,
 ) -> Option<cuda_types::cuda::CUresult> {
     use cuda_types::cuda::*;
@@ -18918,6 +18977,21 @@ unsafe fn try_offload_named_sifive_kernel(
         .ok()
         .as_deref()
         == Some("1");
+    if name_lower.contains("gated_delta_net_cuda") {
+        return Some(sifive_gdn::launch(kernel_name, [grid_dim_x, grid_dim_y, grid_dim_z], kernel_params));
+    }
+    if kernel_name.starts_with("_Z13topk_moe_cudaILi") {
+        return Some(sifive_topk::launch(kernel_name, kernel_params));
+    }
+    if kernel_name.starts_with("_ZL12soft_max_f32I") && kernel_name.ends_with("15soft_max_params") {
+        return Some(sifive_softmax::launch(kernel_name, [grid_dim_x,grid_dim_y,grid_dim_z], kernel_params));
+    }
+    if kernel_name.starts_with("_ZL13mul_mat_vec_fI") && (grid_dim_y>1 || grid_dim_z>1) {
+        return Some(sifive_mmvf::launch(kernel_name, [grid_dim_x,grid_dim_y,grid_dim_z], kernel_params));
+    }
+    if kernel_name.starts_with("_ZL13mul_mat_vec_qIL9ggml_type12ELi") || kernel_name.starts_with("_ZL13mul_mat_vec_qIL9ggml_type13ELi") || kernel_name.starts_with("_ZL13mul_mat_vec_qIL9ggml_type8ELi1ELb1") || kernel_name.starts_with("_ZL13mul_mat_vec_qIL9ggml_type8ELi1ELb0ELb1ELb0") {
+        return Some(sifive_q4k::launch(kernel_name, [grid_dim_x,grid_dim_y,grid_dim_z], block, kernel_params));
+    }
     if name_lower.contains("quantize_q8_1")
         && sifive_env_enabled_default("HETGPU_SIFIVE_QUANTIZE_Q8_1_HOST_FALLBACK", true)
     {

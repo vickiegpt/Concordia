@@ -20,10 +20,11 @@ esac
 case "$WORKLOAD" in
     count16) SUBMISSIONS=8245 ;;
     count64) SUBMISSIONS=31525 ;;
-    *) echo 'supported workloads: count16, count64' >&2; exit 2 ;;
+    rawmath) SUBMISSIONS=0 ;;
+    *) echo 'supported workloads: count16, count64, rawmath' >&2; exit 2 ;;
 esac
 EXPECTED_ARGS=()
-if [[ "$NGL" == 1 && "$PLACEMENT" == default ]]; then
+if [[ "$NGL" == 1 && "$PLACEMENT" == default && "$WORKLOAD" != rawmath ]]; then
     EXPECTED_ARGS=(--expected-submissions "$SUBMISSIONS")
 fi
 test ! -e "logs/phases-$PREFIX.json"
@@ -39,7 +40,13 @@ export HETGPU_SIFIVE_LOG_MEMORY=0 HETGPU_SIFIVE_ZLUDA_IRQ_TRACE=0 HETGPU_SIFIVE_
 export HETGPU_SIFIVE_MMVF_ASYNC_NO_WAIT=0 HETGPU_SIFIVE_SKIP_JOB_WAIT=0
 # Negative polling experiments must not silently alter the default comparison.
 unset HETGPU_SIFIVE_RESPONSE_POLL HETGPU_SIFIVE_STATUS_POLL_SLEEP_US
+TIMEOUT_ARGS=()
+PROFILE_TIMEOUT=900
+if (( NGL >= 99 )); then
+    TIMEOUT_ARGS=(--startup-timeout 900 --request-timeout 3600)
+    PROFILE_TIMEOUT=4800
+fi
 python3 bin/profile-jobd-phases.py --output "logs/phases-$PREFIX.json" \
-    --timeout 900 --sample-ms 1 "${EXPECTED_ARGS[@]}" --require-build "$BUILD_ID" \
+    --timeout "$PROFILE_TIMEOUT" --sample-ms 1 "${EXPECTED_ARGS[@]}" --require-build "$BUILD_ID" \
     -- python3 bin/bench-qwen-requests.py --mode pacc --parallel "$PARALLEL" \
-    --workload "$WORKLOAD" --ngl "$NGL" "${PLACEMENT_ARGS[@]}" --prefix "/srv/lanxin/qwen35-a3b/logs/$PREFIX"
+    --workload "$WORKLOAD" --ngl "$NGL" "${PLACEMENT_ARGS[@]}" "${TIMEOUT_ARGS[@]}" --prefix "/srv/lanxin/qwen35-a3b/logs/$PREFIX"

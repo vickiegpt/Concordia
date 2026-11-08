@@ -73,6 +73,8 @@ if [[ "$COMPILER_PROFILE" == vlen1024 && "$HOST_VLEN" != 1024 ]]; then
 fi
 clang-20 -O2 bin/test-payload-copy.c "$TEST_COPY_OBJECT" -o bin/test_payload_copy
 bin/test_payload_copy
+clang-20 -O2 -pthread bin/test_jobd_elf_cache.c -ldl -lm -o bin/test_jobd_elf_cache
+bin/test_jobd_elf_cache
 clang-20 -march=rv64gc -O2 -c bin/xm-config-probe.c -o firmware/xm-config-probe.o
 clang-20 -march=rv64gcv -O2 -ffp-contract=off -c bin/xm-user-probe.c -o firmware/xm-user-probe.o
 clang-20 -march=rv64gcv -O2 -c bin/xsfmm_native_bf16.c -o firmware/xsfmm_native_bf16.o

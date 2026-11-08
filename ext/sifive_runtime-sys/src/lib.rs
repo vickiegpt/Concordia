@@ -22,6 +22,10 @@
 
 use std::collections::BTreeMap;
 pub mod rmsnorm_layout;
+pub mod gated_delta;
+pub mod topk_moe;
+pub mod q4k_tile;
+pub mod attention_softmax;
 pub use rmsnorm_layout::RmsNormLayout;
 use std::ffi::CStr;
 use std::fs::{File, OpenOptions};
@@ -9291,7 +9295,8 @@ unsafe fn submit_gemm_mmvf_small_n_shared_ddr(
     }
     let max_n = parse_env_usize("HETGPU_SIFIVE_GEMM_MMVF_MAX_N", 16)
         .max(1)
-        .min(16);
+        .min(16)
+        .min(n as usize);
     if n as usize > route_max_n {
         eprintln!(
             "hetgpu_sifive_submit_gemm_mmvf_small_n: route disabled n={} route_max_n={}",
@@ -9395,7 +9400,7 @@ unsafe fn submit_gemm_mmvf_small_n_shared_ddr(
         match btype as u32 {
             x if x == SifiveDataType::Float16 as u32 => SifiveDataType::Float16 as i32,
             x if x == SifiveDataType::Bfloat16 as u32 => SifiveDataType::Bfloat16 as i32,
-            x if x == SifiveDataType::Float32 as u32 => SifiveDataType::Bfloat16 as i32,
+            x if x == SifiveDataType::Float32 as u32 => SifiveDataType::Float32 as i32,
             _ => SifiveDataType::Float32 as i32,
         }
     } else {
@@ -9410,8 +9415,22 @@ unsafe fn submit_gemm_mmvf_small_n_shared_ddr(
     };
     let mmvf_post_submit_settle_us =
         parse_env_usize("HETGPU_SIFIVE_MMVF_POST_SUBMIT_SETTLE_US", 0) as u64;
+    // Bound both single-device and multi-device row tiles by the actual owned
+    // payload. Reserve alignment space; the staging layout is checked again below.
+    let row_bytes = if q8_0_x {q8_0_row_bytes} else {
+        k.checked_mul(sifive_x_elem_size).ok_or_else(|| Error::new(ErrorKind::InvalidInput,"MMVF row overflow"))?
+    };
+    let y_bytes = max_n.checked_mul(k).and_then(|v| v.checked_mul(sifive_y_elem_size))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput,"MMVF Y overflow"))?;
+    let per_row = row_bytes.checked_add(max_n*4)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput,"MMVF row/output overflow"))?;
+    let available = slot_bytes.min(payload_bytes/slot_count).checked_sub(y_bytes.saturating_add(192))
+        .ok_or_else(|| Error::new(ErrorKind::OutOfMemory,"MMVF Y exceeds owned slot"))?;
+    let max_mmvf_rows = max_mmvf_rows.min(available/per_row);
+    if max_mmvf_rows == 0 {return Err(Error::new(ErrorKind::OutOfMemory,"MMVF row exceeds owned slot"));}
+    let requested_workers = if m < parallel_min_m {1} else {requested_workers};
     let mmvf_tasks = (m + max_mmvf_rows - 1) / max_mmvf_rows;
-    if requested_workers > 1 && m >= parallel_min_m && mmvf_tasks > 1 {
+    if mmvf_tasks > 1 {
         let a_addr = a as usize;
         let b_addr = b as usize;
         let c_addr = c as usize;

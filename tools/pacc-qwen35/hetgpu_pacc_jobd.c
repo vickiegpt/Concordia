@@ -558,6 +558,10 @@ enum DispatchPollResult {
 };
 
 static long g_page_size = 4096;
+static uint64_t g_direct_elf_mapping_count;
+static uint64_t g_direct_elf_mapping_bytes;
+static uint64_t g_direct_elf_cache_hits;
+static uint64_t g_direct_elf_cache_count;
 static struct pacc_zluda_ddr_info g_ddr_info;
 static uint64_t g_shared_ddr_pacc_base;
 static uint64_t g_pacc_id;
@@ -1615,6 +1619,18 @@ static void jobd_crash_handler(int sig, siginfo_t *info, void *uctx) {
     if (uctx) {
         ucontext_t *uc = (ucontext_t *)uctx;
         pc = (uintptr_t)uc->uc_mcontext.__gregs[REG_PC];
+    }
+#endif
+#if !HETGPU_PACC_COMPLETION_TELEMETRY
+    /* Preserve the fault before libc/backtrace can fault again. */
+    if (g_control_window) {
+        volatile uint64_t *diag = (volatile uint64_t *)(g_control_window +
+                                                    HETGPU_PACC_COMPLETION_TELEMETRY_OFF);
+        diag[8] = (uint64_t)sig;
+        diag[9] = pc;
+        diag[10] = (uint64_t)(uintptr_t)(info ? info->si_addr : NULL);
+        diag[11] = g_current_kernel_seq;
+        __sync_synchronize();
     }
 #endif
     int len = snprintf(buf, sizeof(buf),
@@ -2914,6 +2930,25 @@ static void write_jobd_beacon(int fd, uint32_t job_id, uint64_t seq, uint32_t ph
     if (!jobd_beacon_enabled()) {
         return;
     }
+#if !HETGPU_PACC_COMPLETION_TELEMETRY
+    if (g_control_window) {
+        /* Host submissions clear the beacon, but not this reserved snapshot. */
+        volatile uint64_t *diag = (volatile uint64_t *)(g_control_window +
+                                                    HETGPU_PACC_COMPLETION_TELEMETRY_OFF);
+        diag[0] = 0;
+        jobd_io_fence();
+        diag[1] = seq;
+        diag[2] = ((uint64_t)detail << 32) | phase;
+        diag[3] = job_id;
+        diag[4] = g_direct_elf_mapping_count;
+        diag[5] = g_direct_elf_mapping_bytes;
+        diag[6] = g_direct_elf_cache_hits;
+        diag[7] = g_direct_elf_cache_count;
+        jobd_io_fence();
+        diag[0] = 0x4847505544494132ULL;
+        jobd_io_fence();
+    }
+#endif
     if (g_control_window &&
         HETGPU_PACC_BEACON_OFF <= HETGPU_PACC_CONTROL_BYTES &&
         sizeof(struct JobdBeacon) <= HETGPU_PACC_CONTROL_BYTES - HETGPU_PACC_BEACON_OFF) {
@@ -4007,6 +4042,8 @@ static bool preloaded_job_seen(uint32_t job_id, uint64_t seq) {
 }
 
 static void mark_preloaded_job_seen(uint32_t job_id, uint64_t seq) {
+    /* The shared completion record has one owner across both dispatch paths. */
+    g_kernel_completion_beacon_sticky = false;
     if (job_id < HETGPU_PACC_MAX_JOB_ID &&
         seq > g_last_preloaded_seq_by_job[job_id]) {
         g_last_preloaded_seq_by_job[job_id] = seq;
@@ -7016,6 +7053,8 @@ static int load_kernel_elf_direct(const uint8_t *elf, size_t elf_len,
     out->handle = NULL;
     out->mapping = mapping;
     out->map_len = map_len;
+    ++g_direct_elf_mapping_count;
+    g_direct_elf_mapping_bytes += map_len;
     out->fn = (void *)(uintptr_t)(load_bias + (uintptr_t)sym_value);
     if (elf64_find_symbol_value(elf, elf_len, "f___zluda_ptx_impl_set_launch", &sym_value)) {
         out->set_launch = (PaccSetLaunchFn)(uintptr_t)(load_bias + (uintptr_t)sym_value);
@@ -7108,6 +7147,100 @@ static void install_kernel_cache_artifact(const char *cache_path,
     unlink(tmp_path);
 }
 
+/* Dispatch is serialized. Reuse identical relocated images, restoring mutable
+ * PT_LOAD segments to their freshly loaded state before every invocation. */
+static int load_kernel_elf_cached(const uint8_t *elf, size_t elf_len,
+                                  const char *symbol, struct LoadedKernelImage *out) {
+    enum { CACHE_ENTRIES = 64 };
+    const size_t budget = 32u << 20;
+    struct CacheEntry {
+        uint64_t hash;
+        size_t elf_len;
+        uint8_t *elf;
+        uint8_t *initial;
+        char symbol[256];
+        struct LoadedKernelImage loaded;
+    };
+    static struct CacheEntry cache[CACHE_ENTRIES];
+    static size_t bytes;
+    uint64_t hash = hash_bytes_fnv64(elf, elf_len);
+    for (size_t i = 0; i < g_direct_elf_cache_count; ++i) {
+        struct CacheEntry *entry = &cache[i];
+        if (entry->hash != hash || entry->elf_len != elf_len ||
+            strcmp(entry->symbol, symbol) || memcmp(entry->elf, elf, elf_len)) continue;
+        uint64_t phoff = read_u64_le(elf + 0x20);
+        uint16_t entsize = read_u16_le(elf + 0x36), count = read_u16_le(elf + 0x38);
+        uint64_t min_vaddr = UINT64_MAX;
+        for (uint16_t p = 0; p < count; ++p) {
+            const uint8_t *ph = elf + phoff + (size_t)p * entsize;
+            if (read_u32_le(ph) == PACC_ELF_PT_LOAD && read_u64_le(ph + 0x28)) {
+                uint64_t start = read_u64_le(ph + 0x10) & ~((uint64_t)g_page_size - 1);
+                if (start < min_vaddr) min_vaddr = start;
+            }
+        }
+        for (uint16_t p = 0; p < count; ++p) {
+            const uint8_t *ph = elf + phoff + (size_t)p * entsize;
+            if (read_u32_le(ph) != PACC_ELF_PT_LOAD || !(read_u32_le(ph + 4) & 2)) continue;
+            size_t len = (size_t)read_u64_le(ph + 0x28);
+            if (!len) continue;
+            size_t off = (size_t)(read_u64_le(ph + 0x10) - min_vaddr);
+            if (off > entry->loaded.map_len || len > entry->loaded.map_len - off) {
+                g_kernel_load_error = 0x136;
+                return -1;
+            }
+            memcpy((uint8_t *)entry->loaded.mapping + off, entry->initial + off, len);
+            if (read_u32_le(ph + 4) & 1)
+                __builtin___clear_cache((char *)entry->loaded.mapping + off,
+                                        (char *)entry->loaded.mapping + off + len);
+        }
+        *out = entry->loaded;
+        ++g_direct_elf_cache_hits;
+        return 0;
+    }
+    if (g_direct_elf_cache_count == CACHE_ENTRIES || strlen(symbol) >= 256 ||
+        elf_len > budget || bytes > budget - elf_len) {
+        g_kernel_load_error = 0x134;
+        return -1;
+    }
+    /* Reserve bookkeeping before loading; cache exhaustion fails closed. */
+    uint8_t *key = malloc(elf_len);
+    if (!key) { g_kernel_load_error = 0x135; return -1; }
+    if (load_kernel_elf_direct(elf, elf_len, symbol, out) != 0) {
+        free(key);
+        return -1;
+    }
+    if (out->map_len > (budget - bytes - elf_len) / 2) {
+        munmap(out->mapping, out->map_len);
+        --g_direct_elf_mapping_count;
+        g_direct_elf_mapping_bytes -= out->map_len;
+        memset(out, 0, sizeof(*out));
+        free(key);
+        g_kernel_load_error = 0x134;
+        return -1;
+    }
+    uint8_t *initial = malloc(out->map_len);
+    if (!initial) {
+        munmap(out->mapping, out->map_len);
+        --g_direct_elf_mapping_count;
+        g_direct_elf_mapping_bytes -= out->map_len;
+        memset(out, 0, sizeof(*out));
+        free(key);
+        g_kernel_load_error = 0x135;
+        return -1;
+    }
+    memcpy(key, elf, elf_len);
+    memcpy(initial, out->mapping, out->map_len);
+    struct CacheEntry *entry = &cache[g_direct_elf_cache_count++];
+    entry->hash = hash;
+    entry->elf_len = elf_len;
+    entry->elf = key;
+    entry->initial = initial;
+    strcpy(entry->symbol, symbol);
+    entry->loaded = *out;
+    bytes += elf_len + 2 * out->map_len;
+    return 0;
+}
+
 static int load_kernel_image(const uint8_t *elf, size_t elf_len,
                              uint64_t kernel_hash,
                              const char *kernel_name, size_t kernel_name_size,
@@ -7143,7 +7276,7 @@ static int load_kernel_image(const uint8_t *elf, size_t elf_len,
     }
 
     if (e_type == PACC_ELF_ET_DYN &&
-        load_kernel_elf_direct(elf, elf_len, symbol_name, loaded_out) == 0) {
+        load_kernel_elf_cached(elf, elf_len, symbol_name, loaded_out) == 0) {
         snprintf(artifact_path, artifact_path_len, "<direct-elf>");
         return 0;
     }
@@ -12706,16 +12839,11 @@ static int load_kernel_job_metadata_view(int fd,
         /* Diagnostic snapshot uses the disabled telemetry area, not job slots. */
         volatile uint64_t *diag = (volatile uint64_t *)(g_control_window +
                                                     HETGPU_PACC_COMPLETION_TELEMETRY_OFF);
-        const uint64_t values[16] = {
-            0x4847505548445231ULL, desc->seq, desc->addr, desc->len,
-            g_ddr_info.ddr_base, g_shared_ddr_pacc_base,
-            (uint64_t)fd, (uint64_t)g_physical_mem_fd,
-            (uint64_t)g_map_uses_shared_ddr_offsets, (uint64_t)(uintptr_t)head,
+        const uint64_t values[4] = {
             read_u64_le(head), read_u64_le(head + 8),
-            read_u64_le(head + 16), read_u64_le(head + 24),
-            g_shared_ddr_fd_user_off, g_shared_ddr_control_base_off
+            read_u64_le(head + 16), read_u64_le(head + 24)
         };
-        for (size_t i = 0; i < 16; ++i) diag[i] = values[i];
+        for (size_t i = 0; i < 4; ++i) diag[12 + i] = values[i];
         jobd_io_fence();
     }
 #endif
@@ -13778,6 +13906,7 @@ static enum DispatchPollResult maybe_dispatch_kernel_job(
             pending_completion_valid = false;
         }
         g_kernel_completion_beacon_sticky = false;
+        g_preloaded_completion_sticky = false;
         trace_msg("new kernel doorbell: seq=%" PRIu64 " addr=0x%" PRIx64 " len=%" PRIu64,
                   desc.seq, desc.addr, desc.len);
         mirror_progress_status(fd, PACC_KERNEL_JOB_ID, desc.seq, 0x5101);
@@ -13798,7 +13927,8 @@ static enum DispatchPollResult maybe_dispatch_kernel_job(
         if (last_kernel_seq) {
             *last_kernel_seq = desc.seq;
         }
-        pending_completion_valid = false;
+        /* Retain the result until a different sequence is accepted. A cleared
+         * completion record must never cause the same kernel to execute twice. */
         g_kernel_completion_beacon_sticky = jobd_sticky_kernel_completion_enabled();
         if (g_kernel_completion_beacon_sticky) {
             g_kernel_completion_beacon_seq = desc.seq;
