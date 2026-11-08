@@ -60,6 +60,10 @@ where F: FnMut(&[f32], Option<&[f32]>, &mut [f32], usize) -> bool {
         }
     }
     let mut out = vec![f32::NAN; count];
+    if let Some(index)=packed.iter().position(|v|!v.is_finite()) {
+        eprintln!("PACC RMSNorm nonfinite input index={} hidden={} rows={} value={}",index,h,count/h,packed[index]);
+        return Err("nonfinite RMSNorm input");
+    }
     let shared = weight.is_none() || w_offsets.iter().all(|o| *o == w_offsets[0]);
     let mut w = vec![0.0; if weight.is_some() { h } else { 0 }];
     let step = if shared { count } else { h };
@@ -72,7 +76,11 @@ where F: FnMut(&[f32], Option<&[f32]>, &mut [f32], usize) -> bool {
             return Err("device RMSNorm failed");
         }
     }
-    if out.iter().any(|v| !v.is_finite()) { return Err("nonfinite RMSNorm output"); }
+    if let Some(index)=out.iter().position(|v|!v.is_finite()) {
+        eprintln!("PACC RMSNorm nonfinite output index={} hidden={} rows={} input={} output_bits=0x{:08x} weight_finite={}",
+            index,h,count/h,packed[index],out[index].to_bits(),w.iter().all(|v|v.is_finite()));
+        return Err("nonfinite RMSNorm output");
+    }
     Ok(out)
 }
 

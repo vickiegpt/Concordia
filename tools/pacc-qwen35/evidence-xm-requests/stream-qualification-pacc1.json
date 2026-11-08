@@ -1,0 +1,77 @@
+{
+  "complete_submissions": 42,
+  "incomplete_submission_count": 0,
+  "incomplete_sample": [],
+  "saturated_submissions": 0,
+  "submission_build_counts": {
+    "0x20036": 42
+  },
+  "build_matches": true,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 2529234,
+  "last_index": 2531008,
+  "unique_indices": 1774,
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 694,
+      "p50_us": 16,
+      "p99_us": 31,
+      "max_us": 31
+    },
+    "input_copy": {
+      "sum_us": 46504,
+      "p50_us": 785,
+      "p99_us": 3039,
+      "max_us": 3039
+    },
+    "compute": {
+      "sum_us": 170872,
+      "p50_us": 3814,
+      "p99_us": 7180,
+      "max_us": 7180
+    },
+    "output_copy": {
+      "sum_us": 2519,
+      "p50_us": 51,
+      "p99_us": 167,
+      "max_us": 167
+    },
+    "cleanup": {
+      "sum_us": 129,
+      "p50_us": 3,
+      "p99_us": 6,
+      "max_us": 6
+    },
+    "completion_publish": {
+      "sum_us": 270,
+      "p50_us": 5,
+      "p99_us": 66,
+      "max_us": 66
+    },
+    "device_before_publish": {
+      "sum_us": 228883,
+      "p50_us": 4864,
+      "p99_us": 10606,
+      "max_us": 10606
+    }
+  },
+  "returncode": 0,
+  "timed_out": false,
+  "capture_valid": true,
+  "device": 1,
+  "command": [
+    "bin/test_jobd_q8",
+    "--hardware",
+    "1"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 1.5614400035701692,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": null,
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

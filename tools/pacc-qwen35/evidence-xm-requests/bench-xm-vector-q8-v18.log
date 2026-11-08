@@ -1,0 +1,6 @@
+isolated_worker physical=0 payload=[0x200000,0x280000) runtime=/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v18
+Traceback (most recent call last):
+  File "/srv/lanxin/qwen35-a3b/bin/bench-xm-vector-reduce.py", line 30, in <module>
+    assert rc==0,(m,n,nb,gate,mode,rc)
+           ^^^^^
+AssertionError: (256, 1, 8, 0, '0', -1)

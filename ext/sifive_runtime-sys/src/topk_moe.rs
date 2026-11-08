@@ -20,7 +20,11 @@ pub unsafe extern "C" fn hetgpu_sifive_submit_topk_row(
         || n > 576
         || k == 0
         || k > n
-        || flags & !29 != 0
+        || (if flags & 64 != 0 {
+            !matches!(flags, 64 | 192) || k != n
+        } else {
+            flags & !29 != 0
+        })
         || !clamp.is_finite()
         || clamp < 0.
         || !scale.is_finite()
@@ -116,11 +120,27 @@ pub unsafe extern "C" fn hetgpu_sifive_submit_topk_row(
         }
     }
     if sifive_LaunchKernel(kernel, 1, 1, 1, 1, 1, 1) != 0 || result.iter().any(|v| !v.is_finite()) {
+        eprintln!(
+            "PACC topk invalid output n={} k={} flags={} sample={:?}",
+            n,
+            k,
+            flags,
+            &result[..result.len().min(32)]
+        );
         return -1;
     }
     let ids = &result[k as usize..];
     for (i, &v) in ids.iter().enumerate() {
         if v < 0. || v >= n as f32 || v.fract() != 0. || ids[..i].contains(&v) {
+            eprintln!(
+                "PACC topk invalid index n={} k={} flags={} position={} value={} sample={:?}",
+                n,
+                k,
+                flags,
+                i,
+                v,
+                &ids[..ids.len().min(32)]
+            );
             return -1;
         }
     }

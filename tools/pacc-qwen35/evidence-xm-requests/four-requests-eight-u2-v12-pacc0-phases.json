@@ -1,0 +1,81 @@
+{
+  "complete_submissions": 8111,
+  "incomplete_submission_count": 0,
+  "incomplete_sample": [],
+  "saturated_submissions": 0,
+  "submission_build_counts": {
+    "0x20036": 8111
+  },
+  "build_matches": true,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 3734964,
+  "last_index": 4783717,
+  "unique_indices": 1048753,
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 61860,
+      "p50_us": 3,
+      "p99_us": 18,
+      "max_us": 56
+    },
+    "input_copy": {
+      "sum_us": 2249258,
+      "p50_us": 3,
+      "p99_us": 797,
+      "max_us": 1380
+    },
+    "compute": {
+      "sum_us": 115970445,
+      "p50_us": 11164,
+      "p99_us": 110195,
+      "max_us": 121703
+    },
+    "output_copy": {
+      "sum_us": 256653,
+      "p50_us": 3,
+      "p99_us": 85,
+      "max_us": 120
+    },
+    "cleanup": {
+      "sum_us": 9568,
+      "p50_us": 0,
+      "p99_us": 5,
+      "max_us": 34
+    },
+    "completion_publish": {
+      "sum_us": 37077,
+      "p50_us": 5,
+      "p99_us": 6,
+      "max_us": 38
+    },
+    "device_before_publish": {
+      "sum_us": 119617099,
+      "p50_us": 11264,
+      "p99_us": 110295,
+      "max_us": 121802
+    }
+  },
+  "returncode": -15,
+  "timed_out": false,
+  "capture_valid": false,
+  "device": 0,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/bin/qwen-multiseq-v3",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "99",
+    "/srv/lanxin/qwen35-a3b/bin/cross-eight.json",
+    "/srv/lanxin/qwen35-a3b/logs/four-requests-eight-u2-v12/pacc0-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/cross-eight-cpu.json",
+    "2"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 5.71939698420465,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": "KeyboardInterrupt: signal 15",
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

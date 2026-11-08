@@ -1,0 +1,36 @@
+{
+  "complete_submissions": 0,
+  "incomplete_submission_count": 0,
+  "incomplete_sample": [],
+  "saturated_submissions": 0,
+  "submission_build_counts": {},
+  "build_matches": false,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 3676209,
+  "last_index": 3685986,
+  "unique_indices": 9777,
+  "phases_us": {},
+  "returncode": -15,
+  "timed_out": false,
+  "capture_valid": false,
+  "device": 0,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/bin/qwen-multiseq-v3",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "99",
+    "/srv/lanxin/qwen35-a3b/bin/cross-eight.json",
+    "/srv/lanxin/qwen35-a3b/logs/four-requests-eight-v11/pacc0-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/cross-eight-cpu.json",
+    "8"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 3.016862989170477,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": "KeyboardInterrupt: signal 15",
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

@@ -145,7 +145,8 @@ pub unsafe fn submit_qk_tile(
         bias as u64,
         env_flag_enabled("HETGPU_SIFIVE_QK_PROFILE") as u64 |
             ((env_flag_enabled("HETGPU_SIFIVE_QK_LOCAL_BATCH") as u64) << 1) |
-            ((env_flag_enabled("HETGPU_SIFIVE_QK_VECTOR_PACK") as u64) << 2),
+            ((env_flag_enabled("HETGPU_SIFIVE_QK_VECTOR_PACK") as u64) << 2) |
+            ((env_flag_enabled("HETGPU_SIFIVE_QK_VECTOR_REDUCE") as u64) << 3),
     ]
     .into_iter()
     .enumerate()

@@ -1,0 +1,134 @@
+isolated_worker physical=1 payload=[0x280000,0x300000) runtime=/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v15
+ZLUDA DEBUG: Compiling SIFIVE source q4k_tile.c to launchable ELF
+SIFIVE: Created LLVM bitcode: /dev/shm/hetgpu_tmp/.tmpZEgStc/q4k_tile.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpgabH4e/q4k_tile.bc -> /dev/shm/hetgpu_tmp/.tmpgabH4e/q4k_tile_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpgabH4e/q4k_tile_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpgabH4e/q4k_tile_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpgabH4e/q4k_tile_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpr5S2CW/q4k_tile_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpr5S2CW/q4k_tile_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpr5S2CW/q4k_tile_optimized_sifive.so
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpr5S2CW/q4k_tile.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpr5S2CW/q4k_tile_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpr5S2CW/q4k_tile_sifive.so
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=1 nb=8 gate=0 device_us=13230.08 activation_us=911.71 weights_us=6353.18 xm_us=642.62 reduce_us=3425.23 xm_calls=512 local_copy_us=401.92
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=1 nb=8 gate=0 device_us=13201.92 activation_us=897.34 weights_us=6332.53 xm_us=641.01 reduce_us=3401.62 xm_calls=512 local_copy_us=396.8
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=1 nb=8 gate=0 device_us=13168.64 activation_us=913.43 weights_us=6336.07 xm_us=656.66 reduce_us=3396.38 xm_calls=512 local_copy_us=407.04
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=1 nb=8 gate=0 device_us=13201.92 activation_us=916.56 weights_us=6356.66 xm_us=665.33 reduce_us=3404.67 xm_calls=512 local_copy_us=386.56
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=1 nb=8 gate=0 device_us=13168.64 activation_us=914.29 weights_us=6366.01 xm_us=640.63 reduce_us=3391.88 xm_calls=512 local_copy_us=385.71
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=1 nb=8 gate=0 device_us=13230.08 activation_us=927.88 weights_us=6362.42 xm_us=647 reduce_us=3393.81 xm_calls=512 local_copy_us=399.36
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=1 nb=8 gate=0 device_us=13226.25 activation_us=909.75 weights_us=6367.61 xm_us=633.66 reduce_us=3393.84 xm_calls=512 local_copy_us=412.16
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=1 nb=8 gate=0 device_us=13199.36 activation_us=912.72 weights_us=6355.55 xm_us=650.11 reduce_us=3393.96 xm_calls=512 local_copy_us=394.24
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=1 nb=8 gate=0 device_us=13212.89 activation_us=929.68 weights_us=6386.2 xm_us=658.53 reduce_us=3397.02 xm_calls=512 local_copy_us=404.48
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=2 nb=8 gate=0 device_us=16293.41 activation_us=1525.44 weights_us=6346.71 xm_us=645.51 reduce_us=5823.79 xm_calls=512 local_copy_us=404.48
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=2 nb=8 gate=0 device_us=16268.8 activation_us=1563.84 weights_us=6363.7 xm_us=660.21 reduce_us=5754.34 xm_calls=512 local_copy_us=399.36
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=2 nb=8 gate=0 device_us=16212.48 activation_us=1464.21 weights_us=6302.4 xm_us=661.76 reduce_us=5824.2 xm_calls=512 local_copy_us=401.92
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=2 nb=8 gate=0 device_us=16243.33 activation_us=1513.76 weights_us=6375.31 xm_us=659.56 reduce_us=5800.76 xm_calls=512 local_copy_us=394.24
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=2 nb=8 gate=0 device_us=16202.24 activation_us=1526.2 weights_us=6311.92 xm_us=666.09 reduce_us=5766.11 xm_calls=512 local_copy_us=394.24
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=2 nb=8 gate=0 device_us=16261.12 activation_us=1509.19 weights_us=6354.06 xm_us=658.16 reduce_us=5797.25 xm_calls=512 local_copy_us=407.04
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=2 nb=8 gate=0 device_us=16232.96 activation_us=1481.2 weights_us=6331.77 xm_us=676.34 reduce_us=5789.29 xm_calls=512 local_copy_us=399.36
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=2 nb=8 gate=0 device_us=16256 activation_us=1534.41 weights_us=6329.66 xm_us=651.36 reduce_us=5795.53 xm_calls=512 local_copy_us=391.68
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=2 nb=8 gate=0 device_us=16245.76 activation_us=1524.33 weights_us=6370.7 xm_us=648.36 reduce_us=5779.8 xm_calls=512 local_copy_us=394.25
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=4 nb=8 gate=0 device_us=22325.76 activation_us=2711.78 weights_us=6357.94 xm_us=663.4 reduce_us=10585.74 xm_calls=512 local_copy_us=401.92
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=4 nb=8 gate=0 device_us=22315.52 activation_us=2686.09 weights_us=6369.2 xm_us=640.17 reduce_us=10599.87 xm_calls=512 local_copy_us=412.16
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=4 nb=8 gate=0 device_us=22318.08 activation_us=2683.81 weights_us=6418.1 xm_us=673.73 reduce_us=10544.1 xm_calls=512 local_copy_us=407.77
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=4 nb=8 gate=0 device_us=22272 activation_us=2720.34 weights_us=6298.44 xm_us=682.01 reduce_us=10567.7 xm_calls=512 local_copy_us=397.67
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=4 nb=8 gate=0 device_us=22314.22 activation_us=2708.87 weights_us=6396.07 xm_us=625.31 reduce_us=10559.68 xm_calls=512 local_copy_us=409.6
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=4 nb=8 gate=0 device_us=22295.04 activation_us=2688.77 weights_us=6367.98 xm_us=643.06 reduce_us=10578.85 xm_calls=512 local_copy_us=401.92
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=4 nb=8 gate=0 device_us=22284.8 activation_us=2682.4 weights_us=6348.31 xm_us=643.04 reduce_us=10579.62 xm_calls=512 local_copy_us=404.48
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=4 nb=8 gate=0 device_us=22300.16 activation_us=2671.04 weights_us=6344.16 xm_us=649.01 reduce_us=10601.36 xm_calls=512 local_copy_us=399.43
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=4 nb=8 gate=0 device_us=22284.8 activation_us=2695.78 weights_us=6332.58 xm_us=633.02 reduce_us=10594.17 xm_calls=512 local_copy_us=396.8
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=8 nb=8 gate=0 device_us=34726.64 activation_us=5085.82 weights_us=6701.48 xm_us=637.14 reduce_us=20089.06 xm_calls=512 local_copy_us=448
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=8 nb=8 gate=0 device_us=34841.6 activation_us=5087.7 weights_us=6662.62 xm_us=617.47 reduce_us=20190.35 xm_calls=512 local_copy_us=506.88
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=8 nb=8 gate=0 device_us=34813.44 activation_us=5033.17 weights_us=6653.56 xm_us=621.42 reduce_us=20173.15 xm_calls=512 local_copy_us=499.2
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=8 nb=8 gate=0 device_us=34810.95 activation_us=5055.95 weights_us=6664.22 xm_us=656.44 reduce_us=20127.12 xm_calls=512 local_copy_us=529.92
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=8 nb=8 gate=0 device_us=34764.8 activation_us=5105.84 weights_us=6598.98 xm_us=686.06 reduce_us=20140.11 xm_calls=512 local_copy_us=481.28
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=8 nb=8 gate=0 device_us=34841.6 activation_us=5029.44 weights_us=6666.62 xm_us=609.8 reduce_us=20193.79 xm_calls=512 local_copy_us=514.75
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=8 nb=8 gate=0 device_us=34769.92 activation_us=5047 weights_us=6609.66 xm_us=678.46 reduce_us=20122.8 xm_calls=512 local_copy_us=504.32
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=8 nb=8 gate=0 device_us=34944 activation_us=5089.67 weights_us=6728.13 xm_us=644.16 reduce_us=20160.03 xm_calls=512 local_copy_us=550.4
+PACC_QK_PROFILE dev=1 qtype=4 m=256 n=8 nb=8 gate=0 device_us=34929.45 activation_us=5081.63 weights_us=6756.51 xm_us=601.4 reduce_us=20147.42 xm_calls=512 local_copy_us=540.16
+[
+  {
+    "device": 1,
+    "qtype": 4,
+    "m": 256,
+    "n": 1,
+    "k": 2048,
+    "latency_us": [
+      1777505.056,
+      17296.684,
+      17333.215,
+      17363.016,
+      17356.135,
+      17495.686,
+      17323.285,
+      17451.996,
+      17325.675
+    ],
+    "mean_us": 17368.2115,
+    "requests_per_s": 57.576452244377606,
+    "gflop_per_s": 0.0603732859886005
+  },
+  {
+    "device": 1,
+    "qtype": 4,
+    "m": 256,
+    "n": 2,
+    "k": 2048,
+    "latency_us": [
+      18644.766,
+      20272.018,
+      20138.217,
+      20210.558,
+      20164.367,
+      20261.748,
+      20244.328,
+      20213.218,
+      20211.187
+    ],
+    "mean_us": 20214.455125,
+    "requests_per_s": 98.93910014554498,
+    "gflop_per_s": 0.10374516587421498
+  },
+  {
+    "device": 1,
+    "qtype": 4,
+    "m": 256,
+    "n": 4,
+    "k": 2048,
+    "latency_us": [
+      24631.862,
+      25924.092,
+      26031.903,
+      25850.311,
+      26030.413,
+      25945.312,
+      26016.013,
+      25965.893,
+      25860.672
+    ],
+    "mean_us": 25953.076125,
+    "requests_per_s": 154.12431192104015,
+    "gflop_per_s": 0.1616110544969166
+  },
+  {
+    "device": 1,
+    "qtype": 4,
+    "m": 256,
+    "n": 8,
+    "k": 2048,
+    "latency_us": [
+      37016.418,
+      37982.786,
+      37905.765,
+      37780.544,
+      37877.954,
+      37928.315,
+      37724.634,
+      38021.856,
+      37974.796
+    ],
+    "mean_us": 37899.58125,
+    "requests_per_s": 211.08412642422005,
+    "gflop_per_s": 0.22133774894940297
+  }
+]

@@ -66,13 +66,14 @@ void pacc_q4k_tile_v1(uint64_t a0,uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a
     for(unsigned t=0;t<2;t++)for(unsigned i=0;i<256;i++)sums[t][i]=0;
     for(unsigned block=0;block<nb;block++)for(unsigned group=0;group<8;group++){
         uint64_t phase=profile?qk_now_ns():0;
-        float dy[8];int sy[8];
+        float dy[8],syf[8];int sy[8];
         for(unsigned col=0;col<n;col++){
             const uint8_t *v=y+(col*nb*8+block*8+group)*36;
             dy[col]=q4_half(v[0]|(v[1]<<8));sy[col]=0;
             for(unsigned lane=0;lane<32;lane++){
                 int q=(int8_t)v[4+lane];sy[col]+=q;b[lane*n+col]=q4_bf(q);
             }
+            syf[col]=(float)sy[col];
         }
         if(profile)activation_ns+=qk_now_ns()-phase;
         for(unsigned t=0;t<=gate;t++){
@@ -119,7 +120,28 @@ void pacc_q4k_tile_v1(uint64_t a0,uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a
             if(xsfmm_native_bf16((const uint16_t *)a,(const uint16_t *)b,dots,m,n,32)){diag[0]=-2;return;}
             calls++;
             if(profile){xm_ns+=qk_now_ns()-phase;phase=qk_now_ns();}
-            for(unsigned r=0;r<m;r++)for(unsigned col=0;col<n;col++){
+            if(options&8) {
+                // Independent columns: preserve each output's original multiply/add order.
+                size_t vl=__riscv_vsetvl_e32m1(n);
+                if(vl!=n){diag[0]=-5;return;}
+                vfloat32m1_t vy=__riscv_vle32_v_f32m1(dy,vl);
+                vfloat32m1_t vs=__riscv_vle32_v_f32m1(syf,vl);
+                for(unsigned r=0;r<m;r++) {
+                    vfloat32m1_t dot=__riscv_vle32_v_f32m1(dots+r*n,vl);
+                    vbool32_t valid=__riscv_vmfle_vf_f32m1_b32(__riscv_vfabs_v_f32m1(dot,vl),524288.f,vl);
+                    vfloat32m1_t integral=__riscv_vfcvt_f_x_v_f32m1(__riscv_vfcvt_rtz_x_f_v_i32m1(dot,vl),vl);
+                    valid=__riscv_vmand_mm_b32(valid,__riscv_vmfeq_vv_f32m1_b32(dot,integral,vl),vl);
+                    if(__riscv_vcpop_m_b32(valid,vl)!=vl) {
+                        unsigned col=__riscv_vfirst_m_b32(__riscv_vmnot_m_b32(valid,vl),vl);
+                        diag[0]=-1;diag[1]=dots[r*n+col];diag[2]=group;diag[3]=(row0+r)*n+col;return;
+                    }
+                    // Match scalar codegen: fused dot-minus-correction, then fused accumulation.
+                    vfloat32m1_t correction=__riscv_vfmul_vf_f32m1(__riscv_vfneg_v_f32m1(vs,vl),dm[r]*mi[r],vl);
+                    vfloat32m1_t value=__riscv_vfmacc_vf_f32m1(correction,dx[r]*sc[r],dot,vl);
+                    value=__riscv_vfmacc_vv_f32m1(__riscv_vle32_v_f32m1((const float *)sums[t]+r*n,vl),vy,value,vl);
+                    __riscv_vse32_v_f32m1((float *)sums[t]+r*n,value,vl);
+                }
+            } else for(unsigned r=0;r<m;r++)for(unsigned col=0;col<n;col++){
                 float dot=dots[r*n+col];
                 if(!isfinite(dot)||fabsf(dot)>524288.f||dot!=(float)(int)dot){diag[0]=-1;diag[1]=dot;diag[2]=group;diag[3]=(row0+r)*n+col;return;}
                 sums[t][r*n+col]+=dy[col]*(dx[r]*sc[r]*dot-dm[r]*mi[r]*sy[col]);

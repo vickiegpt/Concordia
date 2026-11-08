@@ -25,6 +25,7 @@ pub mod rmsnorm_layout;
 pub mod gated_delta;
 pub mod topk_moe;
 pub mod q4k_tile;
+pub mod concat_tile;
 pub mod attention_softmax;
 pub use rmsnorm_layout::RmsNormLayout;
 use std::ffi::CStr;
@@ -2702,20 +2703,17 @@ fn decode_sifive_host_status(
     {
         return None;
     }
-    let seq_matches = status_seq == seq;
-    let seq_covers = env_flag_default_true("HETGPU_SIFIVE_ACCEPT_NEWER_COMPLETION")
-        && status_seq != 0
-        && status_seq >= seq;
-    if !seq_matches && !seq_covers {
+    // Another submission cannot establish completion of this payload.
+    if status_seq != seq {
         return None;
     }
     if status == 0 {
         return Some(Ok(()));
     }
-    if expected_job_id == hetgpu_sifive_job_id::KERNEL && (status & 0xffff) == 0x5109 {
+    if expected_job_id == hetgpu_sifive_job_id::KERNEL && status == 0x5109 {
         return Some(Ok(()));
     }
-    if status == 1 || (status & 0xff00) == 0x5100 {
+    if status == 1 || (0x5100..=0x51ff).contains(&status) {
         return None;
     }
     if status != 1 {
@@ -2728,6 +2726,41 @@ fn decode_sifive_host_status(
         )));
     }
     None
+}
+
+#[cfg(test)]
+mod completion_contract_tests {
+    use super::*;
+    fn status(code:u32,job:u32,seq:u64)->[u8;32] {
+        let mut bytes=[0u8;32];
+        bytes[..8].copy_from_slice(&HETGPU_SIFIVE_JOB_MAGIC.to_le_bytes());
+        bytes[8..12].copy_from_slice(&HETGPU_SIFIVE_JOB_VERSION.to_le_bytes());
+        bytes[12..16].copy_from_slice(&job.to_le_bytes());
+        bytes[16..20].copy_from_slice(&code.to_le_bytes());
+        bytes[24..].copy_from_slice(&seq.to_le_bytes());bytes
+    }
+    #[test]
+    fn errors_cannot_alias_progress_or_success() {
+        let job=hetgpu_sifive_job_id::KERNEL;
+        for code in [0xffff5109,0xffff5104,0xffff5101,0xffff5004] {
+            assert!(decode_sifive_host_status(&status(code,job,7),job,7).unwrap().is_err());
+        }
+        for code in [0,0x5109] {
+            assert!(decode_sifive_host_status(&status(code,job,7),job,7).unwrap().is_ok());
+        }
+        for code in [1,0x5101,0x5104] {
+            assert!(decode_sifive_host_status(&status(code,job,7),job,7).is_none());
+        }
+    }
+    #[test]
+    fn completion_must_match_sequence_and_job() {
+        let job=hetgpu_sifive_job_id::RMSNORM;
+        for seq in [6,8,u64::MAX] {
+            assert!(decode_sifive_host_status(&status(0,job,seq),job,7).is_none());
+        }
+        assert!(decode_sifive_host_status(&status(0,job+1,7),job,7).is_none());
+        assert!(decode_sifive_host_status(&status(0,job,7),job,7).unwrap().is_ok());
+    }
 }
 
 fn sifive_job_timeout_grace_ms() -> u64 {

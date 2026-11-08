@@ -1,0 +1,65 @@
+isolated_worker physical=0 payload=[0x200000,0x280000) runtime=/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v12
+[SIFIVE Backend] exposing 1 CUDA-visible SIFIVE device(s): [0]
+[hetGPU] Checkpoint handler installed (Ctrl+C to checkpoint)
+[hetGPU] Note: Checkpoint will be saved at the next GPU sync point
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+SIFIVE: Successfully linked bitcode files
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpV3D8Ed/linked.bc -> /dev/shm/hetgpu_tmp/.tmpV3D8Ed/linked_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpV3D8Ed/linked_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpV3D8Ed/linked_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpV3D8Ed/linked_optimized.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpV3D8Ed/linked_0.bc -> /dev/shm/hetgpu_tmp/.tmpV3D8Ed/linked_0_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpV3D8Ed/linked_0_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpV3D8Ed/linked_0_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpV3D8Ed/linked_0_optimized.bc
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpV3D8Ed/main.bc -> /dev/shm/hetgpu_tmp/.tmpV3D8Ed/main_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpV3D8Ed/main_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpXYK6Rr/linked_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpXYK6Rr/linked_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpXYK6Rr/linked_optimized_sifive.so
+[SIFIVE Backend] Launching kernel '_ZL9mul_mat_fIfLi32ELi8ELi8ELb0EEvPKT_PKfPKiPfiiiiiiiiiiiiiiii' grid=(1,4,2) block=(32,8,1)
+PACC MMF device-MMVF heads=4 samples=2 m=32 n=8 k=64 atype=4 completion=verified
+PASS MMF device math half=False n=8 broadcast_heads=4 samples=2 guards=unchanged
+SIFIVE: Successfully linked bitcode files
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpjl1r17/linked.bc -> /dev/shm/hetgpu_tmp/.tmpjl1r17/linked_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpjl1r17/linked_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpjl1r17/linked_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpjl1r17/linked_optimized.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpjl1r17/linked_0.bc -> /dev/shm/hetgpu_tmp/.tmpjl1r17/linked_0_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpjl1r17/linked_0_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpjl1r17/linked_0_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpjl1r17/linked_0_optimized.bc
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpjl1r17/main.bc -> /dev/shm/hetgpu_tmp/.tmpjl1r17/main_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpjl1r17/main_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpIGZOj1/linked_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpIGZOj1/linked_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpIGZOj1/linked_optimized_sifive.so
+[SIFIVE Backend] Launching kernel '_ZL9mul_mat_fIfLi32ELi16ELi8ELb0EEvPKT_PKfPKiPfiiiiiiiiiiiiiiii' grid=(1,4,2) block=(32,8,1)
+PACC MMF device-MMVF heads=4 samples=2 m=32 n=16 k=64 atype=4 completion=verified
+PASS MMF device math half=False n=16 broadcast_heads=4 samples=2 guards=unchanged
+SIFIVE: Successfully linked bitcode files
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpSyeiHl/linked.bc -> /dev/shm/hetgpu_tmp/.tmpSyeiHl/linked_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpSyeiHl/linked_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpSyeiHl/linked_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpSyeiHl/linked_optimized.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpSyeiHl/linked_0.bc -> /dev/shm/hetgpu_tmp/.tmpSyeiHl/linked_0_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpSyeiHl/linked_0_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpSyeiHl/linked_0_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpSyeiHl/linked_0_optimized.bc
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpSyeiHl/main.bc -> /dev/shm/hetgpu_tmp/.tmpSyeiHl/main_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpSyeiHl/main_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpiZdyu9/linked_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpiZdyu9/linked_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpiZdyu9/linked_optimized_sifive.so
+[SIFIVE Backend] Launching kernel '_ZL9mul_mat_fI7__half2Li32ELi8ELi8ELb0EEvPKT_PKfPKiPfiiiiiiiiiiiiiiii' grid=(1,4,2) block=(32,8,1)
+PACC MMF device-MMVF heads=4 samples=2 m=32 n=8 k=64 atype=3 completion=verified
+PASS MMF device math half=True n=8 broadcast_heads=4 samples=2 guards=unchanged
+SIFIVE: Successfully linked bitcode files
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpzPdQki/linked.bc -> /dev/shm/hetgpu_tmp/.tmpzPdQki/linked_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpzPdQki/linked_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpzPdQki/linked_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpzPdQki/linked_optimized.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpzPdQki/linked_0.bc -> /dev/shm/hetgpu_tmp/.tmpzPdQki/linked_0_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpzPdQki/linked_0_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpzPdQki/linked_0_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpzPdQki/linked_0_optimized.bc
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpzPdQki/main.bc -> /dev/shm/hetgpu_tmp/.tmpzPdQki/main_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpzPdQki/main_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmptwq4cX/linked_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmptwq4cX/linked_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmptwq4cX/linked_optimized_sifive.so
+[SIFIVE Backend] Launching kernel '_ZL9mul_mat_fI7__half2Li32ELi16ELi8ELb0EEvPKT_PKfPKiPfiiiiiiiiiiiiiiii' grid=(1,4,2) block=(32,8,1)
+PACC MMF device-MMVF heads=4 samples=2 m=32 n=16 k=64 atype=3 completion=verified
+PASS MMF device math half=True n=16 broadcast_heads=4 samples=2 guards=unchanged

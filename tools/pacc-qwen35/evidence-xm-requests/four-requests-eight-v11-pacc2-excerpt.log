@@ -1,0 +1,19 @@
+PACC_XM_REQUEST_BATCH moe=false requests=8 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=8 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=8 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=8 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=8 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=8 completion=verified
+PACC GDN device-core heads=32 seqs=8 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=8 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=8 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=8 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=8 completion=verified
+
+LAST EVENTS
+PACC_XM_REQUEST_BATCH moe=false requests=8 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=8 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=8 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=8 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=8 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=8 completion=verified
+PACC GDN device-core heads=32 seqs=8 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=8 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=8 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=8 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=8 completion=verified
+
+TOKENS
+
+ERRORS
+sifive_LaunchKernel: ELF submit failed for '_ZL9mul_mat_fIfLi32ELi8ELi8ELb0EEvPKT_PKfPKiPfiiiiiiiiiiiiiiii' : SIFIVE kernel helper submit failed for '_ZL9mul_mat_fIfLi32ELi8ELi8ELb0EEvPKT_PKfPKiPfiiiiiiiiiiiiiiii' on sifive2 via /dev/hetgpu_sifive_mbox_ddr_coh2: SIFIVE kernel image must be a non-empty ELF64 payload; refusing legacy /dev/sifive BO fallback

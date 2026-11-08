@@ -1,0 +1,15 @@
+{
+  "prompts": [
+    "<|im_start|>user\nExplain how virtual memory works in at least 500 words.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "<|im_start|>user\nExplain how matrix multiplication works in at least 500 words.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "<|im_start|>user\nExplain how computer networks work in at least 500 words.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "<|im_start|>user\nExplain how operating systems work in at least 500 words.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "<|im_start|>user\nExplain how database indexes work in at least 500 words.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "<|im_start|>user\nExplain how cache coherence works in at least 500 words.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "<|im_start|>user\nExplain how parallel algorithms work in at least 500 words.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "<|im_start|>user\nExplain how error correction works in at least 500 words.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+  ],
+  "max_tokens": 128,
+  "min_tokens": 128,
+  "batched_prefill": true
+}

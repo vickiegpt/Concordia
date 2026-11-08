@@ -1,0 +1,77 @@
+{
+  "complete_submissions": 42,
+  "incomplete_submission_count": 0,
+  "incomplete_sample": [],
+  "saturated_submissions": 0,
+  "submission_build_counts": {
+    "0x20036": 42
+  },
+  "build_matches": true,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 4801404,
+  "last_index": 4803178,
+  "unique_indices": 1774,
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 606,
+      "p50_us": 13,
+      "p99_us": 46,
+      "max_us": 46
+    },
+    "input_copy": {
+      "sum_us": 26657,
+      "p50_us": 673,
+      "p99_us": 699,
+      "max_us": 699
+    },
+    "compute": {
+      "sum_us": 177962,
+      "p50_us": 3625,
+      "p99_us": 9011,
+      "max_us": 9011
+    },
+    "output_copy": {
+      "sum_us": 2460,
+      "p50_us": 49,
+      "p99_us": 159,
+      "max_us": 159
+    },
+    "cleanup": {
+      "sum_us": 93,
+      "p50_us": 2,
+      "p99_us": 4,
+      "max_us": 4
+    },
+    "completion_publish": {
+      "sum_us": 207,
+      "p50_us": 5,
+      "p99_us": 5,
+      "max_us": 5
+    },
+    "device_before_publish": {
+      "sum_us": 215560,
+      "p50_us": 4548,
+      "p99_us": 10094,
+      "max_us": 10094
+    }
+  },
+  "returncode": 0,
+  "timed_out": false,
+  "capture_valid": true,
+  "device": 3,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/bin/test_jobd_q8",
+    "--hardware",
+    "3"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 1.5708610008005053,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": null,
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

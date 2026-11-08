@@ -1,0 +1,386 @@
+isolated_worker physical=3 payload=[0x380000,0x400000) runtime=/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v11
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+hetgpu_sifive_submit_rmsnorm: staged shared-DDR dev=3 slot=3 rows=8 hidden=2048 dtype=4 row_bytes=8192 slot_bytes=131072
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm weight dev=3 off=0x3e0000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=0 off=0x3e2000 bytes=57344
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=0 rows=7 x=0x2075d3e2000 w=0x2075d3e0000 y=0x2075d3f0000 bytes=122880
+hetgpu_sifive_submit_rmsnorm: stage RMSNorm x dev=3 row0=7 off=0x3e6000 bytes=8192
+hetgpu_sifive_submit_rmsnorm: submit RMSNorm chunk dev=3 row0=7 rows=1 x=0x2075d3e6000 w=0x2075d3e0000 y=0x2075d3e8000 bytes=40960
+PASS RMS batch device=3 rows=8 hidden=2048 repeats=64 guards=unchanged

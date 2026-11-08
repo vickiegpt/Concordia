@@ -1,0 +1,58 @@
+{
+  "source": "/srv/lanxin/qwen35-a3b/logs/bench-xm-columns-q4-v15-isolated.json",
+  "profiles": [
+    {
+      "n": 1,
+      "wall_us": 17368.2115,
+      "device_us": 13201.2125,
+      "activation_us": 915.20625,
+      "weights_us": 6357.88125,
+      "xm_us": 649.11625,
+      "reduce_us": 3396.6475,
+      "local_copy_us": 398.29375,
+      "device_other_us": 1484.0674999999992,
+      "non_device_residual_us": 4166.999000000002
+    },
+    {
+      "n": 2,
+      "wall_us": 20214.455125,
+      "device_us": 16240.33625,
+      "activation_us": 1514.6425,
+      "weights_us": 6342.4400000000005,
+      "xm_us": 660.23,
+      "reduce_us": 5788.41,
+      "local_copy_us": 397.76125,
+      "device_other_us": 1536.8525000000009,
+      "non_device_residual_us": 3974.118875
+    },
+    {
+      "n": 4,
+      "wall_us": 25953.076125,
+      "device_us": 22298.0775,
+      "activation_us": 2692.1375,
+      "weights_us": 6359.355,
+      "xm_us": 648.6687499999999,
+      "reduce_us": 10578.16875,
+      "local_copy_us": 403.72875,
+      "device_other_us": 1616.0187499999993,
+      "non_device_residual_us": 3654.998625
+    },
+    {
+      "n": 8,
+      "wall_us": 37899.58125,
+      "device_us": 34839.47,
+      "activation_us": 5066.3,
+      "weights_us": 6667.5375,
+      "xm_us": 639.40125,
+      "reduce_us": 20156.84625,
+      "local_copy_us": 515.86375,
+      "device_other_us": 1793.5212500000052,
+      "non_device_residual_us": 3060.1112500000017
+    }
+  ],
+  "limits": [
+    "Instrumentation adds overhead.",
+    "Non-device residual includes host staging, transport, dispatch, completion observation and copyback; not pure interrupt/DMA time.",
+    "These are operator measurements, not full-model TPS."
+  ]
+}

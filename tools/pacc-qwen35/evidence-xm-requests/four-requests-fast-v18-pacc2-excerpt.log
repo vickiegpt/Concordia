@@ -1,0 +1,59 @@
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC GDN device-core heads=32 seqs=2 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=2 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=2048 k=512 tiles=36 multi_tiles=28 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC GDN device-core heads=32 seqs=2 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=2 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=512 k=2048 tiles=20 multi_tiles=12 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=512 k=2048 tiles=20 multi_tiles=12 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=2048 k=512 tiles=40 multi_tiles=24 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+
+LAST EVENTS
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC GDN device-core heads=32 seqs=2 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=2 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=512 k=2048 tiles=20 multi_tiles=12 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=512 k=2048 tiles=20 multi_tiles=12 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=2048 k=512 tiles=40 multi_tiles=24 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=2048 k=512 tiles=36 multi_tiles=28 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+
+TOKENS
+MULTISEQ_TOKEN sequence=0 step=0 token=24
+MULTISEQ_TOKEN sequence=1 step=0 token=15
+MULTISEQ_TOKEN sequence=0 step=1 token=24
+MULTISEQ_TOKEN sequence=1 step=1 token=16
+MULTISEQ_BATCH active=2 elapsed_us=124197714
+
+ERRORS

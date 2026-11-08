@@ -1,0 +1,239 @@
+isolated_worker physical=0 payload=[0x200000,0x280000) runtime=/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v8
+[SIFIVE Backend] exposing 1 CUDA-visible SIFIVE device(s): [0]
+[hetGPU] Checkpoint handler installed (Ctrl+C to checkpoint)
+[hetGPU] Note: Checkpoint will be saved at the next GPU sync point
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL17k_argsort_f32_i32IL15ggml_sort_order0EEvPKfPiii' grid=(3,1,1) block=(8,1,1)
+ZLUDA DEBUG: Compiling SIFIVE source topk_moe.c to launchable ELF
+SIFIVE: keeping temporary directory /dev/shm/hetgpu_tmp/.tmpcyWCLw
+SIFIVE: Created LLVM bitcode: /dev/shm/hetgpu_tmp/.tmpcyWCLw/topk_moe.bc
+SIFIVE: preserved temporary directory /dev/shm/hetgpu_tmp/.tmpcyWCLw
+SIFIVE: keeping temporary directory /dev/shm/hetgpu_tmp/.tmpq1vWJ6
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpq1vWJ6/topk_moe.bc -> /dev/shm/hetgpu_tmp/.tmpq1vWJ6/topk_moe_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpq1vWJ6/topk_moe_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpq1vWJ6/topk_moe_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpq1vWJ6/topk_moe_optimized.bc
+SIFIVE: preserved temporary directory /dev/shm/hetgpu_tmp/.tmpq1vWJ6
+SIFIVE: keeping temporary directory /dev/shm/hetgpu_tmp/.tmpuflRi3
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpuflRi3/topk_moe_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpuflRi3/topk_moe_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpuflRi3/topk_moe_optimized_sifive.so
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpuflRi3/topk_moe.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpuflRi3/topk_moe_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpuflRi3/topk_moe_sifive.so
+SIFIVE: preserved temporary directory /dev/shm/hetgpu_tmp/.tmpuflRi3
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20480
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x822180 shared=0x2075d204f80 size=20 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x83e1f0 shared=0x2075d204fc0 size=40 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670332630163457 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20480
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x822194 shared=0x2075d204f80 size=20 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x81ddf0 shared=0x2075d204fc0 size=40 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670332658290690 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20480
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8221a8 shared=0x2075d204f80 size=20 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x83e1f0 shared=0x2075d204fc0 size=40 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670332689653763 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+PACC argsort device-bitonic rows=3 cols=5 order=0 completion=verified
+PASS device argsort n=5 order=0 ties=exact padding=exact guards=unchanged
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+SIFIVE: keeping temporary directory /dev/shm/hetgpu_tmp/.tmpMcyiZS
+SIFIVE: Successfully linked bitcode files
+SIFIVE: preserved temporary directory /dev/shm/hetgpu_tmp/.tmpMcyiZS
+SIFIVE: keeping temporary directory /dev/shm/hetgpu_tmp/.tmpLiE7Zm
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpLiE7Zm/linked.bc -> /dev/shm/hetgpu_tmp/.tmpLiE7Zm/linked_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpLiE7Zm/linked_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpLiE7Zm/linked_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpLiE7Zm/linked_optimized.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpLiE7Zm/linked_0.bc -> /dev/shm/hetgpu_tmp/.tmpLiE7Zm/linked_0_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpLiE7Zm/linked_0_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpLiE7Zm/linked_0_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpLiE7Zm/linked_0_optimized.bc
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpLiE7Zm/main.bc -> /dev/shm/hetgpu_tmp/.tmpLiE7Zm/main_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpLiE7Zm/main_optimized.bc
+SIFIVE: preserved temporary directory /dev/shm/hetgpu_tmp/.tmpLiE7Zm
+SIFIVE: keeping temporary directory /dev/shm/hetgpu_tmp/.tmpAZr6jk
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpAZr6jk/linked_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpAZr6jk/linked_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpAZr6jk/linked_optimized_sifive.so
+SIFIVE: preserved temporary directory /dev/shm/hetgpu_tmp/.tmpAZr6jk
+[SIFIVE Backend] Launching kernel '_ZL17k_argsort_f32_i32IL15ggml_sort_order1EEvPKfPiii' grid=(3,1,1) block=(8,1,1)
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20480
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x858480 shared=0x2075d204f80 size=20 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x8a2830 shared=0x2075d204fc0 size=40 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336577384452 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20480
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x858494 shared=0x2075d204f80 size=20 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x89e230 shared=0x2075d204fc0 size=40 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336603897861 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20480
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8584a8 shared=0x2075d204f80 size=20 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x8a7170 shared=0x2075d204fc0 size=40 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336635494406 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+PACC argsort device-bitonic rows=3 cols=5 order=1 completion=verified
+PASS device argsort n=5 order=1 ties=exact padding=exact guards=unchanged
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL17k_argsort_f32_i32IL15ggml_sort_order0EEvPKfPiii' grid=(3,1,1) block=(16,1,1)
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20544
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x89e000 shared=0x2075d204f80 size=64 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x89a6a0 shared=0x2075d204fc0 size=128 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336685162503 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20544
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x89e040 shared=0x2075d204f80 size=64 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x89a550 shared=0x2075d204fc0 size=128 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336713904136 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20544
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x89e080 shared=0x2075d204f80 size=64 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x83e190 shared=0x2075d204fc0 size=128 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336745656329 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+PACC argsort device-bitonic rows=3 cols=16 order=0 completion=verified
+PASS device argsort n=16 order=0 ties=exact padding=exact guards=unchanged
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL17k_argsort_f32_i32IL15ggml_sort_order1EEvPKfPiii' grid=(3,1,1) block=(16,1,1)
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20544
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x89e000 shared=0x2075d204f80 size=64 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x89a550 shared=0x2075d204fc0 size=128 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336796225546 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20544
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x89e040 shared=0x2075d204f80 size=64 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x8986b0 shared=0x2075d204fc0 size=128 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336826298379 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=20544
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x89e080 shared=0x2075d204f80 size=64 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x81df30 shared=0x2075d204fc0 size=128 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336853057548 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+PACC argsort device-bitonic rows=3 cols=16 order=1 completion=verified
+PASS device argsort n=16 order=1 ties=exact padding=exact guards=unchanged
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL17k_argsort_f32_i32IL15ggml_sort_order0EEvPKfPiii' grid=(3,1,1) block=(256,1,1)
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=23424
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x89ff00 shared=0x2075d204f80 size=1024 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x8f19e0 shared=0x2075d205380 size=2048 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336897437709 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=23424
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8a0300 shared=0x2075d204f80 size=1024 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x8f19e0 shared=0x2075d205380 size=2048 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336913694734 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=23424
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8a0700 shared=0x2075d204f80 size=1024 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x8f19e0 shared=0x2075d205380 size=2048 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336940273679 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+PACC argsort device-bitonic rows=3 cols=256 order=0 completion=verified
+PASS device argsort n=256 order=0 ties=exact padding=exact guards=unchanged
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL17k_argsort_f32_i32IL15ggml_sort_order1EEvPKfPiii' grid=(3,1,1) block=(256,1,1)
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=23424
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8f5780 shared=0x2075d204f80 size=1024 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x89f650 shared=0x2075d205380 size=2048 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670336999518224 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=23424
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8f5b80 shared=0x2075d204f80 size=1024 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x89f650 shared=0x2075d205380 size=2048 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670337015885841 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=23424
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8f5f80 shared=0x2075d204f80 size=1024 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x89f650 shared=0x2075d205380 size=2048 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670337042112530 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+PACC argsort device-bitonic rows=3 cols=256 order=1 completion=verified
+PASS device argsort n=256 order=1 ties=exact padding=exact guards=unchanged
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL17k_argsort_f32_i32IL15ggml_sort_order0EEvPKfPiii' grid=(3,1,1) block=(1024,1,1)
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=27264
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8fed00 shared=0x2075d204f80 size=2304 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x900810 shared=0x2075d205880 size=4608 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670337103216659 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=27264
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8ff600 shared=0x2075d204f80 size=2304 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x900810 shared=0x2075d205880 size=4608 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670337128767508 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=27264
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8fff00 shared=0x2075d204f80 size=2304 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x900810 shared=0x2075d205880 size=4608 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670337163403285 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+PACC argsort device-bitonic rows=3 cols=576 order=0 completion=verified
+PASS device argsort n=576 order=0 ties=exact padding=exact guards=unchanged
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL17k_argsort_f32_i32IL15ggml_sort_order1EEvPKfPiii' grid=(3,1,1) block=(1024,1,1)
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=27264
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8fb000 shared=0x2075d204f80 size=2304 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x8f3aa0 shared=0x2075d205880 size=4608 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670337334272022 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=27264
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8fb900 shared=0x2075d204f80 size=2304 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x8f3aa0 shared=0x2075d205880 size=4608 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670337360756759 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_topk_row_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=19904
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=27264
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=0 host=0x8fc200 shared=0x2075d204f80 size=2304 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_topk_row_v1' arg=1 host=0x8f3aa0 shared=0x2075d205880 size=4608 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_topk_row_v1' bytes=20352 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_topk_row_v1' seq=7348670337395752984 shared=0x2075d200000 submit=20352 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_topk_row_v1' elf=19904 bytes submit=20352 bytes args=7 bindings=2 raw=0 bytes on sifive0
+PACC argsort device-bitonic rows=3 cols=576 order=1 completion=verified
+PASS device argsort n=576 order=1 ties=exact padding=exact guards=unchanged

@@ -8,6 +8,26 @@ void pacc_topk_row_v1(uint64_t a0,uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a
     unsigned n=*(uint64_t *)a2, k=*(uint64_t *)a3;
     unsigned flags=*(uint64_t *)a4;
     union {uint32_t u; float f;} clamp={.u=*(uint64_t *)a5},scale={.u=*(uint64_t *)a6};
+    if(flags&64) {
+        // Scalar accesses avoid a no-output failure observed with automatic
+        // vectorization in the current PACC compilation/execution pipeline.
+        volatile unsigned ids[1024]; unsigned pad=1;
+        volatile float values[576];
+        while(pad<n)pad*=2;
+        for(unsigned i=0;i<pad;i++)ids[i]=i;
+        for(unsigned i=0;i<n;i++)values[i]=x[i];
+        // Match GGML's bitonic compare/swap network, including tie ordering.
+        for(unsigned width=2;width<=pad;width*=2)for(unsigned gap=width/2;gap;gap/=2)
+            for(unsigned col=0;col<pad;col++) {
+                unsigned other=col^gap;if(other<=col)continue;
+                unsigned a=ids[col],b=ids[other];int swap;
+                if(!(col&width))swap=a>=n||(b<n&&((flags&128)?values[a]>values[b]:values[a]<values[b]));
+                else swap=b>=n||(a<n&&((flags&128)?values[a]<values[b]:values[a]>values[b]));
+                if(swap){ids[col]=b;ids[other]=a;}
+            }
+        for(unsigned i=0;i<n;i++){out[i]=values[i];out[n+i]=(float)ids[i];}
+        return;
+    }
     volatile float w[576], rank[576];
     float max=-FLT_MAX, sum=0;
     for (unsigned i=0;i<n;i++) if(x[i]>max) max=x[i];

@@ -1,5 +1,70 @@
 use super::*;
 
+pub(super) unsafe fn launch_argsort(
+    name: &str,
+    grid: [u32; 3],
+    params: *mut *mut ::core::ffi::c_void,
+) -> cuda_types::cuda::CUresult {
+    let run = (|| -> Option<bool> {
+        let order = name
+            .strip_prefix("_ZL17k_argsort_f32_i32IL15ggml_sort_order")?
+            .strip_suffix("EEvPKfPiii")?;
+        let flags = match order {
+            "0" => 192,
+            "1" => 64,
+            _ => return None,
+        };
+        let n = usize::try_from(read_param_i32(params, 2)?).ok()?;
+        let pad = usize::try_from(read_param_i32(params, 3)?).ok()?;
+        if n == 0
+            || n > 576
+            || pad != n.next_power_of_two()
+            || grid[0] == 0
+            || grid[0] > 4096
+            || grid[1..] != [1, 1]
+        {
+            return None;
+        }
+        let x = read_param_u64(params, 0)?;
+        let dst = read_param_u64(params, 1)?;
+        let bytes = n.checked_mul(grid[0] as usize)?.checked_mul(4)?;
+        if !sifive_host_or_cuda_alloc_has_bytes(x, bytes, false)
+            || !sifive_host_or_cuda_alloc_has_bytes(dst, bytes, true)
+        {
+            return None;
+        }
+        let mut output = vec![f32::NAN; 2 * n];
+        for row in 0..grid[0] as usize {
+            if sifive_runtime_sys::topk_moe::hetgpu_sifive_submit_topk_row(
+                current_sifive_device_id_or_zero(),
+                (x as *const f32).add(row * n),
+                output.as_mut_ptr(),
+                n as u32,
+                n as u32,
+                flags,
+                0.,
+                1.,
+            ) != 0
+            {
+                return Some(false);
+            }
+            for col in 0..n {
+                *((dst as *mut i32).add(row * n + col)) = output[n + col] as i32;
+            }
+        }
+        eprintln!(
+            "PACC argsort device-bitonic rows={} cols={} order={} completion=verified",
+            grid[0], n, order
+        );
+        Some(true)
+    })();
+    match run {
+        Some(true) => Ok(()),
+        Some(false) => Err(cuda_types::cuda::CUerror::UNKNOWN),
+        None => Err(cuda_types::cuda::CUerror::NOT_SUPPORTED),
+    }
+}
+
 pub(super) unsafe fn launch(
     name: &str,
     params: *mut *mut ::core::ffi::c_void,

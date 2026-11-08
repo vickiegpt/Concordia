@@ -8,6 +8,16 @@ extern u32 f___zluda_ptx_impl_sreg_tid(unsigned char);
 extern u32 f___zluda_ptx_impl_sreg_ntid(unsigned char);
 struct Cell { u64 lo, hi; };
 static u64 cell(u64 p) { return ((const struct Cell *)p)->lo; }
+static void copy_f32(volatile float *dst,const volatile float *src,u64 count) {
+    while(count) {
+        u64 vl;
+        __asm__ volatile("vsetvli %0, %3, e32, m4, ta, ma\n"
+                         "vle32.v v8, (%1)\n" "vse32.v v8, (%2)\n"
+                         :"=&r"(vl):"r"(src),"r"(dst),"r"(count)
+                         :"v8","v9","v10","v11","memory");
+        src+=vl;dst+=vl;count-=vl;
+    }
+}
 
 __attribute__((visibility("default")))
 void pacc_gdn_head_v1(u64 in_cell, u64 out_cell, u64 s_cell, u64 n_cell,
@@ -25,27 +35,29 @@ void pacc_gdn_head_v1(u64 in_cell, u64 out_cell, u64 s_cell, u64 n_cell,
     if (!step) return;
     for (u64 col=tid; col<s; col+=step) {
         /* Keep state accesses explicit while qualifying the compiler path. */
-        volatile float st[128];
-        for (u64 i=0; i<s; ++i) st[i] = initial[col*s+i];
+        volatile float st[128],local_q[128],local_k[128],local_g[128];
+        copy_f32(st,initial+col*s,s);
         for (u64 t=0; t<n; ++t) {
+            copy_f32(local_q,q+t*s,s);copy_f32(local_k,k+t*s,s);
+            if(kda)copy_f32(local_g,g+t*s,s);
             float kv=0, gate= kda ? 1.0f : exp_gate(g[t]);
             if (kda) {
-                for (u64 i=0; i<s; ++i) { st[i] *= exp_gate(g[t*s+i]); kv += st[i]*k[t*s+i]; }
+                for (u64 i=0; i<s; ++i) { st[i] *= exp_gate(local_g[i]); kv += st[i]*local_k[i]; }
             } else {
-                for (u64 i=0; i<s; ++i) kv += st[i]*k[t*s+i];
+                for (u64 i=0; i<s; ++i) kv += st[i]*local_k[i];
                 kv *= gate;
             }
             float delta = (v[t*s+col]-kv)*b[t], attn=0;
             for (u64 i=0; i<s; ++i) {
-                st[i] = gate*st[i] + k[t*s+i]*delta;
-                attn += st[i]*q[t*s+i];
+                st[i] = gate*st[i] + local_k[i]*delta;
+                attn += st[i]*local_q[i];
             }
             out[t*s+col] = attn*scale.f;
             u64 slot=n-1-t;
             if (keep && slot<slots) {
-                for (u64 i=0; i<s; ++i) states[slot*s*s+col*s+i]=st[i];
+                copy_f32(states+slot*s*s+col*s,st,s);
             }
         }
-        if (!keep) for (u64 i=0; i<s; ++i) states[col*s+i]=st[i];
+        if (!keep) copy_f32(states+col*s,st,s);
     }
 }

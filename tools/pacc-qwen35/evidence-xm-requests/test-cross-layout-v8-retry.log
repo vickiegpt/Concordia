@@ -1,0 +1,149 @@
+isolated_worker physical=0 payload=[0x200000,0x280000) runtime=/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v8
+[SIFIVE Backend] exposing 1 CUDA-visible SIFIVE device(s): [0]
+[hetGPU] Checkpoint handler installed (Ctrl+C to checkpoint)
+[hetGPU] Note: Checkpoint will be saved at the next GPU sync point
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL11concat_contIjLi0EEvPKT_S2_PS0_llllll' grid=(1250,1,1) block=(256,1,1)
+ZLUDA DEBUG: Compiling SIFIVE source concat_tile.c to launchable ELF
+SIFIVE: Created LLVM bitcode: /dev/shm/hetgpu_tmp/.tmpJAqhWJ/concat_tile.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpUibdXm/concat_tile.bc -> /dev/shm/hetgpu_tmp/.tmpUibdXm/concat_tile_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpUibdXm/concat_tile_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpUibdXm/concat_tile_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpUibdXm/concat_tile_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpKzJE7a/concat_tile_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpKzJE7a/concat_tile_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpKzJE7a/concat_tile_optimized_sifive.so
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpKzJE7a/concat_tile.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpKzJE7a/concat_tile_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpKzJE7a/concat_tile_sifive.so
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=475072
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0x89de00 shared=0x2075d203fc0 size=143340 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=1 host=0x961380 shared=0x2075d226fc0 size=86004 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0xa07fa0 shared=0x2075d23bfc0 size=229352 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16320 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216294027265 shared=0x2075d200000 submit=16320 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16320 bytes args=7 bindings=3 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=475072
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0x8c0dec shared=0x2075d203fc0 size=143340 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=1 host=0x976374 shared=0x2075d226fc0 size=86004 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0xa07fa0 shared=0x2075d23bfc0 size=229352 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16320 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216327020546 shared=0x2075d200000 submit=16320 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16320 bytes args=7 bindings=3 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=475072
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0x8e3dd8 shared=0x2075d203fc0 size=143340 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=1 host=0x98b368 shared=0x2075d226fc0 size=86004 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0xa07fa0 shared=0x2075d23bfc0 size=229352 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16320 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216370778115 shared=0x2075d200000 submit=16320 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16320 bytes args=7 bindings=3 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=475072
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0x906dc4 shared=0x2075d203fc0 size=143340 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=1 host=0x9a035c shared=0x2075d226fc0 size=86004 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0xa07fa0 shared=0x2075d23bfc0 size=229352 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16320 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216414318596 shared=0x2075d200000 submit=16320 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16320 bytes args=7 bindings=3 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=475072
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0x929db0 shared=0x2075d203fc0 size=143340 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=1 host=0x9b5350 shared=0x2075d226fc0 size=86004 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0xa07fa0 shared=0x2075d23bfc0 size=229352 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16320 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216457814021 shared=0x2075d200000 submit=16320 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16320 bytes args=7 bindings=3 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=282944
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0x94cd9c shared=0x2075d203fc0 size=83300 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=1 host=0x9ca344 shared=0x2075d218540 size=49980 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0xa07fa0 shared=0x2075d224880 size=133288 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16320 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216501915654 shared=0x2075d200000 submit=16320 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16320 bytes args=7 bindings=3 raw=0 bytes on sifive0
+PACC concat device-tiled rows=40000 row_bytes=32 tiles=6 completion=verified
+PASS concat split a=5 b=3 rows=40000 bytes=1280000 guards=unchanged
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL11concat_contIjLi0EEvPKT_S2_PS0_llllll' grid=(1251,1,1) block=(256,1,1)
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=475072
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0xab7c80 shared=0x2075d203f80 size=229372 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0xbf0510 shared=0x2075d23bf80 size=229380 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16256 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216588447751 shared=0x2075d200000 submit=16256 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16256 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=277632
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0xaefc7c shared=0x2075d203f80 size=130632 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0x9af5f0 shared=0x2075d223e00 size=130640 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16256 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216616292360 shared=0x2075d200000 submit=16256 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16256 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=475072
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0xb67980 shared=0x2075d203f80 size=229372 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0xbf0510 shared=0x2075d23bf80 size=229380 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16256 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216648835081 shared=0x2075d200000 submit=16256 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16256 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=117632
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0xb9f97c shared=0x2075d203f80 size=50632 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0x9af5f0 shared=0x2075d210580 size=50640 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16256 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216682954762 shared=0x2075d200000 submit=16256 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16256 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=475072
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0xb0fac4 shared=0x2075d203f80 size=229372 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0xbf0510 shared=0x2075d23bf80 size=229380 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16256 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216714231819 shared=0x2075d200000 submit=16256 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16256 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=277632
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0xb47ac0 shared=0x2075d203f80 size=130632 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0x9af5f0 shared=0x2075d223e00 size=130640 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16256 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216740765708 shared=0x2075d200000 submit=16256 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16256 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=475072
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0xbabf44 shared=0x2075d203f80 size=229372 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0xbf0510 shared=0x2075d23bf80 size=229380 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16256 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216766242829 shared=0x2075d200000 submit=16256 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16256 bytes args=7 bindings=2 raw=0 bytes on sifive0
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=117632
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0xbe3f40 shared=0x2075d203f80 size=50632 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0x9af5f0 shared=0x2075d210580 size=50640 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16256 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216792662030 shared=0x2075d200000 submit=16256 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16256 bytes args=7 bindings=2 raw=0 bytes on sifive0
+PACC concat device-tiled rows=2 row_bytes=640008 tiles=8 completion=verified
+PASS concat split a=90001 b=70001 rows=2 bytes=1280016 guards=unchanged
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL10k_set_rowsIfl6__halfEvPKT_PKT0_PT1_llllllllllllll5uint3S9_S9_S9_S9_' grid=(1,1,1) block=(256,1,1)
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=16512
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0x9dcbb0 shared=0x2075d203f80 size=128 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0x833380 shared=0x2075d204000 size=72 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16256 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671216921321487 shared=0x2075d200000 submit=16256 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16256 bytes args=7 bindings=2 raw=0 bytes on sifive0
+PACC set_rows device-cast sparse-staging elements=32 width=8 tiles=1 completion=verified
+PASS KV sparse cast kind=6__half far_row=200001 rounding=RNE unselected_bytes=unchanged
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL10k_set_rowsIflfEvPKT_PKT0_PT1_llllllllllllll5uint3S9_S9_S9_S9_' grid=(1,1,1) block=(256,1,1)
+sifive_LaunchKernel: kernel='pacc_concat_tile_v1' grid=(1,1,1) block=(1,1,1) elf_bytes=15824
+sifive_LaunchKernel: helper slot layout dev=0 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x200000 required=16576
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=0 host=0x8215d0 shared=0x2075d203f80 size=128 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_concat_tile_v1' arg=2 host=0x84f3f0 shared=0x2075d204000 size=136 flags=0x300
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_concat_tile_v1' bytes=16256 slot_off=0x200000
+sifive_LaunchKernel: helper-submit kernel='pacc_concat_tile_v1' seq=7348671217185460240 shared=0x2075d200000 submit=16256 bytes on sifive0 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_concat_tile_v1' elf=15824 bytes submit=16256 bytes args=7 bindings=2 raw=0 bytes on sifive0
+PACC set_rows device-cast sparse-staging elements=32 width=8 tiles=1 completion=verified
+PASS KV sparse cast kind=f far_row=200001 rounding=RNE unselected_bytes=unchanged

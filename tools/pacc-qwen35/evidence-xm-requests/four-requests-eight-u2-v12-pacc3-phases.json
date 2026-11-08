@@ -1,0 +1,81 @@
+{
+  "complete_submissions": 7980,
+  "incomplete_submission_count": 0,
+  "incomplete_sample": [],
+  "saturated_submissions": 0,
+  "submission_build_counts": {
+    "0x20036": 7980
+  },
+  "build_matches": true,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 2815947,
+  "last_index": 3837411,
+  "unique_indices": 1021464,
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 64890,
+      "p50_us": 3,
+      "p99_us": 18,
+      "max_us": 54
+    },
+    "input_copy": {
+      "sum_us": 2469418,
+      "p50_us": 3,
+      "p99_us": 860,
+      "max_us": 7780
+    },
+    "compute": {
+      "sum_us": 117338196,
+      "p50_us": 11702,
+      "p99_us": 113492,
+      "max_us": 128391
+    },
+    "output_copy": {
+      "sum_us": 266005,
+      "p50_us": 3,
+      "p99_us": 88,
+      "max_us": 141
+    },
+    "cleanup": {
+      "sum_us": 10063,
+      "p50_us": 0,
+      "p99_us": 5,
+      "max_us": 33
+    },
+    "completion_publish": {
+      "sum_us": 35918,
+      "p50_us": 5,
+      "p99_us": 5,
+      "max_us": 35
+    },
+    "device_before_publish": {
+      "sum_us": 121217593,
+      "p50_us": 11802,
+      "p99_us": 113600,
+      "max_us": 128494
+    }
+  },
+  "returncode": -6,
+  "timed_out": false,
+  "capture_valid": false,
+  "device": 3,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/bin/qwen-multiseq-v3",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "99",
+    "/srv/lanxin/qwen35-a3b/bin/cross-eight.json",
+    "/srv/lanxin/qwen35-a3b/logs/four-requests-eight-u2-v12/pacc3-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/cross-eight-cpu.json",
+    "2"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 5.454383994219825,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": null,
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

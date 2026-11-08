@@ -1,0 +1,56 @@
+{
+  "aggregate_decode_tps": null,
+  "aggregate_output_tps": null,
+  "all_correct": false,
+  "config": {
+    "batched_prefill": true,
+    "diagnostic": true,
+    "max_tokens": 2,
+    "min_tokens": 2,
+    "prompts": [
+      "1",
+      "2"
+    ]
+  },
+  "decode_started_monotonic_us": 164667290522,
+  "decode_tokens": 2,
+  "diagnostic": true,
+  "finished_monotonic_us": 164667338368,
+  "input_tokens": [
+    [
+      16
+    ],
+    [
+      17
+    ]
+  ],
+  "measurement": "diagnostic model: no valid application TPS",
+  "model": "models/DIAGNOSTIC-Qwen35-first4.gguf",
+  "ngl": 0,
+  "output_tokens": 4,
+  "reference_complete": true,
+  "reference_only": true,
+  "sequences": 2,
+  "started_monotonic_us": 164667237132,
+  "steps": [
+    {
+      "active": 2,
+      "elapsed_us": 41429
+    }
+  ],
+  "texts": [
+    "teries",
+    "mentiment"
+  ],
+  "tokens": [
+    [
+      455,
+      536
+    ],
+    [
+      468,
+      3691
+    ]
+  ],
+  "ubatch": 1
+}

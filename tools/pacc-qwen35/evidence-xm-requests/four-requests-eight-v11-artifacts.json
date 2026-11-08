@@ -1,0 +1,7 @@
+{
+  "/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v11/libnvcuda.so": "4d7ba23edd0b6b0c8561c12ba61725ed86fa5c91a7f9f1d189c879084469a45e",
+  "/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v11/libhetgpu_cuda_shim.so": "7f875a1841bdf13bbd462383b674e4f11d8c02f1c7b26978d1fe977f138518e3",
+  "/srv/lanxin/qwen35-a3b/bin/qwen-multiseq-v3": "40b51b888a7edcdcc13ea860a320f1debaa617a0c4cd1b1d378aa90da6a1e5df",
+  "/srv/lanxin/qwen35-a3b/bin/cross-eight.json": "ff477df9207af9c8df5e582f6651115c028f08589aa8ef47469559aa0bc42ff9",
+  "/srv/lanxin/qwen35-a3b/logs/cross-eight-cpu.json": "3dde3b912440fde01424a1fb0f50cefdedda49fe29967c2181e488f0b72c2213"
+}

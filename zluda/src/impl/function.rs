@@ -35,6 +35,12 @@ mod sifive_topk;
 #[path = "sifive_q4k.rs"]
 mod sifive_q4k;
 #[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[path = "sifive_concat.rs"]
+mod sifive_concat;
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[path = "sifive_set_rows.rs"]
+mod sifive_set_rows;
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
 #[path = "sifive_mmvf.rs"]
 mod sifive_mmvf;
 #[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
@@ -18997,17 +19003,40 @@ unsafe fn try_offload_named_sifive_kernel(
         .ok()
         .as_deref()
         == Some("1");
+    if kernel_name.starts_with("_ZL15reduce_rows_f32ILb") && sifive_env_truthy("HETGPU_SIFIVE_QK_REQUEST_BATCH") {
+        return Some(sifive_concat::reduce(kernel_name,[grid_dim_x,grid_dim_y,grid_dim_z],
+                                         block,kernel_params));
+    }
+    if kernel_name.starts_with("_ZL11concat_contI") && kernel_name.contains("Li0EE") && sifive_env_truthy("HETGPU_SIFIVE_QK_REQUEST_BATCH") {
+        return Some(sifive_concat::launch(kernel_name,kernel_params));
+    }
+    if kernel_name.starts_with("_ZL10k_set_rowsI") && sifive_env_truthy("HETGPU_SIFIVE_QK_REQUEST_BATCH") {
+        return Some(sifive_set_rows::launch(kernel_name,kernel_params));
+    }
     if name_lower.contains("gated_delta_net_cuda") {
         return Some(sifive_gdn::launch(kernel_name, [grid_dim_x, grid_dim_y, grid_dim_z], kernel_params));
     }
     if kernel_name.starts_with("_Z13topk_moe_cudaILi") {
         return Some(sifive_topk::launch(kernel_name, kernel_params));
     }
+    if kernel_name.starts_with("_ZL17k_argsort_f32_i32IL15ggml_sort_order") && sifive_env_truthy("HETGPU_SIFIVE_QK_REQUEST_BATCH") {
+        return Some(sifive_topk::launch_argsort(kernel_name,[grid_dim_x,grid_dim_y,grid_dim_z],kernel_params));
+    }
     if kernel_name.starts_with("_ZL12soft_max_f32I") && kernel_name.ends_with("15soft_max_params") {
         return Some(sifive_softmax::launch(kernel_name, [grid_dim_x,grid_dim_y,grid_dim_z], kernel_params));
     }
     if kernel_name.starts_with("_ZL13mul_mat_vec_fI") && (grid_dim_y>1 || grid_dim_z>1) {
         return Some(sifive_mmvf::launch(kernel_name, [grid_dim_x,grid_dim_y,grid_dim_z], kernel_params));
+    }
+    if kernel_name.starts_with("_ZL9mul_mat_fI") && sifive_env_truthy("HETGPU_SIFIVE_QK_REQUEST_BATCH") {
+        return Some(sifive_mmvf::launch_matrix(kernel_name,[grid_dim_x,grid_dim_y,grid_dim_z],kernel_params));
+    }
+    if sifive_env_truthy("HETGPU_SIFIVE_QK_REQUEST_BATCH") && (kernel_name.starts_with("_ZL17mul_mat_vec_q_moeIL9ggml_type") ||
+        (kernel_name.starts_with("_ZL13mul_mat_vec_qIL9ggml_type") &&
+         matches!(sifive_parse_mmvq_type(kernel_name),Some(8 | 12 | 13)) &&
+         (sifive_parse_mmvq_ncols_dst(kernel_name).is_some_and(|n| n>1) ||
+          (grid_dim_y>1 && read_param_u64(kernel_params,2)==Some(0) && kernel_name.contains("ELi1ELb0ELb0ELb0EE"))))) {
+        return Some(sifive_q4k::launch_requests(kernel_name,[grid_dim_x,grid_dim_y,grid_dim_z],kernel_params));
     }
     if kernel_name.starts_with("_ZL13mul_mat_vec_qIL9ggml_type12ELi") || kernel_name.starts_with("_ZL13mul_mat_vec_qIL9ggml_type13ELi") || kernel_name.starts_with("_ZL13mul_mat_vec_qIL9ggml_type8ELi1ELb1") || kernel_name.starts_with("_ZL13mul_mat_vec_qIL9ggml_type8ELi1ELb0ELb1ELb0") {
         return Some(sifive_q4k::launch(kernel_name, [grid_dim_x,grid_dim_y,grid_dim_z], block, kernel_params));

@@ -1,0 +1,12 @@
+{
+  "HETGPU_SIFIVE_QK_REQUEST_BATCH": "1",
+  "HETGPU_SIFIVE_QK_LOCAL_BATCH": "1",
+  "HETGPU_SIFIVE_QK_VECTOR_PACK": "1",
+  "HETGPU_SIFIVE_QK_EXPERT_BATCH": "1",
+  "HETGPU_SIFIVE_QK_VECTOR_REDUCE": "1",
+  "HETGPU_SIFIVE_QK_PROFILE": "0",
+  "HETGPU_SIFIVE_ELF_PROFILE": "0",
+  "ubatch": 2,
+  "timeout_s": 1800,
+  "runtime": "/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v18"
+}

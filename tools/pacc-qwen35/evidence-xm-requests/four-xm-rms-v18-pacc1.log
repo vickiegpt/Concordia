@@ -1,0 +1,589 @@
+isolated_worker physical=1 payload=[0x280000,0x300000) runtime=/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v18
+ZLUDA DEBUG: Compiling SIFIVE source q4k_tile.c to launchable ELF
+SIFIVE: Created LLVM bitcode: /dev/shm/hetgpu_tmp/.tmpGee9nb/q4k_tile.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpKXXexH/q4k_tile.bc -> /dev/shm/hetgpu_tmp/.tmpKXXexH/q4k_tile_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpKXXexH/q4k_tile_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpKXXexH/q4k_tile_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpKXXexH/q4k_tile_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpGas2Sp/q4k_tile_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpGas2Sp/q4k_tile_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpGas2Sp/q4k_tile_optimized_sifive.so
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpGas2Sp/q4k_tile.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpGas2Sp/q4k_tile_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpGas2Sp/q4k_tile_sifive.so
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x9b4270 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x99f5c0 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698919216779265 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x925c70 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x990e20 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698919410741251 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x966c70 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x925c70 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698919711014918 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c450 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x967050 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698919827496968 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698919998910474 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698920288624653 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c450 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x971120 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698920396607503 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698920551104529 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698920830836756 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698920937836566 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698921092550680 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698921372430363 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698921478783005 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698921636286495 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698921919975458 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698922027876388 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698922182451238 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698922462847017 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698922571022379 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698922726039597 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698923006885936 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698923114192946 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698923271856180 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698923551719479 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698923658362937 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698923812388923 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698924091826238 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698924198322240 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698924351868994 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698924634255429 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698924741906503 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698924896931913 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698925178949708 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698925286580302 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698925441355856 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698925722431571 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698925829558357 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698925984440407 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698926263861338 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698926369837148 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698926523035742 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698926803398753 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698926911275107 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698927067115621 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698927348138088 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698927455191146 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698927611400300 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698927893221487 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698928000028785 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698928154337395 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698928436617334 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698928545239160 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698928700448890 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698928983769213 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698929091260543 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698929247203457 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698929529962628 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698929637646470 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698929793917064 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698930078986379 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698930187837581 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698930343780495 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698930624626834 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+sifive_LaunchKernel: kernel='pacc_q4k_tile_v1' grid=(1,1,1) block=(2,1,1) elf_bytes=28656
+sifive_LaunchKernel: helper slot layout dev=1 slot=0 logical_slot=0 slot_base=0 active_slots=1 total_slots=1 slot_bytes=524288 slot_off=0x280000 required=452160
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c0c50 shared=0x2075d287240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99bca0 shared=0x2075d2ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x96c9e0 shared=0x2075d2ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x96c450 shared=0x2075d2ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x280000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348698930732642452 shared=0x2075d280000 submit=29248 bytes on sifive1 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive1
+PASS XM/RMS alternating device=1 repeats=64 large_payload=1 guards=unchanged
