@@ -1,0 +1,8 @@
+05e840044c5df9f6f56cdd533b42b014341592a4f8f199e65b28f0b491af80fa  /srv/lanxin/qwen35-a3b/runtime-ngl99-release/libnvcuda.so
+7f875a1841bdf13bbd462383b674e4f11d8c02f1c7b26978d1fe977f138518e3  /srv/lanxin/qwen35-a3b/runtime-ngl99-release/libhetgpu_cuda_shim.so
+b6e1b133a71c34820c55250a6cab341a0de9ec4c784980791606061e4adf9129  /srv/lanxin/qwen35-a3b/firmware/lx500_pacc_qwen35_pacc0_v53_bounded_elf.bin
+8fa88dc522f772e35cd420b5f3059e128ae5e33daae4c005a345f58f9bc898a4  /srv/lanxin/qwen35-a3b/bin/hetgpu_pacc_jobd.c
+30ae483c5619b7a2e145011d688f7630b27724c29738a2a99eb5958e2d55b038  /srv/lanxin/qwen35-a3b/bin/qwen-ngl-smoke
+c0f105aefd7dfd91bfdc36c77c7b861bac608e718ba1970b73bb39f4fcd5c3a1  /srv/lanxin/qwen35-a3b/bin/qwen-ngl-smoke.cpp
+c18610c79a7d753e537a7deb662fbec3b1b31a38aa676e2637a3c286fc48840d  /srv/lanxin/qwen35-a3b/Concordia-xm-release/Cargo.lock
+19cdacf4ddfa8f6861477daa2be79f3e1e52d1a11780c7a209a9419e4a2a83a8  /lib/firmware/lanxin/lx500_pacc.bin

@@ -1,0 +1,14 @@
+PASS test-concat-cuda-abi
+PASS test-gdn-hardware
+PASS test-gdn-cuda-abi
+PASS test-topk-hardware
+PASS test-topk-cuda-abi
+PASS test-mmvf-tiles
+PASS test-mmvf-heads
+PASS test-kv-scatter
+PASS test-softmax-cuda
+PASS quantized type 4 and fusion bias
+PASS quantized type 5 and fusion bias
+PASS quantized type 8 and fusion bias
+PASS real-PTX softmax and small-K Q8
+KERNELS_ONLY: no end-to-end generation or TPS result

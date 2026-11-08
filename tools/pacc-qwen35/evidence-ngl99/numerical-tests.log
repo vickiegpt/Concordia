@@ -1,0 +1,88 @@
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-identity.log:PASS Q8 mode=PACC m=33 n=1 k=32 max_abs_error=7.15255737e-07 elapsed_us=2275
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-identity.log:PASS Q8 mode=PACC m=1031 n=8 k=2048 max_abs_error=0.000284342095 elapsed_us=108444
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-identity.log:PASS Q8 mode=PACC m=3 n=3 k=32768 max_abs_error=0.00673043542 elapsed_us=8240
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-identity.log:PASS Q8 mode=PACC m=8192 n=2 k=2048 max_abs_error=0.000336939469 elapsed_us=330672
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q4-bias.log:PASS Q4_K XM m=3 n=1 k=256 gate=0 max_abs_error=1.93956112e-07
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q4-bias.log:PASS Q4_K XM m=32 n=4 k=512 gate=0 max_abs_error=2.03255513e-06
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q4-bias.log:PASS Q4_K XM m=7 n=3 k=768 gate=1 max_abs_error=1.5192756e-05
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q4-bias.log:PASS Q4_K XM m=32 n=1 k=2048 gate=1 max_abs_error=5.95657732e-06
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q4-bias.log:PASS Q4_K XM m=129 n=3 k=512 gate=1 max_abs_error=8.14235286e-05
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q4-bias.log:PASS Q4_K XM m=512 n=1 k=2048 gate=1 max_abs_error=3.17907916e-05
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q4-bias.log:PASS Q4_K CUDA ABI gate=0 bias=True small_k=False expert_order=[2, 0] output_stride=40 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q4-bias.log:PASS Q4_K CUDA ABI gate=1 bias=True small_k=False expert_order=[2, 0] output_stride=40 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q5-bias.log:PASS Q5_K XM m=3 n=1 k=256 gate=0 max_abs_error=3.24030225e-07
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q5-bias.log:PASS Q5_K XM m=32 n=4 k=512 gate=0 max_abs_error=2.61343666e-06
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q5-bias.log:PASS Q5_K XM m=7 n=3 k=768 gate=1 max_abs_error=9.22513974e-05
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q5-bias.log:PASS Q5_K XM m=32 n=1 k=2048 gate=1 max_abs_error=1.98386053e-05
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q5-bias.log:PASS Q5_K XM m=129 n=3 k=512 gate=1 max_abs_error=0.000187801164
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q5-bias.log:PASS Q5_K XM m=512 n=1 k=2048 gate=1 max_abs_error=6.30593456e-05
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q5-bias.log:PASS Q5_K CUDA ABI gate=0 bias=True small_k=True expert_order=[2, 0] output_stride=71 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q5-bias.log:PASS Q5_K CUDA ABI gate=1 bias=True small_k=True expert_order=[2, 0] output_stride=71 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-bias.log:PASS Q8_K XM m=3 n=1 k=256 gate=0 max_abs_error=1.63418008e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-bias.log:PASS Q8_K XM m=32 n=4 k=512 gate=0 max_abs_error=9.99092663e-07
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-bias.log:PASS Q8_K XM m=7 n=3 k=768 gate=1 max_abs_error=9.52400953e-06
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-bias.log:PASS Q8_K XM m=32 n=1 k=2048 gate=1 max_abs_error=2.46467692e-06
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-bias.log:PASS Q8_K XM m=129 n=3 k=512 gate=1 max_abs_error=1.24765629e-05
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-bias.log:PASS Q8_K XM m=384 n=1 k=2048 gate=1 max_abs_error=3.28512078e-06
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-bias.log:PASS Q8_K CUDA ABI gate=0 bias=True small_k=False expert_order=[0] output_stride=40 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-bias.log:PASS Q8_K CUDA ABI gate=1 bias=True small_k=False expert_order=[0] output_stride=40 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-small.log:PASS Q8_K XM m=3 n=1 k=256 gate=0 max_abs_error=1.63418008e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-small.log:PASS Q8_K XM m=32 n=4 k=512 gate=0 max_abs_error=9.99092663e-07
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-small.log:PASS Q8_K XM m=7 n=3 k=768 gate=1 max_abs_error=9.52400953e-06
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-small.log:PASS Q8_K XM m=32 n=1 k=2048 gate=1 max_abs_error=2.46467692e-06
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-small.log:PASS Q8_K XM m=129 n=3 k=512 gate=1 max_abs_error=1.24765629e-05
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-small.log:PASS Q8_K XM m=384 n=1 k=2048 gate=1 max_abs_error=3.28512078e-06
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-small.log:PASS Q8_K CUDA ABI gate=0 bias=False small_k=True expert_order=[0] output_stride=71 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-q8-small.log:PASS Q8_K CUDA ABI gate=1 bias=False small_k=True expert_order=[0] output_stride=71 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-softmax-real-ptx.log:PASS softmax masked columns=256 heads=2 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-softmax-real-ptx.log:PASS softmax mask_half=False alibi=True sinks=True alias=True cols=7 heads=3 tokens=2 samples=2 max_abs_error=2.09670018e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-softmax-real-ptx.log:PASS softmax mask_half=True alibi=True sinks=True alias=True cols=7 heads=3 tokens=2 samples=2 max_abs_error=3.27063173e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-concat-cuda-abi.log:PASS PACC concat_cont dim=0 elements=20 output_guard=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-concat-cuda-abi.log:PASS PACC concat_cont dim=1 elements=24 output_guard=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-concat-cuda-abi.log:PASS PACC concat_cont dim=2 elements=24 output_guard=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-cuda-abi.log:PASS PACC GDN width=16 tokens=1 kda=0 keep=0 slots=1 max_abs_error=5.04879713e-09
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-cuda-abi.log:PASS PACC GDN width=128 tokens=3 kda=0 keep=0 slots=1 max_abs_error=1.09217166e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-cuda-abi.log:PASS PACC GDN width=32 tokens=5 kda=0 keep=1 slots=3 max_abs_error=1.53760334e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-cuda-abi.log:PASS PACC GDN width=32 tokens=5 kda=1 keep=1 slots=3 max_abs_error=2.1051031e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-cuda-abi.log:PASS PACC GDN width=128 tokens=2 kda=1 keep=0 slots=1 max_abs_error=1.44163882e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-cuda-abi.log:PASS GDN invalid layouts and unsafe completion policy rejected
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-cuda-abi.log:PASS GDN CUDA ABI kda=0 keep=0 heads=3 sequences=2 alias_state=true guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-cuda-abi.log:PASS GDN CUDA ABI kda=0 keep=1 heads=3 sequences=2 alias_state=true guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-cuda-abi.log:PASS GDN CUDA ABI kda=1 keep=1 heads=3 sequences=2 alias_state=true guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-hardware.log:PASS PACC GDN width=16 tokens=1 kda=0 keep=0 slots=1 max_abs_error=5.04879713e-09
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-hardware.log:PASS PACC GDN width=128 tokens=3 kda=0 keep=0 slots=1 max_abs_error=1.09217166e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-hardware.log:PASS PACC GDN width=32 tokens=5 kda=0 keep=1 slots=3 max_abs_error=1.53760334e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-hardware.log:PASS PACC GDN width=32 tokens=5 kda=1 keep=1 slots=3 max_abs_error=2.1051031e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-hardware.log:PASS PACC GDN width=128 tokens=2 kda=1 keep=0 slots=1 max_abs_error=1.44163882e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-gdn-hardware.log:PASS GDN invalid layouts and unsafe completion policy rejected
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-kv-scatter.log:PASS KV scatter real PTX noncontiguous rows=[7,3,5,1] FP16 old rows and guards unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-mmvf-heads.log:PASS MMVF CUDA half=False heads=4 samples=2 m=7 n=2 k=30 max_abs_error=5.48793475e-09 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-mmvf-heads.log:PASS MMVF CUDA half=False heads=16 samples=1 m=256 n=1 k=256 max_abs_error=3.52096817e-08 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-mmvf-heads.log:PASS MMVF CUDA half=True heads=4 samples=2 m=7 n=2 k=30 max_abs_error=8.98211283e-09 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-mmvf-heads.log:PASS MMVF CUDA half=True heads=16 samples=1 m=256 n=1 k=256 max_abs_error=2.40666065e-08 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-mmvf-tiles.log:PASS MMVF m=256 n=1 k=2048 transa=1 max_abs_error=5.0082899e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-mmvf-tiles.log:PASS MMVF m=259 n=3 k=2048 transa=1 max_abs_error=5.0082899e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-mmvf-tiles.log:PASS MMVF m=11 n=19 k=62 transa=0 max_abs_error=9.79379899e-09
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-softmax-cuda.log:PASS softmax masked columns=256 heads=2 guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-softmax-cuda.log:PASS softmax mask_half=False alibi=True sinks=True alias=True cols=7 heads=3 tokens=2 samples=2 max_abs_error=2.09670018e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-softmax-cuda.log:PASS softmax mask_half=True alibi=True sinks=True alias=True cols=7 heads=3 tokens=2 samples=2 max_abs_error=3.27063173e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-topk-cuda-abi.log:PASS Top-k CUDA ABI experts=256 rows=3 ids_stride=256 tie_break=lowest_index guards=unchanged
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-topk-hardware.log:PASS Top-k n=256 k=8 flags=4 error=8.746049e-09
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-topk-hardware.log:PASS Top-k n=128 k=8 flags=0 error=1.76258154e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-topk-hardware.log:PASS Top-k n=576 k=16 flags=17 error=1.17951181e-07
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-topk-hardware.log:PASS Top-k n=32 k=5 flags=8 error=1.46767669e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-topk-hardware.log:PASS Top-k n=64 k=8 flags=12 error=1.19547996e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-test-topk-hardware.log:PASS Top-k n=32 k=4 flags=20 error=3.77409071e-08
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS test-concat-cuda-abi
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS test-gdn-hardware
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS test-gdn-cuda-abi
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS test-topk-hardware
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS test-topk-cuda-abi
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS test-mmvf-tiles
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS test-mmvf-heads
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS test-kv-scatter
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS test-softmax-cuda
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS quantized type 4 and fusion bias
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS quantized type 5 and fusion bias
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS quantized type 8 and fusion bias
+/srv/lanxin/qwen35-a3b/logs/ngl99-release-v53-suite-validation.log:PASS real-PTX softmax and small-K Q8

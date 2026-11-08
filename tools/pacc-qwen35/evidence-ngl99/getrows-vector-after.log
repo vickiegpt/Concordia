@@ -1,0 +1,18 @@
+[SIFIVE Backend] exposing 1 CUDA-visible SIFIVE device(s): [0]
+[hetGPU] Checkpoint handler installed (Ctrl+C to checkpoint)
+[hetGPU] Note: Checkpoint will be saved at the next GPU sync point
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+[SIFIVE Backend] Launching kernel '_ZL16k_get_rows_floatIffEvPKT_PKiPT0_ll5uint3mmmmmmmmm' grid=(2,1,4) block=(256,1,1)
+PASS data-copy ABI vector=False cols=17 bad=None full_bytes_and_guards=verified
+[SIFIVE Backend] Launching kernel '_ZL20k_get_rows_float_vecIfEvPKT_PKiPS0_ll5uint3mmmmmmmmm' grid=(2,1,4) block=(256,1,1)
+PASS data-copy ABI vector=True cols=64 bad=None full_bytes_and_guards=verified
+[SIFIVE Backend] Launching kernel '_ZL20k_get_rows_float_vecIfEvPKT_PKiPS0_ll5uint3mmmmmmmmm' grid=(1,512,1) block=(256,1,1)
+PASS data-copy ABI vector=True cols=524288 bad=None full_bytes_and_guards=verified
+[SIFIVE Backend] Launching kernel '_ZL20k_get_rows_float_vecIfEvPKT_PKiPS0_ll5uint3mmmmmmmmm' grid=(1,1,1) block=(256,1,1)
+PASS data-copy ABI vector=True cols=64 bad=negative full_bytes_and_guards=verified
+[SIFIVE Backend] Launching kernel '_ZL20k_get_rows_float_vecIfEvPKT_PKiPS0_ll5uint3mmmmmmmmm' grid=(1,1,1) block=(256,1,1)
+[SIFIVE Backend] host-fallback k_get_rows_float '_ZL20k_get_rows_float_vecIfEvPKT_PKiPS0_ll5uint3mmmmmmmmm' rejected source row outside allocation src0=0x8c1000 row=0x8c1000 idx=0 ne00=64
+PASS data-copy ABI vector=True cols=64 bad=short-source full_bytes_and_guards=verified
+[SIFIVE Backend] Launching kernel '_ZL20k_get_rows_float_vecIfEvPKT_PKiPS0_ll5uint3mmmmmmmmm' grid=(1,1,1) block=(256,1,1)
+[SIFIVE Backend] host-fallback k_get_rows_float '_ZL20k_get_rows_float_vecIfEvPKT_PKiPS0_ll5uint3mmmmmmmmm' rejected out-of-allocation index/dst range src1=0x8c3300 dst=0x8c1000 idx_elems=1 dst_elems=64 ne00=64 ne10=1 ne11=1 ne12=1
+PASS data-copy ABI vector=True cols=64 bad=short-dest full_bytes_and_guards=verified

@@ -1,0 +1,9 @@
+{
+  "aggregate_output_tps": null,
+  "all_correct": false,
+  "last_tensor": "state_predelta-1",
+  "stop_reason": "numeric divergence",
+  "trace_mismatch": true,
+  "trace_only": true,
+  "trace_records": 65
+}

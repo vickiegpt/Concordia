@@ -20,7 +20,12 @@ use ze_runtime_sys::*;
 ))]
 use sifive_runtime_sys;
 use std::ptr;
-#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[cfg(all(
+    feature = "sifive",
+    not(feature = "amd"),
+    not(feature = "intel"),
+    not(feature = "tenstorrent")
+))]
 #[path = "sifive_gdn.rs"]
 mod sifive_gdn;
 #[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
@@ -9985,7 +9990,7 @@ unsafe fn sifive_kernel_binding_metadata(
         return sifive_argsort_f32_i32_binding_metadata(kernel_params, grid_dim_x, index);
     }
     if name.contains("k_get_rows_float") {
-        return sifive_get_rows_float_binding_metadata(kernel_params, grid_dim_x, index);
+        return sifive_get_rows_float_binding_metadata(kernel_name, kernel_params, grid_dim_x, index);
     }
     if name.contains("k_get_rows") && name.contains("dequantize_q8_0") {
         return sifive_get_rows_q8_0_binding_metadata(
@@ -10679,11 +10684,12 @@ unsafe fn sifive_l2_norm_f32_binding_metadata(
     not(feature = "tenstorrent")
 ))]
 unsafe fn sifive_get_rows_float_binding_metadata(
+    kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
     grid_dim_x: u32,
     index: usize,
 ) -> Option<(u64, u32)> {
-    let ne00 = read_param_i64(kernel_params, 3)?.max(0) as u64;
+    let ne00 = sifive_get_rows_f32_width(kernel_name, kernel_params)? as u64;
     let ne11 = read_param_i64(kernel_params, 4)?.max(0) as u64;
     let ne12 = u64::from(read_param_uint3_z(kernel_params, 5)?);
     let s1 = read_param_u64(kernel_params, 6)?;
@@ -18432,6 +18438,24 @@ unsafe fn execute_l2_norm_f32_fallback(
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn sifive_get_rows_f32_width(
+    kernel_name: &str,
+    kernel_params: *mut *mut ::core::ffi::c_void,
+) -> Option<usize> {
+    // Vector gather counts int4 units; its strides still count scalar elements.
+    let lanes = if kernel_name.contains("k_get_rows_float_vecIfEv") {
+        4
+    } else if kernel_name.contains("k_get_rows_floatIffEv") {
+        1
+    } else {
+        return None;
+    };
+    usize::try_from(read_param_i64(kernel_params, 3)?)
+        .ok()?
+        .checked_mul(lanes)
+}
+
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
 unsafe fn execute_get_rows_float_fallback(
     kernel_name: &str,
     kernel_params: *mut *mut ::core::ffi::c_void,
@@ -18444,13 +18468,15 @@ unsafe fn execute_get_rows_float_fallback(
                 kernel_name
             );
         }
-        return Some(Ok(()));
+        return Some(Err(cuda_types::cuda::CUerror::NOT_SUPPORTED));
     }
 
     let src0 = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 0)?)? as *const f32;
     let src1 = sifive_host_ptr::<i32>(read_param_u64(kernel_params, 1)?)? as *const i32;
     let dst = sifive_host_ptr::<f32>(read_param_u64(kernel_params, 2)?)?;
-    let ne00 = read_param_i64(kernel_params, 3)?.max(0) as usize;
+    let Some(ne00) = sifive_get_rows_f32_width(kernel_name, kernel_params) else {
+        return Some(Err(cuda_types::cuda::CUerror::NOT_SUPPORTED));
+    };
     let ne11 = read_param_i64(kernel_params, 4)?.max(0) as usize;
     let ne12 = if kernel_name.contains("5uint3") {
         read_param_uint3_z(kernel_params, 5)? as usize
@@ -18510,25 +18536,19 @@ unsafe fn execute_get_rows_float_fallback(
         for i11 in 0..ne11 {
             for i10 in 0..ne10 {
                 let row_index_ptr = src1.add(i10 * s10 + i11 * s11 + i12 * s12);
-                let i01 = (*row_index_ptr).max(0) as usize;
+                let Ok(i01) = usize::try_from(*row_index_ptr) else {
+                    return Some(Err(cuda_types::cuda::CUerror::INVALID_VALUE));
+                };
                 let dst_row = dst.add(i10 * s1 + i11 * s2 + i12 * s3);
-                let src0_row =
-                    (src0 as *const u8).add(i01 * nb01 + i11 * nb02 + i12 * nb03) as *const f32;
+                let src_offset = i01.checked_mul(nb01)
+                    .and_then(|v| i11.checked_mul(nb02).and_then(|x| v.checked_add(x)))
+                    .and_then(|v| i12.checked_mul(nb03).and_then(|x| v.checked_add(x)))
+                    .and_then(|v| (src0 as usize).checked_add(v));
+                let Some(src_address) = src_offset else {
+                    return Some(Err(cuda_types::cuda::CUerror::INVALID_VALUE));
+                };
+                let src0_row = src_address as *const f32;
                 if !sifive_cuda_alloc_has_elems(src0_row, ne00) {
-                    if sifive_env_enabled_default("HETGPU_SIFIVE_GET_ROWS_FLOAT_CLAMP_OOB", true) {
-                        let fallback_row =
-                            (src0 as *const u8).add(i11 * nb02 + i12 * nb03) as *const f32;
-                        if sifive_cuda_alloc_has_elems(fallback_row, ne00) {
-                            for i00 in 0..ne00 {
-                                *dst_row.add(i00) = *fallback_row.add(i00);
-                            }
-                        } else {
-                            for i00 in 0..ne00 {
-                                *dst_row.add(i00) = 0.0;
-                            }
-                        }
-                        continue;
-                    }
                     eprintln!(
                         "[SIFIVE Backend] host-fallback k_get_rows_float '{}' rejected source row outside allocation src0={:p} row={:p} idx={} ne00={}",
                         kernel_name, src0, src0_row, i01, ne00
