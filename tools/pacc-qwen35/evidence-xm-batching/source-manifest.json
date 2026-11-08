@@ -1,0 +1,106 @@
+{
+  "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-baseline.log": {
+    "sha256": "b04ac078a1b6a4171b3b1c596999a86d4170721edfbcd91288bc2f5ffd180d59",
+    "archived": "elf-profile-layer3-baseline.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-baseline-summary.json": {
+    "sha256": "860274cbdc6f9d0d1dd88a6bd0742063e5871726110f670e9789b43afef804cc",
+    "archived": "elf-profile-layer3-baseline-summary.json"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-local.log": {
+    "sha256": "ef8e72d95148eb3e6d38eb9398b7338e780aa5d484f4abb8da0ca5d518ce9e02",
+    "archived": "elf-profile-layer3-local.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-local-summary.json": {
+    "sha256": "558ff708d118b2b3cf90dbdacbb66883c606260d4c3e2100a02d4d8133b5a2e4",
+    "archived": "elf-profile-layer3-local-summary.json"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-vector.log": {
+    "sha256": "fbfcc2954a055356d8c5ed390402402d0a924311e63f1ee01976ed2a4c87a8b7",
+    "archived": "elf-profile-layer3-vector.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-vector-summary.json": {
+    "sha256": "c64c95e617de9b1546709efeccb8d2aee0a330c2b42462c00ef2b1c45bb1e098",
+    "archived": "elf-profile-layer3-vector-summary.json"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-final.log": {
+    "sha256": "16a88706da09bdc982ec71dc206e5e8cd77bf560c303a7c377bee05bfd6a81d4",
+    "archived": "elf-profile-layer3-final.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-final-summary.json": {
+    "sha256": "d145393a6776a7e6e0036918d31fc5552a94d9f95c43c4d9c05dc0daa78ac313",
+    "archived": "elf-profile-layer3-final-summary.json"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/xm-local-vector-q4-v5.log": {
+    "sha256": "fcb9338c2f9b21bc2554d2dfce2d196382981f18e49c65ed9ca644852c0f76bf",
+    "archived": "xm-local-vector-q4-v5.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/xm-local-vector-q5-v5.log": {
+    "sha256": "1687eda45d4366ba2cb80ed79c65c4d3cb3bd49721b201f790688728668ca972",
+    "archived": "xm-local-vector-q5-v5.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/xm-local-vector-q8-v5.log": {
+    "sha256": "0381e85d960506f3a2c72a8ac1c2d07b5c1faad44243309803340d6691151257",
+    "archived": "xm-local-vector-q8-v5.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/xm-local-vector-distinct-y-v3.log": {
+    "sha256": "597f120075513fdac9885b857ddfdf938d9d3ff18e1e3088863634cc005f2ed0",
+    "archived": "xm-local-vector-distinct-y-v3.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/xm-local-vector-distinct-y-v5.log": {
+    "sha256": "14caed077ab6fd6c2aa656c0fc5af964e3e911a843098288fc0f2ddf00d4b1f6",
+    "archived": "xm-local-vector-distinct-y-v5.log"
+  },
+  "/srv/lanxin/qwen35-a3b/runtime-xm-local-batch-v5/libnvcuda.so": {
+    "sha256": "4f342c23f756e75cff208f846c198f1d83737e3a462ef02d162b8ee46119117f",
+    "archived": null
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/summary.json": {
+    "sha256": "248d4611c0cb239aa051fa72eb06e8c0aa585eede06f4ad4f87b0b39c285c76f",
+    "archived": "four-summary.json"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/artifacts.json": {
+    "sha256": "6af935379a1344e6f948340aebb7594a8dfa058445e2dd1cd5f2d5bf45cca6f1",
+    "archived": "four-artifacts.json"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/optimization-flags.json": {
+    "sha256": "7a191e74272667ad5809429214795b03210c763c2553d2a64e95a3c052a7fbe9",
+    "archived": "four-optimization-flags.json"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/pacc0-result.json": {
+    "sha256": "f728fdd4967463801bf5a2cd739837ce51354bb4a3fc14d0f338b06e46f4a0dc",
+    "archived": "pacc0-result.json"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry-qualification/pacc0-driver.log": {
+    "sha256": "503ed0454396fd6a710282a85241cdca85a888a53caccfb622ee67b5a0b90b4c",
+    "archived": "qualification-pacc0.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/pacc1-result.json": {
+    "sha256": "ef2d5d65fbb437a73e15c3b3bc741da0243d74d8fb25774b267ce242ee82d426",
+    "archived": "pacc1-result.json"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry-qualification/pacc1-driver.log": {
+    "sha256": "a304d0bf12270f96ddc8cccfd68f45f2ae142074fbff9e7813a2a3a0e922367d",
+    "archived": "qualification-pacc1.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/pacc2-result.json": {
+    "sha256": "c6a1d48d0d469a08be5bace032077bebb9bea25419da3935e3ba905a874839ac",
+    "archived": "pacc2-result.json"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry-qualification/pacc2-driver.log": {
+    "sha256": "934c2b4eb6333a16bee1433889aba094d989efbb3f28f18e837ea173a3205c70",
+    "archived": "qualification-pacc2.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/pacc3-result.json": {
+    "sha256": "39806c756b64ec3d6a0b8bc9127f8661641f726260ee6e3018bc5315ec9eb1f6",
+    "archived": "pacc3-result.json"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry-qualification/pacc3-driver.log": {
+    "sha256": "df956c07aa4dd67d19c14f7d3f0058811511861f81375a20a333a96c79976bc7",
+    "archived": "qualification-pacc3.log"
+  },
+  "/srv/lanxin/qwen35-a3b/logs/four-ngl99-v54-v1/summary.json": {
+    "sha256": "46d59ba092d637d8ce4940b06b1f4ae81986996e163dc0900213be71a585e388",
+    "archived": "four-baseline-summary.json"
+  }
+}

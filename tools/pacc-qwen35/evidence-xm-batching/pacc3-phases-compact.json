@@ -1,0 +1,79 @@
+{
+  "command": [
+    "/srv/lanxin/qwen35-a3b/bin/qwen-ngl-four",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "99",
+    "2",
+    "1+1=",
+    "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/pacc3-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/ngl99-direct-cpu-reference.json"
+  ],
+  "device": 3,
+  "returncode": 0,
+  "timed_out": false,
+  "sample_ms": 1.0,
+  "max_sample_gap_ms": 4.947372013702989,
+  "recent_event_limit": 768,
+  "complete_submissions": 17408,
+  "incomplete_submissions": {},
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 155937,
+      "p50_us": 10,
+      "p99_us": 18,
+      "max_us": 59
+    },
+    "input_copy": {
+      "sum_us": 10052810,
+      "p50_us": 691,
+      "p99_us": 957,
+      "max_us": 7799
+    },
+    "compute": {
+      "sum_us": 85483574,
+      "p50_us": 3065,
+      "p99_us": 32556,
+      "max_us": 44107
+    },
+    "output_copy": {
+      "sum_us": 459389,
+      "p50_us": 33,
+      "p99_us": 39,
+      "max_us": 89
+    },
+    "cleanup": {
+      "sum_us": 37873,
+      "p50_us": 2,
+      "p99_us": 5,
+      "max_us": 44
+    },
+    "completion_publish": {
+      "sum_us": 84030,
+      "p50_us": 5,
+      "p99_us": 6,
+      "max_us": 56
+    },
+    "device_before_publish": {
+      "sum_us": 99268954,
+      "p50_us": 3996,
+      "p99_us": 32658,
+      "max_us": 44210
+    }
+  },
+  "capabilities": {},
+  "limitations": [
+    "Double-read stability is not a source-side atomic snapshot guarantee.",
+    "Completion publish excludes subsequent diagnostic writes.",
+    "Host/device elapsed differences include dispatch and polling, not IRQ alone."
+  ],
+  "expected_submissions": null,
+  "expected_count_matches": false,
+  "build_matches": true,
+  "capture_valid": true,
+  "observed_index_gap_count": 0,
+  "submission_build_counts": {
+    "0x20036": 17408
+  },
+  "raw_sha256": "646a310951e485fc16b96dbc3b7ba79e94eb980f522f4d67f3731d8862cd6933",
+  "raw_path": "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/pacc3-phases.json"
+}

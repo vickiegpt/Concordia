@@ -1,0 +1,58 @@
+{
+  "all_passed": true,
+  "devices": [
+    {
+      "device": 0,
+      "counts": {
+        "layouts": 19650,
+        "bindings": 67800,
+        "submissions": 19650
+      },
+      "violations": [],
+      "violation_count": 0,
+      "passed": true,
+      "sha256": "394472d8a95328082d00892ca8a4dfd65eadef4158da86fa97a96f4cbab0321c",
+      "log": "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/pacc0-phases.log"
+    },
+    {
+      "device": 1,
+      "counts": {
+        "layouts": 19650,
+        "bindings": 67800,
+        "submissions": 19650
+      },
+      "violations": [],
+      "violation_count": 0,
+      "passed": true,
+      "sha256": "1d34e5961fa5d750a469b4f0a07a1053b881dc6cd58d792de62ed34512f3acc0",
+      "log": "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/pacc1-phases.log"
+    },
+    {
+      "device": 2,
+      "counts": {
+        "layouts": 19650,
+        "bindings": 67800,
+        "submissions": 19650
+      },
+      "violations": [],
+      "violation_count": 0,
+      "passed": true,
+      "sha256": "d44c5d1a7224b91ed520f998d4192c13de1cb672062a17c80af9da5b0f073043",
+      "log": "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/pacc2-phases.log"
+    },
+    {
+      "device": 3,
+      "counts": {
+        "layouts": 19650,
+        "bindings": 67800,
+        "submissions": 19650
+      },
+      "violations": [],
+      "violation_count": 0,
+      "passed": true,
+      "sha256": "6df938ea5a37b75ebe5cee88abf47f8d08f0d35d454a95cc2e30bbf2e0bde697",
+      "log": "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry/pacc3-phases.log"
+    }
+  ],
+  "scope": "Logged ELF host staging bounds and physical affinity only; not all device memory accesses"
+}

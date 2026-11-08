@@ -144,24 +144,42 @@ pub(super) unsafe fn launch(
         }
         stage = "device";
         let rowbytes = (k / block_k) * block_bytes;
-        let tile_rows = (sifive_runtime_sys::kernel_payload_capacity().checked_sub(65536 + (k / 32) * 36)?
+        let tile_rows = (sifive_runtime_sys::q4k_tile::payload_capacity().checked_sub(65536 + 64 + (k / 32) * 36)?
             / (rowbytes * if gate != 0 { 2 } else { 1 } + 12))
             .min(512);
         if tile_rows == 0 {
             return None;
         }
-        for (xp, yp, dp, gp, bp, gbp) in channels {
-            for row0 in (0..m).step_by(tile_rows) {
-                let rows = (m - row0).min(tile_rows);
+        let mut groups: Vec<Vec<(u64, u64, u64, u64, u64, u64)>> = Vec::new();
+        let batch = std::env::var("HETGPU_SIFIVE_QK_EXPERT_BATCH").ok().as_deref() == Some("1");
+        // Avoid creating a partial XM M=32 tile at every host partition boundary.
+        let tile_rows = if batch && tile_rows >= 32 { tile_rows / 32 * 32 } else { tile_rows };
+        for channel in channels {
+            if let Some(group) = groups.iter_mut().find(|group| batch && group[0].1 == channel.1) {
+                group.push(channel);
+            } else {
+                groups.push(vec![channel]);
+            }
+        }
+        let group_count = groups.len();
+        let mut tiles = 0;
+        let mut pack_us = 0;
+        let mut submit_us = 0;
+        let mut scatter_us = 0;
+        for group in groups {
+            let total_rows = m.checked_mul(group.len())?;
+            let yp = group[0].1;
+            for row0 in (0..total_rows).step_by(tile_rows) {
+                let before = std::time::Instant::now();
+                let rows = (total_rows - row0).min(tile_rows);
                 let mut xb = vec![0u8; rows * rowbytes * if gate != 0 { 2 } else { 1 }];
-                for (t, base) in [xp, gp]
-                    .into_iter()
-                    .take(if gate != 0 { 2 } else { 1 })
-                    .enumerate()
-                {
+                for t in 0..if gate != 0 { 2 } else { 1 } {
                     for r in 0..rows {
+                        let flat = row0 + r;
+                        let channel = group[flat / m];
+                        let base = if t == 0 { channel.0 } else { channel.3 };
                         std::ptr::copy_nonoverlapping(
-                            (base as *const u8).add((row0 + r) * sx * block_bytes),
+                            (base as *const u8).add((flat % m) * sx * block_bytes),
                             xb.as_mut_ptr().add((t * rows + r) * rowbytes),
                             rowbytes,
                         );
@@ -169,14 +187,14 @@ pub(super) unsafe fn launch(
                 }
                 let mut out = vec![f32::NAN; rows];
                 let mut bias = vec![0f32; 2 * rows];
-                for (t, b) in [bp, gbp].into_iter().enumerate() {
-                    if b != 0 {
-                        bias[t * rows..(t + 1) * rows].copy_from_slice(std::slice::from_raw_parts(
-                            (b as *const f32).add(row0),
-                            rows,
-                        ));
+                for r in 0..rows {
+                    let flat = row0+r;
+                    for (t,b) in [group[flat/m].4,group[flat/m].5].into_iter().enumerate() {
+                        if b != 0 { bias[t*rows+r] = *((b as *const f32).add(flat%m)); }
                     }
                 }
+                pack_us += before.elapsed().as_micros();
+                let before = std::time::Instant::now();
                 if sifive_runtime_sys::q4k_tile::submit_qk_tile(
                     current_sifive_device_id_or_zero(),
                     xb.as_ptr(),
@@ -192,8 +210,19 @@ pub(super) unsafe fn launch(
                 {
                     return Some(false);
                 }
-                std::ptr::copy_nonoverlapping(out.as_ptr(), (dp as *mut f32).add(row0), rows);
+                submit_us += before.elapsed().as_micros();
+                let before = std::time::Instant::now();
+                for r in 0..rows {
+                    let flat = row0+r;
+                    *((group[flat/m].2 as *mut f32).add(flat%m)) = out[r];
+                }
+                scatter_us += before.elapsed().as_micros();
+                tiles += 1;
             }
+        }
+        if std::env::var("HETGPU_SIFIVE_ELF_PROFILE").ok().as_deref() == Some("1") {
+            eprintln!("PACC_QK_BATCH experts={} groups={} tiles={} pack_us={} submit_us={} scatter_us={}",
+                grid[1], group_count, tiles, pack_us, submit_us, scatter_us);
         }
         eprintln!(
             "PACC Q{}_{} XM experts={} m={} n={} k={} fused_gate={} completion=verified",

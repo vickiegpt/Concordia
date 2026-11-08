@@ -1,0 +1,1208 @@
+isolated_worker physical=0 payload=[0x200000,0x280000) runtime=/srv/lanxin/qwen35-a3b/runtime-xm-local-batch-v3
+[SIFIVE Backend] exposing 1 CUDA-visible SIFIVE device(s): [0]
+[hetGPU] Checkpoint handler installed (Ctrl+C to checkpoint)
+[hetGPU] Note: Checkpoint will be saved at the next GPU sync point
+[SIFIVE Backend] cuInit: RISC-V IME backend initialized
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 65536 MiB):
+  Device 0: Virtual GPU (hetGPU SIFIVE0 sm_80), compute capability 8.0, VMM: no, VRAM: 65536 MiB
+llama_model_loader: loaded meta data with 52 key-value pairs and 76 tensors from models/DIAGNOSTIC-Qwen35-first4.gguf (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = qwen35moe
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+llama_model_loader: - kv   4:                      general.sampling.temp f32              = 1.000000
+llama_model_loader: - kv   5:                               general.name str              = DIAGNOSTIC ONLY Qwen35 prefix 4 layers
+llama_model_loader: - kv   6:                           general.basename str              = Qwen3.5-35B-A3B
+llama_model_loader: - kv   7:                       general.quantized_by str              = Unsloth
+llama_model_loader: - kv   8:                         general.size_label str              = 35B-A3B
+llama_model_loader: - kv   9:                            general.license str              = apache-2.0
+llama_model_loader: - kv  10:                       general.license.link str              = https://huggingface.co/Qwen/Qwen3.5-3...
+llama_model_loader: - kv  11:                           general.repo_url str              = https://huggingface.co/unsloth
+llama_model_loader: - kv  12:                   general.base_model.count u32              = 1
+llama_model_loader: - kv  13:                  general.base_model.0.name str              = Qwen3.5 35B A3B
+llama_model_loader: - kv  14:          general.base_model.0.organization str              = Qwen
+llama_model_loader: - kv  15:              general.base_model.0.repo_url str              = https://huggingface.co/Qwen/Qwen3.5-3...
+llama_model_loader: - kv  16:                               general.tags arr[str,2]       = ["unsloth", "image-text-to-text"]
+llama_model_loader: - kv  17:                      qwen35moe.block_count u32              = 4
+llama_model_loader: - kv  18:                   qwen35moe.context_length u32              = 262144
+llama_model_loader: - kv  19:                 qwen35moe.embedding_length u32              = 2048
+llama_model_loader: - kv  20:             qwen35moe.attention.head_count u32              = 16
+llama_model_loader: - kv  21:          qwen35moe.attention.head_count_kv u32              = 2
+llama_model_loader: - kv  22:          qwen35moe.rope.dimension_sections arr[i32,4]       = [11, 11, 10, 0]
+llama_model_loader: - kv  23:                   qwen35moe.rope.freq_base f32              = 10000000.000000
+llama_model_loader: - kv  24: qwen35moe.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  25:                     qwen35moe.expert_count u32              = 256
+llama_model_loader: - kv  26:                qwen35moe.expert_used_count u32              = 8
+llama_model_loader: - kv  27:             qwen35moe.attention.key_length u32              = 256
+llama_model_loader: - kv  28:           qwen35moe.attention.value_length u32              = 256
+llama_model_loader: - kv  29:       qwen35moe.expert_feed_forward_length u32              = 512
+llama_model_loader: - kv  30: qwen35moe.expert_shared_feed_forward_length u32              = 512
+llama_model_loader: - kv  31:                  qwen35moe.ssm.conv_kernel u32              = 4
+llama_model_loader: - kv  32:                   qwen35moe.ssm.state_size u32              = 128
+llama_model_loader: - kv  33:                  qwen35moe.ssm.group_count u32              = 16
+llama_model_loader: - kv  34:               qwen35moe.ssm.time_step_rank u32              = 32
+llama_model_loader: - kv  35:                   qwen35moe.ssm.inner_size u32              = 4096
+llama_model_loader: - kv  36:          qwen35moe.full_attention_interval u32              = 4
+llama_model_loader: - kv  37:             qwen35moe.rope.dimension_count u32              = 64
+llama_model_loader: - kv  38:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - kv  39:                         tokenizer.ggml.pre str              = qwen35
+llama_model_loader: - kv  40:                      tokenizer.ggml.tokens arr[str,248320]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+llama_model_loader: - kv  41:                  tokenizer.ggml.token_type arr[i32,248320]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  42:                      tokenizer.ggml.merges arr[str,247587]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+llama_model_loader: - kv  43:                tokenizer.ggml.eos_token_id u32              = 248046
+llama_model_loader: - kv  44:            tokenizer.ggml.padding_token_id u32              = 248055
+llama_model_loader: - kv  45:                    tokenizer.chat_template str              = {%- set image_count = namespace(value...
+llama_model_loader: - kv  46:               general.quantization_version u32              = 2
+llama_model_loader: - kv  47:                          general.file_type u32              = 15
+llama_model_loader: - kv  48:                      quantize.imatrix.file str              = Qwen3.5-35B-A3B-GGUF/imatrix_unsloth....
+llama_model_loader: - kv  49:                   quantize.imatrix.dataset str              = unsloth_calibration_Qwen3.5-35B-A3B.txt
+llama_model_loader: - kv  50:             quantize.imatrix.entries_count u32              = 510
+llama_model_loader: - kv  51:              quantize.imatrix.chunks_count u32              = 76
+llama_model_loader: - type  f32:   31 tensors
+llama_model_loader: - type q8_0:   32 tensors
+llama_model_loader: - type q4_K:    8 tensors
+llama_model_loader: - type q5_K:    4 tensors
+llama_model_loader: - type q6_K:    1 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = Q4_K - Medium
+print_info: file size   = 2.85 GiB (5.59 BPW) 
+llama_prepare_model_devices: using device CUDA0 (Virtual GPU (hetGPU SIFIVE0 sm_80)) (0000:02:00.0) - 65536 MiB free
+init_tokenizer: initializing tokenizer for type 2
+load: 0 unused tokens
+load: control token: 248075 '<tts_text_bos_single>' is not marked as EOG
+load: control token: 248073 '<tts_text_bos>' is not marked as EOG
+load: control token: 248072 '<tts_pad>' is not marked as EOG
+load: control token: 248071 '<|audio_end|>' is not marked as EOG
+load: control token: 248061 '<|fim_middle|>' is not marked as EOG
+load: control token: 248055 '<|vision_pad|>' is not marked as EOG
+load: control token: 248052 '<|quad_end|>' is not marked as EOG
+load: control token: 248049 '<|box_start|>' is not marked as EOG
+load: control token: 248048 '<|object_ref_end|>' is not marked as EOG
+load: control token: 248045 '<|im_start|>' is not marked as EOG
+load: control token: 248057 '<|video_pad|>' is not marked as EOG
+load: control token: 248070 '<|audio_start|>' is not marked as EOG
+load: control token: 248056 '<|image_pad|>' is not marked as EOG
+load: control token: 248054 '<|vision_end|>' is not marked as EOG
+load: control token: 248060 '<|fim_prefix|>' is not marked as EOG
+load: control token: 248050 '<|box_end|>' is not marked as EOG
+load: control token: 248074 '<tts_text_eod>' is not marked as EOG
+load: control token: 248053 '<|vision_start|>' is not marked as EOG
+load: control token: 248062 '<|fim_suffix|>' is not marked as EOG
+load: control token: 248047 '<|object_ref_start|>' is not marked as EOG
+load: control token: 248051 '<|quad_start|>' is not marked as EOG
+load: control token: 248076 '<|audio_pad|>' is not marked as EOG
+load: printing all EOG tokens:
+load:   - 248044 ('<|endoftext|>')
+load:   - 248046 ('<|im_end|>')
+load:   - 248063 ('<|fim_pad|>')
+load:   - 248064 ('<|repo_name|>')
+load:   - 248065 ('<|file_sep|>')
+load: special tokens cache size = 33
+load: token to piece cache size = 1.7581 MB
+print_info: arch                  = qwen35moe
+print_info: vocab_only            = 0
+print_info: no_alloc              = 0
+print_info: n_ctx_train           = 262144
+print_info: n_embd_inp            = 2048
+print_info: n_embd                = 2048
+print_info: n_embd_out            = 2048
+print_info: n_layer               = 4
+print_info: n_layer_all           = 4
+print_info: n_head                = 16
+print_info: n_head_kv             = 2
+print_info: n_rot                 = 64
+print_info: n_swa                 = 0
+print_info: is_swa_any            = 0
+print_info: n_embd_head_k         = 256
+print_info: n_embd_head_v         = 256
+print_info: n_gqa                 = 8
+print_info: n_embd_k_gqa          = 512
+print_info: n_embd_v_gqa          = 512
+print_info: f_norm_eps            = 0.0e+00
+print_info: f_norm_rms_eps        = 1.0e-06
+print_info: f_clamp_kqv           = 0.0e+00
+print_info: f_max_alibi_bias      = 0.0e+00
+print_info: f_logit_scale         = 0.0e+00
+print_info: f_attn_scale          = 0.0e+00
+print_info: f_attn_value_scale    = 0.0000
+print_info: n_ff                  = 0
+print_info: n_expert              = 256
+print_info: n_expert_used         = 8
+print_info: n_expert_groups       = 0
+print_info: n_group_used          = 0
+print_info: causal attn           = 1
+print_info: pooling type          = -1
+print_info: rope type             = 40
+print_info: rope scaling          = linear
+print_info: freq_base_train       = 10000000.0
+print_info: freq_scale_train      = 1
+print_info: n_ctx_orig_yarn       = 262144
+print_info: rope_yarn_log_mul     = 0.0000
+print_info: rope_finetuned        = unknown
+print_info: mrope sections        = [11, 11, 10, 0]
+print_info: ssm_d_conv            = 4
+print_info: ssm_d_inner           = 4096
+print_info: ssm_d_state           = 128
+print_info: ssm_dt_rank           = 32
+print_info: ssm_n_group           = 16
+print_info: ssm_dt_b_c_rms        = 0
+print_info: model type            = ?B
+print_info: model params          = 4.38 B
+print_info: general.name          = DIAGNOSTIC ONLY Qwen35 prefix 4 layers
+print_info: vocab type            = BPE
+print_info: n_vocab               = 248320
+print_info: n_merges              = 247587
+print_info: BOS token             = 11 ','
+print_info: EOS token             = 248046 '<|im_end|>'
+print_info: EOT token             = 248046 '<|im_end|>'
+print_info: PAD token             = 248055 '<|vision_pad|>'
+print_info: LF token              = 198 'Ċ'
+print_info: FIM PRE token         = 248060 '<|fim_prefix|>'
+print_info: FIM SUF token         = 248062 '<|fim_suffix|>'
+print_info: FIM MID token         = 248061 '<|fim_middle|>'
+print_info: FIM PAD token         = 248063 '<|fim_pad|>'
+print_info: FIM REP token         = 248064 '<|repo_name|>'
+print_info: FIM SEP token         = 248065 '<|file_sep|>'
+print_info: EOG token             = 248044 '<|endoftext|>'
+print_info: EOG token             = 248046 '<|im_end|>'
+print_info: EOG token             = 248063 '<|fim_pad|>'
+print_info: EOG token             = 248064 '<|repo_name|>'
+print_info: EOG token             = 248065 '<|file_sep|>'
+print_info: max token length      = 256
+load_tensors: loading model tensors, this can take a while... (load_mode = mmap)
+load_tensors: layer   0 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   1 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   2 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   3 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   4 assigned to device CUDA0, is_swa = 0
+create_tensor: loading tensor token_embd.weight
+create_tensor: loading tensor output_norm.weight
+create_tensor: loading tensor output.weight
+create_tensor: loading tensor blk.0.attn_norm.weight
+create_tensor: loading tensor blk.0.post_attention_norm.weight
+create_tensor: loading tensor blk.0.attn_qkv.weight
+create_tensor: loading tensor blk.0.attn_gate.weight
+create_tensor: loading tensor blk.0.ssm_conv1d.weight
+create_tensor: loading tensor blk.0.ssm_dt.bias
+create_tensor: loading tensor blk.0.ssm_a
+create_tensor: loading tensor blk.0.ssm_beta.weight
+create_tensor: loading tensor blk.0.ssm_alpha.weight
+create_tensor: loading tensor blk.0.ssm_norm.weight
+create_tensor: loading tensor blk.0.ssm_out.weight
+create_tensor: loading tensor blk.0.ffn_gate_inp.weight
+create_tensor: loading tensor blk.0.ffn_down_exps.weight
+create_tensor: loading tensor blk.0.ffn_gate_up_exps.weight
+create_tensor: loading tensor blk.0.ffn_gate_exps.weight
+create_tensor: loading tensor blk.0.ffn_up_exps.weight
+create_tensor: loading tensor blk.0.ffn_gate_inp_shexp.weight
+create_tensor: loading tensor blk.0.ffn_gate_shexp.weight
+create_tensor: loading tensor blk.0.ffn_up_shexp.weight
+create_tensor: loading tensor blk.0.ffn_down_shexp.weight
+create_tensor: loading tensor blk.1.attn_norm.weight
+create_tensor: loading tensor blk.1.post_attention_norm.weight
+create_tensor: loading tensor blk.1.attn_qkv.weight
+create_tensor: loading tensor blk.1.attn_gate.weight
+create_tensor: loading tensor blk.1.ssm_conv1d.weight
+create_tensor: loading tensor blk.1.ssm_dt.bias
+create_tensor: loading tensor blk.1.ssm_a
+create_tensor: loading tensor blk.1.ssm_beta.weight
+create_tensor: loading tensor blk.1.ssm_alpha.weight
+create_tensor: loading tensor blk.1.ssm_norm.weight
+create_tensor: loading tensor blk.1.ssm_out.weight
+create_tensor: loading tensor blk.1.ffn_gate_inp.weight
+create_tensor: loading tensor blk.1.ffn_down_exps.weight
+create_tensor: loading tensor blk.1.ffn_gate_up_exps.weight
+create_tensor: loading tensor blk.1.ffn_gate_exps.weight
+create_tensor: loading tensor blk.1.ffn_up_exps.weight
+create_tensor: loading tensor blk.1.ffn_gate_inp_shexp.weight
+create_tensor: loading tensor blk.1.ffn_gate_shexp.weight
+create_tensor: loading tensor blk.1.ffn_up_shexp.weight
+create_tensor: loading tensor blk.1.ffn_down_shexp.weight
+create_tensor: loading tensor blk.2.attn_norm.weight
+create_tensor: loading tensor blk.2.post_attention_norm.weight
+create_tensor: loading tensor blk.2.attn_qkv.weight
+create_tensor: loading tensor blk.2.attn_gate.weight
+create_tensor: loading tensor blk.2.ssm_conv1d.weight
+create_tensor: loading tensor blk.2.ssm_dt.bias
+create_tensor: loading tensor blk.2.ssm_a
+create_tensor: loading tensor blk.2.ssm_beta.weight
+create_tensor: loading tensor blk.2.ssm_alpha.weight
+create_tensor: loading tensor blk.2.ssm_norm.weight
+create_tensor: loading tensor blk.2.ssm_out.weight
+create_tensor: loading tensor blk.2.ffn_gate_inp.weight
+create_tensor: loading tensor blk.2.ffn_down_exps.weight
+create_tensor: loading tensor blk.2.ffn_gate_up_exps.weight
+create_tensor: loading tensor blk.2.ffn_gate_exps.weight
+create_tensor: loading tensor blk.2.ffn_up_exps.weight
+create_tensor: loading tensor blk.2.ffn_gate_inp_shexp.weight
+create_tensor: loading tensor blk.2.ffn_gate_shexp.weight
+create_tensor: loading tensor blk.2.ffn_up_shexp.weight
+create_tensor: loading tensor blk.2.ffn_down_shexp.weight
+create_tensor: loading tensor blk.3.attn_norm.weight
+create_tensor: loading tensor blk.3.post_attention_norm.weight
+create_tensor: loading tensor blk.3.attn_qkv.weight
+create_tensor: loading tensor blk.3.attn_q.weight
+create_tensor: loading tensor blk.3.attn_k.weight
+create_tensor: loading tensor blk.3.attn_v.weight
+create_tensor: loading tensor blk.3.attn_q.bias
+create_tensor: loading tensor blk.3.attn_k.bias
+create_tensor: loading tensor blk.3.attn_v.bias
+create_tensor: loading tensor blk.3.attn_output.weight
+create_tensor: loading tensor blk.3.attn_q_norm.weight
+create_tensor: loading tensor blk.3.attn_k_norm.weight
+create_tensor: loading tensor blk.3.ffn_gate_inp.weight
+create_tensor: loading tensor blk.3.ffn_down_exps.weight
+create_tensor: loading tensor blk.3.ffn_gate_up_exps.weight
+create_tensor: loading tensor blk.3.ffn_gate_exps.weight
+create_tensor: loading tensor blk.3.ffn_up_exps.weight
+create_tensor: loading tensor blk.3.ffn_gate_inp_shexp.weight
+create_tensor: loading tensor blk.3.ffn_gate_shexp.weight
+create_tensor: loading tensor blk.3.ffn_up_shexp.weight
+create_tensor: loading tensor blk.3.ffn_down_shexp.weight
+create_tensor: loading tensor blk.0.attn_qkv.scale
+create_tensor: loading tensor blk.0.attn_gate.scale
+create_tensor: loading tensor blk.0.ffn_gate_shexp.scale
+create_tensor: loading tensor blk.0.ffn_down_shexp.scale
+create_tensor: loading tensor blk.0.ffn_up_shexp.scale
+create_tensor: loading tensor blk.0.ffn_gate_exps.scale
+create_tensor: loading tensor blk.0.ffn_down_exps.scale
+create_tensor: loading tensor blk.0.ffn_up_exps.scale
+create_tensor: loading tensor blk.0.ssm_out.scale
+create_tensor: loading tensor blk.0.ssm_alpha.scale
+create_tensor: loading tensor blk.0.ssm_beta.scale
+create_tensor: loading tensor blk.0.attn_qkv.input_scale
+create_tensor: loading tensor blk.0.attn_gate.input_scale
+create_tensor: loading tensor blk.0.ffn_gate_exps.input_scale
+create_tensor: loading tensor blk.0.ffn_down_exps.input_scale
+create_tensor: loading tensor blk.0.ffn_up_exps.input_scale
+create_tensor: loading tensor blk.0.ffn_gate_shexp.input_scale
+create_tensor: loading tensor blk.0.ffn_down_shexp.input_scale
+create_tensor: loading tensor blk.0.ffn_up_shexp.input_scale
+create_tensor: loading tensor blk.0.ssm_out.input_scale
+create_tensor: loading tensor blk.0.ssm_alpha.input_scale
+create_tensor: loading tensor blk.0.ssm_beta.input_scale
+create_tensor: loading tensor blk.1.attn_qkv.scale
+create_tensor: loading tensor blk.1.attn_gate.scale
+create_tensor: loading tensor blk.1.ffn_gate_shexp.scale
+create_tensor: loading tensor blk.1.ffn_down_shexp.scale
+create_tensor: loading tensor blk.1.ffn_up_shexp.scale
+create_tensor: loading tensor blk.1.ffn_gate_exps.scale
+create_tensor: loading tensor blk.1.ffn_down_exps.scale
+create_tensor: loading tensor blk.1.ffn_up_exps.scale
+create_tensor: loading tensor blk.1.ssm_out.scale
+create_tensor: loading tensor blk.1.ssm_alpha.scale
+create_tensor: loading tensor blk.1.ssm_beta.scale
+create_tensor: loading tensor blk.1.attn_qkv.input_scale
+create_tensor: loading tensor blk.1.attn_gate.input_scale
+create_tensor: loading tensor blk.1.ffn_gate_exps.input_scale
+create_tensor: loading tensor blk.1.ffn_down_exps.input_scale
+create_tensor: loading tensor blk.1.ffn_up_exps.input_scale
+create_tensor: loading tensor blk.1.ffn_gate_shexp.input_scale
+create_tensor: loading tensor blk.1.ffn_down_shexp.input_scale
+create_tensor: loading tensor blk.1.ffn_up_shexp.input_scale
+create_tensor: loading tensor blk.1.ssm_out.input_scale
+create_tensor: loading tensor blk.1.ssm_alpha.input_scale
+create_tensor: loading tensor blk.1.ssm_beta.input_scale
+create_tensor: loading tensor blk.2.attn_qkv.scale
+create_tensor: loading tensor blk.2.attn_gate.scale
+create_tensor: loading tensor blk.2.ffn_gate_shexp.scale
+create_tensor: loading tensor blk.2.ffn_down_shexp.scale
+create_tensor: loading tensor blk.2.ffn_up_shexp.scale
+create_tensor: loading tensor blk.2.ffn_gate_exps.scale
+create_tensor: loading tensor blk.2.ffn_down_exps.scale
+create_tensor: loading tensor blk.2.ffn_up_exps.scale
+create_tensor: loading tensor blk.2.ssm_out.scale
+create_tensor: loading tensor blk.2.ssm_alpha.scale
+create_tensor: loading tensor blk.2.ssm_beta.scale
+create_tensor: loading tensor blk.2.attn_qkv.input_scale
+create_tensor: loading tensor blk.2.attn_gate.input_scale
+create_tensor: loading tensor blk.2.ffn_gate_exps.input_scale
+create_tensor: loading tensor blk.2.ffn_down_exps.input_scale
+create_tensor: loading tensor blk.2.ffn_up_exps.input_scale
+create_tensor: loading tensor blk.2.ffn_gate_shexp.input_scale
+create_tensor: loading tensor blk.2.ffn_down_shexp.input_scale
+create_tensor: loading tensor blk.2.ffn_up_shexp.input_scale
+create_tensor: loading tensor blk.2.ssm_out.input_scale
+create_tensor: loading tensor blk.2.ssm_alpha.input_scale
+create_tensor: loading tensor blk.2.ssm_beta.input_scale
+create_tensor: loading tensor blk.3.attn_q.scale
+create_tensor: loading tensor blk.3.attn_k.scale
+create_tensor: loading tensor blk.3.attn_v.scale
+create_tensor: loading tensor blk.3.attn_output.scale
+create_tensor: loading tensor blk.3.ffn_gate_shexp.scale
+create_tensor: loading tensor blk.3.ffn_down_shexp.scale
+create_tensor: loading tensor blk.3.ffn_up_shexp.scale
+create_tensor: loading tensor blk.3.ffn_gate_exps.scale
+create_tensor: loading tensor blk.3.ffn_down_exps.scale
+create_tensor: loading tensor blk.3.ffn_up_exps.scale
+create_tensor: loading tensor blk.3.attn_q.input_scale
+create_tensor: loading tensor blk.3.attn_k.input_scale
+create_tensor: loading tensor blk.3.attn_v.input_scale
+create_tensor: loading tensor blk.3.attn_output.input_scale
+create_tensor: loading tensor blk.3.ffn_gate_exps.input_scale
+create_tensor: loading tensor blk.3.ffn_down_exps.input_scale
+create_tensor: loading tensor blk.3.ffn_up_exps.input_scale
+create_tensor: loading tensor blk.3.ffn_gate_shexp.input_scale
+create_tensor: loading tensor blk.3.ffn_down_shexp.input_scale
+create_tensor: loading tensor blk.3.ffn_up_shexp.input_scale
+done_getting_tensors: tensor 'token_embd.weight' (q8_0) (and 0 others) cannot be used with preferred buffer type CUDA_Host, using CPU instead
+load_tensors: offloading output layer to GPU
+load_tensors: offloading 3 repeating layers to GPU
+load_tensors: offloaded 5/5 layers to GPU
+load_tensors:   CPU_Mapped model buffer size =   515.31 MiB
+load_tensors:        CUDA0 model buffer size =  2405.11 MiB
+....................
+llama_context: constructing llama_context
+llama_context: n_seq_max             = 1
+llama_context: n_ctx                 = 256
+llama_context: n_ctx_seq             = 256
+llama_context: n_batch               = 256
+llama_context: n_ubatch              = 1
+llama_context: causal_attn           = 1
+llama_context: flash_attn            = disabled
+llama_context: kv_unified            = false
+llama_context: freq_base             = 10000000.0
+llama_context: freq_scale            = 1
+llama_context: n_rs_seq              = 0
+llama_context: n_outputs_max         = 256
+llama_context: n_outputs_max_per_seq = 1
+llama_context: n_ctx_seq (256) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+set_abort_callback: call
+llama_context:  CUDA_Host  output buffer size =     0.95 MiB
+llama_kv_cache: layer   0: filtered
+llama_kv_cache: layer   1: filtered
+llama_kv_cache: layer   2: filtered
+llama_kv_cache: layer   3: dev = CUDA0
+llama_kv_cache:      CUDA0 KV buffer size =     0.50 MiB
+llama_kv_cache: size =    0.50 MiB (   256 cells,   1 layers,  1/1 seqs), K (f16):    0.25 MiB, V (f16):    0.25 MiB
+llama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 256
+llama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 256
+llama_memory_recurrent, layer   0: dev = CUDA0
+llama_memory_recurrent, layer   1: dev = CUDA0
+llama_memory_recurrent, layer   2: dev = CUDA0
+llama_memory_recurrent: layer   3: skipped
+llama_memory_recurrent:      CUDA0 RS buffer size =     6.28 MiB
+llama_memory_recurrent: size =    6.28 MiB (     1 cells,   4 layers,  1 seqs  0 rs_seq), R (f32):    0.28 MiB, S (f32):    6.00 MiB
+llama_context: enumerating backends
+llama_context: backend_ptrs.size() = 2
+sched_reserve: reserving ...
+sched_reserve: max_nodes = 2432
+sched_reserve: reserving full memory module
+sched_reserve: worst-case: n_tokens = 1, n_seqs = 1, n_outputs = 1
+resolve_fused_ops: resolving fused Gated Delta Net support:
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+resolve_fused_ops: fused Gated Delta Net (autoregressive) enabled
+graph_reserve: reserving a graph for ubatch with n_tokens =   16, n_seqs =  1, n_outputs =   16
+resolve_fused_ops: fused Gated Delta Net (chunked) enabled
+resolve_fused_ops: resolving fused Lightning Indexer support:
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+resolve_fused_ops: Lightning Indexer enabled
+resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+resolve_fused_ops: fused DeepSeek V4 HC post enabled
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+sched_reserve:      CUDA0 compute buffer size =     4.29 MiB
+sched_reserve:  CUDA_Host compute buffer size =     0.02 MiB
+sched_reserve: graph nodes  = 384
+sched_reserve: graph splits = 2
+sched_reserve: reserve took 8.98 ms, sched copies = 1
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+sifive_LoadProgramPtx: PTX parse failed for module.ptx: [UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_\n()\n.noreturn;"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_()\n.noreturn                               // -- Begin function _ZL14no_device_codePKciS0_iS0_\n                                        // @_ZL14no_device_codePKciS0_iS0_\n{\n\t.local .align 8 .b8 \t__local_depot8[40];\n\t.reg .b64 \t%SP;\n\t.reg .b64 \t%SPL;\n\t.reg .b32 \t%r<5>;\n\t.reg .b64 \t%rd<11>;\n\n// %bb.0:\n\tmov.u64 \t%SPL, __local_depot8;\n\tcvta.local.u64 \t%SP, %SPL;\n\tadd.u64 \t%rd1, %SP, 0;\n\tadd.u64 \t%rd2, %SPL, 0;\n\tmov.u64 \t%rd3, _$_str;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd4, %rd3;\n\tst.local.u64 \t[%rd2], %rd4;\n\tmov.b32 \t%r1, 329;\n\tst.local.u32 \t[%rd2+8], %r1;\n\tmov.u64 \t%rd5, __FUNCTION___$__ZL18quantize_mmq_nvfp4ILb1ELb1EEvPKfPKiPvPfllllllli;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd6, %rd5;\n\tst.local.u64 \t[%rd2+16], %rd6;\n\tmov.b32 \t%r2, 800;\n\tst.local.u32 \t[%rd2+24], %r2;\n\tmov.u64 \t%rd7, _$_str1;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd8, %rd7;\n\tst.local.u64 \t[%rd2+32], %rd8;\n\tmov.u64 \t%rd9, _$_str2;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd10, %rd9;\n\t{ // callseq 1, 0\n\t.param .b64 param0;\n\tst.param.b64 \t[param0], %rd10;\n\t.param .b64 param1;\n\tst.param.b64 \t[param1], %rd1;\n\t.param .b32 retval0;\n\tcall.uni (retval0), \n\tvprintf, \n\t(\n\tparam0, \n\tparam1\n\t);\n\tld.param.b32 \t%r3, [retval0];\n\t} // callseq 1\n\t// begin inline asm\n\ttrap;\n\t// end inline asm\n\tret;\n                                        // -- End function\n}"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);")]
+[SIFIVE Backend] sifive_LoadProgramPtx failed: -1 (ptx_parse: module.ptx: [UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_\n()\n.noreturn;"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_()\n.noreturn                               // -- Begin function _ZL14no_device_codePKciS0_iS0_\n                                        // @_ZL14no_device_codePKciS0_iS0_\n{\n\t.local .align 8 .b8 \t__local_depot8[40];\n\t.reg .b64 \t%SP;\n\t.reg .b64 \t%SPL;\n\t.reg .b32 \t%r<5>;\n\t.reg .b64 \t%rd<11>;\n\n// %bb.0:\n\tmov.u64 \t%SPL, __local_depot8;\n\tcvta.local.u64 \t%SP, %SPL;\n\tadd.u64 \t%rd1, %SP, 0;\n\tadd.u64 \t%rd2, %SPL, 0;\n\tmov.u64 \t%rd3, _$_str;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd4, %rd3;\n\tst.local.u64 \t[%rd2], %rd4;\n\tmov.b32 \t%r1, 329;\n\tst.local.u32 \t[%rd2+8], %r1;\n\tmov.u64 \t%rd5, __FUNCTION___$__ZL18quantize_mmq_nvfp4ILb1ELb1EEvPKfPKiPvPfllllllli;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd6, %rd5;\n\tst.local.u64 \t[%rd2+16], %rd6;\n\tmov.b32 \t%r2, 800;\n\tst.local.u32 \t[%rd2+24], %r2;\n\tmov.u64 \t%rd7, _$_str1;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd8, %rd7;\n\tst.local.u64 \t[%rd2+32], %rd8;\n\tmov.u64 \t%rd9, _$_str2;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd10, %rd9;\n\t{ // callseq 1, 0\n\t.param .b64 param0;\n\tst.param.b64 \t[param0], %rd10;\n\t.param .b64 param1;\n\tst.param.b64 \t[param1], %rd1;\n\t.param .b32 retval0;\n\tcall.uni (retval0), \n\tvprintf, \n\t(\n\tparam0, \n\tparam1\n\t);\n\tld.param.b32 \t%r3, [retval0];\n\t} // callseq 1\n\t// begin inline asm\n\ttrap;\n\t// end inline asm\n\tret;\n                                        // -- End function\n}"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);")])
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC Q8_0xQ8_1 dev=0 m=8192 n=1 k=2048 tiles=35 elapsed_ms=179.156 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC_ELF_PROFILE kernel=_ZL11concat_contIjLi0EEvPKT_S2_PS0_llllll dev=0 seq=7348653129796063269 setup_us=108 stage_us=326 publish_us=1244 wait_us=63940 readback_us=79 total_us=65702 payload_bytes=262144 image_bytes=35328
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC Q8_0xQ8_1 dev=0 m=32 n=1 k=2048 tiles=1 elapsed_ms=1.869 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC_ELF_PROFILE kernel=_ZL21unary_gated_op_kernelIXadL_ZL11op_softplusfEEfEvPKT0_S2_PS0_llll dev=0 seq=7348653130148708391 setup_us=133 stage_us=230 publish_us=1264 wait_us=924 readback_us=31 total_us=2586 payload_bytes=384 image_bytes=55936
+PACC Q8_0xQ8_1 dev=0 m=32 n=1 k=2048 tiles=1 elapsed_ms=3.973 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+ZLUDA DEBUG: Compiling SIFIVE source pacc_gdn_head_v1.c to launchable ELF
+SIFIVE: Created LLVM bitcode: /dev/shm/hetgpu_tmp/.tmpru5Qg8/pacc_gdn_head_v1.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmp4b6Zx6/pacc_gdn_head_v1.bc -> /dev/shm/hetgpu_tmp/.tmp4b6Zx6/pacc_gdn_head_v1_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmp4b6Zx6/pacc_gdn_head_v1_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmp4b6Zx6/pacc_gdn_head_v1_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmp4b6Zx6/pacc_gdn_head_v1_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpBHzxEA/pacc_gdn_head_v1_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpBHzxEA/pacc_gdn_head_v1_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpBHzxEA/pacc_gdn_head_v1_optimized_sifive.so
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpBHzxEA/pacc_gdn_head_v1.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpBHzxEA/pacc_gdn_head_v1_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpBHzxEA/pacc_gdn_head_v1_sifive.so
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653135764009001 setup_us=111 stage_us=166 publish_us=1246 wait_us=8811 readback_us=56 total_us=10394 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653135807164458 setup_us=110 stage_us=140 publish_us=1232 wait_us=11158 readback_us=54 total_us=12698 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653135859757099 setup_us=103 stage_us=139 publish_us=1238 wait_us=11220 readback_us=54 total_us=12758 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653135912599596 setup_us=107 stage_us=134 publish_us=1246 wait_us=11217 readback_us=55 total_us=12763 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653135965462573 setup_us=106 stage_us=135 publish_us=1241 wait_us=11195 readback_us=56 total_us=12737 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136018219054 setup_us=100 stage_us=135 publish_us=1236 wait_us=11039 readback_us=54 total_us=12568 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136070287407 setup_us=102 stage_us=134 publish_us=1230 wait_us=11093 readback_us=56 total_us=12620 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136122568752 setup_us=102 stage_us=133 publish_us=1231 wait_us=11030 readback_us=55 total_us=12555 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136174575665 setup_us=100 stage_us=132 publish_us=1265 wait_us=11195 readback_us=54 total_us=12750 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136227397682 setup_us=98 stage_us=135 publish_us=1237 wait_us=11053 readback_us=56 total_us=12583 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136279523379 setup_us=98 stage_us=136 publish_us=1232 wait_us=11303 readback_us=56 total_us=12829 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136332656692 setup_us=102 stage_us=135 publish_us=1234 wait_us=11072 readback_us=55 total_us=12602 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136384872501 setup_us=101 stage_us=139 publish_us=1222 wait_us=11191 readback_us=57 total_us=12714 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136437538870 setup_us=99 stage_us=158 publish_us=1233 wait_us=11167 readback_us=53 total_us=12713 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136490192951 setup_us=98 stage_us=133 publish_us=1231 wait_us=11183 readback_us=54 total_us=12703 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136542814264 setup_us=101 stage_us=135 publish_us=1228 wait_us=11031 readback_us=55 total_us=12554 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136594808889 setup_us=101 stage_us=134 publish_us=1227 wait_us=11220 readback_us=55 total_us=12741 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136647577658 setup_us=99 stage_us=132 publish_us=1225 wait_us=11454 readback_us=56 total_us=12969 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136701263931 setup_us=99 stage_us=134 publish_us=1230 wait_us=11076 readback_us=55 total_us=12598 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136753467452 setup_us=100 stage_us=139 publish_us=1234 wait_us=11282 readback_us=54 total_us=12812 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136806551613 setup_us=105 stage_us=136 publish_us=1237 wait_us=11069 readback_us=55 total_us=12605 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136858878014 setup_us=100 stage_us=137 publish_us=1231 wait_us=10974 readback_us=55 total_us=12502 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136910680127 setup_us=98 stage_us=132 publish_us=1228 wait_us=11215 readback_us=56 total_us=12733 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653136963424320 setup_us=100 stage_us=135 publish_us=1227 wait_us=11097 readback_us=57 total_us=12619 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653137015693377 setup_us=99 stage_us=139 publish_us=1232 wait_us=11107 readback_us=56 total_us=12638 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653137068052546 setup_us=100 stage_us=134 publish_us=1232 wait_us=11190 readback_us=54 total_us=12714 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653137120718915 setup_us=104 stage_us=139 publish_us=1226 wait_us=11075 readback_us=56 total_us=12603 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653137172942916 setup_us=100 stage_us=136 publish_us=1230 wait_us=12414 readback_us=56 total_us=13940 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653137230643269 setup_us=104 stage_us=136 publish_us=1228 wait_us=11047 readback_us=54 total_us=12573 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653137282707526 setup_us=97 stage_us=131 publish_us=1237 wait_us=11094 readback_us=55 total_us=12618 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653137334980679 setup_us=100 stage_us=133 publish_us=1230 wait_us=11102 readback_us=56 total_us=12625 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653137387266120 setup_us=103 stage_us=138 publish_us=1252 wait_us=11267 readback_us=57 total_us=12820 payload_bytes=133184 image_bytes=16320
+PACC GDN device-core heads=32 seqs=1 tokens=1 width=128 snapshots=1 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC Q8_0xQ8_1 dev=0 m=4096 n=1 k=2048 tiles=18 elapsed_ms=87.392 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC_ELF_PROFILE kernel=_ZL21unary_gated_op_kernelIXadL_ZL7op_silufEEfEvPKT0_S2_PS0_llll dev=0 seq=7348653137818660956 setup_us=108 stage_us=225 publish_us=1278 wait_us=8725 readback_us=43 total_us=10382 payload_bytes=49152 image_bytes=55936
+PACC Q8_0xQ8_1 dev=0 m=2048 n=1 k=4096 tiles=18 elapsed_ms=85.584 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+ZLUDA DEBUG: Compiling SIFIVE source topk_moe.c to launchable ELF
+SIFIVE: Created LLVM bitcode: /dev/shm/hetgpu_tmp/.tmpqXsDYU/topk_moe.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmplPKs9I/topk_moe.bc -> /dev/shm/hetgpu_tmp/.tmplPKs9I/topk_moe_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmplPKs9I/topk_moe_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmplPKs9I/topk_moe_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmplPKs9I/topk_moe_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmp1Bf0i1/topk_moe_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmp1Bf0i1/topk_moe_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmp1Bf0i1/topk_moe_optimized_sifive.so
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmp1Bf0i1/topk_moe.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmp1Bf0i1/topk_moe_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmp1Bf0i1/topk_moe_sifive.so
+PACC_ELF_PROFILE kernel=pacc_topk_row_v1 dev=0 seq=7348653144242511989 setup_us=112 stage_us=123 publish_us=1254 wait_us=2261 readback_us=38 total_us=3791 payload_bytes=1088 image_bytes=16256
+PACC topk device-core experts=256 rows=1 selected=8 flags=4 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+ZLUDA DEBUG: Compiling SIFIVE source q4k_tile.c to launchable ELF
+SIFIVE: Created LLVM bitcode: /dev/shm/hetgpu_tmp/.tmpAZpZdJ/q4k_tile.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpgfXtC3/q4k_tile.bc -> /dev/shm/hetgpu_tmp/.tmpgfXtC3/q4k_tile_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpgfXtC3/q4k_tile_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpgfXtC3/q4k_tile_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpgfXtC3/q4k_tile_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpQXew89/q4k_tile_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpQXew89/q4k_tile_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpQXew89/q4k_tile_optimized_sifive.so
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpQXew89/q4k_tile.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpQXew89/q4k_tile_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpQXew89/q4k_tile_sifive.so
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653151237013622 setup_us=121 stage_us=371 publish_us=1258 wait_us=19989 readback_us=38 total_us=21781 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19730.41 activation_us=830.52 weights_us=9423.41 xm_us=1120.43 reduce_us=5348.94 xm_calls=896 local_copy_us=737.28
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653151327350903 setup_us=106 stage_us=326 publish_us=1249 wait_us=21897 readback_us=37 total_us=23619 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19450.88 activation_us=833.38 weights_us=9399.78 xm_us=1160.47 reduce_us=5336.03 xm_calls=896 local_copy_us=532.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653151425208440 setup_us=102 stage_us=335 publish_us=1258 wait_us=21759 readback_us=36 total_us=23494 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19417.6 activation_us=824.37 weights_us=9400.62 xm_us=1170.22 reduce_us=5302.99 xm_calls=896 local_copy_us=526.57
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653151522558073 setup_us=107 stage_us=321 publish_us=1249 wait_us=21664 readback_us=37 total_us=23382 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19384.32 activation_us=813.1 weights_us=9388.88 xm_us=1134.07 reduce_us=5285.05 xm_calls=896 local_copy_us=522.35
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653151619440762 setup_us=100 stage_us=326 publish_us=1221 wait_us=21603 readback_us=36 total_us=23290 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19361.28 activation_us=829.94 weights_us=9377.73 xm_us=1119.89 reduce_us=5270.14 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653151716135035 setup_us=105 stage_us=330 publish_us=1252 wait_us=21465 readback_us=36 total_us=23191 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19061.76 activation_us=793.96 weights_us=9015.26 xm_us=1273.68 reduce_us=5292.91 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653151812259964 setup_us=106 stage_us=330 publish_us=1249 wait_us=21188 readback_us=35 total_us=22912 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19018.24 activation_us=809.8 weights_us=8991.04 xm_us=1105.19 reduce_us=5280.75 xm_calls=896 local_copy_us=525.78
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653151907201149 setup_us=102 stage_us=333 publish_us=1252 wait_us=21328 readback_us=38 total_us=23055 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19032.55 activation_us=802.03 weights_us=9136.84 xm_us=1031.14 reduce_us=5212.7 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653152002752638 setup_us=126 stage_us=328 publish_us=1247 wait_us=21590 readback_us=37 total_us=23332 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19256.32 activation_us=823.44 weights_us=9168.21 xm_us=1193.58 reduce_us=5324.79 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653152099455103 setup_us=104 stage_us=354 publish_us=1250 wait_us=21628 readback_us=35 total_us=23376 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19258.88 activation_us=817.44 weights_us=9242.63 xm_us=1124.84 reduce_us=5282.81 xm_calls=896 local_copy_us=522.86
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653152196329600 setup_us=106 stage_us=325 publish_us=1246 wait_us=21422 readback_us=38 total_us=23139 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19182.08 activation_us=800.67 weights_us=9181.69 xm_us=1193.41 reduce_us=5277.38 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653152292237441 setup_us=102 stage_us=326 publish_us=1240 wait_us=21331 readback_us=38 total_us=23040 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19082.24 activation_us=816.54 weights_us=9046.06 xm_us=1144.92 reduce_us=5339.34 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653152387735682 setup_us=103 stage_us=325 publish_us=1244 wait_us=21498 readback_us=36 total_us=23210 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19031.04 activation_us=847.32 weights_us=8985.57 xm_us=1114.26 reduce_us=5355.43 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653152483942531 setup_us=100 stage_us=322 publish_us=1250 wait_us=21334 readback_us=35 total_us=23045 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19146.24 activation_us=830.9 weights_us=9120.81 xm_us=1195.92 reduce_us=5295.21 xm_calls=896 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653152579440772 setup_us=102 stage_us=330 publish_us=1250 wait_us=21504 readback_us=37 total_us=23227 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19154.21 activation_us=803.09 weights_us=9117.9 xm_us=1195.62 reduce_us=5296.58 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653152675758213 setup_us=103 stage_us=336 publish_us=1258 wait_us=21479 readback_us=34 total_us=23215 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19148.8 activation_us=819.21 weights_us=9108.1 xm_us=1108.06 reduce_us=5387.78 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653152772087942 setup_us=105 stage_us=351 publish_us=1242 wait_us=21390 readback_us=35 total_us=23128 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19215.36 activation_us=767.82 weights_us=9238.35 xm_us=1169.37 reduce_us=5208.28 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653152867926151 setup_us=104 stage_us=335 publish_us=1247 wait_us=21541 readback_us=35 total_us=23266 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19228.63 activation_us=800.69 weights_us=9218.62 xm_us=1146.79 reduce_us=5318.7 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653152964350088 setup_us=103 stage_us=335 publish_us=1243 wait_us=21616 readback_us=37 total_us=23337 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19276.8 activation_us=773.3 weights_us=9254.72 xm_us=1128.97 reduce_us=5300.96 xm_calls=896 local_copy_us=524.09
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153061064841 setup_us=106 stage_us=332 publish_us=1247 wait_us=21569 readback_us=35 total_us=23293 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19240.96 activation_us=796.44 weights_us=9219.07 xm_us=1228.63 reduce_us=5274.65 xm_calls=896 local_copy_us=547.84
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153157542026 setup_us=101 stage_us=302 publish_us=1250 wait_us=17115 readback_us=36 total_us=18808 payload_bytes=363712 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=156 n=1 nb=8 gate=1 device_us=14817.28 activation_us=581.46 weights_us=7255.2 xm_us=854.63 reduce_us=4155.38 xm_calls=640 local_copy_us=415.83
+PACC_QK_BATCH experts=8 groups=1 tiles=21 pack_us=1758 submit_us=2185748 scatter_us=12
+PACC Q4_K XM experts=8 m=512 n=1 k=2048 fused_gate=true completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153253982347 setup_us=122 stage_us=275 publish_us=1269 wait_us=7326 readback_us=37 total_us=9033 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7219.2 activation_us=427.16 weights_us=3567.55 xm_us=388.45 reduce_us=1696.32 xm_calls=256 local_copy_us=213.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153291870348 setup_us=104 stage_us=230 publish_us=1249 wait_us=9683 readback_us=37 total_us=11307 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7183.36 activation_us=460.08 weights_us=3575.34 xm_us=348.23 reduce_us=1696.81 xm_calls=256 local_copy_us=214.22
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153339089037 setup_us=102 stage_us=234 publish_us=1249 wait_us=9547 readback_us=38 total_us=11172 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7188.48 activation_us=460.89 weights_us=3592.17 xm_us=359.24 reduce_us=1703.03 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153385762958 setup_us=99 stage_us=228 publish_us=1247 wait_us=9757 readback_us=39 total_us=11375 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7192.3 activation_us=449.27 weights_us=3597.34 xm_us=301.71 reduce_us=1678.93 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153433288847 setup_us=98 stage_us=228 publish_us=1246 wait_us=9535 readback_us=38 total_us=11149 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7159.38 activation_us=434.61 weights_us=3560.91 xm_us=341.78 reduce_us=1689.07 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153479876752 setup_us=100 stage_us=229 publish_us=1253 wait_us=9677 readback_us=38 total_us=11300 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7157.76 activation_us=462.56 weights_us=3580.96 xm_us=323.55 reduce_us=1679.72 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153527378065 setup_us=101 stage_us=233 publish_us=1253 wait_us=9418 readback_us=36 total_us=11045 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7196.16 activation_us=448.84 weights_us=3613.13 xm_us=342.65 reduce_us=1674.83 xm_calls=256 local_copy_us=210.98
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153573523602 setup_us=101 stage_us=233 publish_us=1252 wait_us=9691 readback_us=35 total_us=11316 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7188.48 activation_us=466.02 weights_us=3553.45 xm_us=350.73 reduce_us=1748.59 xm_calls=256 local_copy_us=210.78
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153620816019 setup_us=103 stage_us=235 publish_us=1249 wait_us=9538 readback_us=36 total_us=11164 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7189.89 activation_us=472.48 weights_us=3586.55 xm_us=334.34 reduce_us=1708.31 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153667444884 setup_us=102 stage_us=234 publish_us=1244 wait_us=9669 readback_us=38 total_us=11291 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.77 activation_us=455.8 weights_us=3550.25 xm_us=321.45 reduce_us=1706.68 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153714593941 setup_us=103 stage_us=230 publish_us=1250 wait_us=9694 readback_us=38 total_us=11319 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7189.36 activation_us=421.98 weights_us=3579.35 xm_us=325.55 reduce_us=1682.38 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153761874070 setup_us=100 stage_us=229 publish_us=1245 wait_us=9501 readback_us=36 total_us=11115 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7162.88 activation_us=453.99 weights_us=3549.19 xm_us=359.95 reduce_us=1716.65 xm_calls=256 local_copy_us=211.83
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153808314519 setup_us=102 stage_us=233 publish_us=1240 wait_us=9691 readback_us=37 total_us=11307 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7147.52 activation_us=454.49 weights_us=3563.84 xm_us=349.03 reduce_us=1685.36 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153855549592 setup_us=99 stage_us=227 publish_us=1247 wait_us=9504 readback_us=37 total_us=11118 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7191.04 activation_us=462.55 weights_us=3561.68 xm_us=341.26 reduce_us=1730.2 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153902031001 setup_us=99 stage_us=232 publish_us=1275 wait_us=9623 readback_us=35 total_us=11269 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7190.83 activation_us=454.9 weights_us=3591.19 xm_us=286.74 reduce_us=1679 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153949065370 setup_us=102 stage_us=233 publish_us=1247 wait_us=9694 readback_us=36 total_us=11315 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7190.06 activation_us=452.89 weights_us=3577.39 xm_us=335.73 reduce_us=1712.29 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653153996333211 setup_us=101 stage_us=236 publish_us=1247 wait_us=9503 readback_us=36 total_us=11126 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.92 activation_us=452.12 weights_us=3568.33 xm_us=332.16 reduce_us=1710.94 xm_calls=256 local_copy_us=210.21
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154042945692 setup_us=102 stage_us=237 publish_us=1254 wait_us=9670 readback_us=36 total_us=11303 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7198.72 activation_us=479.01 weights_us=3601.86 xm_us=339.07 reduce_us=1709.48 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154090143901 setup_us=102 stage_us=233 publish_us=1256 wait_us=9556 readback_us=35 total_us=11186 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7150.08 activation_us=440.88 weights_us=3577.06 xm_us=331.93 reduce_us=1675.84 xm_calls=256 local_copy_us=209.93
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154136903838 setup_us=102 stage_us=230 publish_us=1250 wait_us=9611 readback_us=37 total_us=11233 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7152.64 activation_us=470.27 weights_us=3577.61 xm_us=336.23 reduce_us=1688.43 xm_calls=256 local_copy_us=211.81
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154183831711 setup_us=99 stage_us=227 publish_us=1248 wait_us=9555 readback_us=36 total_us=11168 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.92 activation_us=453.62 weights_us=3609.21 xm_us=314.84 reduce_us=1677.37 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154230476960 setup_us=103 stage_us=253 publish_us=1257 wait_us=9534 readback_us=37 total_us=11188 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.92 activation_us=454.75 weights_us=3574.25 xm_us=364.47 reduce_us=1714.34 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154277204129 setup_us=103 stage_us=229 publish_us=1248 wait_us=9631 readback_us=36 total_us=11251 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7178.24 activation_us=425.29 weights_us=3550.75 xm_us=379.61 reduce_us=1683.9 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154324201634 setup_us=100 stage_us=226 publish_us=1240 wait_us=9673 readback_us=39 total_us=11282 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7196.16 activation_us=472.17 weights_us=3588.91 xm_us=371.08 reduce_us=1720.61 xm_calls=256 local_copy_us=210.73
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154371297443 setup_us=98 stage_us=226 publish_us=1250 wait_us=9676 readback_us=36 total_us=11290 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.92 activation_us=441.2 weights_us=3576.4 xm_us=341.49 reduce_us=1691.34 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154418442404 setup_us=100 stage_us=238 publish_us=1252 wait_us=9530 readback_us=38 total_us=11162 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7160.32 activation_us=451.3 weights_us=3562.39 xm_us=388.45 reduce_us=1705.38 xm_calls=256 local_copy_us=211.98
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154465075365 setup_us=101 stage_us=234 publish_us=1250 wait_us=9551 readback_us=38 total_us=11178 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7152.64 activation_us=452.96 weights_us=3543.78 xm_us=339.49 reduce_us=1707.14 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154511786150 setup_us=99 stage_us=234 publish_us=1247 wait_us=9688 readback_us=38 total_us=11309 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7193.57 activation_us=447.74 weights_us=3608.56 xm_us=331.02 reduce_us=1680.97 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154559320231 setup_us=101 stage_us=246 publish_us=1248 wait_us=9497 readback_us=38 total_us=11134 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.92 activation_us=470.23 weights_us=3569.23 xm_us=359.14 reduce_us=1734.62 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154605842600 setup_us=105 stage_us=228 publish_us=1240 wait_us=9670 readback_us=36 total_us=11282 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.99 activation_us=453.08 weights_us=3590.83 xm_us=334.93 reduce_us=1691.7 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154652958889 setup_us=99 stage_us=236 publish_us=1249 wait_us=9487 readback_us=37 total_us=11111 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7183.36 activation_us=440.22 weights_us=3598.58 xm_us=350.38 reduce_us=1674.52 xm_calls=256 local_copy_us=210.58
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154699387050 setup_us=100 stage_us=228 publish_us=1247 wait_us=9722 readback_us=36 total_us=11336 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.92 activation_us=450.28 weights_us=3567.07 xm_us=307.57 reduce_us=1683.83 xm_calls=256 local_copy_us=209.92
+PACC_QK_BATCH experts=8 groups=8 tiles=32 pack_us=1247 submit_us=363087 scatter_us=35
+PACC Q5_K XM experts=8 m=2048 n=1 k=512 fused_gate=false completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154761732267 setup_us=114 stage_us=347 publish_us=1258 wait_us=10015 readback_us=37 total_us=11774 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9984 activation_us=483.46 weights_us=4239.38 xm_us=629.42 reduce_us=2847.65 xm_calls=512 local_copy_us=532.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154811084972 setup_us=104 stage_us=331 publish_us=1247 wait_us=12238 readback_us=37 total_us=13960 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9952.05 activation_us=432.11 weights_us=4208.4 xm_us=647.31 reduce_us=2798.15 xm_calls=512 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154869416109 setup_us=104 stage_us=357 publish_us=1247 wait_us=12273 readback_us=36 total_us=14020 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9968.24 activation_us=443.01 weights_us=4200.95 xm_us=653.74 reduce_us=2834.21 xm_calls=512 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154927960238 setup_us=103 stage_us=329 publish_us=1245 wait_us=12245 readback_us=34 total_us=13959 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9966.08 activation_us=471.07 weights_us=4215.52 xm_us=662.28 reduce_us=2844.83 xm_calls=512 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653154986229935 setup_us=104 stage_us=316 publish_us=1244 wait_us=10972 readback_us=37 total_us=12677 payload_bytes=421312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=96 n=1 nb=8 gate=1 device_us=8688.64 activation_us=356.75 weights_us=3821.21 xm_us=520.55 reduce_us=2540.28 xm_calls=384 local_copy_us=506.59
+PACC_QK_BATCH experts=1 groups=1 tiles=5 pack_us=414 submit_us=67345 scatter_us=0
+PACC Q8_0 XM experts=1 m=512 n=1 k=2048 fused_gate=true completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653155047465136 setup_us=120 stage_us=288 publish_us=1265 wait_us=6576 readback_us=41 total_us=8292 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6215.68 activation_us=450.7 weights_us=2517.28 xm_us=332.95 reduce_us=1680.44 xm_calls=256 local_copy_us=325.12
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653155082420401 setup_us=102 stage_us=291 publish_us=1242 wait_us=8627 readback_us=39 total_us=10304 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6218.24 activation_us=442.13 weights_us=2509.2 xm_us=343.89 reduce_us=1698.55 xm_calls=256 local_copy_us=327.68
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653155125620914 setup_us=105 stage_us=274 publish_us=1266 wait_us=8542 readback_us=37 total_us=10226 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6215.68 activation_us=463.61 weights_us=2512.99 xm_us=350.23 reduce_us=1699.27 xm_calls=256 local_copy_us=325.12
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653155168510131 setup_us=102 stage_us=267 publish_us=1246 wait_us=8732 readback_us=38 total_us=10389 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6259.2 activation_us=461.97 weights_us=2518.28 xm_us=345.09 reduce_us=1725.84 xm_calls=256 local_copy_us=325.12
+PACC_QK_BATCH experts=1 groups=1 tiles=4 pack_us=220 submit_us=39956 scatter_us=4
+PACC Q8_0 XM experts=1 m=2048 n=1 k=512 fused_gate=false completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+TRACE l_out-0.0 op=ADD rel_rms=0 max_abs=0
+PACC Q8_0xQ8_1 dev=0 m=8192 n=1 k=2048 tiles=35 elapsed_ms=173.322 completion=verified
+PACC_ELF_PROFILE kernel=_ZL11concat_contIjLi0EEvPKT_S2_PS0_llllll dev=0 seq=7348653155955458265 setup_us=101 stage_us=269 publish_us=1259 wait_us=61914 readback_us=81 total_us=63628 payload_bytes=262144 image_bytes=35328
+PACC Q8_0xQ8_1 dev=0 m=32 n=1 k=2048 tiles=1 elapsed_ms=1.781 completion=verified
+PACC_ELF_PROFILE kernel=_ZL21unary_gated_op_kernelIXadL_ZL11op_softplusfEEfEvPKT0_S2_PS0_llll dev=0 seq=7348653156234727643 setup_us=106 stage_us=195 publish_us=1275 wait_us=821 readback_us=36 total_us=2437 payload_bytes=384 image_bytes=55936
+PACC Q8_0xQ8_1 dev=0 m=32 n=1 k=2048 tiles=1 elapsed_ms=3.885 completion=verified
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156262478045 setup_us=129 stage_us=143 publish_us=1239 wait_us=8634 readback_us=54 total_us=10203 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156304888030 setup_us=103 stage_us=143 publish_us=1245 wait_us=10963 readback_us=55 total_us=12512 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156356743391 setup_us=104 stage_us=144 publish_us=1243 wait_us=11152 readback_us=59 total_us=12706 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156409401568 setup_us=100 stage_us=170 publish_us=1244 wait_us=11022 readback_us=56 total_us=12596 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156461596897 setup_us=102 stage_us=149 publish_us=1240 wait_us=11011 readback_us=57 total_us=12564 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156513652962 setup_us=98 stage_us=141 publish_us=1241 wait_us=11178 readback_us=60 total_us=12722 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156566372579 setup_us=104 stage_us=142 publish_us=1238 wait_us=10949 readback_us=57 total_us=12494 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156618162404 setup_us=105 stage_us=146 publish_us=1238 wait_us=11108 readback_us=57 total_us=12658 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156670607589 setup_us=100 stage_us=141 publish_us=1273 wait_us=10953 readback_us=55 total_us=12526 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156722651366 setup_us=98 stage_us=139 publish_us=1241 wait_us=11131 readback_us=55 total_us=12669 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156775149799 setup_us=100 stage_us=141 publish_us=1237 wait_us=11026 readback_us=56 total_us=12563 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156827218152 setup_us=100 stage_us=141 publish_us=1240 wait_us=11072 readback_us=58 total_us=12614 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156879487209 setup_us=103 stage_us=144 publish_us=1241 wait_us=10963 readback_us=62 total_us=12516 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156931363050 setup_us=102 stage_us=137 publish_us=1238 wait_us=11131 readback_us=58 total_us=12670 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653156983943403 setup_us=100 stage_us=143 publish_us=1238 wait_us=11125 readback_us=57 total_us=12667 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157036421356 setup_us=102 stage_us=138 publish_us=1240 wait_us=10927 readback_us=58 total_us=12469 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157088084205 setup_us=101 stage_us=142 publish_us=1238 wait_us=11111 readback_us=56 total_us=12651 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157140492526 setup_us=98 stage_us=139 publish_us=1242 wait_us=11124 readback_us=57 total_us=12663 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157192954095 setup_us=99 stage_us=139 publish_us=1239 wait_us=11079 readback_us=57 total_us=12618 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157245227248 setup_us=99 stage_us=165 publish_us=1241 wait_us=10953 readback_us=57 total_us=12518 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157297115377 setup_us=101 stage_us=141 publish_us=1243 wait_us=11105 readback_us=58 total_us=12652 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157349548274 setup_us=99 stage_us=144 publish_us=1243 wait_us=10946 readback_us=57 total_us=12494 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157401325811 setup_us=102 stage_us=143 publish_us=1241 wait_us=11099 readback_us=58 total_us=12646 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157453717748 setup_us=101 stage_us=139 publish_us=1239 wait_us=11100 readback_us=56 total_us=12639 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157506076917 setup_us=98 stage_us=141 publish_us=1236 wait_us=10973 readback_us=61 total_us=12513 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157557919990 setup_us=100 stage_us=138 publish_us=1234 wait_us=11155 readback_us=57 total_us=12687 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157610500343 setup_us=100 stage_us=139 publish_us=1234 wait_us=10954 readback_us=57 total_us=12489 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157662236920 setup_us=98 stage_us=137 publish_us=1239 wait_us=11068 readback_us=58 total_us=12603 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157714465017 setup_us=97 stage_us=141 publish_us=1239 wait_us=11131 readback_us=58 total_us=12669 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157766955258 setup_us=99 stage_us=142 publish_us=1233 wait_us=10974 readback_us=56 total_us=12507 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157818880251 setup_us=123 stage_us=147 publish_us=1237 wait_us=11083 readback_us=58 total_us=12652 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653157871292668 setup_us=99 stage_us=141 publish_us=1239 wait_us=11108 readback_us=56 total_us=12646 payload_bytes=133184 image_bytes=16320
+PACC GDN device-core heads=32 seqs=1 tokens=1 width=128 snapshots=1 completion=verified
+PACC Q8_0xQ8_1 dev=0 m=4096 n=1 k=2048 tiles=18 elapsed_ms=87.513 completion=verified
+PACC_ELF_PROFILE kernel=_ZL21unary_gated_op_kernelIXadL_ZL7op_silufEEfEvPKT0_S2_PS0_llll dev=0 seq=7348653158301278480 setup_us=104 stage_us=213 publish_us=1269 wait_us=8708 readback_us=67 total_us=10366 payload_bytes=49152 image_bytes=55936
+PACC Q8_0xQ8_1 dev=0 m=2048 n=1 k=4096 tiles=18 elapsed_ms=86.717 completion=verified
+PACC_ELF_PROFILE kernel=pacc_topk_row_v1 dev=0 seq=7348653159085973801 setup_us=97 stage_us=97 publish_us=1238 wait_us=2252 readback_us=37 total_us=3725 payload_bytes=1088 image_bytes=16256
+PACC topk device-core experts=256 rows=1 selected=8 flags=4 completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653159102714154 setup_us=108 stage_us=364 publish_us=1248 wait_us=21531 readback_us=36 total_us=23289 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19284.48 activation_us=787.6 weights_us=9112.12 xm_us=1089.08 reduce_us=5186.76 xm_calls=896 local_copy_us=719.36
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653159199281451 setup_us=101 stage_us=349 publish_us=1251 wait_us=21418 readback_us=37 total_us=23160 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19046.4 activation_us=804.32 weights_us=9052.53 xm_us=1185.51 reduce_us=5308.53 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653159295258924 setup_us=101 stage_us=347 publish_us=1245 wait_us=21448 readback_us=35 total_us=23180 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19322.88 activation_us=818.2 weights_us=9303.23 xm_us=1151.07 reduce_us=5298.66 xm_calls=896 local_copy_us=527.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653159391359277 setup_us=98 stage_us=369 publish_us=1249 wait_us=21946 readback_us=35 total_us=23701 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19594.24 activation_us=802.85 weights_us=9587.15 xm_us=1148.27 reduce_us=5294.42 xm_calls=896 local_copy_us=523.38
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653159489573166 setup_us=104 stage_us=373 publish_us=1245 wait_us=21719 readback_us=36 total_us=23481 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19571.2 activation_us=814.11 weights_us=9571.4 xm_us=1133.03 reduce_us=5340.98 xm_calls=896 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653159586890031 setup_us=100 stage_us=368 publish_us=1245 wait_us=21902 readback_us=38 total_us=23657 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19596.8 activation_us=802.99 weights_us=9568.2 xm_us=1164.93 reduce_us=5313.35 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653159684903216 setup_us=100 stage_us=352 publish_us=1270 wait_us=21765 readback_us=36 total_us=23527 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19563.52 activation_us=774.1 weights_us=9541.64 xm_us=1133.8 reduce_us=5320.04 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653159782400305 setup_us=101 stage_us=347 publish_us=1252 wait_us=21927 readback_us=38 total_us=23669 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19571.12 activation_us=823.33 weights_us=9566.38 xm_us=1100.38 reduce_us=5286.09 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653159880646962 setup_us=102 stage_us=355 publish_us=1239 wait_us=21885 readback_us=35 total_us=23621 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19550.72 activation_us=813.28 weights_us=9534.53 xm_us=1212.88 reduce_us=5266.79 xm_calls=896 local_copy_us=523.74
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653159978520883 setup_us=99 stage_us=360 publish_us=1243 wait_us=21785 readback_us=36 total_us=23527 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19509.76 activation_us=807.62 weights_us=9517.3 xm_us=1133.68 reduce_us=5310.93 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653160076013876 setup_us=99 stage_us=330 publish_us=1246 wait_us=21889 readback_us=36 total_us=23604 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19586.56 activation_us=805.1 weights_us=9533 xm_us=1183.82 reduce_us=5307.26 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653160173797685 setup_us=98 stage_us=326 publish_us=1245 wait_us=21739 readback_us=35 total_us=23448 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19553.28 activation_us=793.86 weights_us=9569.28 xm_us=1154.27 reduce_us=5282.7 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653160270999862 setup_us=101 stage_us=324 publish_us=1247 wait_us=21992 readback_us=36 total_us=23704 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19591.68 activation_us=795.13 weights_us=9573.4 xm_us=1126.99 reduce_us=5293.49 xm_calls=896 local_copy_us=552.96
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653160369258807 setup_us=100 stage_us=331 publish_us=1244 wait_us=21860 readback_us=34 total_us=23573 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19578.48 activation_us=787.05 weights_us=9530.12 xm_us=1167.24 reduce_us=5310.54 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653160466948408 setup_us=101 stage_us=329 publish_us=1243 wait_us=21850 readback_us=36 total_us=23562 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19596.8 activation_us=797.09 weights_us=9544.06 xm_us=1150.79 reduce_us=5286.57 xm_calls=896 local_copy_us=519.68
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653160564597049 setup_us=102 stage_us=333 publish_us=1252 wait_us=21918 readback_us=37 total_us=23646 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19581.44 activation_us=776.89 weights_us=9589.54 xm_us=1172.48 reduce_us=5235.92 xm_calls=896 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653160662577466 setup_us=103 stage_us=323 publish_us=1243 wait_us=21879 readback_us=38 total_us=23589 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19558.4 activation_us=784.51 weights_us=9593.85 xm_us=1105.88 reduce_us=5316.34 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653160760324411 setup_us=105 stage_us=333 publish_us=1245 wait_us=21898 readback_us=36 total_us=23620 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19601.92 activation_us=786.63 weights_us=9596.53 xm_us=1180.76 reduce_us=5283.14 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653160858206524 setup_us=103 stage_us=324 publish_us=1247 wait_us=21808 readback_us=36 total_us=23522 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19596.8 activation_us=818.58 weights_us=9625.79 xm_us=1173.89 reduce_us=5258.5 xm_calls=896 local_copy_us=527.36
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653160955801917 setup_us=108 stage_us=329 publish_us=1241 wait_us=21856 readback_us=35 total_us=23573 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19558.76 activation_us=795.91 weights_us=9574.57 xm_us=1073.67 reduce_us=5301.01 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161053421886 setup_us=101 stage_us=297 publish_us=1246 wait_us=17431 readback_us=37 total_us=19116 payload_bytes=363712 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=156 n=1 nb=8 gate=1 device_us=15042.56 activation_us=570.93 weights_us=7484.52 xm_us=856.01 reduce_us=4149.99 xm_calls=640 local_copy_us=417.28
+PACC_QK_BATCH experts=8 groups=1 tiles=21 pack_us=1749 submit_us=493835 scatter_us=14
+PACC Q4_K XM experts=8 m=512 n=1 k=2048 fused_gate=true completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161133506879 setup_us=109 stage_us=250 publish_us=1256 wait_us=9367 readback_us=36 total_us=11022 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7175.68 activation_us=479.08 weights_us=3602.81 xm_us=312.54 reduce_us=1688.11 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161179582784 setup_us=101 stage_us=228 publish_us=1243 wait_us=9549 readback_us=36 total_us=11161 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7150.08 activation_us=470.6 weights_us=3573.85 xm_us=353.99 reduce_us=1705.34 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161226207553 setup_us=98 stage_us=251 publish_us=1242 wait_us=9721 readback_us=37 total_us=11354 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7198.72 activation_us=453.3 weights_us=3564 xm_us=358.1 reduce_us=1720.38 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161273606466 setup_us=99 stage_us=229 publish_us=1242 wait_us=9665 readback_us=38 total_us=11276 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7201.28 activation_us=456.9 weights_us=3607.11 xm_us=336.98 reduce_us=1685.19 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161320722755 setup_us=101 stage_us=232 publish_us=1243 wait_us=9526 readback_us=36 total_us=11142 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.92 activation_us=482.57 weights_us=3578.8 xm_us=380.65 reduce_us=1736.24 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161367261508 setup_us=99 stage_us=232 publish_us=1246 wait_us=9677 readback_us=36 total_us=11294 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7198.72 activation_us=447.72 weights_us=3631.73 xm_us=346.44 reduce_us=1665.33 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161414480197 setup_us=100 stage_us=234 publish_us=1250 wait_us=9584 readback_us=36 total_us=11208 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7188.48 activation_us=476.88 weights_us=3580.14 xm_us=381.92 reduce_us=1700.96 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161461297478 setup_us=98 stage_us=231 publish_us=1251 wait_us=9527 readback_us=36 total_us=11146 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7170.56 activation_us=456.76 weights_us=3567.08 xm_us=348.4 reduce_us=1705.35 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161507856711 setup_us=98 stage_us=231 publish_us=1249 wait_us=9714 readback_us=37 total_us=11334 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7162.88 activation_us=430.05 weights_us=3587.58 xm_us=301.91 reduce_us=1640.95 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161555435848 setup_us=97 stage_us=251 publish_us=1252 wait_us=9541 readback_us=37 total_us=11181 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7201.1 activation_us=472.97 weights_us=3623.27 xm_us=335.54 reduce_us=1684.35 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161602142537 setup_us=98 stage_us=225 publish_us=1271 wait_us=9508 readback_us=35 total_us=11141 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7187.16 activation_us=495.77 weights_us=3556.29 xm_us=370.8 reduce_us=1728.3 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161648681290 setup_us=101 stage_us=230 publish_us=1242 wait_us=9610 readback_us=40 total_us=11226 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7193.6 activation_us=476.48 weights_us=3560.46 xm_us=356.68 reduce_us=1751.05 xm_calls=256 local_copy_us=210.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161695568203 setup_us=100 stage_us=223 publish_us=1239 wait_us=9658 readback_us=37 total_us=11261 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7183.36 activation_us=430.96 weights_us=3561.52 xm_us=366.04 reduce_us=1698.76 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161742614860 setup_us=100 stage_us=229 publish_us=1248 wait_us=9632 readback_us=39 total_us=11251 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7206.4 activation_us=454.38 weights_us=3603.09 xm_us=361.69 reduce_us=1707.46 xm_calls=256 local_copy_us=211.08
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161789591885 setup_us=98 stage_us=224 publish_us=1241 wait_us=9693 readback_us=37 total_us=11296 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7157.76 activation_us=452.28 weights_us=3544.74 xm_us=367.84 reduce_us=1720.48 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161836773710 setup_us=101 stage_us=228 publish_us=1248 wait_us=9542 readback_us=48 total_us=11171 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7160.46 activation_us=466.21 weights_us=3589.67 xm_us=331.29 reduce_us=1678.4 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161883447631 setup_us=99 stage_us=233 publish_us=1246 wait_us=9682 readback_us=35 total_us=11299 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7203.84 activation_us=473.75 weights_us=3631.39 xm_us=307.17 reduce_us=1671.95 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161930645840 setup_us=101 stage_us=252 publish_us=1246 wait_us=9527 readback_us=36 total_us=11165 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7188.48 activation_us=476.78 weights_us=3569.14 xm_us=343.07 reduce_us=1742.86 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653161977303377 setup_us=98 stage_us=233 publish_us=1246 wait_us=9679 readback_us=36 total_us=11296 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7193.6 activation_us=432.09 weights_us=3576.67 xm_us=348.71 reduce_us=1667.89 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162024481106 setup_us=97 stage_us=224 publish_us=1245 wait_us=9539 readback_us=37 total_us=11146 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7180.8 activation_us=480.91 weights_us=3574.7 xm_us=344.33 reduce_us=1682.23 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162071167315 setup_us=98 stage_us=229 publish_us=1241 wait_us=9650 readback_us=37 total_us=11258 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7193.6 activation_us=445.44 weights_us=3553.29 xm_us=355.14 reduce_us=1728.18 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162118193492 setup_us=100 stage_us=231 publish_us=1249 wait_us=9509 readback_us=37 total_us=11129 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7157.76 activation_us=445.27 weights_us=3567.04 xm_us=354.03 reduce_us=1684.88 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162164699477 setup_us=97 stage_us=227 publish_us=1245 wait_us=9700 readback_us=36 total_us=11310 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7155.2 activation_us=460.21 weights_us=3544.64 xm_us=381.89 reduce_us=1721.23 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162211930454 setup_us=99 stage_us=228 publish_us=1241 wait_us=9534 readback_us=38 total_us=11144 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7198.72 activation_us=471.79 weights_us=3595.16 xm_us=320.76 reduce_us=1704.76 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162258526551 setup_us=101 stage_us=259 publish_us=1254 wait_us=9640 readback_us=37 total_us=11295 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7196.35 activation_us=420.75 weights_us=3573.16 xm_us=390.18 reduce_us=1697.72 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162305728856 setup_us=96 stage_us=227 publish_us=1244 wait_us=9678 readback_us=35 total_us=11285 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7180.8 activation_us=462.66 weights_us=3567.12 xm_us=387.89 reduce_us=1712.93 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162352873817 setup_us=99 stage_us=234 publish_us=1243 wait_us=9526 readback_us=35 total_us=11142 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7193.6 activation_us=457.99 weights_us=3602.27 xm_us=336.79 reduce_us=1687.47 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162399396186 setup_us=99 stage_us=230 publish_us=1247 wait_us=9663 readback_us=35 total_us=11277 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7188.48 activation_us=459.44 weights_us=3552.1 xm_us=342.58 reduce_us=1718.31 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162446504283 setup_us=98 stage_us=234 publish_us=1250 wait_us=9509 readback_us=39 total_us=11133 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7152.64 activation_us=451.97 weights_us=3560.59 xm_us=331.89 reduce_us=1686.14 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162493010268 setup_us=99 stage_us=231 publish_us=1243 wait_us=9654 readback_us=36 total_us=11267 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7157.76 activation_us=448.31 weights_us=3541.95 xm_us=317.93 reduce_us=1702.25 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162540093789 setup_us=99 stage_us=230 publish_us=1243 wait_us=9571 readback_us=36 total_us=11182 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7191.04 activation_us=438.07 weights_us=3576.55 xm_us=359.1 reduce_us=1709.49 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162587005278 setup_us=128 stage_us=232 publish_us=1249 wait_us=9622 readback_us=36 total_us=11270 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7183.36 activation_us=480.7 weights_us=3611.75 xm_us=334.88 reduce_us=1689.36 xm_calls=256 local_copy_us=212.48
+PACC_QK_BATCH experts=8 groups=8 tiles=32 pack_us=1256 submit_us=364945 scatter_us=34
+PACC Q5_K XM experts=8 m=2048 n=1 k=512 fused_gate=false completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162635989343 setup_us=128 stage_us=333 publish_us=1243 wait_us=11769 readback_us=36 total_us=13514 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9978.73 activation_us=472.56 weights_us=4188.09 xm_us=670.47 reduce_us=2864.53 xm_calls=512 local_copy_us=527.36
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162692489568 setup_us=101 stage_us=333 publish_us=1251 wait_us=12367 readback_us=34 total_us=14090 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9973.76 activation_us=487.56 weights_us=4221.43 xm_us=670.66 reduce_us=2801.23 xm_calls=512 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162751480161 setup_us=103 stage_us=333 publish_us=1249 wait_us=12214 readback_us=35 total_us=13937 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9962.53 activation_us=472.53 weights_us=4178.33 xm_us=648.75 reduce_us=2868.57 xm_calls=512 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162809733474 setup_us=105 stage_us=338 publish_us=1249 wait_us=12236 readback_us=34 total_us=13966 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9950.72 activation_us=464.92 weights_us=4214.31 xm_us=647.56 reduce_us=2807.92 xm_calls=512 local_copy_us=545.28
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162868035939 setup_us=107 stage_us=320 publish_us=1245 wait_us=10995 readback_us=36 total_us=12706 payload_bytes=421312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=96 n=1 nb=8 gate=1 device_us=8678.4 activation_us=336.29 weights_us=3807.93 xm_us=518.07 reduce_us=2567.52 xm_calls=384 local_copy_us=481.28
+PACC_QK_BATCH experts=1 groups=1 tiles=5 pack_us=409 submit_us=69217 scatter_us=0
+PACC Q8_0 XM experts=1 m=512 n=1 k=2048 fused_gate=true completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162921681252 setup_us=110 stage_us=294 publish_us=1253 wait_us=8389 readback_us=37 total_us=10087 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6246.4 activation_us=449.04 weights_us=2532.13 xm_us=342.66 reduce_us=1699.32 xm_calls=256 local_copy_us=322.56
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653162964128101 setup_us=105 stage_us=278 publish_us=1242 wait_us=8723 readback_us=36 total_us=10387 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6341.12 activation_us=447.96 weights_us=2519.39 xm_us=338.21 reduce_us=1728.92 xm_calls=256 local_copy_us=389.12
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653163007701350 setup_us=100 stage_us=269 publish_us=1242 wait_us=8724 readback_us=38 total_us=10375 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6254.08 activation_us=456.15 weights_us=2522.64 xm_us=347.45 reduce_us=1710.2 xm_calls=256 local_copy_us=330.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653163051188583 setup_us=101 stage_us=264 publish_us=1243 wait_us=8630 readback_us=38 total_us=10279 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6302.72 activation_us=462.82 weights_us=2553.55 xm_us=342.48 reduce_us=1705.32 xm_calls=256 local_copy_us=363.52
+PACC_QK_BATCH experts=1 groups=1 tiles=4 pack_us=237 submit_us=41935 scatter_us=4
+PACC Q8_0 XM experts=1 m=2048 n=1 k=512 fused_gate=false completion=verified
+TRACE l_out-1.0 op=ADD rel_rms=0 max_abs=0
+PACC Q8_0xQ8_1 dev=0 m=8192 n=1 k=2048 tiles=35 elapsed_ms=176.304 completion=verified
+PACC_ELF_PROFILE kernel=_ZL11concat_contIjLi0EEvPKT_S2_PS0_llllll dev=0 seq=7348653163848507789 setup_us=113 stage_us=272 publish_us=1252 wait_us=63860 readback_us=83 total_us=65584 payload_bytes=262144 image_bytes=35328
+PACC Q8_0xQ8_1 dev=0 m=32 n=1 k=2048 tiles=1 elapsed_ms=1.781 completion=verified
+PACC_ELF_PROFILE kernel=_ZL21unary_gated_op_kernelIXadL_ZL11op_softplusfEEfEvPKT0_S2_PS0_llll dev=0 seq=7348653164136014223 setup_us=103 stage_us=196 publish_us=1268 wait_us=788 readback_us=34 total_us=2392 payload_bytes=384 image_bytes=55936
+PACC Q8_0xQ8_1 dev=0 m=32 n=1 k=2048 tiles=1 elapsed_ms=4.036 completion=verified
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164164370833 setup_us=96 stage_us=141 publish_us=1259 wait_us=12066 readback_us=59 total_us=13626 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164220891538 setup_us=110 stage_us=141 publish_us=1242 wait_us=12830 readback_us=58 total_us=14385 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164280443283 setup_us=114 stage_us=141 publish_us=1235 wait_us=12303 readback_us=56 total_us=13852 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164337799572 setup_us=112 stage_us=146 publish_us=1243 wait_us=12311 readback_us=58 total_us=13873 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164395254165 setup_us=108 stage_us=146 publish_us=1242 wait_us=12450 readback_us=62 total_us=14012 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164453306774 setup_us=116 stage_us=143 publish_us=1264 wait_us=12923 readback_us=59 total_us=14508 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164513390999 setup_us=111 stage_us=137 publish_us=1243 wait_us=11730 readback_us=58 total_us=13283 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164568404376 setup_us=111 stage_us=162 publish_us=1243 wait_us=12815 readback_us=57 total_us=14392 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164627997081 setup_us=109 stage_us=141 publish_us=1245 wait_us=11561 readback_us=60 total_us=13120 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164682396058 setup_us=117 stage_us=149 publish_us=1266 wait_us=11893 readback_us=59 total_us=13489 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164738285979 setup_us=111 stage_us=148 publish_us=1245 wait_us=12921 readback_us=59 total_us=14488 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164798284188 setup_us=112 stage_us=175 publish_us=1246 wait_us=11499 readback_us=57 total_us=13095 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164852572573 setup_us=114 stage_us=147 publish_us=1249 wait_us=12736 readback_us=60 total_us=14309 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164911841694 setup_us=111 stage_us=147 publish_us=1277 wait_us=12482 readback_us=60 total_us=14081 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653164970160543 setup_us=112 stage_us=142 publish_us=1241 wait_us=11524 readback_us=59 total_us=13081 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165024362912 setup_us=110 stage_us=143 publish_us=1244 wait_us=11690 readback_us=58 total_us=13249 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165079441825 setup_us=111 stage_us=137 publish_us=1249 wait_us=12121 readback_us=59 total_us=13681 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165136122274 setup_us=108 stage_us=145 publish_us=1241 wait_us=11367 readback_us=58 total_us=12922 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165189706147 setup_us=115 stage_us=144 publish_us=1235 wait_us=12788 readback_us=59 total_us=14345 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165249089956 setup_us=113 stage_us=143 publish_us=1243 wait_us=11787 readback_us=59 total_us=13349 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165304418725 setup_us=111 stage_us=145 publish_us=1240 wait_us=11753 readback_us=60 total_us=13313 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165359587750 setup_us=109 stage_us=139 publish_us=1248 wait_us=12311 readback_us=60 total_us=13870 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165417046439 setup_us=114 stage_us=147 publish_us=1247 wait_us=11437 readback_us=57 total_us=13006 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165471101352 setup_us=116 stage_us=145 publish_us=1239 wait_us=11848 readback_us=60 total_us=13412 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165526684073 setup_us=114 stage_us=146 publish_us=1240 wait_us=11862 readback_us=58 total_us=13424 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165582315946 setup_us=119 stage_us=147 publish_us=1238 wait_us=11953 readback_us=59 total_us=13519 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165638332843 setup_us=113 stage_us=143 publish_us=1254 wait_us=11949 readback_us=59 total_us=13522 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165694386604 setup_us=114 stage_us=144 publish_us=1242 wait_us=11336 readback_us=59 total_us=12899 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165747863981 setup_us=114 stage_us=150 publish_us=1261 wait_us=11670 readback_us=58 total_us=13258 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165802791342 setup_us=106 stage_us=144 publish_us=1242 wait_us=12269 readback_us=57 total_us=13823 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165860024751 setup_us=101 stage_us=140 publish_us=1234 wait_us=11911 readback_us=57 total_us=13446 payload_bytes=133184 image_bytes=16320
+PACC_ELF_PROFILE kernel=pacc_gdn_head_v1 dev=0 seq=7348653165915709872 setup_us=101 stage_us=143 publish_us=1237 wait_us=14378 readback_us=60 total_us=15923 payload_bytes=133184 image_bytes=16320
+PACC GDN device-core heads=32 seqs=1 tokens=1 width=128 snapshots=1 completion=verified
+PACC Q8_0xQ8_1 dev=0 m=4096 n=1 k=2048 tiles=18 elapsed_ms=88.504 completion=verified
+PACC_ELF_PROFILE kernel=_ZL21unary_gated_op_kernelIXadL_ZL7op_silufEEfEvPKT0_S2_PS0_llll dev=0 seq=7348653166363406788 setup_us=109 stage_us=210 publish_us=1270 wait_us=8993 readback_us=47 total_us=10632 payload_bytes=49152 image_bytes=55936
+PACC Q8_0xQ8_1 dev=0 m=2048 n=1 k=4096 tiles=18 elapsed_ms=88.654 completion=verified
+PACC_ELF_PROFILE kernel=pacc_topk_row_v1 dev=0 seq=7348653167254933981 setup_us=104 stage_us=107 publish_us=1245 wait_us=2262 readback_us=36 total_us=3757 payload_bytes=1088 image_bytes=16256
+PACC topk device-core experts=256 rows=1 selected=8 flags=4 completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653167271883230 setup_us=113 stage_us=360 publish_us=1250 wait_us=22525 readback_us=39 total_us=24292 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=20129.28 activation_us=813.89 weights_us=9799.52 xm_us=1160.98 reduce_us=5304.25 xm_calls=896 local_copy_us=821.76
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653167372681695 setup_us=110 stage_us=341 publish_us=1252 wait_us=22768 readback_us=39 total_us=24514 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=20397.45 activation_us=806.69 weights_us=9754.51 xm_us=1188 reduce_us=5325.33 xm_calls=896 local_copy_us=1128.15
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653167474414048 setup_us=129 stage_us=366 publish_us=1286 wait_us=22148 readback_us=36 total_us=23967 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19832.53 activation_us=789.93 weights_us=9723.07 xm_us=1115.11 reduce_us=5301.28 xm_calls=896 local_copy_us=603.13
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653167573836257 setup_us=120 stage_us=356 publish_us=1259 wait_us=22241 readback_us=39 total_us=24019 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19916.8 activation_us=856.55 weights_us=9727.05 xm_us=1161.71 reduce_us=5271.91 xm_calls=896 local_copy_us=622.08
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653167673455074 setup_us=117 stage_us=357 publish_us=1259 wait_us=22086 readback_us=37 total_us=23860 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19860.48 activation_us=868.04 weights_us=9732.18 xm_us=1154.58 reduce_us=5299.4 xm_calls=896 local_copy_us=622.08
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653167772430819 setup_us=116 stage_us=346 publish_us=1256 wait_us=22257 readback_us=38 total_us=24016 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19880.96 activation_us=806.62 weights_us=9764.69 xm_us=1135.69 reduce_us=5336.99 xm_calls=896 local_copy_us=622.08
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653167872008676 setup_us=120 stage_us=346 publish_us=1261 wait_us=22273 readback_us=37 total_us=24041 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19888.64 activation_us=804.52 weights_us=9780.43 xm_us=1143.42 reduce_us=5324.04 xm_calls=896 local_copy_us=622.18
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653167971717605 setup_us=117 stage_us=352 publish_us=1260 wait_us=22204 readback_us=36 total_us=23973 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19852.44 activation_us=780.6 weights_us=9722.93 xm_us=1124.25 reduce_us=5338.7 xm_calls=896 local_copy_us=620.95
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653168071954918 setup_us=107 stage_us=344 publish_us=1249 wait_us=22275 readback_us=40 total_us=24018 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=20103.68 activation_us=798.47 weights_us=9997.63 xm_us=1184.38 reduce_us=5296.33 xm_calls=896 local_copy_us=586.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653168172409319 setup_us=128 stage_us=407 publish_us=1264 wait_us=21947 readback_us=36 total_us=23786 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19786.24 activation_us=813.57 weights_us=9693.92 xm_us=1146.7 reduce_us=5309.29 xm_calls=896 local_copy_us=623.86
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653168271897064 setup_us=142 stage_us=375 publish_us=1262 wait_us=21944 readback_us=37 total_us=23762 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19806.72 activation_us=766.92 weights_us=9678.92 xm_us=1181.64 reduce_us=5302.23 xm_calls=896 local_copy_us=604.16
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653168371425769 setup_us=121 stage_us=377 publish_us=1260 wait_us=21873 readback_us=39 total_us=23674 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19842.03 activation_us=801.23 weights_us=9737.28 xm_us=1189.71 reduce_us=5282.72 xm_calls=896 local_copy_us=609.09
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653168470110698 setup_us=120 stage_us=373 publish_us=1251 wait_us=22156 readback_us=37 total_us=23940 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19942.4 activation_us=775.98 weights_us=9780.28 xm_us=1163.12 reduce_us=5281.48 xm_calls=896 local_copy_us=632.32
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653168569405931 setup_us=122 stage_us=369 publish_us=1260 wait_us=22231 readback_us=36 total_us=24021 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19901.44 activation_us=815.52 weights_us=9770.93 xm_us=1145.03 reduce_us=5274.8 xm_calls=896 local_copy_us=627.2
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653168669020652 setup_us=122 stage_us=375 publish_us=1262 wait_us=22297 readback_us=38 total_us=24097 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19996.16 activation_us=832.93 weights_us=9865.79 xm_us=1180.66 reduce_us=5290.42 xm_calls=896 local_copy_us=629.76
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653168769024493 setup_us=128 stage_us=392 publish_us=1267 wait_us=22257 readback_us=42 total_us=24089 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19909.12 activation_us=802.3 weights_us=9712 xm_us=1150.45 reduce_us=5346.33 xm_calls=896 local_copy_us=655.36
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653168868970990 setup_us=122 stage_us=366 publish_us=1253 wait_us=22201 readback_us=37 total_us=23982 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19888.64 activation_us=810.92 weights_us=9749.43 xm_us=1192.58 reduce_us=5291.3 xm_calls=896 local_copy_us=622.08
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653168968450543 setup_us=122 stage_us=376 publish_us=1267 wait_us=22223 readback_us=38 total_us=24029 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19888.64 activation_us=852.07 weights_us=9752.52 xm_us=1126.1 reduce_us=5296.78 xm_calls=896 local_copy_us=622.08
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169068118512 setup_us=121 stage_us=372 publish_us=1236 wait_us=22212 readback_us=39 total_us=23984 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19906.56 activation_us=856.15 weights_us=9775.47 xm_us=1166.87 reduce_us=5269.06 xm_calls=896 local_copy_us=628.98
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169167618545 setup_us=122 stage_us=373 publish_us=1254 wait_us=22234 readback_us=36 total_us=24023 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19904 activation_us=802.67 weights_us=9829.65 xm_us=1162.26 reduce_us=5255.85 xm_calls=896 local_copy_us=629.76
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169267200498 setup_us=121 stage_us=329 publish_us=1254 wait_us=17666 readback_us=39 total_us=19414 payload_bytes=363712 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=156 n=1 nb=8 gate=1 device_us=15285.76 activation_us=646.19 weights_us=7571.07 xm_us=790.67 reduce_us=4160.5 xm_calls=640 local_copy_us=499.2
+PACC_QK_BATCH experts=8 groups=1 tiles=21 pack_us=1829 submit_us=504943 scatter_us=17
+PACC Q4_K XM experts=8 m=512 n=1 k=2048 fused_gate=true completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169348674035 setup_us=127 stage_us=279 publish_us=1268 wait_us=9467 readback_us=37 total_us=11182 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7262.29 activation_us=464.6 weights_us=3580.4 xm_us=388.57 reduce_us=1763.95 xm_calls=256 local_copy_us=248.32
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169395597812 setup_us=115 stage_us=239 publish_us=1263 wait_us=9871 readback_us=42 total_us=11533 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7452.16 activation_us=440.56 weights_us=3621.12 xm_us=377.4 reduce_us=1677.26 xm_calls=256 local_copy_us=435.2
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169443869173 setup_us=123 stage_us=248 publish_us=1258 wait_us=9771 readback_us=38 total_us=11442 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7244.67 activation_us=432.87 weights_us=3620.81 xm_us=309.93 reduce_us=1657.4 xm_calls=256 local_copy_us=240.64
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169491706358 setup_us=115 stage_us=240 publish_us=1255 wait_us=9668 readback_us=40 total_us=11321 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7203.84 activation_us=471.65 weights_us=3590.23 xm_us=347.01 reduce_us=1704.99 xm_calls=256 local_copy_us=238.08
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169539039735 setup_us=112 stage_us=244 publish_us=1251 wait_us=9628 readback_us=40 total_us=11280 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7195.62 activation_us=462.95 weights_us=3558.49 xm_us=399.51 reduce_us=1723.14 xm_calls=256 local_copy_us=238.08
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169586217464 setup_us=111 stage_us=243 publish_us=1254 wait_us=9576 readback_us=65 total_us=11253 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7265.28 activation_us=455.87 weights_us=3639.54 xm_us=320.25 reduce_us=1679.08 xm_calls=256 local_copy_us=240.64
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169633313273 setup_us=112 stage_us=232 publish_us=1253 wait_us=9780 readback_us=38 total_us=11419 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7232 activation_us=441.35 weights_us=3552.37 xm_us=358.9 reduce_us=1732.66 xm_calls=256 local_copy_us=238.08
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169681052154 setup_us=139 stage_us=249 publish_us=1250 wait_us=9586 readback_us=38 total_us=11265 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7249.44 activation_us=474.29 weights_us=3603.42 xm_us=360.56 reduce_us=1726.08 xm_calls=256 local_copy_us=243.2
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169728147963 setup_us=109 stage_us=241 publish_us=1253 wait_us=9698 readback_us=37 total_us=11341 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7249.92 activation_us=478.32 weights_us=3583.23 xm_us=306.64 reduce_us=1710.35 xm_calls=256 local_copy_us=250.88
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169775579644 setup_us=110 stage_us=249 publish_us=1256 wait_us=9753 readback_us=40 total_us=11412 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7221.76 activation_us=491.3 weights_us=3591.57 xm_us=313.44 reduce_us=1711.12 xm_calls=256 local_copy_us=248.32
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169823322621 setup_us=111 stage_us=242 publish_us=1249 wait_us=9679 readback_us=37 total_us=11321 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7216.64 activation_us=440.76 weights_us=3582.65 xm_us=317.61 reduce_us=1682.69 xm_calls=256 local_copy_us=253.44
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169870668286 setup_us=113 stage_us=237 publish_us=1262 wait_us=9651 readback_us=36 total_us=11303 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7255.04 activation_us=469.4 weights_us=3615.61 xm_us=331.19 reduce_us=1715.22 xm_calls=256 local_copy_us=245.76
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169918079487 setup_us=114 stage_us=240 publish_us=1251 wait_us=9720 readback_us=38 total_us=11367 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7255.71 activation_us=447.45 weights_us=3578.16 xm_us=377.36 reduce_us=1722.05 xm_calls=256 local_copy_us=250.88
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653169965597184 setup_us=109 stage_us=243 publish_us=1249 wait_us=9656 readback_us=38 total_us=11300 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7244.8 activation_us=439.74 weights_us=3609.27 xm_us=319.67 reduce_us=1680.97 xm_calls=256 local_copy_us=250.88
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170012828161 setup_us=114 stage_us=243 publish_us=1251 wait_us=9667 readback_us=37 total_us=11315 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7260.16 activation_us=480.74 weights_us=3623.03 xm_us=315.78 reduce_us=1706.75 xm_calls=256 local_copy_us=246.65
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170060145154 setup_us=109 stage_us=246 publish_us=1251 wait_us=9816 readback_us=45 total_us=11470 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7303.68 activation_us=474.78 weights_us=3667.99 xm_us=342.81 reduce_us=1714.77 xm_calls=256 local_copy_us=248.32
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170108269059 setup_us=118 stage_us=248 publish_us=1258 wait_us=9776 readback_us=39 total_us=11443 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7214.08 activation_us=450.42 weights_us=3585.44 xm_us=349.5 reduce_us=1687.76 xm_calls=256 local_copy_us=250.88
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170156159492 setup_us=141 stage_us=241 publish_us=1246 wait_us=9639 readback_us=37 total_us=11307 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7244.8 activation_us=436.46 weights_us=3610.6 xm_us=322.11 reduce_us=1696.92 xm_calls=256 local_copy_us=233.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170203451909 setup_us=113 stage_us=243 publish_us=1277 wait_us=9549 readback_us=43 total_us=11228 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7236.67 activation_us=441.1 weights_us=3585.39 xm_us=343.53 reduce_us=1712.51 xm_calls=256 local_copy_us=235.52
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170250445318 setup_us=111 stage_us=236 publish_us=1253 wait_us=9751 readback_us=42 total_us=11398 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7234.9 activation_us=463.28 weights_us=3555.99 xm_us=313.81 reduce_us=1739.03 xm_calls=256 local_copy_us=243.2
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170298155527 setup_us=118 stage_us=244 publish_us=1262 wait_us=9562 readback_us=36 total_us=11225 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7237.12 activation_us=467.14 weights_us=3618.67 xm_us=347.64 reduce_us=1705.81 xm_calls=256 local_copy_us=237.23
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170345132552 setup_us=115 stage_us=243 publish_us=1252 wait_us=9780 readback_us=42 total_us=11436 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7234.08 activation_us=453.39 weights_us=3614.08 xm_us=318.29 reduce_us=1689.48 xm_calls=256 local_copy_us=235.52
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170392961545 setup_us=114 stage_us=233 publish_us=1250 wait_us=9633 readback_us=38 total_us=11271 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7201.28 activation_us=480.08 weights_us=3578.87 xm_us=290.67 reduce_us=1702.78 xm_calls=256 local_copy_us=245.76
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170440253962 setup_us=115 stage_us=241 publish_us=1249 wait_us=9590 readback_us=40 total_us=11238 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7198.93 activation_us=468.36 weights_us=3554 xm_us=354.92 reduce_us=1725.09 xm_calls=256 local_copy_us=245.76
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170487239179 setup_us=115 stage_us=242 publish_us=1251 wait_us=9803 readback_us=38 total_us=11453 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7249.92 activation_us=442.98 weights_us=3610.85 xm_us=308.74 reduce_us=1690.2 xm_calls=256 local_copy_us=245.76
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170535096844 setup_us=115 stage_us=239 publish_us=1254 wait_us=9606 readback_us=40 total_us=11258 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7247.81 activation_us=474.81 weights_us=3595 xm_us=354.65 reduce_us=1693.26 xm_calls=256 local_copy_us=245.76
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170582188557 setup_us=141 stage_us=247 publish_us=1250 wait_us=9766 readback_us=37 total_us=11445 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7232 activation_us=470.38 weights_us=3613.28 xm_us=328.54 reduce_us=1703.74 xm_calls=256 local_copy_us=238.08
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170630029838 setup_us=112 stage_us=240 publish_us=1274 wait_us=9707 readback_us=40 total_us=11376 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7257.6 activation_us=470.21 weights_us=3615.09 xm_us=312.77 reduce_us=1708.32 xm_calls=256 local_copy_us=243.2
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170677588495 setup_us=112 stage_us=240 publish_us=1252 wait_us=9595 readback_us=38 total_us=11241 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7211.52 activation_us=455.7 weights_us=3605.08 xm_us=349.04 reduce_us=1686.32 xm_calls=256 local_copy_us=240.64
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170724635152 setup_us=115 stage_us=239 publish_us=1255 wait_us=9951 readback_us=39 total_us=11603 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7400.96 activation_us=492.87 weights_us=3580.8 xm_us=318.26 reduce_us=1711.86 xm_calls=256 local_copy_us=432.64
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170773193233 setup_us=118 stage_us=238 publish_us=1248 wait_us=9767 readback_us=38 total_us=11413 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7247.36 activation_us=460.78 weights_us=3596.93 xm_us=336.75 reduce_us=1726.91 xm_calls=256 local_copy_us=238.08
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170820903442 setup_us=112 stage_us=242 publish_us=1257 wait_us=9609 readback_us=41 total_us=11264 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7234.03 activation_us=456.69 weights_us=3552.73 xm_us=323.66 reduce_us=1752.26 xm_calls=256 local_copy_us=238.83
+PACC_QK_BATCH experts=8 groups=8 tiles=32 pack_us=1287 submit_us=369518 scatter_us=47
+PACC Q5_K XM experts=8 m=2048 n=1 k=512 fused_gate=false completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170870202899 setup_us=126 stage_us=362 publish_us=1274 wait_us=11975 readback_us=39 total_us=13779 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=10091.52 activation_us=459.52 weights_us=4255 xm_us=656.17 reduce_us=2790.21 xm_calls=512 local_copy_us=599.04
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170927845908 setup_us=116 stage_us=355 publish_us=1252 wait_us=12297 readback_us=36 total_us=14060 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=10086.4 activation_us=470.54 weights_us=4289.53 xm_us=669.47 reduce_us=2803.88 xm_calls=512 local_copy_us=609.28
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653170986791445 setup_us=124 stage_us=358 publish_us=1250 wait_us=12379 readback_us=37 total_us=14152 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=10092.06 activation_us=475.15 weights_us=4260.57 xm_us=673.08 reduce_us=2805.86 xm_calls=512 local_copy_us=596.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653171045990934 setup_us=116 stage_us=356 publish_us=1248 wait_us=12617 readback_us=36 total_us=14376 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=10137.6 activation_us=513.53 weights_us=4281.24 xm_us=670.55 reduce_us=2818.71 xm_calls=512 local_copy_us=624.64
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653171106079255 setup_us=120 stage_us=385 publish_us=1254 wait_us=11044 readback_us=38 total_us=12845 payload_bytes=421312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=96 n=1 nb=8 gate=1 device_us=8824.32 activation_us=327.86 weights_us=3851.89 xm_us=509.14 reduce_us=2581.14 xm_calls=384 local_copy_us=570.88
+PACC_QK_BATCH experts=1 groups=1 tiles=5 pack_us=432 submit_us=70292 scatter_us=0
+PACC Q8_0 XM experts=1 m=512 n=1 k=2048 fused_gate=true completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653171160474136 setup_us=124 stage_us=303 publish_us=1266 wait_us=8462 readback_us=38 total_us=10196 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6338.56 activation_us=454.67 weights_us=2571.67 xm_us=349.44 reduce_us=1684.6 xm_calls=256 local_copy_us=381.44
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653171203301913 setup_us=115 stage_us=310 publish_us=1255 wait_us=8776 readback_us=48 total_us=10508 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6333.29 activation_us=477.66 weights_us=2554.09 xm_us=326.88 reduce_us=1727.07 xm_calls=256 local_copy_us=391.68
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653171247501850 setup_us=124 stage_us=303 publish_us=1264 wait_us=8703 readback_us=39 total_us=10437 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6343.68 activation_us=469.84 weights_us=2551.82 xm_us=327.95 reduce_us=1698.39 xm_calls=256 local_copy_us=414.9
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653171291345435 setup_us=117 stage_us=302 publish_us=1262 wait_us=8675 readback_us=40 total_us=10401 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6307.84 activation_us=455.72 weights_us=2533.29 xm_us=338.01 reduce_us=1695.76 xm_calls=256 local_copy_us=389.12
+PACC_QK_BATCH experts=1 groups=1 tiles=4 pack_us=235 submit_us=42369 scatter_us=6
+PACC Q8_0 XM experts=1 m=2048 n=1 k=512 fused_gate=false completion=verified
+TRACE l_out-2.0 op=ADD rel_rms=0 max_abs=0
+PACC Q8_0xQ8_1 dev=0 m=8192 n=1 k=2048 tiles=35 elapsed_ms=179.820 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC_ELF_PROFILE kernel=_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb dev=0 seq=7348653172128977474 setup_us=230 stage_us=285 publish_us=1600 wait_us=605 readback_us=45 total_us=2769 payload_bytes=32832 image_bytes=330240
+PACC Q8_0xQ8_1 dev=0 m=512 n=1 k=2048 tiles=3 elapsed_ms=13.615 completion=verified
+PACC Q8_0xQ8_1 dev=0 m=512 n=1 k=2048 tiles=3 elapsed_ms=11.939 completion=verified
+PACC_ELF_PROFILE kernel=_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb dev=0 seq=7348653172255441482 setup_us=191 stage_us=247 publish_us=1585 wait_us=111 readback_us=42 total_us=2180 payload_bytes=4160 image_bytes=330240
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC_ELF_PROFILE kernel=_ZL10k_set_rowsIfl6__halfEvPKT_PKT0_PT1_llllllllllllll5uint3S9_S9_S9_S9_ dev=0 seq=7348653172269527627 setup_us=190 stage_us=168 publish_us=1289 wait_us=671 readback_us=37 total_us=2358 payload_bytes=3136 image_bytes=65152
+PACC_ELF_PROFILE kernel=_ZL10k_set_rowsIfl6__halfEvPKT_PKT0_PT1_llllllllllllll5uint3S9_S9_S9_S9_ dev=0 seq=7348653172280345164 setup_us=109 stage_us=230 publish_us=1279 wait_us=2130 readback_us=112 total_us=3864 payload_bytes=267840 image_bytes=65152
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC MMVF staged heads=16 samples=1 m=256 n=1 k=256 atype=3 completion=verified
+ZLUDA DEBUG: Compiling SIFIVE source attention_softmax.c to launchable ELF
+SIFIVE: Created LLVM bitcode: /dev/shm/hetgpu_tmp/.tmpRjCsnz/attention_softmax.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmp44JVN9/attention_softmax.bc -> /dev/shm/hetgpu_tmp/.tmp44JVN9/attention_softmax_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmp44JVN9/attention_softmax_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmp44JVN9/attention_softmax_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmp44JVN9/attention_softmax_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpjygNEo/attention_softmax_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpjygNEo/attention_softmax_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpjygNEo/attention_softmax_optimized_sifive.so
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpjygNEo/attention_softmax.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpjygNEo/attention_softmax_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpjygNEo/attention_softmax_sifive.so
+PACC_ELF_PROFILE kernel=pacc_attention_softmax_v1 dev=0 seq=7348653178758341213 setup_us=117 stage_us=147 publish_us=1264 wait_us=6773 readback_us=45 total_us=8350 payload_bytes=49472 image_bytes=16192
+PACC attention softmax rows=16 cols=256 mask=true sinks=false completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC MMVF staged heads=16 samples=1 m=256 n=1 k=256 atype=3 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC_ELF_PROFILE kernel=_ZL21unary_gated_op_kernelIXadL_ZL10op_sigmoidfEEfEvPKT0_S2_PS0_llll dev=0 seq=7348653179621118574 setup_us=116 stage_us=246 publish_us=1276 wait_us=8820 readback_us=45 total_us=10507 payload_bytes=49152 image_bytes=55936
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653179665543791 setup_us=116 stage_us=354 publish_us=1259 wait_us=13028 readback_us=39 total_us=14800 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10897.92 activation_us=950.68 weights_us=4281.55 xm_us=637.54 reduce_us=2820.68 xm_calls=512 local_copy_us=719.36
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653179727241840 setup_us=105 stage_us=340 publish_us=1262 wait_us=13044 readback_us=37 total_us=14792 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10690.56 activation_us=906.31 weights_us=4308.68 xm_us=660.55 reduce_us=2819.09 xm_calls=512 local_copy_us=528.38
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653179788923505 setup_us=110 stage_us=372 publish_us=1260 wait_us=12880 readback_us=37 total_us=14661 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10639.36 activation_us=920.77 weights_us=4225.74 xm_us=692.74 reduce_us=2828.95 xm_calls=512 local_copy_us=526
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653179850052210 setup_us=106 stage_us=339 publish_us=1252 wait_us=13017 readback_us=37 total_us=14755 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10693.12 activation_us=894.95 weights_us=4297.69 xm_us=658.18 reduce_us=2814.42 xm_calls=512 local_copy_us=547.84
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653179911713395 setup_us=107 stage_us=347 publish_us=1251 wait_us=12988 readback_us=39 total_us=14736 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10700.8 activation_us=915.87 weights_us=4289.14 xm_us=641.59 reduce_us=2860.68 xm_calls=512 local_copy_us=527.36
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653179973284468 setup_us=116 stage_us=357 publish_us=1253 wait_us=12994 readback_us=38 total_us=14761 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10654.72 activation_us=933.74 weights_us=4248.39 xm_us=657.86 reduce_us=2842.85 xm_calls=512 local_copy_us=537.6
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180034830965 setup_us=107 stage_us=375 publish_us=1247 wait_us=12831 readback_us=38 total_us=14602 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10652.16 activation_us=928.61 weights_us=4248.52 xm_us=638.39 reduce_us=2869.85 xm_calls=512 local_copy_us=527.36
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180095701622 setup_us=106 stage_us=356 publish_us=1248 wait_us=13017 readback_us=36 total_us=14766 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10726.4 activation_us=946.29 weights_us=4307.18 xm_us=644.92 reduce_us=2832.83 xm_calls=512 local_copy_us=555.52
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180157280887 setup_us=105 stage_us=359 publish_us=1250 wait_us=13015 readback_us=38 total_us=14771 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10677.76 activation_us=973.71 weights_us=4275.46 xm_us=656.34 reduce_us=2822.67 xm_calls=512 local_copy_us=542.72
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180218839672 setup_us=98 stage_us=344 publish_us=1254 wait_us=12957 readback_us=35 total_us=14692 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10688 activation_us=928.17 weights_us=4289.55 xm_us=654.07 reduce_us=2807.99 xm_calls=512 local_copy_us=536.02
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180280083065 setup_us=104 stage_us=356 publish_us=1245 wait_us=12955 readback_us=37 total_us=14700 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10670.08 activation_us=922.08 weights_us=4290.3 xm_us=652.54 reduce_us=2809.09 xm_calls=512 local_copy_us=543.38
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180341359226 setup_us=101 stage_us=342 publish_us=1247 wait_us=13056 readback_us=36 total_us=14785 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10657.28 activation_us=909.79 weights_us=4252.96 xm_us=630.18 reduce_us=2825.01 xm_calls=512 local_copy_us=550.4
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180402983547 setup_us=104 stage_us=341 publish_us=1258 wait_us=12879 readback_us=38 total_us=14624 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10654.72 activation_us=907.17 weights_us=4285.52 xm_us=651.24 reduce_us=2808.14 xm_calls=512 local_copy_us=527.36
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180463964796 setup_us=98 stage_us=337 publish_us=1249 wait_us=13064 readback_us=37 total_us=14789 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10666.15 activation_us=893.85 weights_us=4268.59 xm_us=635.63 reduce_us=2799.92 xm_calls=512 local_copy_us=550.4
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180525625981 setup_us=101 stage_us=353 publish_us=1250 wait_us=12954 readback_us=40 total_us=14701 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10654.72 activation_us=900.92 weights_us=4263.76 xm_us=659.92 reduce_us=2807.19 xm_calls=512 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180587004542 setup_us=99 stage_us=347 publish_us=1253 wait_us=12934 readback_us=37 total_us=14673 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10670.08 activation_us=927 weights_us=4253.16 xm_us=650.38 reduce_us=2840.09 xm_calls=512 local_copy_us=547.84
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180648153727 setup_us=99 stage_us=345 publish_us=1248 wait_us=12889 readback_us=37 total_us=14621 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10664.43 activation_us=898.87 weights_us=4233.4 xm_us=629.78 reduce_us=2825.43 xm_calls=512 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180709122688 setup_us=101 stage_us=342 publish_us=1258 wait_us=12988 readback_us=37 total_us=14730 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10662.4 activation_us=919.48 weights_us=4242.91 xm_us=688.63 reduce_us=2823.28 xm_calls=512 local_copy_us=547.84
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180770546305 setup_us=101 stage_us=346 publish_us=1244 wait_us=12918 readback_us=39 total_us=14652 payload_bytes=458560 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=16 gate=0 device_us=10652.16 activation_us=900.56 weights_us=4277.79 xm_us=658.42 reduce_us=2801.47 xm_calls=512 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653180831527554 setup_us=98 stage_us=292 publish_us=1251 wait_us=9926 readback_us=39 total_us=11610 payload_bytes=318912 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=72 n=1 nb=16 gate=0 device_us=7565.61 activation_us=678.02 weights_us=2934.76 xm_us=472.74 reduce_us=1962.3 xm_calls=384 local_copy_us=365.78
+PACC_QK_BATCH experts=1 groups=1 tiles=20 pack_us=1591 submit_us=294901 scatter_us=3
+PACC Q8_0 XM experts=1 m=2048 n=1 k=4096 fused_gate=false completion=verified
+PACC_ELF_PROFILE kernel=pacc_topk_row_v1 dev=0 seq=7348653181276684937 setup_us=98 stage_us=98 publish_us=1229 wait_us=2260 readback_us=36 total_us=3724 payload_bytes=1088 image_bytes=16256
+PACC topk device-core experts=256 rows=1 selected=8 flags=4 completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653181293363850 setup_us=102 stage_us=333 publish_us=1261 wait_us=22080 readback_us=40 total_us=23819 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19799.04 activation_us=786.97 weights_us=9593.16 xm_us=1153.08 reduce_us=5289.95 xm_calls=896 local_copy_us=706.56
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653181392024203 setup_us=96 stage_us=327 publish_us=1243 wait_us=21941 readback_us=40 total_us=23650 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19614.72 activation_us=812.7 weights_us=9575.52 xm_us=1119.14 reduce_us=5344.17 xm_calls=896 local_copy_us=527.36
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653181489971852 setup_us=98 stage_us=325 publish_us=1248 wait_us=21766 readback_us=37 total_us=23477 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19550.72 activation_us=826.18 weights_us=9612.87 xm_us=1141.32 reduce_us=5263.96 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653181587227277 setup_us=100 stage_us=322 publish_us=1238 wait_us=21879 readback_us=38 total_us=23581 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19576.32 activation_us=770.19 weights_us=9569.07 xm_us=1236 reduce_us=5299.63 xm_calls=896 local_copy_us=527.36
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653181684884110 setup_us=101 stage_us=324 publish_us=1243 wait_us=22038 readback_us=40 total_us=23750 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19596.8 activation_us=828.07 weights_us=9576.63 xm_us=1120.36 reduce_us=5279.7 xm_calls=896 local_copy_us=523.17
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653181783388815 setup_us=102 stage_us=321 publish_us=1246 wait_us=21814 readback_us=35 total_us=23521 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19571.2 activation_us=808.86 weights_us=9536.07 xm_us=1168.93 reduce_us=5272.04 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653181880816272 setup_us=101 stage_us=323 publish_us=1246 wait_us=21891 readback_us=36 total_us=23600 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19601.92 activation_us=791.69 weights_us=9568.01 xm_us=1169.37 reduce_us=5278.91 xm_calls=896 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653181978587793 setup_us=98 stage_us=328 publish_us=1247 wait_us=21917 readback_us=38 total_us=23632 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19568.64 activation_us=808.47 weights_us=9560.64 xm_us=1138.84 reduce_us=5316.07 xm_calls=896 local_copy_us=546.51
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653182076490386 setup_us=98 stage_us=326 publish_us=1261 wait_us=21916 readback_us=41 total_us=23644 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19581.44 activation_us=805.96 weights_us=9599.42 xm_us=1136.98 reduce_us=5282.96 xm_calls=896 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653182174425747 setup_us=100 stage_us=332 publish_us=1247 wait_us=21873 readback_us=38 total_us=23594 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19594.24 activation_us=781.45 weights_us=9559.06 xm_us=1186.08 reduce_us=5257.2 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653182272156308 setup_us=100 stage_us=329 publish_us=1249 wait_us=21900 readback_us=37 total_us=23619 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19601.92 activation_us=805.14 weights_us=9557.1 xm_us=1134.88 reduce_us=5293.75 xm_calls=896 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653182370001557 setup_us=99 stage_us=326 publish_us=1249 wait_us=21826 readback_us=37 total_us=23541 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19594.24 activation_us=806.28 weights_us=9573.09 xm_us=1129.42 reduce_us=5312.66 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653182467543702 setup_us=100 stage_us=325 publish_us=1249 wait_us=21971 readback_us=39 total_us=23687 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19601.92 activation_us=807.78 weights_us=9591.31 xm_us=1169.05 reduce_us=5298.17 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653182565642903 setup_us=99 stage_us=333 publish_us=1251 wait_us=21955 readback_us=36 total_us=23677 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19596.8 activation_us=823.25 weights_us=9584.39 xm_us=1142.86 reduce_us=5288.36 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653182663758488 setup_us=102 stage_us=328 publish_us=1244 wait_us=21775 readback_us=43 total_us=23494 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19604.48 activation_us=805.2 weights_us=9616.61 xm_us=1121.71 reduce_us=5322.49 xm_calls=896 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653182761067161 setup_us=100 stage_us=325 publish_us=1244 wait_us=22025 readback_us=36 total_us=23733 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19578.88 activation_us=773.22 weights_us=9557.69 xm_us=1141.9 reduce_us=5295.16 xm_calls=896 local_copy_us=523.53
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653182859469466 setup_us=101 stage_us=329 publish_us=1254 wait_us=21818 readback_us=41 total_us=23546 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19589.12 activation_us=821.27 weights_us=9567.16 xm_us=1145.32 reduce_us=5333.11 xm_calls=896 local_copy_us=523.43
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653182957027995 setup_us=105 stage_us=329 publish_us=1245 wait_us=21870 readback_us=38 total_us=23590 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19591.68 activation_us=809.49 weights_us=9535.49 xm_us=1173.57 reduce_us=5348.83 xm_calls=896 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183054733980 setup_us=100 stage_us=338 publish_us=1246 wait_us=21975 readback_us=39 total_us=23702 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19594.24 activation_us=807.6 weights_us=9601.62 xm_us=1164.54 reduce_us=5305.42 xm_calls=896 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183153001117 setup_us=103 stage_us=324 publish_us=1250 wait_us=21811 readback_us=37 total_us=23530 payload_bytes=458688 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=197 n=1 nb=8 gate=1 device_us=19624.96 activation_us=788.02 weights_us=9638.53 xm_us=1145.73 reduce_us=5290.25 xm_calls=896 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183250412190 setup_us=100 stage_us=290 publish_us=1250 wait_us=17478 readback_us=39 total_us=19160 payload_bytes=363712 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=4 m=156 n=1 nb=8 gate=1 device_us=15045.12 activation_us=583.16 weights_us=7462.88 xm_us=804.01 reduce_us=4185.02 xm_calls=640 local_copy_us=417.28
+PACC_QK_BATCH experts=8 groups=1 tiles=21 pack_us=1715 submit_us=495487 scatter_us=6
+PACC Q4_K XM experts=8 m=512 n=1 k=2048 fused_gate=true completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183330787999 setup_us=112 stage_us=245 publish_us=1252 wait_us=9430 readback_us=40 total_us=11083 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7219.2 activation_us=460.66 weights_us=3609.91 xm_us=300.08 reduce_us=1654 xm_calls=256 local_copy_us=215.04
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183377064608 setup_us=102 stage_us=254 publish_us=1248 wait_us=9613 readback_us=39 total_us=11261 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7152.64 activation_us=442.3 weights_us=3571.07 xm_us=317.67 reduce_us=1674.83 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183424074401 setup_us=98 stage_us=229 publish_us=1246 wait_us=9536 readback_us=37 total_us=11150 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7150.08 activation_us=477.54 weights_us=3551.97 xm_us=331.57 reduce_us=1730.33 xm_calls=256 local_copy_us=211.46
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183470629538 setup_us=98 stage_us=225 publish_us=1250 wait_us=9693 readback_us=44 total_us=11312 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7188.48 activation_us=494.59 weights_us=3578.73 xm_us=321.47 reduce_us=1705.64 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183517860515 setup_us=98 stage_us=226 publish_us=1248 wait_us=9627 readback_us=39 total_us=11240 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7188.48 activation_us=426.68 weights_us=3578.99 xm_us=366.91 reduce_us=1677.46 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183564919460 setup_us=99 stage_us=229 publish_us=1244 wait_us=9603 readback_us=40 total_us=11218 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7193.6 activation_us=467.45 weights_us=3576.01 xm_us=325.67 reduce_us=1705.88 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183611785893 setup_us=100 stage_us=232 publish_us=1253 wait_us=9604 readback_us=39 total_us=11231 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.92 activation_us=466.69 weights_us=3551.58 xm_us=342.75 reduce_us=1745.29 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183658664614 setup_us=94 stage_us=233 publish_us=1245 wait_us=9561 readback_us=38 total_us=11175 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7188.48 activation_us=463.81 weights_us=3564.36 xm_us=335.41 reduce_us=1718.58 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183705330343 setup_us=98 stage_us=258 publish_us=1245 wait_us=9613 readback_us=41 total_us=11259 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7152.64 activation_us=449.52 weights_us=3555.64 xm_us=348.14 reduce_us=1700.35 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183752348328 setup_us=99 stage_us=229 publish_us=1241 wait_us=9598 readback_us=39 total_us=11209 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7154.39 activation_us=438.71 weights_us=3573.66 xm_us=342.57 reduce_us=1675.71 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183799161513 setup_us=100 stage_us=229 publish_us=1246 wait_us=9588 readback_us=41 total_us=11208 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7193.6 activation_us=466.19 weights_us=3606.32 xm_us=363.7 reduce_us=1685.52 xm_calls=256 local_copy_us=215.04
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183845954218 setup_us=96 stage_us=225 publish_us=1248 wait_us=9723 readback_us=39 total_us=11335 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7193.6 activation_us=454.79 weights_us=3594.59 xm_us=302.58 reduce_us=1647.19 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183893283499 setup_us=98 stage_us=233 publish_us=1247 wait_us=9576 readback_us=39 total_us=11198 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7183.36 activation_us=467.66 weights_us=3556.67 xm_us=306.54 reduce_us=1731.29 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183940047532 setup_us=99 stage_us=225 publish_us=1253 wait_us=9639 readback_us=40 total_us=11259 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7196.16 activation_us=449.01 weights_us=3595.58 xm_us=342.23 reduce_us=1691.73 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653183987061421 setup_us=96 stage_us=225 publish_us=1244 wait_us=9587 readback_us=39 total_us=11195 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7178.24 activation_us=472.07 weights_us=3551.61 xm_us=347.39 reduce_us=1723.74 xm_calls=256 local_copy_us=232.96
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184033899182 setup_us=101 stage_us=237 publish_us=1247 wait_us=9697 readback_us=41 total_us=11328 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7265.28 activation_us=476.28 weights_us=3585.03 xm_us=333.98 reduce_us=1705 xm_calls=256 local_copy_us=309.76
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184081412783 setup_us=107 stage_us=534 publish_us=1253 wait_us=9425 readback_us=39 total_us=11362 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7275.52 activation_us=455.81 weights_us=3560.52 xm_us=340.09 reduce_us=1710.18 xm_calls=256 local_copy_us=227.84
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184128869040 setup_us=99 stage_us=234 publish_us=1253 wait_us=9774 readback_us=38 total_us=11402 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7229.44 activation_us=457.46 weights_us=3593.06 xm_us=337.35 reduce_us=1714.69 xm_calls=256 local_copy_us=227.84
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184176501425 setup_us=98 stage_us=234 publish_us=1245 wait_us=9653 readback_us=39 total_us=11273 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7200.71 activation_us=452.45 weights_us=3583.94 xm_us=358.4 reduce_us=1711.47 xm_calls=256 local_copy_us=220.16
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184223589042 setup_us=98 stage_us=236 publish_us=1245 wait_us=9615 readback_us=40 total_us=11238 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7211.52 activation_us=460.92 weights_us=3597.06 xm_us=332.37 reduce_us=1702.73 xm_calls=256 local_copy_us=225.28
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184270537395 setup_us=98 stage_us=225 publish_us=1255 wait_us=9706 readback_us=41 total_us=11328 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7237.12 activation_us=462.71 weights_us=3610.2 xm_us=352.97 reduce_us=1695.39 xm_calls=256 local_copy_us=245.76
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184317850292 setup_us=96 stage_us=228 publish_us=1247 wait_us=9566 readback_us=39 total_us=11179 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7160.32 activation_us=473.45 weights_us=3570.06 xm_us=324.74 reduce_us=1701.14 xm_calls=256 local_copy_us=215.04
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184364544693 setup_us=96 stage_us=224 publish_us=1249 wait_us=9730 readback_us=38 total_us=11341 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7152.64 activation_us=428.43 weights_us=3549.79 xm_us=366.51 reduce_us=1687.86 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184411890358 setup_us=94 stage_us=231 publish_us=1249 wait_us=9578 readback_us=41 total_us=11196 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.92 activation_us=450.68 weights_us=3560.26 xm_us=347.86 reduce_us=1666.96 xm_calls=256 local_copy_us=213.44
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184458642103 setup_us=98 stage_us=249 publish_us=1252 wait_us=9541 readback_us=38 total_us=11181 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7190.89 activation_us=460.52 weights_us=3592.55 xm_us=367.43 reduce_us=1704.13 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184505320120 setup_us=94 stage_us=231 publish_us=1245 wait_us=9710 readback_us=42 total_us=11325 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7185.92 activation_us=455.79 weights_us=3597.28 xm_us=326.74 reduce_us=1689.36 xm_calls=256 local_copy_us=209.92
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184552592057 setup_us=99 stage_us=231 publish_us=1240 wait_us=9571 readback_us=40 total_us=11185 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7183.36 activation_us=458.1 weights_us=3561.3 xm_us=330.36 reduce_us=1695.11 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184599446202 setup_us=98 stage_us=238 publish_us=1251 wait_us=9595 readback_us=41 total_us=11227 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7193.6 activation_us=459.65 weights_us=3552.66 xm_us=374.33 reduce_us=1748.77 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184646316731 setup_us=96 stage_us=231 publish_us=1252 wait_us=9521 readback_us=39 total_us=11143 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7151.67 activation_us=435.89 weights_us=3579.76 xm_us=327.1 reduce_us=1659.89 xm_calls=256 local_copy_us=215.04
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184692839100 setup_us=93 stage_us=237 publish_us=1249 wait_us=9596 readback_us=40 total_us=11219 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7155.2 activation_us=446.2 weights_us=3552.87 xm_us=339.55 reduce_us=1697.16 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184739758781 setup_us=97 stage_us=227 publish_us=1249 wait_us=9667 readback_us=38 total_us=11282 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7196.16 activation_us=455.06 weights_us=3585.85 xm_us=341.78 reduce_us=1710.19 xm_calls=256 local_copy_us=212.48
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184786838206 setup_us=97 stage_us=255 publish_us=1255 wait_us=9579 readback_us=41 total_us=11231 payload_bytes=187008 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=5 m=512 n=1 nb=2 gate=0 device_us=7191.04 activation_us=440.13 weights_us=3636.78 xm_us=305.5 reduce_us=1631.55 xm_calls=256 local_copy_us=212.48
+PACC_QK_BATCH experts=8 groups=8 tiles=32 pack_us=1261 submit_us=365537 scatter_us=36
+PACC Q5_K XM experts=8 m=2048 n=1 k=512 fused_gate=false completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184835818175 setup_us=104 stage_us=352 publish_us=1258 wait_us=11809 readback_us=38 total_us=13565 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9986.56 activation_us=456.92 weights_us=4206.97 xm_us=653.39 reduce_us=2826.04 xm_calls=512 local_copy_us=537.6
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184892461760 setup_us=100 stage_us=331 publish_us=1247 wait_us=12388 readback_us=40 total_us=14111 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9973.76 activation_us=454.36 weights_us=4194.18 xm_us=697.54 reduce_us=2835.42 xm_calls=512 local_copy_us=522.24
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653184951411393 setup_us=101 stage_us=324 publish_us=1242 wait_us=12223 readback_us=37 total_us=13931 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9966.43 activation_us=455.4 weights_us=4230.77 xm_us=645.03 reduce_us=2852.62 xm_calls=512 local_copy_us=524.8
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653185009562306 setup_us=101 stage_us=328 publish_us=1250 wait_us=12252 readback_us=44 total_us=13979 payload_bytes=456256 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=104 n=1 nb=8 gate=1 device_us=9958.4 activation_us=464.27 weights_us=4199.96 xm_us=633.2 reduce_us=2827.22 xm_calls=512 local_copy_us=547.84
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653185067881155 setup_us=100 stage_us=309 publish_us=1241 wait_us=11014 readback_us=39 total_us=12707 payload_bytes=421312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=96 n=1 nb=8 gate=1 device_us=8696.32 activation_us=341.43 weights_us=3856.76 xm_us=510.25 reduce_us=2528.59 xm_calls=384 local_copy_us=483.84
+PACC_QK_BATCH experts=1 groups=1 tiles=5 pack_us=420 submit_us=69199 scatter_us=0
+PACC Q8_0 XM experts=1 m=512 n=1 k=2048 fused_gate=true completion=verified
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653185121501892 setup_us=105 stage_us=276 publish_us=1250 wait_us=8473 readback_us=40 total_us=10148 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6241.28 activation_us=437.56 weights_us=2526.8 xm_us=340.83 reduce_us=1701.02 xm_calls=256 local_copy_us=325.12
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653185164284613 setup_us=98 stage_us=270 publish_us=1251 wait_us=8622 readback_us=40 total_us=10284 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6243.84 activation_us=452.92 weights_us=2496.95 xm_us=360.92 reduce_us=1701.34 xm_calls=256 local_copy_us=324.21
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653185207382726 setup_us=96 stage_us=262 publish_us=1242 wait_us=8659 readback_us=41 total_us=10303 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6244.73 activation_us=471.42 weights_us=2494.75 xm_us=352.84 reduce_us=1731.31 xm_calls=256 local_copy_us=325.12
+PACC_ELF_PROFILE kernel=pacc_q4k_tile_v1 dev=0 seq=7348653185250554567 setup_us=97 stage_us=261 publish_us=1248 wait_us=8696 readback_us=38 total_us=10343 payload_bytes=285312 image_bytes=29184
+PACC_QK_PROFILE dev=0 qtype=8 m=512 n=1 nb=2 gate=0 device_us=6242.84 activation_us=451.36 weights_us=2514.15 xm_us=331.31 reduce_us=1721.95 xm_calls=256 local_copy_us=325.12
+PACC_QK_BATCH experts=1 groups=1 tiles=4 pack_us=219 submit_us=41857 scatter_us=4
+PACC Q8_0 XM experts=1 m=2048 n=1 k=512 fused_gate=false completion=verified
+TRACE l_out-3.0 op=ADD rel_rms=0 max_abs=0

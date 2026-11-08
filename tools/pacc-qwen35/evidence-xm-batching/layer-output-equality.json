@@ -1,0 +1,146 @@
+[
+  {
+    "variant": "baseline",
+    "layer": 0,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-baseline-tensors/l_out-0.0.f32",
+    "bytes": 8192,
+    "sha256": "be3d8dd43269a203c821a104f7df1a8fed756916b0588ed36afb2485244193a3",
+    "baseline_sha256": "be3d8dd43269a203c821a104f7df1a8fed756916b0588ed36afb2485244193a3",
+    "byte_equal": true
+  },
+  {
+    "variant": "baseline",
+    "layer": 1,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-baseline-tensors/l_out-1.0.f32",
+    "bytes": 8192,
+    "sha256": "6873887f3af77936c374ed613b0950115a4a829e384d352d61a11b99307caed5",
+    "baseline_sha256": "6873887f3af77936c374ed613b0950115a4a829e384d352d61a11b99307caed5",
+    "byte_equal": true
+  },
+  {
+    "variant": "baseline",
+    "layer": 2,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-baseline-tensors/l_out-2.0.f32",
+    "bytes": 8192,
+    "sha256": "e058ae34f754bda99116ab7545ac0e1c7f73552e14b0418525ddd5d87b58a005",
+    "baseline_sha256": "e058ae34f754bda99116ab7545ac0e1c7f73552e14b0418525ddd5d87b58a005",
+    "byte_equal": true
+  },
+  {
+    "variant": "baseline",
+    "layer": 3,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-baseline-tensors/l_out-3.0.f32",
+    "bytes": 8192,
+    "sha256": "5c63f28a53571e0e70a5c1f22152bd236a66a4070a53f474e50f187b4203ce57",
+    "baseline_sha256": "5c63f28a53571e0e70a5c1f22152bd236a66a4070a53f474e50f187b4203ce57",
+    "byte_equal": true
+  },
+  {
+    "variant": "local",
+    "layer": 0,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-local-tensors/l_out-0.0.f32",
+    "bytes": 8192,
+    "sha256": "be3d8dd43269a203c821a104f7df1a8fed756916b0588ed36afb2485244193a3",
+    "baseline_sha256": "be3d8dd43269a203c821a104f7df1a8fed756916b0588ed36afb2485244193a3",
+    "byte_equal": true
+  },
+  {
+    "variant": "local",
+    "layer": 1,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-local-tensors/l_out-1.0.f32",
+    "bytes": 8192,
+    "sha256": "6873887f3af77936c374ed613b0950115a4a829e384d352d61a11b99307caed5",
+    "baseline_sha256": "6873887f3af77936c374ed613b0950115a4a829e384d352d61a11b99307caed5",
+    "byte_equal": true
+  },
+  {
+    "variant": "local",
+    "layer": 2,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-local-tensors/l_out-2.0.f32",
+    "bytes": 8192,
+    "sha256": "e058ae34f754bda99116ab7545ac0e1c7f73552e14b0418525ddd5d87b58a005",
+    "baseline_sha256": "e058ae34f754bda99116ab7545ac0e1c7f73552e14b0418525ddd5d87b58a005",
+    "byte_equal": true
+  },
+  {
+    "variant": "local",
+    "layer": 3,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-local-tensors/l_out-3.0.f32",
+    "bytes": 8192,
+    "sha256": "5c63f28a53571e0e70a5c1f22152bd236a66a4070a53f474e50f187b4203ce57",
+    "baseline_sha256": "5c63f28a53571e0e70a5c1f22152bd236a66a4070a53f474e50f187b4203ce57",
+    "byte_equal": true
+  },
+  {
+    "variant": "vector",
+    "layer": 0,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-vector-tensors/l_out-0.0.f32",
+    "bytes": 8192,
+    "sha256": "be3d8dd43269a203c821a104f7df1a8fed756916b0588ed36afb2485244193a3",
+    "baseline_sha256": "be3d8dd43269a203c821a104f7df1a8fed756916b0588ed36afb2485244193a3",
+    "byte_equal": true
+  },
+  {
+    "variant": "vector",
+    "layer": 1,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-vector-tensors/l_out-1.0.f32",
+    "bytes": 8192,
+    "sha256": "6873887f3af77936c374ed613b0950115a4a829e384d352d61a11b99307caed5",
+    "baseline_sha256": "6873887f3af77936c374ed613b0950115a4a829e384d352d61a11b99307caed5",
+    "byte_equal": true
+  },
+  {
+    "variant": "vector",
+    "layer": 2,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-vector-tensors/l_out-2.0.f32",
+    "bytes": 8192,
+    "sha256": "e058ae34f754bda99116ab7545ac0e1c7f73552e14b0418525ddd5d87b58a005",
+    "baseline_sha256": "e058ae34f754bda99116ab7545ac0e1c7f73552e14b0418525ddd5d87b58a005",
+    "byte_equal": true
+  },
+  {
+    "variant": "vector",
+    "layer": 3,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-vector-tensors/l_out-3.0.f32",
+    "bytes": 8192,
+    "sha256": "5c63f28a53571e0e70a5c1f22152bd236a66a4070a53f474e50f187b4203ce57",
+    "baseline_sha256": "5c63f28a53571e0e70a5c1f22152bd236a66a4070a53f474e50f187b4203ce57",
+    "byte_equal": true
+  },
+  {
+    "variant": "final",
+    "layer": 0,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-final-tensors/l_out-0.0.f32",
+    "bytes": 8192,
+    "sha256": "be3d8dd43269a203c821a104f7df1a8fed756916b0588ed36afb2485244193a3",
+    "baseline_sha256": "be3d8dd43269a203c821a104f7df1a8fed756916b0588ed36afb2485244193a3",
+    "byte_equal": true
+  },
+  {
+    "variant": "final",
+    "layer": 1,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-final-tensors/l_out-1.0.f32",
+    "bytes": 8192,
+    "sha256": "6873887f3af77936c374ed613b0950115a4a829e384d352d61a11b99307caed5",
+    "baseline_sha256": "6873887f3af77936c374ed613b0950115a4a829e384d352d61a11b99307caed5",
+    "byte_equal": true
+  },
+  {
+    "variant": "final",
+    "layer": 2,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-final-tensors/l_out-2.0.f32",
+    "bytes": 8192,
+    "sha256": "e058ae34f754bda99116ab7545ac0e1c7f73552e14b0418525ddd5d87b58a005",
+    "baseline_sha256": "e058ae34f754bda99116ab7545ac0e1c7f73552e14b0418525ddd5d87b58a005",
+    "byte_equal": true
+  },
+  {
+    "variant": "final",
+    "layer": 3,
+    "source": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-final-tensors/l_out-3.0.f32",
+    "bytes": 8192,
+    "sha256": "5c63f28a53571e0e70a5c1f22152bd236a66a4070a53f474e50f187b4203ce57",
+    "baseline_sha256": "5c63f28a53571e0e70a5c1f22152bd236a66a4070a53f474e50f187b4203ce57",
+    "byte_equal": true
+  }
+]

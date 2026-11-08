@@ -14231,6 +14231,8 @@ fn submit_sifive_kernel_image_via_helper(
     block_y: u32,
     block_z: u32,
 ) -> std::io::Result<usize> {
+    let profile_started = std::time::Instant::now();
+    let profile_enabled = env_flag_enabled("HETGPU_SIFIVE_ELF_PROFILE");
     let shared_base = shared_ddr_base();
     if shared_base == 0 || shared_ddr_bytes() == 0 {
         return Err(Error::new(
@@ -14293,6 +14295,8 @@ fn submit_sifive_kernel_image_via_helper(
     };
     clear_sifive_kernel_status_cached(&mut shared_file, &mut mailbox_file, dev.id)?;
     clear_sifive_kernel_doorbell_cached(&mut shared_file, &mut mailbox_file, dev.id)?;
+    let profile_setup_us = profile_started.elapsed().as_micros();
+    let profile_stage_started = std::time::Instant::now();
     let staging = unsafe {
         prepare_sifive_kernel_shared_ddr_staging(
             kernel_name,
@@ -14311,6 +14315,8 @@ fn submit_sifive_kernel_image_via_helper(
             "SIFIVE shared-DDR staged kernel launch requires HETGPU_SIFIVE_WAIT_KERNEL_LAUNCH=1",
         ));
     }
+    let profile_stage_us = profile_stage_started.elapsed().as_micros();
+    let profile_publish_started = std::time::Instant::now();
     let mut output_wait = prepare_sifive_kernel_output_wait(&staging, &mut shared_file)?;
     if output_wait.is_none() {
         output_wait =
@@ -14430,6 +14436,9 @@ fn submit_sifive_kernel_image_via_helper(
         dev.zluda_irq(shared_ddr_info())?;
     }
 
+    let profile_publish_us = profile_publish_started.elapsed().as_micros();
+    let mut profile_wait_us = 0u128;
+    let mut profile_readback_us = 0u128;
     if kernel_launch_wait_enabled() {
         let wait_start = std::time::Instant::now();
         let mut wait_result = if env_flag_enabled("HETGPU_SIFIVE_KERNEL_WAIT_OUTPUT_ONLY") {
@@ -14483,10 +14492,19 @@ fn submit_sifive_kernel_image_via_helper(
                 slot_id
             );
         }
+        profile_wait_us = wait_start.elapsed().as_micros();
         wait_result?;
+        let profile_readback_started = std::time::Instant::now();
         unsafe {
             complete_sifive_kernel_shared_ddr_staging(&staging, &mut shared_file)?;
         }
+        profile_readback_us = profile_readback_started.elapsed().as_micros();
+    }
+
+    if profile_enabled {
+        eprintln!("PACC_ELF_PROFILE kernel={} dev={} seq={} setup_us={} stage_us={} publish_us={} wait_us={} readback_us={} total_us={} payload_bytes={} image_bytes={}",
+            kernel_name, dev.id, seq, profile_setup_us, profile_stage_us, profile_publish_us,
+            profile_wait_us, profile_readback_us, profile_started.elapsed().as_micros(), staging_bytes, submit_len);
     }
 
     if std::env::var("HETGPU_SIFIVE_LOG_KERNEL_LAUNCHES")

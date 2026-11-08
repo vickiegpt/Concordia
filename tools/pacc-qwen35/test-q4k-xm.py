@@ -59,13 +59,15 @@ def reference(x,y,m,n,nb,gate):
     return result
 
 def main():
-    for m,n,nb,gate in [(3,1,1,0),(32,4,2,0),(7,3,3,1),(32,1,8,1),(129,3,2,1),(384 if qtype==8 else 512,1,8,1)]:
+    for m,n,nb,gate in [(3,1,1,0),(32,4,2,0),(7,3,3,1),(31,8,3,1),(3,2,128,1),(32,1,8,1),(129,3,2,1),(384 if qtype==8 else 512,1,8,1)]:
         x,y=generate(m,n,nb,gate);ref=reference(x,y,m,n,nb,gate)
         out=(c.c_float*(m*n+8))(*([math.nan]*(m*n)+[12345.]*8))
         rc=fn(0,c.c_char_p(x),c.c_char_p(y),out,m,n,nb,gate)
         # This raw API submits one tile. CUDA ABI tests exercise automatic tiling.
         slot=int(os.environ.get('HETGPU_SIFIVE_KERNEL_SLOT_BYTES',str(2*1024*1024)),0)
-        oversize=len(x)+len(y)+(m*n+4+2*m)*4 > slot-65536
+        if os.environ.get('HETGPU_SIFIVE_QK_LOCAL_BATCH') == '1':
+            slot=min(slot,512*1024)
+        oversize=len(x)+len(y)+(m*n+16+2*m)*4 > slot-65536
         if oversize:
             assert rc != 0 and all(math.isnan(v) for v in out[:m*n])
             assert list(out)[m*n:]==[12345.]*8

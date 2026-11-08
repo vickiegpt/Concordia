@@ -1,0 +1,448 @@
+{
+  "all_correct": true,
+  "aggregate_output_tps": 0.0194169325253294,
+  "aggregate_decode_tps": 0.04139135123162967,
+  "scope": "short four-request correctness smoke; not sustained or large-batch qualification",
+  "generated_tokens": 8,
+  "request_window_s": 412.011526,
+  "decode_window_s": 96.638546,
+  "returncodes": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "elapsed_including_load_s": 473.5023516060028,
+  "requests": [
+    {
+      "aggregate_output_tps": 0.005066139040444338,
+      "all_correct": true,
+      "batch": 256,
+      "decode_ms": 79477.684,
+      "decode_started_monotonic_us": 162439375798,
+      "finished_monotonic_us": 162518858172,
+      "generated_tokens": [
+        17,
+        220
+      ],
+      "input_tokens": [
+        16,
+        10,
+        16,
+        28
+      ],
+      "measurement": "includes prompt prefill; excludes model load; short correctness smoke",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 99,
+      "prefill_ms": 315288.815,
+      "prompt": "1+1=",
+      "requested_tokens": 2,
+      "started_monotonic_us": 162124080219,
+      "steps": [
+        {
+          "elapsed_ms": 315288.815,
+          "token": 17,
+          "top_logits": [
+            [
+              17,
+              15.662055015563965
+            ],
+            [
+              16,
+              14.73778247833252
+            ],
+            [
+              18,
+              14.365307807922363
+            ],
+            [
+              15,
+              12.915176391601562
+            ],
+            [
+              10992,
+              12.880255699157715
+            ],
+            [
+              20,
+              12.354592323303223
+            ],
+            [
+              271,
+              12.004284858703613
+            ],
+            [
+              19,
+              11.924123764038086
+            ]
+          ]
+        },
+        {
+          "elapsed_ms": 79477.684,
+          "token": 220,
+          "top_logits": [
+            [
+              220,
+              13.64884090423584
+            ],
+            [
+              3709,
+              12.761433601379395
+            ],
+            [
+              369,
+              12.734301567077637
+            ],
+            [
+              11,
+              12.266430854797363
+            ],
+            [
+              271,
+              11.752799034118652
+            ],
+            [
+              95726,
+              11.694851875305176
+            ],
+            [
+              13,
+              11.674951553344727
+            ],
+            [
+              95761,
+              11.663125991821289
+            ]
+          ]
+        }
+      ],
+      "text": "2 ",
+      "ubatch": 1,
+      "wall_s": 394.777953
+    },
+    {
+      "aggregate_output_tps": 0.0049481586245362,
+      "all_correct": true,
+      "batch": 256,
+      "decode_ms": 81785.072,
+      "decode_started_monotonic_us": 162446403825,
+      "finished_monotonic_us": 162528193579,
+      "generated_tokens": [
+        17,
+        220
+      ],
+      "input_tokens": [
+        16,
+        10,
+        16,
+        28
+      ],
+      "measurement": "includes prompt prefill; excludes model load; short correctness smoke",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 99,
+      "prefill_ms": 322394.271,
+      "prompt": "1+1=",
+      "requested_tokens": 2,
+      "started_monotonic_us": 162124002818,
+      "steps": [
+        {
+          "elapsed_ms": 322394.271,
+          "token": 17,
+          "top_logits": [
+            [
+              17,
+              15.662055015563965
+            ],
+            [
+              16,
+              14.73778247833252
+            ],
+            [
+              18,
+              14.365307807922363
+            ],
+            [
+              15,
+              12.915176391601562
+            ],
+            [
+              10992,
+              12.880255699157715
+            ],
+            [
+              20,
+              12.354592323303223
+            ],
+            [
+              271,
+              12.004284858703613
+            ],
+            [
+              19,
+              11.924123764038086
+            ]
+          ]
+        },
+        {
+          "elapsed_ms": 81785.072,
+          "token": 220,
+          "top_logits": [
+            [
+              220,
+              13.64884090423584
+            ],
+            [
+              3709,
+              12.761433601379395
+            ],
+            [
+              369,
+              12.734301567077637
+            ],
+            [
+              11,
+              12.266430854797363
+            ],
+            [
+              271,
+              11.752799034118652
+            ],
+            [
+              95726,
+              11.694851875305176
+            ],
+            [
+              13,
+              11.674951553344727
+            ],
+            [
+              95761,
+              11.663125991821289
+            ]
+          ]
+        }
+      ],
+      "text": "2 ",
+      "ubatch": 1,
+      "wall_s": 404.190761
+    },
+    {
+      "aggregate_output_tps": 0.004855158060204717,
+      "all_correct": true,
+      "batch": 256,
+      "decode_ms": 83158.886,
+      "decode_started_monotonic_us": 162452850849,
+      "finished_monotonic_us": 162536014344,
+      "generated_tokens": [
+        17,
+        220
+      ],
+      "input_tokens": [
+        16,
+        10,
+        16,
+        28
+      ],
+      "measurement": "includes prompt prefill; excludes model load; short correctness smoke",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 99,
+      "prefill_ms": 328762.672,
+      "prompt": "1+1=",
+      "requested_tokens": 2,
+      "started_monotonic_us": 162124081308,
+      "steps": [
+        {
+          "elapsed_ms": 328762.672,
+          "token": 17,
+          "top_logits": [
+            [
+              17,
+              15.662055015563965
+            ],
+            [
+              16,
+              14.73778247833252
+            ],
+            [
+              18,
+              14.365307807922363
+            ],
+            [
+              15,
+              12.915176391601562
+            ],
+            [
+              10992,
+              12.880255699157715
+            ],
+            [
+              20,
+              12.354592323303223
+            ],
+            [
+              271,
+              12.004284858703613
+            ],
+            [
+              19,
+              11.924123764038086
+            ]
+          ]
+        },
+        {
+          "elapsed_ms": 83158.886,
+          "token": 220,
+          "top_logits": [
+            [
+              220,
+              13.64884090423584
+            ],
+            [
+              3709,
+              12.761433601379395
+            ],
+            [
+              369,
+              12.734301567077637
+            ],
+            [
+              11,
+              12.266430854797363
+            ],
+            [
+              271,
+              11.752799034118652
+            ],
+            [
+              95726,
+              11.694851875305176
+            ],
+            [
+              13,
+              11.674951553344727
+            ],
+            [
+              95761,
+              11.663125991821289
+            ]
+          ]
+        }
+      ],
+      "text": "2 ",
+      "ubatch": 1,
+      "wall_s": 411.933036
+    },
+    {
+      "aggregate_output_tps": 0.004951781887694572,
+      "all_correct": true,
+      "batch": 256,
+      "decode_ms": 81448.874,
+      "decode_started_monotonic_us": 162446446216,
+      "finished_monotonic_us": 162527899834,
+      "generated_tokens": [
+        17,
+        220
+      ],
+      "input_tokens": [
+        16,
+        10,
+        16,
+        28
+      ],
+      "measurement": "includes prompt prefill; excludes model load; short correctness smoke",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 99,
+      "prefill_ms": 322434.604,
+      "prompt": "1+1=",
+      "requested_tokens": 2,
+      "started_monotonic_us": 162124004823,
+      "steps": [
+        {
+          "elapsed_ms": 322434.604,
+          "token": 17,
+          "top_logits": [
+            [
+              17,
+              15.662055015563965
+            ],
+            [
+              16,
+              14.73778247833252
+            ],
+            [
+              18,
+              14.365307807922363
+            ],
+            [
+              15,
+              12.915176391601562
+            ],
+            [
+              10992,
+              12.880255699157715
+            ],
+            [
+              20,
+              12.354592323303223
+            ],
+            [
+              271,
+              12.004284858703613
+            ],
+            [
+              19,
+              11.924123764038086
+            ]
+          ]
+        },
+        {
+          "elapsed_ms": 81448.874,
+          "token": 220,
+          "top_logits": [
+            [
+              220,
+              13.64884090423584
+            ],
+            [
+              3709,
+              12.761433601379395
+            ],
+            [
+              369,
+              12.734301567077637
+            ],
+            [
+              11,
+              12.266430854797363
+            ],
+            [
+              271,
+              11.752799034118652
+            ],
+            [
+              95726,
+              11.694851875305176
+            ],
+            [
+              13,
+              11.674951553344727
+            ],
+            [
+              95761,
+              11.663125991821289
+            ]
+          ]
+        }
+      ],
+      "text": "2 ",
+      "ubatch": 1,
+      "wall_s": 403.895011
+    }
+  ],
+  "profile_files": [
+    "pacc0-phases.json",
+    "pacc1-phases.json",
+    "pacc2-phases.json",
+    "pacc3-phases.json"
+  ]
+}

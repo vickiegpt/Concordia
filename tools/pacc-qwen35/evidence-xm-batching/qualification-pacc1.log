@@ -1,0 +1,71 @@
+isolated_worker physical=1 payload=[0x280000,0x300000) runtime=/srv/lanxin/qwen35-a3b/runtime-xm-local-batch-v5
+{
+  "command": [
+    "bin/test_jobd_q8",
+    "--hardware",
+    "1"
+  ],
+  "device": 1,
+  "returncode": 0,
+  "timed_out": false,
+  "sample_ms": 1.0,
+  "max_sample_gap_ms": 1.430380012607202,
+  "recent_event_limit": 768,
+  "complete_submissions": 42,
+  "incomplete_submissions": {},
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 588,
+      "p50_us": 13,
+      "p99_us": 31,
+      "max_us": 31
+    },
+    "input_copy": {
+      "sum_us": 27370,
+      "p50_us": 691,
+      "p99_us": 717,
+      "max_us": 717
+    },
+    "compute": {
+      "sum_us": 158875,
+      "p50_us": 3630,
+      "p99_us": 6818,
+      "max_us": 6818
+    },
+    "output_copy": {
+      "sum_us": 2501,
+      "p50_us": 51,
+      "p99_us": 164,
+      "max_us": 164
+    },
+    "cleanup": {
+      "sum_us": 102,
+      "p50_us": 3,
+      "p99_us": 3,
+      "max_us": 3
+    },
+    "completion_publish": {
+      "sum_us": 210,
+      "p50_us": 5,
+      "p99_us": 5,
+      "max_us": 5
+    },
+    "device_before_publish": {
+      "sum_us": 197134,
+      "p50_us": 4572,
+      "p99_us": 7895,
+      "max_us": 7895
+    }
+  },
+  "capabilities": {},
+  "limitations": [
+    "Double-read stability is not a source-side atomic snapshot guarantee.",
+    "Completion publish excludes subsequent diagnostic writes.",
+    "Host/device elapsed differences include dispatch and polling, not IRQ alone."
+  ],
+  "expected_submissions": null,
+  "expected_count_matches": false,
+  "build_matches": true,
+  "capture_valid": true,
+  "observed_index_gap_count": 0
+}

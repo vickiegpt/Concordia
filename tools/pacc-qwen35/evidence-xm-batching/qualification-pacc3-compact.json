@@ -1,0 +1,75 @@
+{
+  "command": [
+    "bin/test_jobd_q8",
+    "--hardware",
+    "3"
+  ],
+  "device": 3,
+  "returncode": 0,
+  "timed_out": false,
+  "sample_ms": 1.0,
+  "max_sample_gap_ms": 1.443829998606816,
+  "recent_event_limit": 768,
+  "complete_submissions": 42,
+  "incomplete_submissions": {},
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 627,
+      "p50_us": 15,
+      "p99_us": 31,
+      "max_us": 31
+    },
+    "input_copy": {
+      "sum_us": 32126,
+      "p50_us": 691,
+      "p99_us": 2970,
+      "max_us": 2970
+    },
+    "compute": {
+      "sum_us": 175590,
+      "p50_us": 3681,
+      "p99_us": 8980,
+      "max_us": 8980
+    },
+    "output_copy": {
+      "sum_us": 2460,
+      "p50_us": 49,
+      "p99_us": 159,
+      "max_us": 159
+    },
+    "cleanup": {
+      "sum_us": 120,
+      "p50_us": 3,
+      "p99_us": 5,
+      "max_us": 5
+    },
+    "completion_publish": {
+      "sum_us": 203,
+      "p50_us": 5,
+      "p99_us": 5,
+      "max_us": 5
+    },
+    "device_before_publish": {
+      "sum_us": 218787,
+      "p50_us": 4649,
+      "p99_us": 10123,
+      "max_us": 10123
+    }
+  },
+  "capabilities": {},
+  "limitations": [
+    "Double-read stability is not a source-side atomic snapshot guarantee.",
+    "Completion publish excludes subsequent diagnostic writes.",
+    "Host/device elapsed differences include dispatch and polling, not IRQ alone."
+  ],
+  "expected_submissions": null,
+  "expected_count_matches": false,
+  "build_matches": true,
+  "capture_valid": true,
+  "observed_index_gap_count": 0,
+  "submission_build_counts": {
+    "0x20036": 42
+  },
+  "raw_sha256": "d9d29b28034e78c864670a16dafd9cff45c9d07cd9ed9607e7667492e3982925",
+  "raw_path": "/srv/lanxin/qwen35-a3b/logs/four-ngl99-xm-batch-v5-retry-qualification/pacc3.json"
+}

@@ -1,0 +1,125 @@
+{
+  "log": "/srv/lanxin/qwen35-a3b/logs/elf-profile-layer3-local.log",
+  "host_by_kernel": {
+    "_ZL11concat_contIjLi0EEvPKT_S2_PS0_llllll": {
+      "calls": 3.0,
+      "setup_us": 314.0,
+      "stage_us": 961.0,
+      "publish_us": 4136.0,
+      "wait_us": 188741.0,
+      "readback_us": 251.0,
+      "total_us": 194415.0
+    },
+    "_ZL21unary_gated_op_kernelIXadL_ZL11op_softplusfEEfEvPKT0_S2_PS0_llll": {
+      "calls": 3.0,
+      "setup_us": 339.0,
+      "stage_us": 749.0,
+      "publish_us": 3843.0,
+      "wait_us": 2476.0,
+      "readback_us": 115.0,
+      "total_us": 7532.0
+    },
+    "pacc_gdn_head_v1": {
+      "calls": 96.0,
+      "setup_us": 9941.0,
+      "stage_us": 14643.0,
+      "publish_us": 120362.0,
+      "wait_us": 1126208.0,
+      "readback_us": 5966.0,
+      "total_us": 1277463.0
+    },
+    "_ZL21unary_gated_op_kernelIXadL_ZL7op_silufEEfEvPKT0_S2_PS0_llll": {
+      "calls": 3.0,
+      "setup_us": 319.0,
+      "stage_us": 705.0,
+      "publish_us": 3894.0,
+      "wait_us": 26858.0,
+      "readback_us": 152.0,
+      "total_us": 31941.0
+    },
+    "pacc_topk_row_v1": {
+      "calls": 4.0,
+      "setup_us": 424.0,
+      "stage_us": 746.0,
+      "publish_us": 5045.0,
+      "wait_us": 9066.0,
+      "readback_us": 171.0,
+      "total_us": 15467.0
+    },
+    "pacc_q4k_tile_v1": {
+      "calls": 268.0,
+      "setup_us": 29207.0,
+      "stage_us": 86717.0,
+      "publish_us": 339989.0,
+      "wait_us": 6963716.0,
+      "readback_us": 11899.0,
+      "total_us": 7432483.0
+    },
+    "_ZL10rope_multiILb1ELb0EfEvPKT1_PS0_iiiiiiiiiiiPKifff14rope_corr_dimsfPKf14mrope_sectionsbb": {
+      "calls": 2.0,
+      "setup_us": 377.0,
+      "stage_us": 516.0,
+      "publish_us": 3169.0,
+      "wait_us": 690.0,
+      "readback_us": 104.0,
+      "total_us": 4864.0
+    },
+    "_ZL10k_set_rowsIfl6__halfEvPKT_PKT0_PT1_llllllllllllll5uint3S9_S9_S9_S9_": {
+      "calls": 2.0,
+      "setup_us": 238.0,
+      "stage_us": 421.0,
+      "publish_us": 2614.0,
+      "wait_us": 2735.0,
+      "readback_us": 157.0,
+      "total_us": 6174.0
+    },
+    "pacc_attention_softmax_v1": {
+      "calls": 1.0,
+      "setup_us": 107.0,
+      "stage_us": 173.0,
+      "publish_us": 1289.0,
+      "wait_us": 6593.0,
+      "readback_us": 53.0,
+      "total_us": 8219.0
+    },
+    "_ZL21unary_gated_op_kernelIXadL_ZL10op_sigmoidfEEfEvPKT0_S2_PS0_llll": {
+      "calls": 1.0,
+      "setup_us": 120.0,
+      "stage_us": 279.0,
+      "publish_us": 1319.0,
+      "wait_us": 8819.0,
+      "readback_us": 50.0,
+      "total_us": 10591.0
+    }
+  },
+  "device_qk": {
+    "calls": 268.0,
+    "device_us": 6361476.469999992,
+    "activation_us": 159668.69999999984,
+    "weights_us": 4787681.449999997,
+    "xm_us": 156947.77000000016,
+    "reduce_us": 794939.0599999998,
+    "xm_calls": 130944.0,
+    "local_copy_us": 101661.53000000001
+  },
+  "qk_host_batch": {
+    "calls": 17.0,
+    "experts": 73.0,
+    "groups": 45.0,
+    "tiles": 268.0,
+    "pack_us": 16292.0,
+    "submit_us": 9073460.0,
+    "scatter_us": 234.0
+  },
+  "paired_qk": {
+    "calls": 268.0,
+    "publish_wait_minus_device_us": 942228.5300000003,
+    "negative_residuals": 0.0
+  },
+  "limitations": [
+    "Host wait contains device execution: do not add the two durations.",
+    "Publish+wait minus kernel duration includes image publishing, guest setup and cleanup, scheduling, polling and completion visibility; it is not pure IRQ latency.",
+    "Device syscall timing adds overhead; compare throughput with detailed timing disabled.",
+    "Only Q4/Q5/Q8 ELF kernels have internal device timings here; other kernels expose host phases only."
+  ]
+}

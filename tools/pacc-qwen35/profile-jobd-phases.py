@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Collect stable, per-submission device durations, never subtract clock epochs."""
 import argparse
+import errno
 from collections import deque
 import gc
 import json
@@ -23,6 +24,21 @@ PHASES = ("dst_prepare", "input_copy", "compute", "output_copy", "cleanup",
 def percentile(values, fraction):
     values = sorted(values)
     return values[max(0, min(len(values)-1, math.ceil(len(values)*fraction)-1))]
+
+
+def read_shared_base(fd, timeout=5.0):
+    # The driver's global trylock is shared by all four devices.
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            data = os.pread(fd, 8, 0x02004000)
+            if len(data) != 8:
+                raise ValueError("short shared DDR base read")
+            return struct.unpack("<Q", data)[0]
+        except OSError as error:
+            if error.errno != errno.EBUSY or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
 
 
 def valid_capture(returncode, timed_out, complete_count, incomplete, gaps, expected, build_matches):
@@ -53,7 +69,7 @@ def main():
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(f"/dev/hetgpu_sifive_mbox_ddr_coh{args.device}", os.O_RDONLY)
-    base, = struct.unpack("<Q", os.pread(fd, 8, 0x02004000))
+    base = read_shared_base(fd)
     if base != int(os.environ["HETGPU_SIFIVE_SHARED_DDR_BASE"], 0):
         raise SystemExit("shared DDR allocation mismatch")
     ring_offset = RING_OFFSET + args.device * 0x2000

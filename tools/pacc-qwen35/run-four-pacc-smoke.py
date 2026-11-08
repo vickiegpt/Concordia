@@ -67,6 +67,14 @@ def main():
     for file in [a.runtime / "libnvcuda.so", a.runtime / "libhetgpu_cuda_shim.so", ROOT / "bin/qwen-ngl-four"]:
         hashes[str(file)] = hashlib.sha256(file.read_bytes()).hexdigest()
     (destination / "artifacts.json").write_text(json.dumps(hashes, indent=2) + "\n")
+    flag_names = ("HETGPU_SIFIVE_QK_LOCAL_BATCH", "HETGPU_SIFIVE_QK_EXPERT_BATCH",
+                  "HETGPU_SIFIVE_QK_VECTOR_PACK", "HETGPU_SIFIVE_QK_PROFILE",
+                  "HETGPU_SIFIVE_ELF_PROFILE", "HETGPU_SIFIVE_LOG_KERNEL_LAUNCHES",
+                  "HETGPU_SIFIVE_KERNEL_POST_DOORBELL_IRQ_SLEEP_US")
+    (destination / "optimization-flags.json").write_text(json.dumps(
+        {name:env.get(name, "1000" if name.endswith("IRQ_SLEEP_US") else
+                      "1" if name.endswith("LOG_KERNEL_LAUNCHES") else "0")
+         for name in flag_names}, indent=2)+"\n")
     processes, logs = [], []
     started = time.monotonic()
     def interrupted(signum, frame):

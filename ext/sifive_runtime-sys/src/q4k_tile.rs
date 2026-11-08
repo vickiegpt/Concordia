@@ -2,6 +2,11 @@ use crate::*;
 use std::sync::Mutex;
 static KERNELS: Mutex<[Option<usize>; 4]> = Mutex::new([None; 4]);
 
+pub fn payload_capacity() -> usize {
+    let capacity = kernel_payload_capacity();
+    if env_flag_enabled("HETGPU_SIFIVE_QK_LOCAL_BATCH") { capacity.min(512 * 1024) } else { capacity }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn hetgpu_sifive_submit_q4k_tile(
     dev: i32,
@@ -79,7 +84,7 @@ pub unsafe fn submit_qk_tile(
     };
     let xbytes = (m * nb * block_bytes * (1 + gate)) as u64;
     let ybytes = (n * nb * 288) as u64;
-    if xbytes + ybytes + (m * n + 4 + 2 * m) as u64 * 4 > kernel_payload_capacity().saturating_sub(65536) as u64 {
+    if xbytes + ybytes + (m * n + 16 + 2 * m) as u64 * 4 > payload_capacity().saturating_sub(65536) as u64 {
         return -1;
     }
     let zeros = vec![0f32; 2 * m as usize];
@@ -124,7 +129,7 @@ pub unsafe fn submit_qk_tile(
         q
     };
     let count = (m * n) as usize;
-    let mut result = vec![f32::NAN; count + 4];
+    let mut result = vec![f32::NAN; count + 16];
     if sifive_KernelClearLaunchState(kernel) != 0 {
         return -1;
     }
@@ -138,6 +143,9 @@ pub unsafe fn submit_qk_tile(
         gate as u64,
         qtype as u64,
         bias as u64,
+        env_flag_enabled("HETGPU_SIFIVE_QK_PROFILE") as u64 |
+            ((env_flag_enabled("HETGPU_SIFIVE_QK_LOCAL_BATCH") as u64) << 1) |
+            ((env_flag_enabled("HETGPU_SIFIVE_QK_VECTOR_PACK") as u64) << 2),
     ]
     .into_iter()
     .enumerate()
@@ -170,7 +178,7 @@ pub unsafe fn submit_qk_tile(
                     0 => xbytes,
                     1 => ybytes,
                     8 => m as u64 * 8,
-                    _ => ((count + 4) * 4) as u64,
+                    _ => ((count + 16) * 4) as u64,
                 },
             };
             if sifive_KernelAddBufferBinding(kernel, &binding) != 0 {
@@ -188,6 +196,15 @@ pub unsafe fn submit_qk_tile(
             &result[..count.min(8)]
         );
         return -1;
+    }
+    if env_flag_enabled("HETGPU_SIFIVE_QK_PROFILE") {
+        if !result[count+4].is_finite() || result[count+4] <= 0. ||
+            result[count+5..count+11].iter().any(|v| !v.is_finite() || *v < 0.) {
+            return -1;
+        }
+        eprintln!("PACC_QK_PROFILE dev={} qtype={} m={} n={} nb={} gate={} device_us={} activation_us={} weights_us={} xm_us={} reduce_us={} xm_calls={} local_copy_us={}",
+            dev, qtype, m, n, nb, gate, result[count+4], result[count+5], result[count+6],
+            result[count+7], result[count+8], result[count+9], result[count+10]);
     }
     std::ptr::copy_nonoverlapping(result.as_ptr(), out, count);
     0
