@@ -2,7 +2,7 @@
 
 ## Scope and current gate
 
-Target: Qwen3.5-35B-A3B Q4_K_M, `ngl=99`, one PACC0, batch=256,
+Initial target: Qwen3.5-35B-A3B Q4_K_M, `ngl=99`, one PACC0, batch=256,
 ubatch=1, flash attention disabled. This is full-layer compute offload with
 host-backed weights staged through the owned 2 MiB payload aperture, not a
 claim that all model weights reside in PACC RAM. Host-side quantization and
@@ -95,20 +95,23 @@ SHA256: `b6e1b133a71c34820c55250a6cab341a0de9ec4c784980791606061e4adf9129`.
 No host reboot. Only PACC0 was rebound through the vendor driver. The canonical
 vendor image was restored and its SHA checked after every load.
 
-## Reproduction
+## Single-device reproduction
 
 These paths and the loader's boot/allocation checks are specific to lanxin2.
 Deploy the tools into `/srv/lanxin/qwen35-a3b/bin` and run with PACC0 idle:
 
 ```sh
-CONCORDIA_RELEASE=/srv/lanxin/qwen35-a3b/runtime-ngl99-release \
-  bash /srv/lanxin/qwen35-a3b/bin/run-ngl99-validation.sh UNIQUE_PREFIX 0x20035
+CONCORDIA_RELEASE=/srv/lanxin/qwen35-a3b/runtime-ngl99-getrows \
+  bash /srv/lanxin/qwen35-a3b/bin/run-ngl99-direct.sh UNIQUE_PREFIX 0x20036
 ```
 
-The runner first verifies firmware identity and numerical results, then tests
-the added CUDA ABIs, then makes the full-offload request. Failure stops the run.
-It does not load firmware or reboot anything. The matching firmware must already
-be qualified. Tests using actual PTX require the existing llama.cpp PTX cache.
+The direct runner verifies firmware identity and numerical results, then makes
+the full-offload request against the CPU reference. Failure stops the run.
+The current image is v54, marker `0x20036`; the recorded fixed single-device run
+used v53, marker `0x20035`. This command does not load firmware or reboot anything.
+Run it only while all other PACC clients are idle: this older single-device runner
+uses the whole 2 MiB payload, not the four-worker partition wrapper. Tests using
+actual PTX require the existing llama.cpp PTX cache.
 
 Release builds use the LLVM submodule at the recorded gitlink, LLVM 20, and the
 evaluation environment's Cargo.lock. The lock is not normally tracked by this
@@ -186,12 +189,69 @@ token sequences match a CPU reference and each profile has the requested firmwar
 build and device id. Reported windows use the shared host monotonic clock and
 include cross-worker skew; the short smoke is not sustained large-batch evidence.
 
+Four-worker reproduction with the already qualified, boot-specific artifacts:
+
+```sh
+cd /srv/lanxin/qwen35-a3b
+python3 bin/run-four-pacc-smoke.py UNIQUE_PREFIX \
+  --runtime runtime-ngl99-four \
+  --reference logs/ngl99-direct-cpu-reference.json \
+  --qualification logs/four-v54-qualification --timeout 5400
+python3 bin/audit-four-pacc-staging.py logs/UNIQUE_PREFIX \
+  --output logs/UNIQUE_PREFIX/staging-audit.json
+```
+
+Run the staging audit after inference has exited so its log hashes describe
+immutable evidence. It validates logged ELF staging spans and physical affinity,
+not every memory transaction performed by the device. The helper's allocation
+must remain pinned and its boot-specific base must not be reused after reboot.
+
+### Four-device full-model result
+
+`four-ngl99-v54-v1` passed on all four physical devices. Each request loaded
+41/41 layers, used the full original 35B Q4_K_M model, and generated `[17, 220]`
+(`2 `) for `1+1=`, exactly matching the CPU token/text reference. All logits were
+finite. Each recorder reports matching firmware build, valid capture, and zero
+observed event gaps, with 17408 completed preloaded submissions per device.
+Those phase durations exclude ELF execution and are not a full end-to-end
+compute/copy/wait breakdown. All four processes exited with status 0.
+
+| Physical device | Prefill (s) | One decode step (s) | Token sequence |
+| --- | ---: | ---: | --- |
+| PACC0 | 1151.052523 | 288.993212 | 17, 220 |
+| PACC1 | 1199.717347 | 305.046173 | 17, 220 |
+| PACC2 | 1269.484211 | 315.773141 | 17, 220 |
+| PACC3 | 1184.042147 | 297.867910 | 17, 220 |
+
+- Eight output tokens / 1585.268998 s shared request window:
+  **0.0050464622 aggregate output TPS**, including prefill, excluding model load.
+- Four post-prefill tokens / 434.208998 s shared decode window:
+  **0.0092121536 aggregate decode-window TPS**, including worker start skew.
+- Outer elapsed time including model load and capture finalization: 1647.469875 s.
+- Per device: 19750 logged ELF submissions, 68200 staged buffer bindings, no
+  wrong-device or out-of-partition spans. This is host-log audit evidence, not
+  an independent hardware bus trace or a security-isolation proof.
+
+This is a four-request, two-output-token correctness smoke with `ubatch=1`.
+It is not sustained decode, a large-batch benchmark, or peak throughput. It is
+far below 500 TPS. The single-device and four-device runs differ in firmware
+version and payload capacity, so do not present their ratio as controlled scaling.
+Host weight storage, data movement, quantization and existing pointwise shims
+remain; integer matrix dots execute on XM, with no host matrix fallback enabled.
+
+Raw logs and profiles remain at
+`/srv/lanxin/qwen35-a3b/logs/four-ngl99-v54-v1/`. The committed summary, per-device
+results, artifact hashes, compact profiles and staging audit are under
+`tools/pacc-qwen35/evidence-ngl99/four-v54/`. Compact profiles retain the absolute
+raw-file paths and SHA256 values. The default installed runtime was not replaced;
+the tested runtime is `/srv/lanxin/qwen35-a3b/runtime-ngl99-four`.
+
 ## Remaining boundaries
 
 - General CUDA warp reductions are not universally implemented by these named
   kernel specializations. Unsupported combinations return errors.
-- Multi-token MoE CUDA kernels and large-batch throughput are not qualified by
-  the ubatch=1 test. PACC0 is not four PACC devices.
+- Four independent ubatch=1 workers do not qualify multi-token MoE CUDA kernels,
+  longer output sequences, other prompts, or sustained large-batch throughput.
 - Board VLEN=1024 code is not executed on the host's VLEN=128 CPU.
 - Do not reuse the owned shared-DDR address after a host reboot.
 - The default installed runtime is unchanged; candidate libraries are separate.

@@ -1,0 +1,5 @@
+{
+  "runtime-ngl99-four/libnvcuda.so": "9f4e595ede36972c5ac1427d1b231d3fcc70d780fb6430f7baca262e67d0d62f",
+  "runtime-ngl99-four/libhetgpu_cuda_shim.so": "7f875a1841bdf13bbd462383b674e4f11d8c02f1c7b26978d1fe977f138518e3",
+  "/srv/lanxin/qwen35-a3b/bin/qwen-ngl-four": "30c6af263c9b757e97d0e4a060a5f446e3c05d773ec5bc252bf2d5084fd53429"
+}

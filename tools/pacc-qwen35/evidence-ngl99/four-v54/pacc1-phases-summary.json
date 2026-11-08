@@ -1,0 +1,79 @@
+{
+  "command": [
+    "/srv/lanxin/qwen35-a3b/bin/qwen-ngl-four",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "99",
+    "2",
+    "1+1=",
+    "/srv/lanxin/qwen35-a3b/logs/four-ngl99-v54-v1/pacc1-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/ngl99-direct-cpu-reference.json"
+  ],
+  "device": 1,
+  "returncode": 0,
+  "timed_out": false,
+  "sample_ms": 1.0,
+  "max_sample_gap_ms": 6.139750010333955,
+  "recent_event_limit": 768,
+  "complete_submissions": 17408,
+  "incomplete_submissions": {},
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 148345,
+      "p50_us": 9,
+      "p99_us": 15,
+      "max_us": 1502
+    },
+    "input_copy": {
+      "sum_us": 9949708,
+      "p50_us": 692,
+      "p99_us": 922,
+      "max_us": 2455
+    },
+    "compute": {
+      "sum_us": 81576241,
+      "p50_us": 3067,
+      "p99_us": 29755,
+      "max_us": 43748
+    },
+    "output_copy": {
+      "sum_us": 463209,
+      "p50_us": 33,
+      "p99_us": 41,
+      "max_us": 98
+    },
+    "cleanup": {
+      "sum_us": 31642,
+      "p50_us": 2,
+      "p99_us": 4,
+      "max_us": 46
+    },
+    "completion_publish": {
+      "sum_us": 78830,
+      "p50_us": 5,
+      "p99_us": 5,
+      "max_us": 38
+    },
+    "device_before_publish": {
+      "sum_us": 95114187,
+      "p50_us": 3989,
+      "p99_us": 29852,
+      "max_us": 43855
+    }
+  },
+  "capabilities": {},
+  "limitations": [
+    "Double-read stability is not a source-side atomic snapshot guarantee.",
+    "Completion publish excludes subsequent diagnostic writes.",
+    "Host/device elapsed differences include dispatch and polling, not IRQ alone."
+  ],
+  "expected_submissions": null,
+  "expected_count_matches": false,
+  "build_matches": true,
+  "capture_valid": true,
+  "observed_index_gap_count": 0,
+  "submission_build_counts": {
+    "0x20036": 17408
+  },
+  "raw_sha256": "3501f0406948bd091461b0bf5fa02e499a9be7a25a11b7777186c345e70ed6fc",
+  "raw_path": "/srv/lanxin/qwen35-a3b/logs/four-ngl99-v54-v1/pacc1-phases.json"
+}

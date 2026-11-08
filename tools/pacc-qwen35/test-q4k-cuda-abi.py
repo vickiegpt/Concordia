@@ -7,6 +7,7 @@ import runpy
 import struct
 
 ref=runpy.run_path(str(Path(__file__).with_name('test-q4k-xm.py')))
+ref['main']()
 qtype=ref['qtype'];block_bytes=ref['block_bytes'];small=qtype==5 or os.environ.get('QK_TEST_SMALL')=='1'
 lib=c.CDLL(os.environ['CONCORDIA_RELEASE']+'/libnvcuda.so');P=c.c_void_p;U=c.c_uint64
 def call(name,types,*args):
