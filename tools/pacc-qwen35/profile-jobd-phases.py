@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--sample-ms", type=float, default=5)
     parser.add_argument("--expected-submissions", type=int)
     parser.add_argument("--require-build", type=lambda value: int(value, 0))
+    parser.add_argument("--device", type=int, choices=range(4), default=0)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if not 0.5 <= args.sample_ms <= 100:
@@ -46,18 +47,22 @@ def main():
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         parser.error("a benchmark command is required")
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt(f"signal {signum}")
+    signal.signal(signal.SIGTERM, interrupted)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open("/dev/hetgpu_sifive_mbox_ddr_coh0", os.O_RDONLY)
+    fd = os.open(f"/dev/hetgpu_sifive_mbox_ddr_coh{args.device}", os.O_RDONLY)
     base, = struct.unpack("<Q", os.pread(fd, 8, 0x02004000))
     if base != int(os.environ["HETGPU_SIFIVE_SHARED_DDR_BASE"], 0):
         raise SystemExit("shared DDR allocation mismatch")
-    region = mmap.mmap(fd, RING_OFFSET+RING_SIZE, flags=mmap.MAP_SHARED,
+    ring_offset = RING_OFFSET + args.device * 0x2000
+    region = mmap.mmap(fd, ring_offset+RING_SIZE, flags=mmap.MAP_SHARED,
                        prot=mmap.PROT_READ)
 
     def sample():
-        a = region[RING_OFFSET:RING_OFFSET+RING_SIZE]
-        b = region[RING_OFFSET:RING_OFFSET+RING_SIZE]
+        a = region[ring_offset:ring_offset+RING_SIZE]
+        b = region[ring_offset:ring_offset+RING_SIZE]
         for offset in range(0, RING_SIZE, EVENT.size):
             raw = a[offset:offset+EVENT.size]
             if raw != b[offset:offset+EVENT.size]:
@@ -114,7 +119,11 @@ def main():
         finally:
             if child.poll() is None:
                 os.killpg(child.pid, signal.SIGTERM)
-                child.wait()
+                try:
+                    child.wait(5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.wait()
             region.close()
             os.close(fd)
             if gc_was_enabled:
@@ -144,7 +153,7 @@ def main():
                             "p99_us": percentile(values, .99), "max_us": max(values)}
     indices = sorted(set(record["index"] for record in records))
     gaps = [(a, b) for a, b in zip(indices, indices[1:]) if b != a+1]
-    result = dict(command=command, returncode=child.returncode, timed_out=timed_out,
+    result = dict(command=command, device=args.device, returncode=child.returncode, timed_out=timed_out,
                   sample_ms=args.sample_ms,
                   max_sample_gap_ms=max_sample_gap*1000,
                   recent_event_limit=seen_limit,

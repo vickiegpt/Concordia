@@ -114,7 +114,10 @@ pub(super) unsafe fn launch(
                 }
             }
         }
-        let tile_rows = ((2 * 1024 * 1024 - 65536) / ((3 * n + 4) * 4)).min(1024);
+        let tile_rows = (sifive_runtime_sys::kernel_payload_capacity().checked_sub(65536)? / ((3 * n + 4) * 4)).min(1024);
+        if tile_rows == 0 {
+            return None;
+        }
         for row0 in (0..rows).step_by(tile_rows) {
             let r = (rows - row0).min(tile_rows);
             let mut input = vec![0f32; r * (2 * n + 4)];

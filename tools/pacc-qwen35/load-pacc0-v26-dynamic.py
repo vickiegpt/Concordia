@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""One-boot PACC0 experiment through the vendor driver, never raw MMIO."""
+"""One-boot, per-device experiment through the vendor driver, never raw MMIO."""
 import argparse
 import hashlib
+import fcntl
 import os
 from pathlib import Path
 import re
@@ -41,7 +42,14 @@ IMAGES = {
     "v51_completion_owner": "676ac581327b0afa0cbfbbdcf51be5ad24fccdd84d59ac97f5ec65d36d32d626",
     "v52_persistent_diag": "125b1632ef94ea919f1b69dc182e76bcf205be0a0516efb3b87564bfc1d3a95f",
     "v53_bounded_elf": "b6e1b133a71c34820c55250a6cab341a0de9ec4c784980791606061e4adf9129",
+    "v54_owned_slots": "aeae60a8842ad62c6cee316227b9d0ad840a14c4c2b59b58532e5567aefc4323",
 }
+FOUR_IMAGES = [
+    IMAGES["v54_owned_slots"],
+    "2456ed78bc86512ca5f00e8e6b34205fa1e795e1e70037434dd038f42dfe9433",
+    "14cf909ff0505615b7b62cdec05cfbb1b2896da94cf6e5e20f057688d7bc8542",
+    "0ddcb56451ccd3fe3a237ebc83337ae547c72bcf1d2767a5cd4456b91923d2aa",
+]
 
 
 def require(test, message):
@@ -53,8 +61,15 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def main(apply, version):
+def main(apply, version, device=0):
     require(os.geteuid() == 0, "root required for EFI and client checks")
+    require(0 <= device < 4 and (device == 0 or version == "v54_owned_slots"),
+            "only ownership-qualified images may run on PACC1/2/3")
+    if device != 0:
+        require(digest(Path("/lib/modules/6.18.3+/extra/pacc.ko")) ==
+                "5152d12fb10bcb03484a5b51fea5254f87d1dddc3f5b4c4c154a9b5c9c166cc2" and
+                Path("/sys/module/pacc/srcversion").read_text().strip() == "4A5DBFEE5CE6CA5CCA36263",
+                "vendor driver differs from per-device reset/load audit")
     subprocess.run(["python3", str(ROOT / "bin/pacc-preflight.py")], check=True)
     require(Path("/proc/sys/kernel/random/boot_id").read_text().strip() == BOOT,
             "different boot; dynamic addresses must not be reused")
@@ -65,10 +80,11 @@ def main(apply, version):
     require(int((debug / "shared_ddr_base").read_text(), 0) == BASE and
             int((debug / "shared_ddr_size").read_text(), 0) == SIZE,
             "allocation no longer matches the image")
-    image = ROOT / f"firmware/lx500_pacc_qwen35_pacc0_{version}.bin"
+    image = ROOT / f"firmware/lx500_pacc_qwen35_pacc{device}_{version}.bin"
     backup = ROOT / "firmware/lx500_pacc.vendor-backup.bin"
     canonical = Path("/lib/firmware/lanxin/lx500_pacc.bin")
-    require(digest(image) == IMAGES[version], "test image changed")
+    expected = FOUR_IMAGES[device] if version == "v54_owned_slots" else IMAGES[version]
+    require(digest(image) == expected, "test image changed")
     require(digest(backup) == VENDOR and digest(canonical) == VENDOR,
             "vendor image or current canonical image changed")
     efidir = Path("/sys/firmware/efi/efivars")
@@ -80,34 +96,38 @@ def main(apply, version):
     fwsize = struct.unpack_from("<Q", size_data, 4)[0]
     require(fwbase == 0x20100000000 and fwsize == 0x20000000,
             "vendor fallback layout changed")
-    require(image.stat().st_size <= 0x08000000, "image exceeds PACC0 slot")
-    end = fwbase + 0x08000000
+    require(image.stat().st_size <= 0x08000000, "image exceeds per-PACC slot")
+    # Vendor pacc_probe uses PaccBase + (physical_id << 27), length 128 MiB.
+    start = fwbase + device * 0x08000000
+    end = start + 0x08000000
+    require(end <= fwbase + fwsize, "firmware slot exceeds reserved EFI region")
     reserved = False
     for line in Path("/proc/iomem").read_text().splitlines():
         m = re.match(r"\s*([0-9a-f]+)-([0-9a-f]+) : (.+)", line)
         if not m:
             continue
         lo, hi, kind = int(m[1], 16), int(m[2], 16) + 1, m[3]
-        require(not (kind == "System RAM" and lo < end and hi > fwbase),
+        require(not (kind == "System RAM" and lo < end and hi > start),
                 "firmware slot overlaps host System RAM")
-        reserved |= kind == "Reserved" and lo <= fwbase and hi >= end
+        reserved |= kind == "Reserved" and lo <= start and hi >= end
     require(reserved, "firmware slot not fully reserved")
-    clients = subprocess.run(["fuser", "/dev/pacc0"])
+    clients = subprocess.run(["fuser", f"/dev/pacc{device}"])
     require(clients.returncode == 1, "device busy or fuser check failed")
     driver = Path("/sys/bus/platform/drivers/pacc")
-    require((driver / "PACC0001:00").is_symlink(), "PACC0 not bound")
-    print(f"CHECKED firmware_slot=0x{fwbase:x}+0x8000000 owned_ddr=0x{BASE:x}+0x{SIZE:x}", flush=True)
+    target = f"PACC0001:0{device}"
+    require((driver / target).is_symlink(), "target PACC not bound")
+    print(f"CHECKED pacc={device} firmware_slot=0x{start:x}+0x8000000 owned_ddr=0x{BASE:x}+0x{SIZE:x}", flush=True)
     if not apply:
         print("DRY RUN: no firmware, driver or device writes")
         return
     # Hold a reference so the backing allocation cannot be unloaded mid-load.
-    fd = os.open("/dev/hetgpu_sifive_mbox_ddr_coh0", os.O_RDWR)
+    fd = os.open(f"/dev/hetgpu_sifive_mbox_ddr_coh{device}", os.O_RDWR)
     try:
         shutil.copyfile(image, canonical)
-        print("unbind PACC0 via vendor SBI reset", flush=True)
-        (driver / "unbind").write_text("PACC0001:00")
-        print("bind PACC0 via vendor firmware loader", flush=True)
-        (driver / "bind").write_text("PACC0001:00")
+        print(f"unbind PACC{device} via vendor SBI reset", flush=True)
+        (driver / "unbind").write_text(target)
+        print(f"bind PACC{device} via vendor firmware loader", flush=True)
+        (driver / "bind").write_text(target)
         print("vendor bind returned; running jobd identity NOT yet verified", flush=True)
     finally:
         shutil.copyfile(backup, canonical)
@@ -120,5 +140,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--version", choices=IMAGES, default="v26_dynamic")
+    parser.add_argument("--device", type=int, choices=range(4), default=0)
     args = parser.parse_args()
-    main(args.apply, args.version)
+    require(os.geteuid() == 0, "root required for EFI and client checks")
+    # Serialize the shared canonical image and exclude a cooperating worker on the target.
+    locks = ROOT / "locks"
+    locks.mkdir(exist_ok=True)
+    owner = ROOT.stat()
+    os.chown(locks, owner.st_uid, owner.st_gid)
+    with open("/run/lock/pacc-firmware-update.lock", "a") as global_lock, \
+         open(locks / f"pacc{args.device}.lock", "a") as device_lock:
+        os.fchown(device_lock.fileno(), owner.st_uid, owner.st_gid)
+        fcntl.flock(global_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(device_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        main(args.apply, args.version, args.device)

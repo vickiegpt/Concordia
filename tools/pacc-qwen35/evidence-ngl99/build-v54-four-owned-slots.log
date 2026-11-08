@@ -1,0 +1,127 @@
+compiler_profile=vlen1024 hot=-O3 -march=rv64gcv_zvl1024b -mrvv-vector-bits=1024 jobd=-O3 -march=rv64gcv_zvl1024b -mrvv-vector-bits=1024 workers=-O3 -march=rv64gcv_zvl1024b -mrvv-vector-bits=1024
+Host VLEN=128: run VLA layout tests only; VLS1024 requires PACC validation
+PASS mode=unit m=17 n=1 k=256 max_abs_error=1.82166696e-05 elapsed_us=62
+PASS mode=unit m=1031 n=2 k=2048 max_abs_error=0.000624079257 elapsed_us=21803
+PASS mode=unit m=3 n=1 k=8192 max_abs_error=0.000831996556 elapsed_us=233
+PASS mode=unit m=1031 n=8 k=2048 max_abs_error=0.000838597771 elapsed_us=71766
+PASS Q8 mode=unit m=33 n=1 k=32 max_abs_error=7.15255737e-07 elapsed_us=28
+PASS Q8 mode=unit m=1031 n=8 k=2048 max_abs_error=0.000284342095 elapsed_us=92815
+PASS Q8 mode=unit m=3 n=3 k=32768 max_abs_error=0.00673043542 elapsed_us=2254
+PASS Q8 mode=unit m=8192 n=2 k=2048 max_abs_error=0.000336939469 elapsed_us=236443
+PASS Q8 XM invalid dots, leaf error, nonfinite scales, bounds, zero and max dot
+PASS XM rejection: seven invalid values, leaf error, invalid shape, valid zero
+PASS RVV payload copy: 648 alignment/length cases, 514 guard-page tails
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x40000000 len=0x2000 min=0x1000 bias=0x3ffff000 fn=0x40000700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x50000000 len=0x2000 min=0x1000 bias=0x4ffff000 fn=0x50000700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x60000000 len=0x2000 min=0x1000 bias=0x5ffff000 fn=0x60000700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x70000000 len=0x2000 min=0x1000 bias=0x6ffff000 fn=0x70000700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84266000 len=0x2000 min=0x1000 bias=0x7fff84265000 fn=0x7fff84266700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84264000 len=0x2000 min=0x1000 bias=0x7fff84263000 fn=0x7fff84264700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84262000 len=0x2000 min=0x1000 bias=0x7fff84261000 fn=0x7fff84262700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84260000 len=0x2000 min=0x1000 bias=0x7fff8425f000 fn=0x7fff84260700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8425e000 len=0x2000 min=0x1000 bias=0x7fff8425d000 fn=0x7fff8425e700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8425c000 len=0x2000 min=0x1000 bias=0x7fff8425b000 fn=0x7fff8425c700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84056000 len=0x2000 min=0x1000 bias=0x7fff84055000 fn=0x7fff84056700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84054000 len=0x2000 min=0x1000 bias=0x7fff84053000 fn=0x7fff84054700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84052000 len=0x2000 min=0x1000 bias=0x7fff84051000 fn=0x7fff84052700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84050000 len=0x2000 min=0x1000 bias=0x7fff8404f000 fn=0x7fff84050700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8404e000 len=0x2000 min=0x1000 bias=0x7fff8404d000 fn=0x7fff8404e700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8404c000 len=0x2000 min=0x1000 bias=0x7fff8404b000 fn=0x7fff8404c700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8404a000 len=0x2000 min=0x1000 bias=0x7fff84049000 fn=0x7fff8404a700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84048000 len=0x2000 min=0x1000 bias=0x7fff84047000 fn=0x7fff84048700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84046000 len=0x2000 min=0x1000 bias=0x7fff84045000 fn=0x7fff84046700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84044000 len=0x2000 min=0x1000 bias=0x7fff84043000 fn=0x7fff84044700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84042000 len=0x2000 min=0x1000 bias=0x7fff84041000 fn=0x7fff84042700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84040000 len=0x2000 min=0x1000 bias=0x7fff8403f000 fn=0x7fff84040700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8403e000 len=0x2000 min=0x1000 bias=0x7fff8403d000 fn=0x7fff8403e700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8403c000 len=0x2000 min=0x1000 bias=0x7fff8403b000 fn=0x7fff8403c700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8403a000 len=0x2000 min=0x1000 bias=0x7fff84039000 fn=0x7fff8403a700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84038000 len=0x2000 min=0x1000 bias=0x7fff84037000 fn=0x7fff84038700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84036000 len=0x2000 min=0x1000 bias=0x7fff84035000 fn=0x7fff84036700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84034000 len=0x2000 min=0x1000 bias=0x7fff84033000 fn=0x7fff84034700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84032000 len=0x2000 min=0x1000 bias=0x7fff84031000 fn=0x7fff84032700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84030000 len=0x2000 min=0x1000 bias=0x7fff8402f000 fn=0x7fff84030700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8402e000 len=0x2000 min=0x1000 bias=0x7fff8402d000 fn=0x7fff8402e700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8402c000 len=0x2000 min=0x1000 bias=0x7fff8402b000 fn=0x7fff8402c700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8402a000 len=0x2000 min=0x1000 bias=0x7fff84029000 fn=0x7fff8402a700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84028000 len=0x2000 min=0x1000 bias=0x7fff84027000 fn=0x7fff84028700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84026000 len=0x2000 min=0x1000 bias=0x7fff84025000 fn=0x7fff84026700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84024000 len=0x2000 min=0x1000 bias=0x7fff84023000 fn=0x7fff84024700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84022000 len=0x2000 min=0x1000 bias=0x7fff84021000 fn=0x7fff84022700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84020000 len=0x2000 min=0x1000 bias=0x7fff8401f000 fn=0x7fff84020700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8401e000 len=0x2000 min=0x1000 bias=0x7fff8401d000 fn=0x7fff8401e700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8401c000 len=0x2000 min=0x1000 bias=0x7fff8401b000 fn=0x7fff8401c700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8401a000 len=0x2000 min=0x1000 bias=0x7fff84019000 fn=0x7fff8401a700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84018000 len=0x2000 min=0x1000 bias=0x7fff84017000 fn=0x7fff84018700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84016000 len=0x2000 min=0x1000 bias=0x7fff84015000 fn=0x7fff84016700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84014000 len=0x2000 min=0x1000 bias=0x7fff84013000 fn=0x7fff84014700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84012000 len=0x2000 min=0x1000 bias=0x7fff84011000 fn=0x7fff84012700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84010000 len=0x2000 min=0x1000 bias=0x7fff8400f000 fn=0x7fff84010700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8400e000 len=0x2000 min=0x1000 bias=0x7fff8400d000 fn=0x7fff8400e700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8400c000 len=0x2000 min=0x1000 bias=0x7fff8400b000 fn=0x7fff8400c700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff8400a000 len=0x2000 min=0x1000 bias=0x7fff84009000 fn=0x7fff8400a700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84008000 len=0x2000 min=0x1000 bias=0x7fff84007000 fn=0x7fff84008700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84006000 len=0x2000 min=0x1000 bias=0x7fff84005000 fn=0x7fff84006700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84004000 len=0x2000 min=0x1000 bias=0x7fff84003000 fn=0x7fff84004700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84002000 len=0x2000 min=0x1000 bias=0x7fff84001000 fn=0x7fff84002700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff84000000 len=0x2000 min=0x1000 bias=0x7fff83fff000 fn=0x7fff84000700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff83ffe000 len=0x2000 min=0x1000 bias=0x7fff83ffd000 fn=0x7fff83ffe700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff83ffc000 len=0x2000 min=0x1000 bias=0x7fff83ffb000 fn=0x7fff83ffc700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff83ffa000 len=0x2000 min=0x1000 bias=0x7fff83ff9000 fn=0x7fff83ffa700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff83ff8000 len=0x2000 min=0x1000 bias=0x7fff83ff7000 fn=0x7fff83ff8700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff83ff6000 len=0x2000 min=0x1000 bias=0x7fff83ff5000 fn=0x7fff83ff6700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff83ff4000 len=0x2000 min=0x1000 bias=0x7fff83ff3000 fn=0x7fff83ff4700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff83ff2000 len=0x2000 min=0x1000 bias=0x7fff83ff1000 fn=0x7fff83ff2700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff83ff0000 len=0x2000 min=0x1000 bias=0x7fff83fef000 fn=0x7fff83ff0700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff83fee000 len=0x2000 min=0x1000 bias=0x7fff83fed000 fn=0x7fff83fee700 set_launch=(nil)
+hetgpu_pacc_jobd: direct ELF mapped symbol=cache_test base=0x7fff83fec000 len=0x2000 min=0x1000 bias=0x7fff83feb000 fn=0x7fff83fec700 set_launch=(nil)
+PASS ELF cache: 10000 hits, mutable/BSS restoration, byte identity, bounded exhaustion
+hetgpu_pacc_jobd: no validated PACC id; refusing implicit pacc0 ownership
+hetgpu_pacc_jobd: invalid pacc id 4 from HETGPU_PACC_ID; expected 0..3
+hetgpu_pacc_jobd: pacc id 0 from HETGPU_PACC_ID
+hetgpu_pacc_jobd: pacc id 1 from HETGPU_PACC_ID
+hetgpu_pacc_jobd: pacc id 2 from HETGPU_PACC_ID
+hetgpu_pacc_jobd: pacc id 3 from HETGPU_PACC_ID
+PASS four-device marker ownership, explicit identity, diagnostic region non-overlap
+/usr/bin/ld: /tmp/hetgpu_pacc_jobd-077786.o: in function `load_kernel_image':
+hetgpu_pacc_jobd.c:(.text+0x20ffc): warning: Using 'dlopen' in statically linked applications requires at runtime the shared libraries from the glibc version used for linking
+patched outer:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched outer:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched outer:etc/skel/.bashrc: 145 bytes into 410-byte slot
+patched inner:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched inner:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched inner:etc/skel/.bashrc: 145 bytes into 410-byte slot
+wrote firmware/lx500_pacc_qwen35_pacc0_v54_owned_slots_raw.bin (31716408 bytes)
+{"fdt_offset": 126976, "fdt_size": 14213, "changed_offsets": [128109, 128110, 128119, 128120, 128130, 128131, 128142, 128143, 128154, 128155, 128793, 128794, 128803, 128804, 128814, 128815, 128826, 128827, 128838, 128839, 130129, 130130, 130139, 130140, 130150, 130151, 130162, 130163, 130174, 130175, 130813, 130814, 130823, 130824, 130834, 130835, 130846, 130847, 130858, 130859, 132149, 132150, 132159, 132160, 132170, 132171, 132182, 132183, 132194, 132195, 132833, 132834, 132843, 132844, 132854, 132855, 132866, 132867, 132878, 132879, 134169, 134170, 134179, 134180, 134190, 134191, 134202, 134203, 134214, 134215, 134853, 134854, 134863, 134864, 134874, 134875, 134886, 134887, 134898, 134899], "source_sha256": "f167534b43b41fe90c9b97c940a3a43e38a8cc85756e0b68373f9737c217784b", "output_sha256": "aeae60a8842ad62c6cee316227b9d0ad840a14c4c2b59b58532e5567aefc4323"}
+aeae60a8842ad62c6cee316227b9d0ad840a14c4c2b59b58532e5567aefc4323  firmware/lx500_pacc_qwen35_pacc0_v54_owned_slots.bin
+780e8578a3f064b2ec0c4104426658a2f90c6d1762258ff2dc7a323c883ceeb6  bin/hetgpu_pacc_jobd.c
+patched outer:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched outer:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched outer:etc/skel/.bashrc: 145 bytes into 410-byte slot
+patched inner:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched inner:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched inner:etc/skel/.bashrc: 145 bytes into 410-byte slot
+wrote firmware/lx500_pacc_qwen35_pacc1_v54_owned_slots_raw.bin (31716408 bytes)
+{"fdt_offset": 126976, "fdt_size": 14213, "changed_offsets": [128109, 128110, 128119, 128120, 128130, 128131, 128142, 128143, 128154, 128155, 128793, 128794, 128803, 128804, 128814, 128815, 128826, 128827, 128838, 128839, 130129, 130130, 130139, 130140, 130150, 130151, 130162, 130163, 130174, 130175, 130813, 130814, 130823, 130824, 130834, 130835, 130846, 130847, 130858, 130859, 132149, 132150, 132159, 132160, 132170, 132171, 132182, 132183, 132194, 132195, 132833, 132834, 132843, 132844, 132854, 132855, 132866, 132867, 132878, 132879, 134169, 134170, 134179, 134180, 134190, 134191, 134202, 134203, 134214, 134215, 134853, 134854, 134863, 134864, 134874, 134875, 134886, 134887, 134898, 134899], "source_sha256": "031e4e8ef47cbf1d6de6b24f289ab8f0bfbf67bbed50fcd419b41e6ed6ef3cff", "output_sha256": "2456ed78bc86512ca5f00e8e6b34205fa1e795e1e70037434dd038f42dfe9433"}
+2456ed78bc86512ca5f00e8e6b34205fa1e795e1e70037434dd038f42dfe9433  firmware/lx500_pacc_qwen35_pacc1_v54_owned_slots.bin
+780e8578a3f064b2ec0c4104426658a2f90c6d1762258ff2dc7a323c883ceeb6  bin/hetgpu_pacc_jobd.c
+patched outer:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched outer:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched outer:etc/skel/.bashrc: 145 bytes into 410-byte slot
+patched inner:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched inner:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched inner:etc/skel/.bashrc: 145 bytes into 410-byte slot
+wrote firmware/lx500_pacc_qwen35_pacc2_v54_owned_slots_raw.bin (31716408 bytes)
+{"fdt_offset": 126976, "fdt_size": 14213, "changed_offsets": [128109, 128110, 128119, 128120, 128130, 128131, 128142, 128143, 128154, 128155, 128793, 128794, 128803, 128804, 128814, 128815, 128826, 128827, 128838, 128839, 130129, 130130, 130139, 130140, 130150, 130151, 130162, 130163, 130174, 130175, 130813, 130814, 130823, 130824, 130834, 130835, 130846, 130847, 130858, 130859, 132149, 132150, 132159, 132160, 132170, 132171, 132182, 132183, 132194, 132195, 132833, 132834, 132843, 132844, 132854, 132855, 132866, 132867, 132878, 132879, 134169, 134170, 134179, 134180, 134190, 134191, 134202, 134203, 134214, 134215, 134853, 134854, 134863, 134864, 134874, 134875, 134886, 134887, 134898, 134899], "source_sha256": "2b2c6ec56714d410f66b810fe81ce2805306ebe922b2859b447953842b4786bd", "output_sha256": "14cf909ff0505615b7b62cdec05cfbb1b2896da94cf6e5e20f057688d7bc8542"}
+14cf909ff0505615b7b62cdec05cfbb1b2896da94cf6e5e20f057688d7bc8542  firmware/lx500_pacc_qwen35_pacc2_v54_owned_slots.bin
+780e8578a3f064b2ec0c4104426658a2f90c6d1762258ff2dc7a323c883ceeb6  bin/hetgpu_pacc_jobd.c
+patched outer:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched outer:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched outer:etc/skel/.bashrc: 145 bytes into 410-byte slot
+patched inner:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched inner:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched inner:etc/skel/.bashrc: 145 bytes into 410-byte slot
+wrote firmware/lx500_pacc_qwen35_pacc3_v54_owned_slots_raw.bin (31716408 bytes)
+{"fdt_offset": 126976, "fdt_size": 14213, "changed_offsets": [128109, 128110, 128119, 128120, 128130, 128131, 128142, 128143, 128154, 128155, 128793, 128794, 128803, 128804, 128814, 128815, 128826, 128827, 128838, 128839, 130129, 130130, 130139, 130140, 130150, 130151, 130162, 130163, 130174, 130175, 130813, 130814, 130823, 130824, 130834, 130835, 130846, 130847, 130858, 130859, 132149, 132150, 132159, 132160, 132170, 132171, 132182, 132183, 132194, 132195, 132833, 132834, 132843, 132844, 132854, 132855, 132866, 132867, 132878, 132879, 134169, 134170, 134179, 134180, 134190, 134191, 134202, 134203, 134214, 134215, 134853, 134854, 134863, 134864, 134874, 134875, 134886, 134887, 134898, 134899], "source_sha256": "099042b9b1840db529d12c2d87cc908637eb7f9c7d3730f031144ffd8183c2cf", "output_sha256": "0ddcb56451ccd3fe3a237ebc83337ae547c72bcf1d2767a5cd4456b91923d2aa"}
+0ddcb56451ccd3fe3a237ebc83337ae547c72bcf1d2767a5cd4456b91923d2aa  firmware/lx500_pacc_qwen35_pacc3_v54_owned_slots.bin
+780e8578a3f064b2ec0c4104426658a2f90c6d1762258ff2dc7a323c883ceeb6  bin/hetgpu_pacc_jobd.c

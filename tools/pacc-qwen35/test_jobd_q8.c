@@ -10,7 +10,13 @@ static uint8_t random_byte(void) {
 }
 
 int main(int argc, char **argv) {
-    bool hardware = argc == 2 && !strcmp(argv[1], "--hardware");
+    bool hardware = (argc == 2 || argc == 3) && !strcmp(argv[1], "--hardware");
+    int device = 0;
+    if (argc == 3) {
+        if (!hardware || strlen(argv[2]) != 1 || argv[2][0] < '0' || argv[2][0] > '3') return 2;
+        device = argv[2][0] - '0';
+    }
+    if (argc > 1 && !hardware) return 2;
     void *ggml = dlopen("/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so", RTLD_NOW);
     assert(ggml);
     void (*dequant)(const void *, float *, int64_t) = dlsym(ggml, "dequantize_row_q8_0");
@@ -56,7 +62,7 @@ int main(int argc, char **argv) {
         job.stride_row=sx; job.stride_col_y2=sy; job.stride_col_dst=sd;
         job.x_bytes=m*sx; job.y_bytes=n*sy; job.dst_bytes=n*sd*4;
         uint64_t start=monotonic_us();
-        int rc=hardware ? submit(0,x,y,out,m,n,k,sx,sy,sd) : run_q8_0_q8_1(&job,x,y,out);
+        int rc=hardware ? submit(device,x,y,out,m,n,k,sx,sy,sd) : run_q8_0_q8_1(&job,x,y,out);
         if (rc) { fprintf(stderr,"FAIL Q8 submit rc=%d\n",rc); return 1; }
         double worst=0;
         for (unsigned row=0; row<m; ++row) {

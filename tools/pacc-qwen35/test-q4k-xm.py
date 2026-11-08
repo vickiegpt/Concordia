@@ -58,11 +58,24 @@ def reference(x,y,m,n,nb,gate):
             result.append(totals[0]*(totals[1]/(1+math.exp(-totals[1]))) if gate else totals[0])
     return result
 
-for m,n,nb,gate in [(3,1,1,0),(32,4,2,0),(7,3,3,1),(32,1,8,1),(129,3,2,1),(384 if qtype==8 else 512,1,8,1)]:
-    x,y=generate(m,n,nb,gate);ref=reference(x,y,m,n,nb,gate)
-    out=(c.c_float*(m*n+8))(*([math.nan]*(m*n)+[12345.]*8))
-    assert fn(0,c.c_char_p(x),c.c_char_p(y),out,m,n,nb,gate)==0,(m,n,nb,gate)
-    err=max(abs(out[i]-v) for i,v in enumerate(ref))
-    assert all(math.isfinite(out[i]) and abs(out[i]-v)<5e-5+5e-5*abs(v) for i,v in enumerate(ref)),(m,n,nb,gate,err,list(out)[:8],ref[:8])
-    assert list(out)[m*n:]==[12345.]*8
-    print(f'PASS Q{qtype}_K XM m={m} n={n} k={nb*256} gate={gate} max_abs_error={err:.9g}',flush=True)
+def main():
+    for m,n,nb,gate in [(3,1,1,0),(32,4,2,0),(7,3,3,1),(32,1,8,1),(129,3,2,1),(384 if qtype==8 else 512,1,8,1)]:
+        x,y=generate(m,n,nb,gate);ref=reference(x,y,m,n,nb,gate)
+        out=(c.c_float*(m*n+8))(*([math.nan]*(m*n)+[12345.]*8))
+        rc=fn(0,c.c_char_p(x),c.c_char_p(y),out,m,n,nb,gate)
+        # This raw API submits one tile. CUDA ABI tests exercise automatic tiling.
+        slot=int(os.environ.get('HETGPU_SIFIVE_KERNEL_SLOT_BYTES',str(2*1024*1024)),0)
+        oversize=len(x)+len(y)+(m*n+4+2*m)*4 > slot-65536
+        if oversize:
+            assert rc != 0 and all(math.isnan(v) for v in out[:m*n])
+            assert list(out)[m*n:]==[12345.]*8
+            print(f'PASS Q{qtype}_K raw oversize rejected m={m} k={nb*256}',flush=True)
+            continue
+        assert rc==0,(m,n,nb,gate,rc)
+        err=max(abs(out[i]-v) for i,v in enumerate(ref))
+        assert all(math.isfinite(out[i]) and abs(out[i]-v)<5e-5+5e-5*abs(v) for i,v in enumerate(ref)),(m,n,nb,gate,err,list(out)[:8],ref[:8])
+        assert list(out)[m*n:]==[12345.]*8
+        print(f'PASS Q{qtype}_K XM m={m} n={n} k={nb*256} gate={gate} max_abs_error={err:.9g}',flush=True)
+
+if __name__ == '__main__':
+    main()

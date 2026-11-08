@@ -105,7 +105,7 @@
 #define HETGPU_PACC_DIAG_RING_OFF 0x0000ULL
 #define HETGPU_PACC_DIAG_RING_RECORDS 192U
 #define HETGPU_PACC_DIAG_MAGIC 0x4847505544494147ULL
-#define HETGPU_PACC_RMS_DEBUG_SLOT 9U
+#define HETGPU_PACC_RMS_DEBUG_SLOT 12U
 #define HETGPU_PACC_RMS_DEBUG_RECORD_BYTES 0x100ULL
 #define HETGPU_PACC_RMS_DEBUG_MAGIC 0x48475055524d5344ULL
 #define PACC_DTYPE_INT8 0U
@@ -564,7 +564,7 @@ static uint64_t g_direct_elf_cache_hits;
 static uint64_t g_direct_elf_cache_count;
 static struct pacc_zluda_ddr_info g_ddr_info;
 static uint64_t g_shared_ddr_pacc_base;
-static uint64_t g_pacc_id;
+static uint64_t g_pacc_id = UINT64_MAX;
 static int g_mbox_fd = -1;
 static int g_shared_ddr_data_fd = -1;
 static int g_physical_mem_fd = -1;
@@ -606,7 +606,7 @@ static uint32_t g_preloaded_completion_status;
 static void mirror_host_status(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static void mirror_job_completion(int fd, uint32_t job_id, uint64_t seq,
                                   uint32_t status);
-static bool mirror_boot_marker_all_slots_mbox_mmap(int fd, uint32_t status);
+static bool mirror_boot_marker_owned_slot_mbox_mmap(int fd, uint32_t status);
 static bool mirror_host_status_mbox_mmap(int fd, uint32_t job_id, uint64_t seq, uint32_t status);
 static void mirror_diag_event(int fd, uint32_t job_id, uint64_t seq, uint32_t status, uint32_t aux);
 static void mirror_rmsnorm_debug_record(int fd, const struct RmsNormDebugRecord *record);
@@ -2002,33 +2002,34 @@ static bool set_pacc_id_checked(uint64_t id, const char *source) {
     return true;
 }
 
-static void read_pacc_id_from_mbox(int mbox_fd) {
+static bool read_pacc_id_from_mbox(int mbox_fd) {
     const char *env = getenv("HETGPU_PACC_ID");
     const char *legacy_env = getenv("PACC_JOBD_PACC_ID");
     uint64_t parsed_id;
     unsigned long ioctl_id = 0;
 
-    if (parse_u64_checked(env, &parsed_id) &&
-        set_pacc_id_checked(parsed_id, "HETGPU_PACC_ID")) {
-        return;
+    g_pacc_id = UINT64_MAX;
+    if (env && *env) {
+        return parse_u64_checked(env, &parsed_id) &&
+               set_pacc_id_checked(parsed_id, "HETGPU_PACC_ID");
     }
-    if (parse_u64_checked(legacy_env, &parsed_id) &&
-        set_pacc_id_checked(parsed_id, "PACC_JOBD_PACC_ID")) {
-        return;
+    if (legacy_env && *legacy_env) {
+        return parse_u64_checked(legacy_env, &parsed_id) &&
+               set_pacc_id_checked(parsed_id, "PACC_JOBD_PACC_ID");
     }
 
     if (mbox_fd >= 0 && jobd_pacc_id_ioctl_enabled()) {
         if (ioctl(mbox_fd, PACC_IOC_GET_PACC_ID, &ioctl_id) == 0 &&
             set_pacc_id_checked((uint64_t)ioctl_id,
                                 "/dev/mbox PACC_IOC_GET_PACC_ID")) {
-            return;
+            return true;
         }
         trace_msg("pacc id ioctl failed or invalid: errno=%d id=%lu",
                   errno, ioctl_id);
     }
 
-    g_pacc_id = 0;
-    log_msg("pacc id defaulting to pacc0");
+    log_msg("no validated PACC id; refusing implicit pacc0 ownership");
+    return false;
 }
 
 static uint64_t shared_ddr_control_rel(uint64_t pacc_id, uint64_t off) {
@@ -15394,19 +15395,20 @@ static bool arg_slot_fast_peek_direct(uint32_t job_id) {
            header.seq != 0;
 }
 
-static bool mirror_boot_marker_all_slots_mbox_mmap(int fd, uint32_t status) {
+static bool mirror_boot_marker_owned_slot_mbox_mmap(int fd, uint32_t status) {
     const size_t map_len = HETGPU_PACC_COUNT * HETGPU_PACC_CONTROL_BYTES;
     void *base;
 
-    if (fd < 0) {
+    if (fd < 0 || g_pacc_id >= HETGPU_PACC_COUNT) {
         return false;
     }
     base = mmap(NULL, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (base == MAP_FAILED) {
-        trace_msg("boot marker all-slot mmap failed: %s", strerror(errno));
+        trace_msg("boot marker owned-slot mmap failed: %s", strerror(errno));
         return false;
     }
-    for (uint32_t slot = 0; slot < HETGPU_PACC_COUNT; slot++) {
+    {
+        uint32_t slot = (uint32_t)g_pacc_id;
         volatile struct HostStatus *host =
             (volatile struct HostStatus *)((uint8_t *)base +
                                            (uint64_t)slot * HETGPU_PACC_CONTROL_BYTES +
@@ -15418,13 +15420,14 @@ static bool mirror_boot_marker_all_slots_mbox_mmap(int fd, uint32_t status) {
         host->seq = 0;
     }
     jobd_io_fence();
-    jobd_flush_for_device(base, map_len);
+    jobd_flush_for_device((uint8_t *)base + g_pacc_id * HETGPU_PACC_CONTROL_BYTES,
+                          HETGPU_PACC_CONTROL_BYTES);
     if (jobd_msync_enabled()) {
         (void)msync(base, map_len, MS_SYNC);
     }
     jobd_io_fence();
     munmap(base, map_len);
-    trace_msg("boot marker all-slot status=0x%x", status);
+    trace_msg("boot marker owned-slot id=%" PRIu64 " status=0x%x", g_pacc_id, status);
     return true;
 }
 
@@ -15589,7 +15592,8 @@ static void early_devmem_diag_marker(const char *devmem, uint32_t status, uint64
     uint64_t page;
     int fd;
 
-    if (!env_flag_true(getenv("HETGPU_PACC_JOBD_EARLY_DEVMEM_MARKER"))) {
+    if (!env_flag_true(getenv("HETGPU_PACC_JOBD_EARLY_DEVMEM_MARKER")) ||
+        g_pacc_id >= HETGPU_PACC_COUNT) {
         return;
     }
 
@@ -15610,7 +15614,8 @@ static void early_devmem_diag_marker(const char *devmem, uint32_t status, uint64
         return;
     }
 
-    for (uint32_t slot = 0; slot < HETGPU_PACC_COUNT; slot++) {
+    {
+        uint32_t slot = (uint32_t)g_pacc_id;
         uint64_t phys = ddr_base + (uint64_t)slot * HETGPU_PACC_CONTROL_BYTES +
                         HETGPU_PACC_COMPLETION_OFF;
         uint64_t map_base = phys & ~(page - 1);
@@ -15620,7 +15625,8 @@ static void early_devmem_diag_marker(const char *devmem, uint32_t status, uint64
         if (map == MAP_FAILED) {
             log_msg("early devmem marker mmap phys=0x%" PRIx64 " failed: %s",
                     phys, strerror(errno));
-            continue;
+            close(fd);
+            return;
         }
 
         volatile struct HostStatus *host =
@@ -15688,6 +15694,10 @@ int main(int argc, char **argv) {
     }
     g_shared_ddr_pacc_base = parse_env_u64_default("HETGPU_PACC_SHARED_DDR_PACC_BASE",
                                                  g_ddr_info.ddr_base);
+    if (!read_pacc_id_from_mbox(-1)) {
+        fprintf(stderr, "explicit PACC id required before startup shared-DDR writes\n");
+        return EINVAL;
+    }
     early_devmem_diag_marker(devmem, 0x6d100000u, 1);
     if (jobd_xsfmm_gemm_requested()) {
         int xsfmm_init = jobd_enable_xsfmm_context();
@@ -15720,7 +15730,7 @@ int main(int argc, char **argv) {
     wait_for_initial_control(mbox_fd);
 
     read_shared_ddr_info_from_mbox(mbox_fd);
-    read_pacc_id_from_mbox(mbox_fd);
+    if (!read_pacc_id_from_mbox(mbox_fd)) return EINVAL;
     g_shared_ddr_pacc_base =
         parse_env_u64_default("HETGPU_PACC_SHARED_DDR_PACC_BASE",
                               g_ddr_info.ddr_base ? g_ddr_info.ddr_base : 0x80000000ULL);
@@ -15757,9 +15767,9 @@ int main(int argc, char **argv) {
     }
     int boot_status_fd = g_shared_ddr_data_fd >= 0 ? g_shared_ddr_data_fd : mbox_fd;
     if (jobd_boot_marker_enabled()) {
-        if (!mirror_boot_marker_all_slots_mbox_mmap(boot_status_fd, 0x6a010000u) &&
+        if (!mirror_boot_marker_owned_slot_mbox_mmap(boot_status_fd, 0x6a010000u) &&
             jobd_mbox_status_mmap_enabled()) {
-            mirror_boot_marker_all_slots_mbox_mmap(mbox_fd, 0x6a010000u);
+            mirror_boot_marker_owned_slot_mbox_mmap(mbox_fd, 0x6a010000u);
         }
     }
     if (jobd_boot_marker_enabled()) {
@@ -15862,9 +15872,9 @@ int main(int argc, char **argv) {
     run_xsfmm_smoke_if_requested();
     early_devmem_diag_marker(devmem, 0x6d170000u | ((uint32_t)g_pacc_id << 8), 8);
     if (jobd_boot_marker_enabled()) {
-        if (!mirror_boot_marker_all_slots_mbox_mmap(map_fd, 0x6a020000u) &&
+        if (!mirror_boot_marker_owned_slot_mbox_mmap(map_fd, 0x6a020000u) &&
             jobd_mbox_status_mmap_enabled()) {
-            mirror_boot_marker_all_slots_mbox_mmap(mbox_fd, 0x6a020000u);
+            mirror_boot_marker_owned_slot_mbox_mmap(mbox_fd, 0x6a020000u);
         }
         mirror_host_status(map_fd, PACC_KERNEL_JOB_ID, 0, 0x6a21);
     }

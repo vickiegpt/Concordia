@@ -1,0 +1,7 @@
+hetgpu_pacc_jobd: no validated PACC id; refusing implicit pacc0 ownership
+hetgpu_pacc_jobd: invalid pacc id 4 from HETGPU_PACC_ID; expected 0..3
+hetgpu_pacc_jobd: pacc id 0 from HETGPU_PACC_ID
+hetgpu_pacc_jobd: pacc id 1 from HETGPU_PACC_ID
+hetgpu_pacc_jobd: pacc id 2 from HETGPU_PACC_ID
+hetgpu_pacc_jobd: pacc id 3 from HETGPU_PACC_ID
+PASS four-device marker ownership, explicit identity, diagnostic region non-overlap

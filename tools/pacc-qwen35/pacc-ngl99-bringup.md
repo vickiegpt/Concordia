@@ -9,8 +9,15 @@ claim that all model weights reside in PACC RAM. Host-side quantization and
 existing pointwise shims remain. GDN, softmax and top-k run on the PACC core;
 quantized integer matrix dots use XM. No host matrix fallback is enabled.
 
-**End-to-end gate: FAILED numerical validation.** The clean-release two-token
-run for raw prompt `1+1=` completed but produced `[17, 1046]` (`2 gr`), versus
+**Current end-to-end gate: two-token correctness smoke PASSED.** The corrected
+gather runtime with v53 firmware generates `[17, 220]` (`2 `), matching the CPU
+reference for raw prompt `1+1=`. Prefill took 1109742.836 ms, one decode step took
+269051.840 ms, and the measured request window was 1378.804553 s. This yields
+0.0014505319 output tokens/s including prefill, excluding model load. The single
+decode interval is 0.00371676 tokens/s, not sustained decode throughput. No host
+matrix fallback was enabled. Four-card qualification is recorded separately below.
+
+The previous clean-release two-token run completed but produced `[17, 1046]` (`2 gr`), versus
 the CPU reference `[17, 220]` (`2 `). All logits were finite. Prefill took
 1187607.727 ms and the following decode took 265996.446 ms; these are failed-run
 diagnostic timings, not a valid throughput result. `aggregate_output_tps` is null.
@@ -42,9 +49,14 @@ fallback or an XM speedup.
 
 `test-getrows-vector-abi.py` reproduces the old failure, then passes scalar,
 vector, 524288-float state, guard preservation, negative-index and short-buffer
-checks with the repaired library. Full-model post-fix generation is not yet
-qualified. The single-token layer-31 residual comparison also amplifies small
+checks with the repaired library. The full-model post-fix two-token run passes;
+longer generation and varied prompts remain unqualified. The single-token
+layer-31 residual comparison also amplifies small
 upstream differences; that threshold crossing alone is not proof of another bug.
+
+Post-fix hardware traces show all-zero initial states in layers 0/1/2 and five
+byte-identical state-carry pairs across consecutive input tokens. The copy-only
+checker is `check-recurrent-trace.py`; its success is not a full-model TPS claim.
 
 ## Repairs
 
@@ -107,7 +119,7 @@ use `run-ngl99-direct.sh UNIQUE_PREFIX 0x20035`. It still computes all prompt an
 decode steps, checks every output logit is finite, and compares generated text
 and token IDs with an actual CPU run. Its default is two output tokens.
 
-## Four-device readiness audit
+## Initial four-device readiness audit
 
 Read-only inspection found all four `/dev/paccN` and helper nodes present and
 bound. However, all four helpers report the same base, `0x2075d000000`, with one
@@ -131,6 +143,48 @@ Do not enable four simultaneous clients with the current single-slot settings:
 For aggregate throughput, qualify independent requests on four isolated device
 queues first, then evaluate expert or tensor parallelism. No four-card TPS or
 linear speedup has been measured. This audit did not reset or program PACC1/2/3.
+
+### Ownership-qualified v54 deployment
+
+v54 `owned_slots` / build `0x20036` now requires an explicit valid device id
+before startup writes. Both startup marker paths write only that id's completion
+record. Per-device diagnostic rings remain in slots 8..11; RMS debug moves to
+slot 12. A host mmap/canary test verifies all four ownership cases and rejects
+missing/invalid ids. All four id-specific firmware images were built and loaded
+through the audited vendor driver. Each physical device then passed four Q8 XM
+shapes, with matching build `0x20036`, complete diagnostic submissions and no
+observed event gaps. This qualifies the individual matrix paths, not inference.
+
+The partition-aware runtime computes Q4/Q5/Q8 and softmax row tiles from actual
+ELF slot capacity. `run-pacc-isolated.sh` gives physical device N the payload
+range `[0x200000 + N*0x80000, 0x280000 + N*0x80000)`, within the single owned
+4 MiB allocation. A per-worker logical upper bound confines both ELF and
+preloaded GEMM staging. Four independent processes avoid process-local kernel
+mutex serialization. Geometry, oversize rejection and summary-gating tests pass.
+
+The vendor driver audit shows `pacc_probe` computes firmware fallback slots as
+`PaccBase + (id << 27)`, length 128 MiB, and reset passes the selected id to SBI.
+The loader checks boot id, reserved memory, exact firmware SHA, driver SHA and
+srcversion (for nonzero devices), and an idle target before driver unbind/bind.
+It serializes canonical-firmware changes, restores the vendor file in `finally`,
+and never writes raw reset registers. Each target still needs a hardware identity
+and numerical check after loading. Do not treat a successful bind as that check.
+
+Initially nvtop PID 1375297 held all four `/dev/paccN` handles and the loader
+refused the busy device. The user approved ending that monitor; it had already
+exited when checked, so no process was killed. All four targets were idle for
+the subsequent rebinds. The host boot id is unchanged and the canonical vendor
+firmware was restored after every load. No unrelated inference service was stopped.
+
+At 512 KiB per worker, the raw single-tile Q4 API correctly rejects the oversized
+512x2048 fused test. The CUDA ABI path instead splits the same shape and passes
+both unfused and fused expert-indexed numerical checks with output guards intact.
+
+`run-four-pacc-smoke.py` requires four per-device numerical/profile qualification
+JSON files before launching. It leaves TPS null unless all four actual generated
+token sequences match a CPU reference and each profile has the requested firmware
+build and device id. Reported windows use the shared host monotonic clock and
+include cross-worker skew; the short smoke is not sustained large-batch evidence.
 
 ## Remaining boundaries
 

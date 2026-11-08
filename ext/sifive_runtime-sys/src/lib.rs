@@ -13744,10 +13744,15 @@ fn align_down(value: usize, align: usize) -> usize {
     value - (value % align)
 }
 
-fn kernel_submit_slot_layout(
-    dev_id: usize,
-    required_bytes: usize,
-) -> std::io::Result<(u64, usize, usize)> {
+struct KernelSlotGeometry {
+    base_off: u64,
+    slot_bytes: usize,
+    slot_base: usize,
+    active_slot_count: usize,
+    total_slot_count: usize,
+}
+
+fn kernel_submit_slot_geometry(required_bytes: usize) -> std::io::Result<KernelSlotGeometry> {
     let shared_bytes = shared_ddr_bytes();
     let control_reserved = shared_ddr_control_reserved_bytes();
     let usable_bytes = shared_bytes.saturating_sub(control_reserved);
@@ -13836,6 +13841,21 @@ fn kernel_submit_slot_layout(
     } else {
         control_reserved as u64 + (usable_bytes - reserved) as u64
     };
+    Ok(KernelSlotGeometry { base_off, slot_bytes, slot_base, active_slot_count, total_slot_count })
+}
+
+/// Available bytes in one ELF submission slot, without advancing the slot allocator.
+pub fn kernel_payload_capacity() -> usize {
+    kernel_submit_slot_geometry(64).map(|layout| layout.slot_bytes).unwrap_or(0)
+}
+
+fn kernel_submit_slot_layout(
+    dev_id: usize,
+    required_bytes: usize,
+) -> std::io::Result<(u64, usize, usize)> {
+    let KernelSlotGeometry { base_off, slot_bytes, slot_base, active_slot_count, total_slot_count } =
+        kernel_submit_slot_geometry(required_bytes)?;
+    let min_slot_bytes = align_up(required_bytes, 64).max(64);
     let logical_slot_id = next_kernel_submit_slot(active_slot_count, dev_id);
     let slot_id = slot_base
         .checked_add(logical_slot_id)
@@ -14950,6 +14970,52 @@ fn stage_sifive_job_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolated_worker_payload_geometry() {
+        let settings = [
+            ("HETGPU_SIFIVE_SHARED_DDR_BYTES", "0x400000"),
+            ("HETGPU_SIFIVE_SHARED_DDR_PAYLOAD_BASE_OFF", "0x200000"),
+            ("HETGPU_SIFIVE_KERNEL_SLOT_COUNT", "1"),
+            ("HETGPU_SIFIVE_KERNEL_TOTAL_SLOTS", "1"),
+            ("HETGPU_SIFIVE_KERNEL_SLOT_BASE", "0"),
+            ("HETGPU_SIFIVE_KERNEL_SLOT_BYTES", "0x80000"),
+            ("HETGPU_SIFIVE_KERNEL_SLOT_LOW", "0"),
+            ("HETGPU_SIFIVE_SHARED_DEVICE_MEM", "0"),
+        ];
+        struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (key, value) in &self.0 {
+                    unsafe { match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }}
+                }
+            }
+        }
+        let _restore = Restore(settings.iter().map(|(key, _)| (*key, std::env::var_os(key))).collect());
+        for (key, value) in settings { unsafe { std::env::set_var(key, value); } }
+        let mut previous_end = 0x200000;
+        for id in 0..4 {
+            let start = 0x200000 + id * 0x80000;
+            let end = start + 0x80000;
+            unsafe {
+                std::env::set_var("HETGPU_SIFIVE_SHARED_DDR_PAYLOAD_BASE_OFF", start.to_string());
+                std::env::set_var("HETGPU_SIFIVE_SHARED_DDR_BYTES", end.to_string());
+            }
+            let layout = kernel_submit_slot_geometry(0x80000).unwrap();
+            assert_eq!(layout.base_off, start as u64);
+            assert_eq!(layout.slot_bytes, 0x80000);
+            assert_eq!(kernel_payload_capacity(), 0x80000);
+            assert!(kernel_submit_slot_geometry(0x80001).is_err());
+            assert_eq!(start, previous_end);
+            previous_end = end;
+        }
+        assert_eq!(previous_end, 0x400000);
+        unsafe { std::env::set_var("HETGPU_SIFIVE_KERNEL_SLOT_BASE", "1"); }
+        assert_eq!(kernel_payload_capacity(), 0);
+    }
 
     #[test]
     fn test_ioctl_encoding() {

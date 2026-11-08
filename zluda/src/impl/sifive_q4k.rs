@@ -144,7 +144,7 @@ pub(super) unsafe fn launch(
         }
         stage = "device";
         let rowbytes = (k / block_k) * block_bytes;
-        let tile_rows = ((2 * 1024 * 1024 - 65536 - (k / 32) * 36)
+        let tile_rows = (sifive_runtime_sys::kernel_payload_capacity().checked_sub(65536 + (k / 32) * 36)?
             / (rowbytes * if gate != 0 { 2 } else { 1 } + 12))
             .min(512);
         if tile_rows == 0 {

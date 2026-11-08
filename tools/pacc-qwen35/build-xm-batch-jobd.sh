@@ -4,6 +4,14 @@ cd /srv/lanxin/qwen35-a3b
 VERSION=${VERSION:-v46_xm_reduce}
 BUILD_ID=${BUILD_ID:-0x2002e}
 COMPILER_PROFILE=${COMPILER_PROFILE:-baseline}
+read -r -a DEVICES <<< "${PACC_IDS:-0}"
+[[ ${#DEVICES[@]} -gt 0 ]] || exit 2
+declare -A SEEN_DEVICES=()
+for id in "${DEVICES[@]}"; do
+    [[ "$id" =~ ^[0-3]$ && -z ${SEEN_DEVICES[$id]:-} ]] || exit 2
+    SEEN_DEVICES[$id]=1
+    test ! -e "firmware/lx500_pacc_qwen35_pacc${id}_$VERSION.bin"
+done
 HOT_FLAGS=(-O3 -march=rv64gcv)
 JOBD_FLAGS=(-O2)
 WORKER_FLAGS=(-O2)
@@ -25,7 +33,6 @@ case "$COMPILER_PROFILE" in
         ;;
     *) echo "unknown compiler profile: $COMPILER_PROFILE" >&2; exit 2 ;;
 esac
-test ! -e "firmware/lx500_pacc_qwen35_pacc0_$VERSION.bin"
 test ! -e "firmware/hetgpu_pacc_jobd_$VERSION"
 grep -q 'uint32_t result\[12\] = {0}' bin/hetgpu_pacc_jobd.c
 grep -q '0x5330, HETGPU_PACC_XM_BUILD_ID' bin/hetgpu_pacc_jobd.c
@@ -75,6 +82,8 @@ clang-20 -O2 bin/test-payload-copy.c "$TEST_COPY_OBJECT" -o bin/test_payload_cop
 bin/test_payload_copy
 clang-20 -O2 -pthread bin/test_jobd_elf_cache.c -ldl -lm -o bin/test_jobd_elf_cache
 bin/test_jobd_elf_cache
+clang-20 -O2 -pthread bin/test_jobd_device_ownership.c -ldl -lm -o bin/test_jobd_device_ownership
+bin/test_jobd_device_ownership
 clang-20 -march=rv64gc -O2 -c bin/xm-config-probe.c -o firmware/xm-config-probe.o
 clang-20 -march=rv64gcv -O2 -ffp-contract=off -c bin/xm-user-probe.c -o firmware/xm-user-probe.o
 clang-20 -march=rv64gcv -O2 -c bin/xsfmm_native_bf16.c -o firmware/xsfmm_native_bf16.o
@@ -85,14 +94,16 @@ clang-20 "${JOBD_FLAGS[@]}" -static -pthread -DHETGPU_PACC_DIAGNOSTIC_BUILD -DHE
     bin/hetgpu_pacc_jobd.c firmware/q6k-batch-xm.o firmware/q6k-xm-workers.o firmware/xm-user-probe.o \
     firmware/xm-config-probe.o firmware/xsfmm_native_bf16.o firmware/payload-copy-rvv.o -ldl -lm \
     -o "firmware/hetgpu_pacc_jobd_$VERSION"
-PACC_JOBD_PACC_ID=0 PACC_JOBD_KERNEL_THREADS=1 PACC_JOBD_BEACON=1 \
+for id in "${DEVICES[@]}"; do
+PACC_JOBD_PACC_ID="$id" PACC_JOBD_KERNEL_THREADS=1 PACC_JOBD_BEACON=1 \
 PACC_JOBD_FORCE_DEVMEM=1 PACC_JOBD_STATUS_MMAP_FALLBACK=0 \
 PACC_JOBD_EARLY_DEVMEM_MARKER=1 PACC_JOBD_SHARED_DDR_BASE=0x2075d000000 \
 PACC_JOBD_SHARED_DDR_SIZE=0x400000 PACC_JOBD_SHARED_DDR_PACC_BASE= \
     bash pacc-runtime-head/ext/pacc_runtime-sys/patch_lx500_pacc_inplace_jobd.sh \
     firmware/lx500_pacc.vendor-backup.bin "firmware/hetgpu_pacc_jobd_$VERSION" \
-    "firmware/lx500_pacc_qwen35_pacc0_${VERSION}_raw.bin"
-SHA=$(sha256sum "firmware/lx500_pacc_qwen35_pacc0_${VERSION}_raw.bin" | cut -d' ' -f1)
-python3 bin/patch-xm-isa-alias.py "firmware/lx500_pacc_qwen35_pacc0_${VERSION}_raw.bin" \
-    "firmware/lx500_pacc_qwen35_pacc0_$VERSION.bin" --sha256 "$SHA"
-sha256sum "firmware/lx500_pacc_qwen35_pacc0_$VERSION.bin" bin/hetgpu_pacc_jobd.c
+    "firmware/lx500_pacc_qwen35_pacc${id}_${VERSION}_raw.bin"
+SHA=$(sha256sum "firmware/lx500_pacc_qwen35_pacc${id}_${VERSION}_raw.bin" | cut -d' ' -f1)
+python3 bin/patch-xm-isa-alias.py "firmware/lx500_pacc_qwen35_pacc${id}_${VERSION}_raw.bin" \
+    "firmware/lx500_pacc_qwen35_pacc${id}_$VERSION.bin" --sha256 "$SHA"
+sha256sum "firmware/lx500_pacc_qwen35_pacc${id}_$VERSION.bin" bin/hetgpu_pacc_jobd.c
+done

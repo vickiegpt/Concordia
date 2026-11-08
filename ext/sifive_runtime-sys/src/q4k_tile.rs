@@ -79,7 +79,7 @@ pub unsafe fn submit_qk_tile(
     };
     let xbytes = (m * nb * block_bytes * (1 + gate)) as u64;
     let ybytes = (n * nb * 288) as u64;
-    if xbytes + ybytes + (m * n + 4 + 2 * m) as u64 * 4 > 2 * 1024 * 1024 - 65536 {
+    if xbytes + ybytes + (m * n + 4 + 2 * m) as u64 * 4 > kernel_payload_capacity().saturating_sub(65536) as u64 {
         return -1;
     }
     let zeros = vec![0f32; 2 * m as usize];

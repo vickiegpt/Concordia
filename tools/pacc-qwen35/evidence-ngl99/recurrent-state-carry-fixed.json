@@ -1,0 +1,31 @@
+{
+  "initial_zero_layers": [
+    0,
+    1,
+    2
+  ],
+  "byte_identical_carry_pairs": [
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      2
+    ],
+    [
+      1,
+      1
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      2,
+      1
+    ]
+  ],
+  "all_correct": true,
+  "scope": "state copying only; no inference or TPS qualification"
+}

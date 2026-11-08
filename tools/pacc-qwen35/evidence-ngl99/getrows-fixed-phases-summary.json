@@ -1,0 +1,78 @@
+{
+  "command": [
+    "bin/qwen-ngl-trace-next",
+    "models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "99",
+    "2",
+    "1+1=",
+    "logs/ngl99-getrows-v1.json",
+    "logs/ngl99-direct-cpu-reference.json"
+  ],
+  "returncode": 0,
+  "timed_out": false,
+  "sample_ms": 1.0,
+  "max_sample_gap_ms": 6.58720001229085,
+  "recent_event_limit": 768,
+  "complete_submissions": 8720,
+  "incomplete_submissions": {},
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 85995,
+      "p50_us": 12,
+      "p99_us": 18,
+      "max_us": 56
+    },
+    "input_copy": {
+      "sum_us": 9158932,
+      "p50_us": 1311,
+      "p99_us": 3164,
+      "max_us": 5064
+    },
+    "compute": {
+      "sum_us": 81120663,
+      "p50_us": 6606,
+      "p99_us": 95629,
+      "max_us": 171751
+    },
+    "output_copy": {
+      "sum_us": 320149,
+      "p50_us": 51,
+      "p99_us": 53,
+      "max_us": 95
+    },
+    "cleanup": {
+      "sum_us": 13629,
+      "p50_us": 2,
+      "p99_us": 4,
+      "max_us": 30
+    },
+    "completion_publish": {
+      "sum_us": 43383,
+      "p50_us": 5,
+      "p99_us": 7,
+      "max_us": 51
+    },
+    "device_before_publish": {
+      "sum_us": 92163271,
+      "p50_us": 8207,
+      "p99_us": 95737,
+      "max_us": 171860
+    }
+  },
+  "capabilities": {},
+  "limitations": [
+    "Double-read stability is not a source-side atomic snapshot guarantee.",
+    "Completion publish excludes subsequent diagnostic writes.",
+    "Host/device elapsed differences include dispatch and polling, not IRQ alone."
+  ],
+  "expected_submissions": null,
+  "expected_count_matches": false,
+  "build_matches": true,
+  "capture_valid": true,
+  "observed_index_gap_count": 0,
+  "submission_build_counts": {
+    "0x20035": 8720
+  },
+  "raw_sha256": "02b63df153193046da7bc61708b49c0d92dddcc029d37722e9f4444340c92ac7",
+  "raw_path": "/srv/lanxin/qwen35-a3b/logs/phases-ngl99-getrows-v1.json"
+}

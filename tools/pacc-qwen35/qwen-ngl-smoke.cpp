@@ -133,8 +133,10 @@ int main(int argc, char **argv) {
     try {
         int ngl = std::stoi(argv[2]), count = std::stoi(argv[3]);
         if (ngl < 0 || count < 1 || count > 16) throw std::runtime_error("invalid shape");
+        if (std::filesystem::path(argv[1]).filename().string().find("DIAGNOSTIC-") == 0 &&
+            !getenv("QWEN_TRACE_DIR")) throw std::runtime_error("diagnostic model requires trace-only mode");
         std::string prompt = argv[4], text;
-        report = {{"ngl", ngl}, {"prompt", prompt}, {"requested_tokens", count},
+        report = {{"ngl", ngl}, {"model", argv[1]}, {"prompt", prompt}, {"requested_tokens", count},
                   {"batch", 256}, {"ubatch", 1}, {"all_correct", false},
                   {"aggregate_output_tps", nullptr}};
         ggml_backend_load_all();
@@ -176,10 +178,12 @@ int main(int argc, char **argv) {
         sampler = llama_sampler_init_greedy();
         llama_batch batch = llama_batch_get_one(input.data(), input.size());
         auto started = ggml_time_us();
+        report["started_monotonic_us"] = started;
         double prefill_ms = 0, decode_ms = 0;
         json steps = json::array();
         for (int i = 0; i < count; ++i) {
             auto before = ggml_time_us();
+            if (i == 1) report["decode_started_monotonic_us"] = before;
             int decode_status = llama_decode(ctx, batch);
             if (trace.stopped) throw std::runtime_error(trace.error.empty() ? "trace stopped intentionally" : trace.error);
             if (decode_status != 0) throw std::runtime_error("llama_decode failed");
@@ -209,7 +213,9 @@ int main(int argc, char **argv) {
             fflush(stderr);
             batch = llama_batch_get_one(&generated.back(), 1);
         }
-        double wall = (ggml_time_us() - started) / 1000000.;
+        auto finished = ggml_time_us();
+        double wall = (finished - started) / 1000000.;
+        report["finished_monotonic_us"] = finished;
         report.update({{"input_tokens", input}, {"generated_tokens", generated},
                        {"text", text}, {"steps", steps}, {"wall_s", wall},
                        {"prefill_ms", prefill_ms}, {"decode_ms", decode_ms},

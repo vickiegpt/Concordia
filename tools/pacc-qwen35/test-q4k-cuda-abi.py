@@ -20,7 +20,8 @@ def read(p,sz):
 call('cuInit',[c.c_uint],0);ctx=P();call('cuCtxCreate_v2',[c.POINTER(P),c.c_uint,c.c_int],c.byref(ctx),0,0)
 bias_enabled=os.environ.get('QK_TEST_BIAS')=='1'
 for gate in ([1] if qtype==8 and not small and not bias_enabled else [0,1]):
-    m,n,nb,experts=(68 if small else 37),1,2,3
+    m,n,nb,experts=int(os.environ.get('QK_TEST_ROWS',68 if small else 37)),1,int(os.environ.get('QK_TEST_BLOCKS',2)),3
+    assert 1 <= m <= 8192 and 1 <= nb <= 128 and (not small or m % 4 == 0)
     x,y=ref['generate'](m*experts,n,nb,gate);xs=m*nb*block_bytes
     no_ids=qtype==8
     order=[0] if no_ids else [2,0];stride=m+3
