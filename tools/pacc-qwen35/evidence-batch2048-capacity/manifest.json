@@ -1,0 +1,1019 @@
+{
+  "files": {
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-capacity-20261108.json": {
+      "bytes": 822,
+      "sha256": "13fdb82fff27be79ebce79f99f512da16c6d3f4a269939e27d1dc2ee73f81087"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-capacity-seq512-20261108.json": {
+      "bytes": 717,
+      "sha256": "fa3cb066d0c7521b0172e0947ecb7c5b6b443d599d5953ac51c3debd6b903701"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-cpu-allocation-20261108.json": {
+      "bytes": 205,
+      "sha256": "dbe6de218edeef3ddd8adc6139d991ebf552f085281828afba5284dea6dc4ad3"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-cpu-allocation-20261108.log": {
+      "bytes": 115518,
+      "sha256": "478572321339c4a78c97c7f0cca9a0bb05e122903fe4ec0b687d8fa088b4428c"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json": {
+      "bytes": 950,
+      "sha256": "6b3f7b9797bab65439182a37d0681cd9a6dab2a5dbf0543f7051d428a402838e"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.log": {
+      "bytes": 115301,
+      "sha256": "f8bd6c36aa96cb5e09ab7e047316eeea14572320e4995501ac5dda800ba4e033"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/build-seq512-20261108.log": {
+      "bytes": 13804,
+      "sha256": "119b3cc3644ba11195ab43cf68f747a6f535eb1f5e39afb45f678cf77f846898"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker3.json": {
+      "bytes": 235,
+      "sha256": "7042e563d0e23c2d20cd02f502bf848ae8a919336f5214f271cdff7976ace832"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker2.log": {
+      "bytes": 115548,
+      "sha256": "6981ec729fed75a4e47c02f8374913a5d1b709f98276e965bc331af39aded827"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker0.json.ready": {
+      "bytes": 205,
+      "sha256": "72e707111d24f455cd0e6a20fea3101b1aca004e9fbd35582e0c587c12cd05c7"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker1.json.ready": {
+      "bytes": 205,
+      "sha256": "74c9f44c131187e7b2b1e2fd57ed60e3263149e4302b30e0702ba79864f866a4"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker1.log": {
+      "bytes": 115548,
+      "sha256": "57c7964475a185d21b9e1f46c8554688e9e6c87b95fc619c270eceb331a58b2a"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker3.json.ready": {
+      "bytes": 205,
+      "sha256": "bf98ac3497819941dfaac6e3d4e5b92fa0ac923eefd0366185bf424d127a2e8d"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker0.json": {
+      "bytes": 235,
+      "sha256": "6e5e88dd3a1f28742b0503a37d77a274f5e2f530b0219961fe4c4b8b9fd2fa5a"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker1.json": {
+      "bytes": 235,
+      "sha256": "6fc195f25a1043181f208473b61d399f82f1f2911cc8e93c9dfc1b476d797612"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/summary.json": {
+      "bytes": 1309,
+      "sha256": "3ddbc389f2945f8cf75b7748fcbb06f5b0fad2c295094c470cacfc59acc2a304"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker0.log": {
+      "bytes": 115548,
+      "sha256": "28b9b7b94fc4e955cec58ac91247eff8be303b82a89e484600f7fdc90687851b"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker2.json.ready": {
+      "bytes": 205,
+      "sha256": "536809226395b073d1bd7a97f3a8133f378044bba506f389e7c4fea4778f6663"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker3.log": {
+      "bytes": 115548,
+      "sha256": "6111b37dbbc80c8aafaa61aead3a3a978bb7d39059eeb5c653e79dffecd37280"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/batch2048-four-cpu-capacity-20261108/worker2.json": {
+      "bytes": 235,
+      "sha256": "2c6fc347ae804680b36eae7925db1756b56bf1c760b3c2b3fdc4e0534cdf3401"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/CMakeLists.txt": {
+      "bytes": 1924,
+      "sha256": "666aaa7f44777b4abc665aae93c65480fbddd4fa34567706c01ddebf071b977d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-adapter.cpp": {
+      "bytes": 18454,
+      "sha256": "e0abe8c4905db55c5ba4e75012798551e95d93bc5b697cba25d8e3cc86175d3b"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-adapter.h": {
+      "bytes": 2240,
+      "sha256": "b63d8654358d6141fac1f45b1b56247d7c8360e609a55323d30e7dcb6a6ffc00"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-arch.cpp": {
+      "bytes": 76099,
+      "sha256": "55869eb20f651e63478688222199d091ea6446594c4d7567244caeb3354900cc"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-arch.h": {
+      "bytes": 21818,
+      "sha256": "404d6e73de04156ff771dc557cda99c112583d2ddccda3b63ddb159f319fbecf"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-batch.cpp": {
+      "bytes": 31110,
+      "sha256": "484607d92fb08d510727e0c4b01139e27a40137ef03e74e1dbea4aac3965e328"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-batch.h": {
+      "bytes": 6580,
+      "sha256": "7000dfd8750e06c544642dd7b84c882191702ad46ced1a4d6ad109462d1a1013"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-chat.cpp": {
+      "bytes": 41872,
+      "sha256": "0029616465e6d641c1e75a0e0e6e132f3ea6177593735d7f16c89e7edfbbe9a8"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-chat.h": {
+      "bytes": 2275,
+      "sha256": "15d7f3257e01e3f095d79350f969658abfb0f0305a4f9bc734ebfafb067ed80c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-context.cpp": {
+      "bytes": 148815,
+      "sha256": "053bf9298f49c658605df55815839e06ba2a2f2d1ed483e4bf4aace98570e2a8"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-context.h": {
+      "bytes": 12890,
+      "sha256": "7cd1b39819442f1f3c556bec487fdd8d1501967cd1fbe33feea59d5bbc556fc8"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-cparams.cpp": {
+      "bytes": 100,
+      "sha256": "95ab4b7b72851eb381a3d2ff2e9f18731103ba5f9f5f216882a034319e709297"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-cparams.h": {
+      "bytes": 2134,
+      "sha256": "299e7f0d4ce20c10c349d726351d7f504b159b4a6ed090e309295af1ab43bd98"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-ext.h": {
+      "bytes": 5203,
+      "sha256": "da3da8089082cc2872427fffd414802a3d20871df750d7de4917ed28e064caeb"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-grammar.cpp": {
+      "bytes": 56246,
+      "sha256": "a9c76fbfc9bbbc6bd5e07c336420bd87740ff4ff3984ef390d2d80585c02e85d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-grammar.h": {
+      "bytes": 6961,
+      "sha256": "db730e5aff77f96274aba4a43670f036400d89c7ed44b6e98d3ced41c7b9d193"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-graph.cpp": {
+      "bytes": 136651,
+      "sha256": "ce80a29e867312570bb7c022b9b1616f8e09adfc9d6c1f71adfe5d17c9a82e88"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-graph.h": {
+      "bytes": 48208,
+      "sha256": "bdaf4158c1fccfba227edc8a95b521d233178b0885e888b2717416a34621427a"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-hparams.cpp": {
+      "bytes": 8175,
+      "sha256": "403df9d73792519375cadfe3f63af3221207b288d0cbb31ff8b4f3e88220acfb"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-hparams.h": {
+      "bytes": 15392,
+      "sha256": "acd6a6c6b731fed59c9b52a83b341381e2d785d31fd01834b3884b3f0c655fbc"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-impl.cpp": {
+      "bytes": 6131,
+      "sha256": "b01ad5b5ec7b314a73205ff7a7168769d72bb2e200b87bc39c48dcb9dc712ee8"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-impl.h": {
+      "bytes": 3076,
+      "sha256": "c9346ca1cb12c31e838380773eb822b97b4f467ab4ca85fa4e91a8a573d2a502"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-io.cpp": {
+      "bytes": 447,
+      "sha256": "4ed1a8b75a4e82dd765f7b6ca8970bb8a2ae371c56c833af0355231072e70045"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-io.h": {
+      "bytes": 812,
+      "sha256": "d4fab09cdc38af97d2d4b08b55944b25af0d9f0deff11f22daac7876f23c1389"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache-dsa-iswa.cpp": {
+      "bytes": 10702,
+      "sha256": "5130c25e719a546d876496760b3a301b1a2392968072402bc5f97bd42c5b89e7"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache-dsa-iswa.h": {
+      "bytes": 4188,
+      "sha256": "2cc674eccbba95dd0b8008e95c842011f7ed87e29cf65f34c73e0c252444d3b9"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache-dsa.cpp": {
+      "bytes": 8340,
+      "sha256": "85d76ec2cf3f796aaed04557bdccc9fa151b84128046d48ba1017696e7801eef"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache-dsa.h": {
+      "bytes": 4271,
+      "sha256": "169d2bb004e1cbebfafab2b283621a00eaf998f69fbf00172f7855c8d31fa6dd"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache-dsv4.cpp": {
+      "bytes": 77915,
+      "sha256": "b6511a46469c631852c613ca26b76e8b1c87c3498c101e2bc6c0659cd3a43e9c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache-dsv4.h": {
+      "bytes": 14530,
+      "sha256": "edef4ce05dd9169fa15b56ec4fec79d5ab5441ce3ba5bf6c1264e83c5abc41b2"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache-iswa.cpp": {
+      "bytes": 11491,
+      "sha256": "567fe836543e1dd9cdd5b7cb3a91afd049c17c7010f0bddf9fe149b02b5243cb"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache-iswa.h": {
+      "bytes": 4842,
+      "sha256": "b42f1b166b92f1a7eadde2995ac7457c2e6ec845e1a9c72258df1e880c1f2c90"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache-msa.cpp": {
+      "bytes": 12540,
+      "sha256": "eb8001f9dbb87e909b0f24e316d941cfba0bd98e97292fd8fb0014f9ef9491bb"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache-msa.h": {
+      "bytes": 5714,
+      "sha256": "7a5f891f976b5638117feecba216e4f0e87afad75330957e2557b2dd67d956bd"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache.cpp": {
+      "bytes": 86885,
+      "sha256": "611ebc4389ab1a8c8bc5f100246549de03cc3fc0fedd8127a298e5b6f5d59b28"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cache.h": {
+      "bytes": 14549,
+      "sha256": "64d18a4890684113e7e794e3c84dc4f5334ac374d215bdb457ffad61eeabfde5"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-kv-cells.h": {
+      "bytes": 13245,
+      "sha256": "c0a9e9571adcc2521c7cc278cb6da83086afb7d19d10bcf88ce3c83df6ae5545"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-memory-hybrid-iswa.cpp": {
+      "bytes": 10166,
+      "sha256": "74b00eb779e216ac2447784ba1e34950aa8cb168899868e7195a590bc7daf6e3"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-memory-hybrid-iswa.h": {
+      "bytes": 4565,
+      "sha256": "340e3e77765fb7439ef6fa956a67d043452ded15adfc1299cdcf0913ce3ff48f"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-memory-hybrid.cpp": {
+      "bytes": 9539,
+      "sha256": "b2b193c4a412a91b1fe15a3c239d3b2664b5208ff49d6dba244ff8fec0880f92"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-memory-hybrid.h": {
+      "bytes": 4382,
+      "sha256": "45919f9364e401eabb80eafab0e396166f21e92d75eb4d4ef4e52fe6d9b92cd5"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-memory-recurrent.cpp": {
+      "bytes": 42683,
+      "sha256": "0c22ad19fe37bd53d8f66ec5ed1553320a0a3d4a69c38fea26e9931696f83563"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-memory-recurrent.h": {
+      "bytes": 6059,
+      "sha256": "f41a2c8eb8509141c48709ebc1caeb1ba866c128fa442a1ff7c16b868ec58317"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-memory.cpp": {
+      "bytes": 1534,
+      "sha256": "1bf48d324cfa5fa57d5c486ec17ddd12b844fc40ec82d72ba113a3fe76a1f2c6"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-memory.h": {
+      "bytes": 4669,
+      "sha256": "c9ed12cafb89336408a700739a0d985daca1de599c7baa9db8ba62ecbedb1bd3"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-mmap.cpp": {
+      "bytes": 25152,
+      "sha256": "0673e5273594690a1a7b81010b18f158f5b153f502fed161a595c941e8e5808a"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-mmap.h": {
+      "bytes": 1663,
+      "sha256": "778d279d36bdbcf55b22480ebf8a4d16cc78db66780e33234ed08a496a66295d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-model-loader.cpp": {
+      "bytes": 74235,
+      "sha256": "57b011a756890a5659e08139fb17017ae29975dea67b95cd7badf13f90b76eed"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-model-loader.h": {
+      "bytes": 7701,
+      "sha256": "72f5eb5c6f9fefc4b1e5b3f76139f0e868098c335be22df1bfcf978fe6551328"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-model-saver.cpp": {
+      "bytes": 25037,
+      "sha256": "6dec1fc297dca89fb6933b638acf593a2e4c1ca02b69dafe00268651fa9ef96d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-model-saver.h": {
+      "bytes": 1312,
+      "sha256": "c46f2ed984b7e4bf9c0f0229ac6508f9412b0acb8bbb1428f3eb4405de04f8c4"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-model.cpp": {
+      "bytes": 144939,
+      "sha256": "d9cd16dad9ad9cd46d8dc2750ba3365dea995d387a1f770cff3a6d286aef443e"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-model.h": {
+      "bytes": 30500,
+      "sha256": "e6f318f94d3365f66f64270c63b7dbceeec2199d8c4c1f983f40e86aa32a5993"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-quant.cpp": {
+      "bytes": 61317,
+      "sha256": "0a9327d4a87d2047f1399348a9e17cd4c7f3c271c005e174bdf171fc1f7639fc"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-quant.h": {
+      "bytes": 13,
+      "sha256": "b3adf106d95b8934f690943f2921308b90be5b766c4c8ba250c792de56400201"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-sampler.cpp": {
+      "bytes": 151735,
+      "sha256": "ade0e3fee8ae823ee1fe0c527e5c3fbe66189b0201ce42327cd6940f83883026"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-sampler.h": {
+      "bytes": 982,
+      "sha256": "d39c6bfd6c966acde7bfaeb55f08c176b3d9078bc5e8e8de2eee504fc66c258b"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-vocab.cpp": {
+      "bytes": 182463,
+      "sha256": "32b8b7ac4a023bc6367eb7832e56e988ab7373a676ddcca4977665f78932ab88"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama-vocab.h": {
+      "bytes": 7276,
+      "sha256": "864acfeaa8b14c871bc31f9c94e50e26b3a1274219bbb9b99c94263be63af91c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/llama.cpp": {
+      "bytes": 22043,
+      "sha256": "9315db4cc7aad1a926dc7e10cc3483d0b7453e55509ae175562a87a066af296e"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/afmoe.cpp": {
+      "bytes": 12187,
+      "sha256": "2608ce94c618c1e55fa4d125023aa77185b11c470c499f79b8e44bffd4e11482"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/apertus.cpp": {
+      "bytes": 7005,
+      "sha256": "83be4a4a963b317b490d5afb34516cc123144f12d3681f047dcd356cdf788e87"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/arcee.cpp": {
+      "bytes": 5443,
+      "sha256": "609e76077ea905621d34bf40ddf17b21f93c0701d157f6b6a9e2101aeb57fa22"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/arctic.cpp": {
+      "bytes": 6371,
+      "sha256": "d9d7e80642f43434fb0773a601db6261aa30ea6e5edb0342ddb38f4019faf5c3"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/arwkv7.cpp": {
+      "bytes": 9322,
+      "sha256": "eb238d963a98c1efe502057b844351be4f4468a6e674b81d6442f011dbc145b2"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/baichuan.cpp": {
+      "bytes": 5263,
+      "sha256": "c9e07a7480cef7de22c91549e4f2d2c922bfb5af2692efc7245c232f30edc003"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/bailingmoe.cpp": {
+      "bytes": 6903,
+      "sha256": "86c2b90ed183a54576d2da9797bf856420b07a119443157dd05048b14c48c5da"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/bailingmoe2.cpp": {
+      "bytes": 9853,
+      "sha256": "593003f54c320fafbadecf5fc18089c798ad886d1c473a97f3f987e94a14d923"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/bailingmoe3.cpp": {
+      "bytes": 30014,
+      "sha256": "d9a825d45f0caebb5526ff5d4da840603f1a0dd81019a9535123c74f56949825"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/bert.cpp": {
+      "bytes": 10160,
+      "sha256": "50c2529042194398155d5eaf86f55cc8b3373b7d5418e745bd5754df019e7478"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/bitnet.cpp": {
+      "bytes": 6483,
+      "sha256": "739b2deffc85bde340d2b1558de16341563a472ba674ad124aa47fb908d4de29"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/bloom.cpp": {
+      "bytes": 5508,
+      "sha256": "189301af07d631204b5ea3981a969d37f0045e29abbdbeb3cad7de7c9524253d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/chameleon.cpp": {
+      "bytes": 7540,
+      "sha256": "afcd0530ee06aa9681c46b45fea0e37bf991a741d92b2b6702a03ccec3725ae7"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/chatglm.cpp": {
+      "bytes": 5296,
+      "sha256": "638c14e7233b29d4c73d3033f297c2e7788ff9b5711c12fcea2c1347756868b5"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/clip.cpp": {
+      "bytes": 636,
+      "sha256": "d1477e8630074efa73e36ff49984b161b66888cdd2fe83f9192a31b3e84c6c2c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/codeshell.cpp": {
+      "bytes": 5468,
+      "sha256": "398d10c57b6487ded2ff3cf1d57fa73ceb498fbc9c3ef2715a636d6f9534468f"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/cogvlm.cpp": {
+      "bytes": 6341,
+      "sha256": "a97175b03188dd8c441b9d7b3fc36e9a350ea35579debb815ee1f4fd97d394ea"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/cohere2.cpp": {
+      "bytes": 5815,
+      "sha256": "5687b58d9be905f92311f4b5124d8da59d3761c415752c7dc5b383a50a668d88"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/cohere2moe.cpp": {
+      "bytes": 19689,
+      "sha256": "389afbfacc32152dba0340fa602a3dfdc6fe73a4442e0423ab3a1651c7497611"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/command-r.cpp": {
+      "bytes": 5325,
+      "sha256": "19078d4b50872ef99252db495ba77c55fbe9620000500025635e3ed553a59324"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/dbrx.cpp": {
+      "bytes": 5250,
+      "sha256": "90bbd4df16ccea93186ad8a0ba18458250507b6caa67adc57515e7eb01587f7f"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/deci.cpp": {
+      "bytes": 7920,
+      "sha256": "5d1353d31381046e7a8fabd774eaf3097c8553bee314668cf191973335cd97ce"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/deepseek.cpp": {
+      "bytes": 7981,
+      "sha256": "906423a9d5452aacbfd7e23c585423935b2570d33c33457137d1ed3864e7006e"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/deepseek2.cpp": {
+      "bytes": 32435,
+      "sha256": "ca47abbdd28e41646048dc7fc52356d6228804b4ef830fef29d9ed62facd1f30"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/deepseek2ocr.cpp": {
+      "bytes": 4150,
+      "sha256": "580c854d54236872d33b1c0ba91c1ab4207ea9797a1ceb3acbb6e0fe2f5002f4"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/deepseek32.cpp": {
+      "bytes": 35570,
+      "sha256": "ee28310c309a6da2b3133ca0be78bedf61225278b95160d664a9a97de5aed8d3"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/deepseek4.cpp": {
+      "bytes": 64287,
+      "sha256": "e65c1312052dfae40e18df07afb1909b9774e0cb402095d6b082bf837082812f"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/delta-net-base.cpp": {
+      "bytes": 23706,
+      "sha256": "5e3b318953f854b3825dd7cfe4b483ca7935cd5f6680438a3ece4be9b4d5428f"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/dflash.cpp": {
+      "bytes": 33982,
+      "sha256": "f954c0c224a4982ae4b921ea65cc054988ef832eff7da2f8455447fdedba2fae"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/dots1.cpp": {
+      "bytes": 8250,
+      "sha256": "bc4f6646fad8d811c5b0f6f5e691f4cc2f8b44b14c8cd2ac6868314eb797e67b"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/dots3note.cpp": {
+      "bytes": 24717,
+      "sha256": "d94a0275b6049907b7aa85226d5d79dc7ad200714670a92f5c4d576bbebdd3f6"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/dream.cpp": {
+      "bytes": 4951,
+      "sha256": "559bfc539bd59b3d1908735fc955be74c49717447f8553bb4c8a51365a01814b"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/eagle3.cpp": {
+      "bytes": 13966,
+      "sha256": "c16bd4e1e2fd33ed71a53215c2f83b3e40b4810f73ded97367a48d7aed1a4f68"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/ernie4-5-moe.cpp": {
+      "bytes": 5091,
+      "sha256": "601d02b676ee6b740500db8d145a4e043c5036209d087022e37027edd1f69777"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/ernie4-5.cpp": {
+      "bytes": 6933,
+      "sha256": "ce007829dad450e9e6fdb85e44c418a1b523f09c446dbff225a200c164757e9d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/eurobert.cpp": {
+      "bytes": 4167,
+      "sha256": "f293a0cff2cc5b3b427545c0dc0c16c1ba63d813452551e03ce7bd34b718d6cb"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/exaone-moe.cpp": {
+      "bytes": 11240,
+      "sha256": "4083a40f9ce5a97dbeb565852155374180286d8902e7efd25a09469863c6be5d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/exaone.cpp": {
+      "bytes": 5123,
+      "sha256": "7de27ff6242ef9f96240659c20b865083c42932e8f3cbf8965fb6d5906079c71"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/exaone4.cpp": {
+      "bytes": 7895,
+      "sha256": "05765a768aa1b6796aef92c53cb60d70c900211af8ab2ebd28ace75a19ba171c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/falcon-h1.cpp": {
+      "bytes": 9017,
+      "sha256": "2b3ba9bd66682cadbcdd8ac23cea1dc147b9fffb311aed05830a8e78c28af980"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/falcon.cpp": {
+      "bytes": 5607,
+      "sha256": "f3a47d64c33539eb49a4b5c6218ed310d0597b5e9360870050026a21a77a35ec"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/gemma-embedding.cpp": {
+      "bytes": 7484,
+      "sha256": "015d73c1d62d45488b2a5aa2307086e05c4b208d62b942b70a61a8a747bd82d2"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/gemma.cpp": {
+      "bytes": 4858,
+      "sha256": "aaef5aa37bf550c65c4c01515e1ced0f1a20be1c708e29e62da7fe196bf69eda"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/gemma2.cpp": {
+      "bytes": 6841,
+      "sha256": "cf07c24ccb4af0c883eea2f097dfafc388ed5f640c3ad6796ea7da96d2d68649"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/gemma3.cpp": {
+      "bytes": 8784,
+      "sha256": "72be38f347d80e26c4c2248c09e663c608db8166486ad7035c3bebd99e095dd5"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/gemma3n.cpp": {
+      "bytes": 23665,
+      "sha256": "b84549fd08caa8b75cd607cc1939cb2988164483a21fc8731596c807722de046"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/gemma4-assistant.cpp": {
+      "bytes": 8758,
+      "sha256": "5a88f121a0013667187b6859bd92758bf8bb21f27810769c59b65c023db7ce5e"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/gemma4.cpp": {
+      "bytes": 21905,
+      "sha256": "8e19e703e3c0a7cfa54777a148108eccdbc670c690731aeb3448c2d21e4f7230"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/glm-dsa.cpp": {
+      "bytes": 37666,
+      "sha256": "ef017c1be3637ea568637116471455154a41c957fff8e76d3ae9c47a65812b58"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/glm4-moe.cpp": {
+      "bytes": 19297,
+      "sha256": "113446b3c83f2ba8c804b3bc5902e84bc581f3528243cd28c350bad4b70bc167"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/glm4.cpp": {
+      "bytes": 8019,
+      "sha256": "2367e5cdb3b306c7d3fb4c69f759f8dd4e88ed00464652e8864aaf66b114d802"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/gpt2.cpp": {
+      "bytes": 5368,
+      "sha256": "eefbfd7857f7dfa32edfd6c45bb0f4b027e2756dae71177a63e6e605d9cb45f9"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/gptneox.cpp": {
+      "bytes": 8009,
+      "sha256": "2fdd8d6343d2a5b120caef9b08855620e25ac43a8e8171f52a614c4c48550ed9"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/granite-hybrid.cpp": {
+      "bytes": 13612,
+      "sha256": "ed8f176250ec1cdf462c611936f12047ac39d74d06b4447e3c4e24368a2b8e50"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/granite-moe.cpp": {
+      "bytes": 4583,
+      "sha256": "45ff2519e4d3363d0edd1aea06e5d8668a773f9430251f07c1db664b5f0ad1de"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/granite-swa.cpp": {
+      "bytes": 12528,
+      "sha256": "164a62236d818804bc955f1385f7763cd661f4352c1e1f1596306239513fc0da"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/granite-switch.cpp": {
+      "bytes": 18868,
+      "sha256": "07439b38f609ef4aff81a40f278096b340e36a750ce4aa25433d81094e976686"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/granite.cpp": {
+      "bytes": 12275,
+      "sha256": "9da75e9fa08587961fbc9bc0561e5c3d621fc44aabe34c59c0dc0ba96024990c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/grok.cpp": {
+      "bytes": 8962,
+      "sha256": "2561d8cf857c305537e03e8f55dc103892f988fd19a7946ca934083ae79bedb7"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/grovemoe.cpp": {
+      "bytes": 7954,
+      "sha256": "c7d7cc29b15a2ec91667063441433ab4569139c6681082aeeb8a3519d6df4669"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/hunyuan-dense.cpp": {
+      "bytes": 195,
+      "sha256": "72d728a540dfb3a84efab43efa4231003e560ce19a56a582677d0b8814ec4185"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/hunyuan-moe.cpp": {
+      "bytes": 7274,
+      "sha256": "2e087f06693fd4ea03be17ea1eb7dc1d1ec52fea556c494cb64aa00d3f67657f"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/hunyuan-vl.cpp": {
+      "bytes": 7306,
+      "sha256": "d40c60f1a62425ee4f2f67de6ef90358566b44df43e9eed15403632e4b16bf4b"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/hy-v3.cpp": {
+      "bytes": 18551,
+      "sha256": "7578c18abdea87e783cb7692e82687c011611b13fed05925b19bc3cedfb3e750"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/internlm2.cpp": {
+      "bytes": 4864,
+      "sha256": "7d39e5153730b846442e82b70f126c24dce3dd9604b6e6f7d97bbbf352f1ff07"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/jais.cpp": {
+      "bytes": 5002,
+      "sha256": "ca0d7ed770c17d2b07a33e870462b29c4bdc42a161c028db06fe6c55e3e696f6"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/jais2.cpp": {
+      "bytes": 6300,
+      "sha256": "c724b5e46042e6f1bc9cdd7c581245139f726e29476186313cea172bc4cacbc7"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/jamba.cpp": {
+      "bytes": 7853,
+      "sha256": "bc6f2afca4133e47bb55ba50b4b20786aff019ebed30adb5797ffcc5a7d13133"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/jina-bert-v2.cpp": {
+      "bytes": 3645,
+      "sha256": "7e53c33a92c2507521eb7fd919c335a7298496e57f3f8435d21c27db9b49423c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/jina-bert-v3.cpp": {
+      "bytes": 3538,
+      "sha256": "fa375ba9c4a0c1fe9188c3392572e410757004dfc4709563c5da36c769f168a3"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/kimi-k3.cpp": {
+      "bytes": 30162,
+      "sha256": "2a0f9639677ad4a9ac7ac4e3b8f8990029203588621ce97f5eabdf8f1e003b55"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/kimi-linear.cpp": {
+      "bytes": 30609,
+      "sha256": "f560da127cfa7dce9b183745d552ed24ae1ee3ac6c17bbb9edac70429a19b32a"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/laguna.cpp": {
+      "bytes": 17226,
+      "sha256": "b813413fa59dd130bf616a279d39abe1866bcea76ee4be6325638694be9b7157"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/lfm2.cpp": {
+      "bytes": 14429,
+      "sha256": "36c2fa17bfd78d74c5e7e710e0e49de43ba7906070218af7601266e28eebe817"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/lfm2moe.cpp": {
+      "bytes": 4448,
+      "sha256": "f91e0d3f51e51b13afd725b798b003726a8b63f2b105b4b08b6abc6b86d937f6"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/llada-moe.cpp": {
+      "bytes": 5948,
+      "sha256": "28cf42a5e734456a69d110158bdcdb118eb50427ed105899aef7ddb223e46c6d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/llada.cpp": {
+      "bytes": 6191,
+      "sha256": "eac7c561de26c4c661f0304d87cfbbc8ebdc34e3f3bc4a125e9d530362a346ee"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/llama-embed.cpp": {
+      "bytes": 199,
+      "sha256": "bb9245b4c18e6f2ebea1ce72e16cfa10ee7fd1193adbfa370b5e5e205c851dc8"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/llama.cpp": {
+      "bytes": 10554,
+      "sha256": "10af5226730900378be77318691f4acbfccb46809c41a81a195a0ca0d5d48109"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/llama4.cpp": {
+      "bytes": 11327,
+      "sha256": "9e8ed9d396366b1ad1297347ca2711985005af86a8713007765bd2a348168a3a"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/maincoder.cpp": {
+      "bytes": 5427,
+      "sha256": "c6a0de66d78542155b1720765ba0d221bc4627ccdec9c55858e196a544a38087"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/mamba-base.cpp": {
+      "bytes": 15434,
+      "sha256": "eeec35753d700590b3567605d252c663b95f7289443ee35870012b6797c4fc26"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/mamba.cpp": {
+      "bytes": 4918,
+      "sha256": "5ed47ecaec74210ed31c709e1c2766c9a930a41535bf3ff8f17616643dc7cb34"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/mamba2.cpp": {
+      "bytes": 3517,
+      "sha256": "18b05431fc5414c92463bd32a6e5270c885268ecd474a8b27b9b166f837b79fa"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/mellum.cpp": {
+      "bytes": 8442,
+      "sha256": "20b8fdca2fb0216e84f4a98218b419d7ab59246f9a3b0dfb7ef390b398328524"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/mimo2.cpp": {
+      "bytes": 17202,
+      "sha256": "c6f1cc8b3327fb3ad9fe918f279363df1eb27bf5a14f67254668a1d195a4c198"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/minicpm.cpp": {
+      "bytes": 4737,
+      "sha256": "742c12eb92763390bab64a55f3b28c5447abcfec1c9af5328a39ed39803c5fad"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/minicpm3.cpp": {
+      "bytes": 10832,
+      "sha256": "167bc69d381515f803f4fafb2702dd895c72ec8da3c86342f06f5556284c67d8"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/minimax-01.cpp": {
+      "bytes": 21121,
+      "sha256": "b1aefd73dcb57d670f3703022b8193e100b15ed3a9fe96d9376ad06ea98d9626"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/minimax-m2.cpp": {
+      "bytes": 6369,
+      "sha256": "e27cad153d417ff4472fd4a3808eae2c8981ec70b59bc7a5fb167f4de19f8fcb"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/minimax-m3.cpp": {
+      "bytes": 31554,
+      "sha256": "5c4bcd507d7d335cba4844b9ee85395d78ba8a9300d4acd4ac74c70d537c475c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/mistral3.cpp": {
+      "bytes": 9878,
+      "sha256": "3cc33d10acfcc7bbabe93a76dbcaf5b138306481531982e1c2c2643c74489cbd"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/mistral4.cpp": {
+      "bytes": 190,
+      "sha256": "7f37e8d7f76f4fa138ce1edcd93e7acd0eb5df2e11491899e3866efe6df00d1c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/models.h": {
+      "bytes": 96197,
+      "sha256": "d464dd348a72ccb1e09eb4f830c6120030b6c17d5b155fbac9d6a59000122158"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/modern-bert.cpp": {
+      "bytes": 6483,
+      "sha256": "b5054417adb18ed76e4f3308bb85dc74085717cde922dd55545a6965526e7e30"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/mpt.cpp": {
+      "bytes": 6991,
+      "sha256": "602309601708997584c956d596e6959323975d338fcb0fc8f552694767c96b11"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/muse-glimmer.cpp": {
+      "bytes": 8799,
+      "sha256": "4cd16cb4685a4b63e70750854216586345ec2a830147be0527d4f5cead97901f"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/nanbeige.cpp": {
+      "bytes": 7018,
+      "sha256": "6d7f87e74cd982a8b327871625b4e3c95ffb11940d20cde6d1407416f8bbdcc2"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/nemotron-h-moe.cpp": {
+      "bytes": 6093,
+      "sha256": "f525e36101b9a0a67b73847ab9946df761884023738c97aca2e2a724204b480d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/nemotron-h.cpp": {
+      "bytes": 15821,
+      "sha256": "d0a2066c77a97c667b78987932a8b20caeb6d1da215e070fa7aa2982aaddef98"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/nemotron.cpp": {
+      "bytes": 5406,
+      "sha256": "1ff1dc879acad1af816167349c9b46fb3e4d2ac49194149d88d07cca7d83c498"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/neo-bert.cpp": {
+      "bytes": 4730,
+      "sha256": "997a15f82ae2f24414ad1d470d19f3a93647216949be1c98e921b42a4c5b5121"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/nomic-bert-moe.cpp": {
+      "bytes": 3763,
+      "sha256": "5e512af0b6468c50620906ef5820d671fce1d3b08cc89e6ef3e78ea057a816d4"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/nomic-bert.cpp": {
+      "bytes": 3751,
+      "sha256": "f3f0478e11211a09b6fcb19c4e86432313799266cc43d7cefef867ed462343d0"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/olmo.cpp": {
+      "bytes": 4728,
+      "sha256": "21ab04377da5607ca36440bcaf9e328837528911e29dae62d8ac9cd7b4c22e95"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/olmo2.cpp": {
+      "bytes": 7933,
+      "sha256": "9d419a867f0980d4b2918ec7258ff1d95c2a0df17ecdd3b0a905662128ced110"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/olmoe.cpp": {
+      "bytes": 6205,
+      "sha256": "7138060ab096924619a4baacaf50028cada1b41111b5844ceede1da5d4a1c572"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/openai-moe.cpp": {
+      "bytes": 6929,
+      "sha256": "f2819e785b2aa1be0c10d945bd73ec9ffd2c20f9cb3b1d911191421209382f32"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/openelm.cpp": {
+      "bytes": 6334,
+      "sha256": "22cc2b0468d3942310b6bec4d85e54b8f9a897f1f04833dcbffc41b75c8a9da6"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/orion.cpp": {
+      "bytes": 4986,
+      "sha256": "253d3991464176d967673e8e4ba50806691cdef23e0d66bdc7e739589af548eb"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/paddleocr.cpp": {
+      "bytes": 3495,
+      "sha256": "e74eef42cc3f814ed2f394f87bdcdc8913601827c26c0b134dfd1ea66cbd276c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/pangu-embed.cpp": {
+      "bytes": 5938,
+      "sha256": "0fa7869357432a5dd486daeaba8242742c30dfa91b572fcad40a96006e9396a1"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/phi2.cpp": {
+      "bytes": 5461,
+      "sha256": "fba4125519c810307742f7b1d4b031c3aacae5aeb9695a3517afba8a27dc6a1d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/phi3.cpp": {
+      "bytes": 7368,
+      "sha256": "1dc4b740a1e449c6c81a035a226aa9428ee7cef03bfeb606bdf715b363e564ed"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/phimoe.cpp": {
+      "bytes": 2764,
+      "sha256": "8f5338f703fb921878a4e55bfdfe296c2e43ac7855eb1be248f8bd6d72d4187e"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/plamo.cpp": {
+      "bytes": 4560,
+      "sha256": "c8a96722e5afb6e141f7f84f40485b4d3ecd344c882a824a21ef64be98804198"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/plamo2.cpp": {
+      "bytes": 19847,
+      "sha256": "cbaef9612f5b41f46de53487a4fb1d803c36fb58b3105554ae902c6a9e4f79cc"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/plamo3.cpp": {
+      "bytes": 7986,
+      "sha256": "104cf626c1a13055bda02af738f12c14fcfbe9d96cf251683bad402aaccfdbe7"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/plm.cpp": {
+      "bytes": 8631,
+      "sha256": "d53a245d2ab8a134a10370c56291ae8849f94fefab783a4c15b9c831f9a12e9e"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/pockettts.cpp": {
+      "bytes": 5177,
+      "sha256": "f344224844bac2a4ff82d03baae834e7324e36844f2ef6e56cb1f203d5bb40df"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen.cpp": {
+      "bytes": 4831,
+      "sha256": "847acd174baff951f963a43909b7c609a537eb8c972a39d2fc3285310a4f53a3"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen2.cpp": {
+      "bytes": 5535,
+      "sha256": "0da43ff61f449be3a3da8ca2e7cc0eee119b4b8e07c8accce0041998241824e8"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen2moe.cpp": {
+      "bytes": 7300,
+      "sha256": "2824ca5bffac459e3a70ebe78a651a2c0f84812cf256e3317afec14dd2d07df5"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen2vl.cpp": {
+      "bytes": 5062,
+      "sha256": "e460b762e73a7631cf07509e225c12fa0ee6b3b14ec61737a19a7f6478337c00"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen3.cpp": {
+      "bytes": 5872,
+      "sha256": "06f400665980d30fd357886a5d14b541adda06d159a5b7f0ce929ca36788778c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen35.cpp": {
+      "bytes": 28474,
+      "sha256": "b61c5813fc80c54269d45cbbdbbc34b090500e8017dc190483605b37249d007c"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen35moe.cpp": {
+      "bytes": 33068,
+      "sha256": "23a53cf41ef16583b3d196ce1398c6e45561d8c08de002e8636ce8f8becc4d5f"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen3moe.cpp": {
+      "bytes": 6603,
+      "sha256": "19ec92222acad18b43e280bff205739a1d818d3403d06b435282a8825ec04f06"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen3next.cpp": {
+      "bytes": 37508,
+      "sha256": "bf40975de9387eb180b3e6889f17ff89a2218ebf9caeace34031e01f75183c58"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen3tts.cpp": {
+      "bytes": 102,
+      "sha256": "d6d6522b315a156e4f1a5ff8b9a97416485c8782eed3b29c7c5c85a990167183"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen3vl.cpp": {
+      "bytes": 7264,
+      "sha256": "098cd4d4ee0728b66fa4c0968bd3fea14bfeec1591bf5036747b186e5ccfaf94"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/qwen3vlmoe.cpp": {
+      "bytes": 7090,
+      "sha256": "7bf6d11120a461ffdeea1b26c3924a3f5293be2d98f06e2aeceff551b3300b91"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/refact.cpp": {
+      "bytes": 6546,
+      "sha256": "62b0dbed5539a4dab54df04065f730b8d0032e88db6c388b32b3fcc62c61c07d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/rnd1.cpp": {
+      "bytes": 6495,
+      "sha256": "458d965a5f34ab249d198f638ff7df122659187ff1f044b14fafd8c18cd49ad2"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/rwkv6-base.cpp": {
+      "bytes": 8064,
+      "sha256": "39b99e74a9e2dd0e4c9f9e9c1c9e050be30e1b7eaa27d5f88574ebe52a29f4ec"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/rwkv6.cpp": {
+      "bytes": 9800,
+      "sha256": "5a2081b32253e6387da8d22b2e175410ce37794f0b274b48118e437c8f625ec6"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/rwkv6qwen2.cpp": {
+      "bytes": 7691,
+      "sha256": "196b6319824b4a1d91dbcf4e37146c9d21eedd90170cf43ae35f8591fafdd150"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/rwkv7-base.cpp": {
+      "bytes": 6913,
+      "sha256": "b74cd5ab735a15c2554e41a4a8a305a89a192ed330280f01c2d78ca94225c603"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/rwkv7.cpp": {
+      "bytes": 10418,
+      "sha256": "802e4d5000b0b29772b3918dead27e40c5bae85998b3d14000d2baaa48e593bb"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/seed-oss.cpp": {
+      "bytes": 5306,
+      "sha256": "da503ce9b14cf33879120110df322ac6a9bf1b60ffcb317024f33785722ab4ce"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/smallthinker.cpp": {
+      "bytes": 7677,
+      "sha256": "e28b63743074f253434d30e4db078796f3a9fe5f018a1de541df2da254d790ea"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/smollm3.cpp": {
+      "bytes": 5448,
+      "sha256": "84aadea04e83263c837c00a2d2be9f2b9baf11caf2c485ec759e409a0201f212"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/stablelm.cpp": {
+      "bytes": 6378,
+      "sha256": "392d14896eb9cac5684305e2bd7a179e8fa7e5c21640e62b58a9471931645f67"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/starcoder.cpp": {
+      "bytes": 5361,
+      "sha256": "2ca2421d5cd926c2677bf946b9932249fe99007b289277f4a92e0f8ad61dd954"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/starcoder2.cpp": {
+      "bytes": 5745,
+      "sha256": "f37d72a30092fbe193d0a8ea656e37bdea8b173c5ba10f4d3f20d72f94a29e90"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/step35.cpp": {
+      "bytes": 27405,
+      "sha256": "0b5d7e90165bca9a2cb5d5304ce5bc19861515e9dca835a3ff9f3f8ba754ec57"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/t5.cpp": {
+      "bytes": 15012,
+      "sha256": "836de314ada190844e0f012c8161c6a60355e79e9390dcf923a5c933f72fbb99"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/t5encoder.cpp": {
+      "bytes": 2292,
+      "sha256": "d6ed91afbf9318474ea1967d957a838e3c1183b52b2ff557b1ca024286bb865b"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/talkie.cpp": {
+      "bytes": 5243,
+      "sha256": "38253d47157065713e047d497eb9747e434cb046a5377046dcd77a27d655165b"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/wavtokenizer-dec.cpp": {
+      "bytes": 10558,
+      "sha256": "088d2d30af8bd7ce6a56264ba71d9bd27f266f9fbe5995a745175c4a4e1255b2"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/models/xverse.cpp": {
+      "bytes": 4732,
+      "sha256": "f9aaa931b000e27e45afa4f85b8b74eae398b91e17777e519bc9d67461d348bb"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/unicode-data.cpp": {
+      "bytes": 168374,
+      "sha256": "95170cd1c105a5b41a1b2dce73b0fae8ce8011ef7897600828bb2babe8b26e5d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/unicode-data.h": {
+      "bytes": 630,
+      "sha256": "1854f4494e5666db6036f0bf4cf818e01588b40b48a89e3372e775c4d5174402"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/unicode.cpp": {
+      "bytes": 55284,
+      "sha256": "b1f3a18646197e21f7300c6d3b45c9faf52a123d58a38d7d54f3f225018da45d"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/src/unicode.h": {
+      "bytes": 3967,
+      "sha256": "f1562388d5b9d2dac1152ad8eda56e0bcae25dd407cf15d9dd2e96fe0124f4e7"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/include/llama-cpp.h": {
+      "bytes": 900,
+      "sha256": "c48fd31095d2403a3bf7cbe98333ba0e61a398ee6e83b56f9d8b7237143b9877"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-source/include/llama.h": {
+      "bytes": 84279,
+      "sha256": "d987e8fa7f98c845613201e66e5e0ca76aca7a08c2645711d4b0c8febd2cb369"
+    },
+    "/srv/lanxin/qwen35-a3b/build-seq512/bin/libllama.so.0.3.0": {
+      "bytes": 3822640,
+      "sha256": "319da8e0be0c8e65d98468e5d8da980ccd1bd6ba9156032dd28b6150b15f59c0"
+    },
+    "/srv/lanxin/qwen35-a3b/build-seq512/bin/qwen-capacity-probe": {
+      "bytes": 80160,
+      "sha256": "b851053334515fd97dda05843d8488df0eebe355ab7a100866a7c8c07f8e83e3"
+    },
+    "/srv/lanxin/qwen35-a3b/build-seq512/bin/qwen-multiseq-v4": {
+      "bytes": 184352,
+      "sha256": "c5d11cc15d011c7fd439b176e04a6874c47cace51de21d20486a7b91eb72366e"
+    },
+    "/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml.so": {
+      "bytes": 39400,
+      "sha256": "40a8eadf00e5e3bcc9620eda21ee8744c0d0c4788acf9273c9cc3bdea4d34f53"
+    },
+    "/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so": {
+      "bytes": 743640,
+      "sha256": "9748b325487bbc97ed58ee14990bcc3671f4fcfebf81c504b653523cdff0b1f3"
+    },
+    "/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cpu.so": {
+      "bytes": 905968,
+      "sha256": "b2c1beb68a88834da295be3699642a75aadc03e7d14b517a9ea786159bae4972"
+    },
+    "/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so": {
+      "bytes": 10247704,
+      "sha256": "7ae887a73bb0d6ca445393451eed2bb873755b9b678c52217bed45b82c13c593"
+    },
+    "/srv/lanxin/qwen35-a3b/llama.cpp/src/llama-cparams.h": {
+      "bytes": 2105,
+      "sha256": "aefc211ffe0fb1401a6459ef2d3bc74f0c25f280fb87797f4fda9469694330e4"
+    },
+    "/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v18/libnvcuda.so": {
+      "bytes": 8204512,
+      "sha256": "6783baacc556ad2cb99683b2a9e2ac989f02e284ecee65534b57d2a07ba51b9c"
+    },
+    "/srv/lanxin/qwen35-a3b/build-seq512/CMakeCache.txt": {
+      "bytes": 13443,
+      "sha256": "8c089db968207d9915c17f972d6acee4ea13ab5757a8f54ff598d7a624401398"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/check-request-capacity.py": {
+      "bytes": 1774,
+      "sha256": "ff9c6d83acdb2537447f5126333f1c2c5d2e25d644da10083823529003118137"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/seq512-CMakeLists.txt": {
+      "bytes": 1817,
+      "sha256": "c1eac9eb2bffaadabd30a5dcf4197922a294d86ab9c2d992f3a6b7843282ddcb"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/seq512-llama-max-seq.patch": {
+      "bytes": 262,
+      "sha256": "46af131af270c8b60078aff8b6bd0704fb5047bcaa191c620dc71590e023487d"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/seq512-qwen-multiseq.cpp": {
+      "bytes": 9152,
+      "sha256": "98d8a4e7286d38530ef3af0c57860e8ef007421f41b08a6334d89da5b1ad8cc7"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/qwen-capacity-probe.cpp": {
+      "bytes": 2631,
+      "sha256": "030fd864e4c70b37342a96a5c1a523133d583eed432ab4b91411c1f166a570d0"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/probe-four-context-capacity.py": {
+      "bytes": 3123,
+      "sha256": "8e59a9238e91e5ed4a321950ef95f0e20436a126888d61b4a4f055e4a0a51359"
+    }
+  },
+  "boot_id": "4ca2fa21-0d48-4090-93a5-51206ac1de29",
+  "parent_commit": "21ff8ab469f0aca2e7a98bb8708157bc27a293d4",
+  "accelerator_execution_performed": false
+}

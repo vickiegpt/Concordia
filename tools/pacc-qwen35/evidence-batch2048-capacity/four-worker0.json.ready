@@ -1,0 +1,9 @@
+{
+  "aggregate_decode_tps": null,
+  "allocation_passed": true,
+  "context_tokens": 131072,
+  "max_rss_kib": 57674844,
+  "max_sequences": 512,
+  "sequences": 512,
+  "stage": "CPU context allocation only"
+}

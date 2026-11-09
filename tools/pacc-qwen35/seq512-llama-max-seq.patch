@@ -1,0 +1,12 @@
+--- a/src/llama-cparams.h
++++ b/src/llama-cparams.h
+@@ -5,7 +5,9 @@
+ #include <cstdint>
+ #include <vector>
+ 
++#ifndef LLAMA_MAX_SEQ
+ #define LLAMA_MAX_SEQ 256
++#endif
+ 
+ struct llama_cparams {
+     uint32_t n_ctx;           // context size used during inference

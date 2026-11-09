@@ -1,0 +1,53 @@
+{
+  "stage": "CPU context capacity only; no PACC execution or generated tokens",
+  "simultaneously_held_sequences": 2048,
+  "capacity_passed": true,
+  "initial_available_kib": 259247408,
+  "min_available_kib": 114102192,
+  "aggregate_decode_tps": null,
+  "workers": [
+    {
+      "aggregate_decode_tps": null,
+      "allocation_passed": true,
+      "context_tokens": 131072,
+      "max_rss_kib": 57674844,
+      "max_sequences": 512,
+      "sequences": 512,
+      "stage": "CPU context allocation only"
+    },
+    {
+      "aggregate_decode_tps": null,
+      "allocation_passed": true,
+      "context_tokens": 131072,
+      "max_rss_kib": 57674712,
+      "max_sequences": 512,
+      "sequences": 512,
+      "stage": "CPU context allocation only"
+    },
+    {
+      "aggregate_decode_tps": null,
+      "allocation_passed": true,
+      "context_tokens": 131072,
+      "max_rss_kib": 57674936,
+      "max_sequences": 512,
+      "sequences": 512,
+      "stage": "CPU context allocation only"
+    },
+    {
+      "aggregate_decode_tps": null,
+      "allocation_passed": true,
+      "context_tokens": 131072,
+      "max_rss_kib": 57675064,
+      "max_sequences": 512,
+      "sequences": 512,
+      "stage": "CPU context allocation only"
+    }
+  ],
+  "returncodes": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "error": null
+}

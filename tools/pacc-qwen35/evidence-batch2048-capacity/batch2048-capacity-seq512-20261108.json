@@ -1,0 +1,16 @@
+{
+  "stage": "read-only ABI preflight; no inference or device allocation",
+  "requested_independent_sequences": 2048,
+  "devices": 4,
+  "sequences_per_device": 512,
+  "max_sequences_per_instance": 512,
+  "within_compiled_sequence_limit": true,
+  "aggregate_decode_tps": null,
+  "library": "/srv/lanxin/qwen35-a3b/build-seq512/bin/libllama.so.0.3.0",
+  "library_sha256": "319da8e0be0c8e65d98468e5d8da980ccd1bd6ba9156032dd28b6150b15f59c0",
+  "boot_id": "4ca2fa21-0d48-4090-93a5-51206ac1de29",
+  "limitations": [
+    "A passing sequence-limit check does not prove memory capacity, operator support or correct generation.",
+    "Logical token batch, active sequences and XM matrix columns are different dimensions."
+  ]
+}
