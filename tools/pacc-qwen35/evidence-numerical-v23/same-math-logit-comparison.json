@@ -1,0 +1,14 @@
+{
+  "trace-q81-pacc1-long-v23": {
+    "max_abs": 0.24302738904953003,
+    "relative_rms": 0.02020289424415701,
+    "expected_argmax": 314,
+    "actual_argmax": 1817
+  },
+  "trace-q81-pacc1-noauto-v23": {
+    "max_abs": 7.62939453125e-06,
+    "relative_rms": 1.3641830477605658e-07,
+    "expected_argmax": 314,
+    "actual_argmax": 314
+  }
+}

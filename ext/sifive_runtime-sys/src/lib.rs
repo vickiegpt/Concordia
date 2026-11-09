@@ -25,6 +25,7 @@ pub mod rmsnorm_layout;
 pub mod gated_delta;
 pub mod topk_moe;
 pub mod q4k_tile;
+pub mod rms_exact;
 pub mod concat_tile;
 pub mod attention_softmax;
 pub use rmsnorm_layout::RmsNormLayout;
@@ -11931,6 +11932,11 @@ pub unsafe extern "C" fn hetgpu_sifive_submit_rmsnorm_strided_f32(
     let input = std::slice::from_raw_parts(x, xs);
     let weights = if weight.is_null() { None } else { Some(std::slice::from_raw_parts(weight, ws)) };
     let result = rmsnorm_layout::pack_and_run(&layout, input, weights, |a, w, out, rows| {
+        if env_flag_enabled("HETGPU_SIFIVE_RMS_EXACT") {
+            return rms_exact::hetgpu_sifive_submit_rms_exact_on(dev_id, a.as_ptr(),
+                w.map_or(std::ptr::null(), |v|v.as_ptr()),out.as_mut_ptr(),
+                rows as u64,layout.hidden,layout.eps)==0;
+        }
         hetgpu_sifive_submit_rmsnorm_on(dev_id, a.as_ptr().cast(),
             w.map_or(std::ptr::null(), |v| v.as_ptr().cast()), out.as_mut_ptr().cast(),
             rows as u64, layout.hidden, layout.eps, SifiveDataType::Float32 as i32) == 0

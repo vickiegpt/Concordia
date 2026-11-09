@@ -1,0 +1,254 @@
+{
+  "aggregate_decode_tps": 0.6191626568061884,
+  "aggregate_output_tps": 0.4906731844421333,
+  "all_correct": true,
+  "barrier_synchronized": true,
+  "config": {
+    "batched_prefill": true,
+    "max_tokens": 32,
+    "min_tokens": 32,
+    "prompts": [
+      "Write a detailed explanation of virtual memory:\n",
+      "Write a detailed explanation of matrix multiplication:\n"
+    ]
+  },
+  "decode_started_monotonic_us": 21384122854,
+  "decode_tokens": 62,
+  "diagnostic": false,
+  "finished_monotonic_us": 21484258092,
+  "input_tokens": [
+    [
+      7734,
+      264,
+      11346,
+      15673,
+      314,
+      3972,
+      4779,
+      25,
+      198
+    ],
+    [
+      7734,
+      264,
+      11346,
+      15673,
+      314,
+      5979,
+      44896,
+      25,
+      198
+    ]
+  ],
+  "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+  "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+  "ngl": 1,
+  "op_offload": false,
+  "output_tokens": 64,
+  "reference_complete": false,
+  "reference_math": "CPU independent Q6_K x CUDA-Q8_1 head, FP64 accumulate",
+  "reference_only": false,
+  "sequences": 2,
+  "started_monotonic_us": 21353825042,
+  "steps": [
+    {
+      "active": 2,
+      "elapsed_us": 3263730
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3217627
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3220053
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3294078
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3190298
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3218678
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3325728
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3186596
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3194101
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3238143
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3176821
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3181056
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3242001
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3195723
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3201847
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3217907
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3294325
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3187072
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3167013
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3237862
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3272316
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3197701
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3221390
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3220933
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3153788
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3198329
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3259154
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3231018
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3245564
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3293240
+    },
+    {
+      "active": 2,
+      "elapsed_us": 3189808
+    }
+  ],
+  "texts": [
+    "1. What is virtual memory?\n2. How does it work?\n3. What are the benefits?\n4. What are the drawbacks?\n",
+    "1. Define the operation and the condition for it to be possible.\n2. Explain the calculation of individual elements using the dot product of rows and columns."
+  ],
+  "tokens": [
+    [
+      16,
+      13,
+      3437,
+      369,
+      3972,
+      4779,
+      30,
+      198,
+      17,
+      13,
+      2500,
+      1503,
+      424,
+      944,
+      30,
+      198,
+      18,
+      13,
+      3437,
+      513,
+      279,
+      7328,
+      30,
+      198,
+      19,
+      13,
+      3437,
+      513,
+      279,
+      85039,
+      30,
+      198
+    ],
+    [
+      16,
+      13,
+      18053,
+      279,
+      5488,
+      321,
+      279,
+      2876,
+      364,
+      424,
+      310,
+      381,
+      3102,
+      13,
+      198,
+      17,
+      13,
+      79091,
+      279,
+      21261,
+      314,
+      3714,
+      5255,
+      1608,
+      279,
+      12391,
+      1918,
+      314,
+      6761,
+      321,
+      7890,
+      13
+    ]
+  ],
+  "ubatch": 2
+}

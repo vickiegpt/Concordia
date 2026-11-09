@@ -1,0 +1,3202 @@
+[
+  {
+    "buffer": "CPU",
+    "call": 1,
+    "count": 4096,
+    "key": "1-l_out-39-0",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 1,
+    "count": 4096,
+    "key": "1-result_norm-0",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 2,
+    "count": 4096,
+    "key": "2-l_out-39-1",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 2,
+    "count": 4096,
+    "key": "2-result_norm-1",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 3,
+    "count": 4096,
+    "key": "3-l_out-39-2",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 3,
+    "count": 4096,
+    "key": "3-result_norm-2",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 4,
+    "count": 4096,
+    "key": "4-l_out-39-3",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 4,
+    "count": 4096,
+    "key": "4-result_norm-3",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 5,
+    "count": 4096,
+    "key": "5-l_out-39-4",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 5,
+    "count": 4096,
+    "key": "5-result_norm-4",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 6,
+    "count": 4096,
+    "key": "6-l_out-39-5",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 6,
+    "count": 4096,
+    "key": "6-result_norm-5",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 7,
+    "count": 4096,
+    "key": "7-l_out-39-6",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 7,
+    "count": 4096,
+    "key": "7-result_norm-6",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 8,
+    "count": 4096,
+    "key": "8-l_out-39-7",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 8,
+    "count": 4096,
+    "key": "8-result_norm-7",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 9,
+    "count": 4096,
+    "key": "9-l_out-39-8",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 9,
+    "count": 4096,
+    "key": "9-result_norm-8",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 10,
+    "count": 4096,
+    "key": "10-l_out-39-9",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 10,
+    "count": 4096,
+    "key": "10-result_norm-9",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 11,
+    "count": 4096,
+    "key": "11-l_out-39-10",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 11,
+    "count": 4096,
+    "key": "11-result_norm-10",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 12,
+    "count": 4096,
+    "key": "12-l_out-39-11",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 12,
+    "count": 4096,
+    "key": "12-result_norm-11",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 13,
+    "count": 4096,
+    "key": "13-l_out-39-12",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 13,
+    "count": 4096,
+    "key": "13-result_norm-12",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 14,
+    "count": 4096,
+    "key": "14-l_out-39-13",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 14,
+    "count": 4096,
+    "key": "14-result_norm-13",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 15,
+    "count": 4096,
+    "key": "15-l_out-39-14",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 15,
+    "count": 4096,
+    "key": "15-result_norm-14",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 16,
+    "count": 4096,
+    "key": "16-l_out-39-15",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 16,
+    "count": 4096,
+    "key": "16-result_norm-15",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 17,
+    "count": 4096,
+    "key": "17-l_out-39-16",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 17,
+    "count": 4096,
+    "key": "17-result_norm-16",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 18,
+    "count": 4096,
+    "key": "18-l_out-39-17",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 18,
+    "count": 4096,
+    "key": "18-result_norm-17",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.0,
+    "relative_rms": 0.0,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 19,
+    "count": 4096,
+    "key": "19-l_out-39-18",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.10982704162597656,
+    "relative_rms": 0.014681122734372479,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 19,
+    "count": 4096,
+    "key": "19-result_norm-18",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.21868133544921875,
+    "relative_rms": 0.015423701340014306,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 20,
+    "count": 4096,
+    "key": "20-l_out-39-19",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0424482524394989,
+    "relative_rms": 0.01925875718691697,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 20,
+    "count": 4096,
+    "key": "20-result_norm-19",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.2626008987426758,
+    "relative_rms": 0.021939067804764987,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 21,
+    "count": 4096,
+    "key": "21-l_out-39-20",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.06431388854980469,
+    "relative_rms": 0.014401545831575121,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 21,
+    "count": 4096,
+    "key": "21-result_norm-20",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.2032170295715332,
+    "relative_rms": 0.014431374454379723,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 22,
+    "count": 4096,
+    "key": "22-l_out-39-21",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.05620718002319336,
+    "relative_rms": 0.014771860812527673,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 22,
+    "count": 4096,
+    "key": "22-result_norm-21",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.292415976524353,
+    "relative_rms": 0.015504243143813573,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 23,
+    "count": 4096,
+    "key": "23-l_out-39-22",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0794224739074707,
+    "relative_rms": 0.033608661954293094,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 23,
+    "count": 4096,
+    "key": "23-result_norm-22",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.43240833282470703,
+    "relative_rms": 0.03693441471579227,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 24,
+    "count": 4096,
+    "key": "24-l_out-39-23",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.08844375610351562,
+    "relative_rms": 0.03801329491744171,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 24,
+    "count": 4096,
+    "key": "24-result_norm-23",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.40972137451171875,
+    "relative_rms": 0.04104142580653923,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 25,
+    "count": 4096,
+    "key": "25-l_out-39-24",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.27982139587402344,
+    "relative_rms": 0.033558557229149306,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 25,
+    "count": 4096,
+    "key": "25-result_norm-24",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.40860939025878906,
+    "relative_rms": 0.03891032536148783,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 26,
+    "count": 4096,
+    "key": "26-l_out-39-25",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.09003126621246338,
+    "relative_rms": 0.027668035502931614,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 26,
+    "count": 4096,
+    "key": "26-result_norm-25",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.5471131801605225,
+    "relative_rms": 0.03437042969361585,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 27,
+    "count": 4096,
+    "key": "27-l_out-39-26",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.05769796669483185,
+    "relative_rms": 0.03869194356027206,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 27,
+    "count": 4096,
+    "key": "27-result_norm-26",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.40979623794555664,
+    "relative_rms": 0.04073361818645875,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 28,
+    "count": 4096,
+    "key": "28-l_out-39-27",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0920252799987793,
+    "relative_rms": 0.019231021117022812,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 28,
+    "count": 4096,
+    "key": "28-result_norm-27",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.23703044652938843,
+    "relative_rms": 0.020344070944765175,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 29,
+    "count": 4096,
+    "key": "29-l_out-39-28",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.05934786796569824,
+    "relative_rms": 0.022363338912700058,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 29,
+    "count": 4096,
+    "key": "29-result_norm-28",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.2980766296386719,
+    "relative_rms": 0.023419260885611918,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 30,
+    "count": 4096,
+    "key": "30-l_out-39-29",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.10802364349365234,
+    "relative_rms": 0.023286315102557173,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 30,
+    "count": 4096,
+    "key": "30-result_norm-29",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.3871116638183594,
+    "relative_rms": 0.023498489136481216,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 31,
+    "count": 4096,
+    "key": "31-l_out-39-30",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.1624150276184082,
+    "relative_rms": 0.03081566227493421,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 31,
+    "count": 4096,
+    "key": "31-result_norm-30",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.3645191192626953,
+    "relative_rms": 0.03238767043388357,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 32,
+    "count": 4096,
+    "key": "32-l_out-39-31",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.08640909194946289,
+    "relative_rms": 0.034168050248721396,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 32,
+    "count": 4096,
+    "key": "32-result_norm-31",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.45220741629600525,
+    "relative_rms": 0.0351108893595106,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 33,
+    "count": 4096,
+    "key": "33-l_out-39-32",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.0681304931640625,
+    "relative_rms": 0.03182992267339043,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 33,
+    "count": 4096,
+    "key": "33-result_norm-32",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.33054661750793457,
+    "relative_rms": 0.033605128729966675,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 34,
+    "count": 4096,
+    "key": "34-l_out-39-33",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.08809471130371094,
+    "relative_rms": 0.020530246675830296,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 34,
+    "count": 4096,
+    "key": "34-result_norm-33",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.2895963191986084,
+    "relative_rms": 0.026123924420309974,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 35,
+    "count": 4096,
+    "key": "35-l_out-39-34",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.41937255859375,
+    "relative_rms": 0.06579368456815694,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 35,
+    "count": 4096,
+    "key": "35-result_norm-34",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.6876049041748047,
+    "relative_rms": 0.06992204188942906,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 36,
+    "count": 4096,
+    "key": "36-l_out-39-35",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.1215972900390625,
+    "relative_rms": 0.03211134789763662,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 36,
+    "count": 4096,
+    "key": "36-result_norm-35",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.3871321678161621,
+    "relative_rms": 0.03500194857340507,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 37,
+    "count": 4096,
+    "key": "37-l_out-39-36",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.19434690475463867,
+    "relative_rms": 0.0727992887154331,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 37,
+    "count": 4096,
+    "key": "37-result_norm-36",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.8381846994161606,
+    "relative_rms": 0.07086506984359262,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 38,
+    "count": 4096,
+    "key": "38-l_out-39-37",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.08370733261108398,
+    "relative_rms": 0.030900278621033818,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 38,
+    "count": 4096,
+    "key": "38-result_norm-37",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.3144630193710327,
+    "relative_rms": 0.03430441401456133,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 39,
+    "count": 4096,
+    "key": "39-l_out-39-38",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.14226484298706055,
+    "relative_rms": 0.046030703112207014,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 39,
+    "count": 4096,
+    "key": "39-result_norm-38",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.5661525726318359,
+    "relative_rms": 0.0537795920105177,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 40,
+    "count": 4096,
+    "key": "40-l_out-39-39",
+    "name": "l_out-39",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "ADD",
+    "sources": [
+      {
+        "name": "ffn_out-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "attn_residual-39",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      }
+    ],
+    "max_abs": 0.08879375457763672,
+    "relative_rms": 0.031133183859324377,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  },
+  {
+    "buffer": "CPU",
+    "call": 40,
+    "count": 4096,
+    "key": "40-result_norm-39",
+    "name": "result_norm",
+    "ne": [
+      2048,
+      2,
+      1,
+      1
+    ],
+    "op": "GET_ROWS",
+    "sources": [
+      {
+        "name": "h_nextn",
+        "ne": [
+          2048,
+          2,
+          1,
+          1
+        ],
+        "type": "f32"
+      },
+      {
+        "name": "leaf_820",
+        "ne": [
+          2,
+          1,
+          1,
+          1
+        ],
+        "type": "i32"
+      }
+    ],
+    "max_abs": 0.5363569259643555,
+    "relative_rms": 0.036355292265425075,
+    "finite": true,
+    "actual_buffer": "CUDA0"
+  }
+]

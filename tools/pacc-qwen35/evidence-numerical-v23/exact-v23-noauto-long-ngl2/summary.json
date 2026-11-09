@@ -1,0 +1,1388 @@
+{
+  "all_correct": true,
+  "aggregate_output_tps": 0.8767038829862231,
+  "aggregate_decode_tps": 1.0903727682003967,
+  "token_matched_decode_tps": 1.0903727682003967,
+  "token_matched_output_tps": 0.8767038829862231,
+  "tokens_correct": true,
+  "xm_batch_verified": true,
+  "requested_ngl": 2,
+  "scope": "startup XM/build qualification + synchronous submission logs + end-to-end token validation; no runtime phase accounting",
+  "output_tokens": 256,
+  "decode_tokens": 248,
+  "start_skew_ms": 1.656,
+  "decode_start_skew_ms": 2362.074,
+  "request_window_s": 292.002813,
+  "decode_window_s": 227.445152,
+  "returncodes": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "requests": [
+    {
+      "aggregate_decode_tps": 0.28431065058329263,
+      "aggregate_output_tps": 0.2264464101691195,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 32,
+        "min_tokens": 32,
+        "prompts": [
+          "Write a detailed explanation of virtual memory:\n",
+          "Write a detailed explanation of matrix multiplication:\n"
+        ]
+      },
+      "decode_started_monotonic_us": 21594916511,
+      "decode_tokens": 62,
+      "diagnostic": false,
+      "finished_monotonic_us": 21812987835,
+      "input_tokens": [
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          3972,
+          4779,
+          25,
+          198
+        ],
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          5979,
+          44896,
+          25,
+          198
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 2,
+      "op_offload": false,
+      "output_tokens": 64,
+      "reference_complete": false,
+      "reference_math": "CPU independent CUDA-Q8_1 head + quantized layer39, FP64 accumulate",
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 21530360259,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 6154311
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6429963
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7115719
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6952049
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7151239
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7039888
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7038416
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7204579
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7096855
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7076265
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7243335
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7064367
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6922991
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7112280
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7138328
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7089127
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7042347
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7040190
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6937717
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7107427
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6839519
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6978122
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7231196
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7102951
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7040095
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7203233
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7096709
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7060466
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7252180
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7030853
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7076778
+        }
+      ],
+      "texts": [
+        "1. What is virtual memory?\n2. How does it work?\n3. What are the benefits?\n4. What are the drawbacks?\n",
+        "1. Define the operation and the condition for it to be possible.\n2. Explain the calculation of individual elements using the dot product of rows and columns."
+      ],
+      "tokens": [
+        [
+          16,
+          13,
+          3437,
+          369,
+          3972,
+          4779,
+          30,
+          198,
+          17,
+          13,
+          2500,
+          1503,
+          424,
+          944,
+          30,
+          198,
+          18,
+          13,
+          3437,
+          513,
+          279,
+          7328,
+          30,
+          198,
+          19,
+          13,
+          3437,
+          513,
+          279,
+          85039,
+          30,
+          198
+        ],
+        [
+          16,
+          13,
+          18053,
+          279,
+          5488,
+          321,
+          279,
+          2876,
+          364,
+          424,
+          310,
+          381,
+          3102,
+          13,
+          198,
+          17,
+          13,
+          79091,
+          279,
+          21261,
+          314,
+          3714,
+          5255,
+          1608,
+          279,
+          12391,
+          1918,
+          314,
+          6761,
+          321,
+          7890,
+          13
+        ]
+      ],
+      "ubatch": 2
+    },
+    {
+      "aggregate_decode_tps": 0.28105660019357726,
+      "aggregate_output_tps": 0.22376882532163553,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 32,
+        "min_tokens": 32,
+        "prompts": [
+          "Write a detailed explanation of virtual memory:\n",
+          "Write a detailed explanation of matrix multiplication:\n"
+        ]
+      },
+      "decode_started_monotonic_us": 21595772170,
+      "decode_tokens": 62,
+      "diagnostic": false,
+      "finished_monotonic_us": 21816368306,
+      "input_tokens": [
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          3972,
+          4779,
+          25,
+          198
+        ],
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          5979,
+          44896,
+          25,
+          198
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 2,
+      "op_offload": false,
+      "output_tokens": 64,
+      "reference_complete": false,
+      "reference_math": "CPU independent CUDA-Q8_1 head + quantized layer39, FP64 accumulate",
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 21530358850,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 6394274
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6599645
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7062720
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6949583
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7320870
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7134214
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7010306
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7292400
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7111874
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7102548
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7404172
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7174992
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7071750
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7268554
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7160931
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7134309
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7054067
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7197149
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7105041
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7052196
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7095954
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7146488
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7128685
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7280181
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7116926
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7057623
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7298445
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7120441
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7164383
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7271770
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7111952
+        }
+      ],
+      "texts": [
+        "1. What is virtual memory?\n2. How does it work?\n3. What are the benefits?\n4. What are the drawbacks?\n",
+        "1. Define the operation and the condition for it to be possible.\n2. Explain the calculation of individual elements using the dot product of rows and columns."
+      ],
+      "tokens": [
+        [
+          16,
+          13,
+          3437,
+          369,
+          3972,
+          4779,
+          30,
+          198,
+          17,
+          13,
+          2500,
+          1503,
+          424,
+          944,
+          30,
+          198,
+          18,
+          13,
+          3437,
+          513,
+          279,
+          7328,
+          30,
+          198,
+          19,
+          13,
+          3437,
+          513,
+          279,
+          85039,
+          30,
+          198
+        ],
+        [
+          16,
+          13,
+          18053,
+          279,
+          5488,
+          321,
+          279,
+          2876,
+          364,
+          424,
+          310,
+          381,
+          3102,
+          13,
+          198,
+          17,
+          13,
+          79091,
+          279,
+          21261,
+          314,
+          3714,
+          5255,
+          1608,
+          279,
+          12391,
+          1918,
+          314,
+          6761,
+          321,
+          7890,
+          13
+        ]
+      ],
+      "ubatch": 2
+    },
+    {
+      "aggregate_decode_tps": 0.2754538482008852,
+      "aggregate_output_tps": 0.21917721373960172,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 32,
+        "min_tokens": 32,
+        "prompts": [
+          "Write a detailed explanation of virtual memory:\n",
+          "Write a detailed explanation of matrix multiplication:\n"
+        ]
+      },
+      "decode_started_monotonic_us": 21597278585,
+      "decode_tokens": 62,
+      "diagnostic": false,
+      "finished_monotonic_us": 21822361663,
+      "input_tokens": [
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          3972,
+          4779,
+          25,
+          198
+        ],
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          5979,
+          44896,
+          25,
+          198
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 2,
+      "op_offload": false,
+      "output_tokens": 64,
+      "reference_complete": false,
+      "reference_math": "CPU independent CUDA-Q8_1 head + quantized layer39, FP64 accumulate",
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 21530360506,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 6537911
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6690126
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7289686
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7103398
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7450915
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7413365
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7291847
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7248572
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7496632
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7411300
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7412422
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7514678
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7420009
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7283460
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7301482
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7463821
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7113064
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7159379
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7458137
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7153675
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7012894
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7446473
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7205631
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7167892
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7409693
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7336772
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7259557
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7330824
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7422535
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7126490
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6948709
+        }
+      ],
+      "texts": [
+        "1. What is virtual memory?\n2. How does it work?\n3. What are the benefits?\n4. What are the drawbacks?\n",
+        "1. Define the operation and the condition for it to be possible.\n2. Explain the calculation of individual elements using the dot product of rows and columns."
+      ],
+      "tokens": [
+        [
+          16,
+          13,
+          3437,
+          369,
+          3972,
+          4779,
+          30,
+          198,
+          17,
+          13,
+          2500,
+          1503,
+          424,
+          944,
+          30,
+          198,
+          18,
+          13,
+          3437,
+          513,
+          279,
+          7328,
+          30,
+          198,
+          19,
+          13,
+          3437,
+          513,
+          279,
+          85039,
+          30,
+          198
+        ],
+        [
+          16,
+          13,
+          18053,
+          279,
+          5488,
+          321,
+          279,
+          2876,
+          364,
+          424,
+          310,
+          381,
+          3102,
+          13,
+          198,
+          17,
+          13,
+          79091,
+          279,
+          21261,
+          314,
+          3714,
+          5255,
+          1608,
+          279,
+          12391,
+          1918,
+          314,
+          6761,
+          321,
+          7890,
+          13
+        ]
+      ],
+      "ubatch": 2
+    },
+    {
+      "aggregate_decode_tps": 0.28296793326597447,
+      "aggregate_output_tps": 0.22514407321032343,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 32,
+        "min_tokens": 32,
+        "prompts": [
+          "Write a detailed explanation of virtual memory:\n",
+          "Write a detailed explanation of matrix multiplication:\n"
+        ]
+      },
+      "decode_started_monotonic_us": 21595515711,
+      "decode_tokens": 62,
+      "diagnostic": false,
+      "finished_monotonic_us": 21814621810,
+      "input_tokens": [
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          3972,
+          4779,
+          25,
+          198
+        ],
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          5979,
+          44896,
+          25,
+          198
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 2,
+      "op_offload": false,
+      "output_tokens": 64,
+      "reference_complete": false,
+      "reference_math": "CPU independent CUDA-Q8_1 head + quantized layer39, FP64 accumulate",
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 21530359386,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 6242415
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6542418
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7075738
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6886454
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7272241
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7041955
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7008214
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7262507
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7108116
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7090191
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7325541
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7169947
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7021697
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7327362
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7078461
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7046255
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7069178
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7061782
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7027279
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7117828
+        },
+        {
+          "active": 2,
+          "elapsed_us": 6890513
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7015572
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7229014
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7159374
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7019986
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7169862
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7136665
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7041663
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7259093
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7109336
+        },
+        {
+          "active": 2,
+          "elapsed_us": 7098003
+        }
+      ],
+      "texts": [
+        "1. What is virtual memory?\n2. How does it work?\n3. What are the benefits?\n4. What are the drawbacks?\n",
+        "1. Define the operation and the condition for it to be possible.\n2. Explain the calculation of individual elements using the dot product of rows and columns."
+      ],
+      "tokens": [
+        [
+          16,
+          13,
+          3437,
+          369,
+          3972,
+          4779,
+          30,
+          198,
+          17,
+          13,
+          2500,
+          1503,
+          424,
+          944,
+          30,
+          198,
+          18,
+          13,
+          3437,
+          513,
+          279,
+          7328,
+          30,
+          198,
+          19,
+          13,
+          3437,
+          513,
+          279,
+          85039,
+          30,
+          198
+        ],
+        [
+          16,
+          13,
+          18053,
+          279,
+          5488,
+          321,
+          279,
+          2876,
+          364,
+          424,
+          310,
+          381,
+          3102,
+          13,
+          198,
+          17,
+          13,
+          79091,
+          279,
+          21261,
+          314,
+          3714,
+          5255,
+          1608,
+          279,
+          12391,
+          1918,
+          314,
+          6761,
+          321,
+          7890,
+          13
+        ]
+      ],
+      "ubatch": 2
+    }
+  ],
+  "phase_profiles": [],
+  "xm_batch_proof": [
+    {
+      "device": 0,
+      "calls": 440,
+      "multi_tiles": 36304,
+      "max_n": 2,
+      "q6_calls": 40
+    },
+    {
+      "device": 1,
+      "calls": 440,
+      "multi_tiles": 36304,
+      "max_n": 2,
+      "q6_calls": 40
+    },
+    {
+      "device": 2,
+      "calls": 440,
+      "multi_tiles": 36304,
+      "max_n": 2,
+      "q6_calls": 40
+    },
+    {
+      "device": 3,
+      "calls": 440,
+      "multi_tiles": 36304,
+      "max_n": 2,
+      "q6_calls": 40
+    }
+  ],
+  "hardware_qualification": [
+    {
+      "complete_submissions": 42,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 42
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 14798958,
+      "last_index": 14800726,
+      "unique_indices": 1768,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 638,
+          "p50_us": 14,
+          "p99_us": 31,
+          "max_us": 31
+        },
+        "input_copy": {
+          "sum_us": 27103,
+          "p50_us": 671,
+          "p99_us": 1132,
+          "max_us": 1132
+        },
+        "compute": {
+          "sum_us": 180392,
+          "p50_us": 3673,
+          "p99_us": 9128,
+          "max_us": 9128
+        },
+        "output_copy": {
+          "sum_us": 2397,
+          "p50_us": 48,
+          "p99_us": 156,
+          "max_us": 156
+        },
+        "cleanup": {
+          "sum_us": 75,
+          "p50_us": 2,
+          "p99_us": 3,
+          "max_us": 3
+        },
+        "completion_publish": {
+          "sum_us": 209,
+          "p50_us": 5,
+          "p99_us": 7,
+          "max_us": 7
+        },
+        "device_before_publish": {
+          "sum_us": 218453,
+          "p50_us": 4601,
+          "p99_us": 10179,
+          "max_us": 10179
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 0,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/bin/test_jobd_q8",
+        "--hardware",
+        "0"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 1.6027050005504861,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 42,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 42
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 10663802,
+      "last_index": 10665578,
+      "unique_indices": 1776,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 626,
+          "p50_us": 13,
+          "p99_us": 31,
+          "max_us": 31
+        },
+        "input_copy": {
+          "sum_us": 28428,
+          "p50_us": 689,
+          "p99_us": 842,
+          "max_us": 842
+        },
+        "compute": {
+          "sum_us": 161668,
+          "p50_us": 3655,
+          "p99_us": 7229,
+          "max_us": 7229
+        },
+        "output_copy": {
+          "sum_us": 2507,
+          "p50_us": 49,
+          "p99_us": 168,
+          "max_us": 168
+        },
+        "cleanup": {
+          "sum_us": 73,
+          "p50_us": 2,
+          "p99_us": 3,
+          "max_us": 3
+        },
+        "completion_publish": {
+          "sum_us": 222,
+          "p50_us": 5,
+          "p99_us": 7,
+          "max_us": 7
+        },
+        "device_before_publish": {
+          "sum_us": 201129,
+          "p50_us": 4600,
+          "p99_us": 8456,
+          "max_us": 8456
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 1,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/bin/test_jobd_q8",
+        "--hardware",
+        "1"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 1.6063650000432972,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 42,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 42
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 10810219,
+      "last_index": 10811993,
+      "unique_indices": 1774,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 604,
+          "p50_us": 13,
+          "p99_us": 33,
+          "max_us": 33
+        },
+        "input_copy": {
+          "sum_us": 29365,
+          "p50_us": 739,
+          "p99_us": 784,
+          "max_us": 784
+        },
+        "compute": {
+          "sum_us": 161457,
+          "p50_us": 3701,
+          "p99_us": 6893,
+          "max_us": 6893
+        },
+        "output_copy": {
+          "sum_us": 2548,
+          "p50_us": 51,
+          "p99_us": 169,
+          "max_us": 169
+        },
+        "cleanup": {
+          "sum_us": 86,
+          "p50_us": 2,
+          "p99_us": 3,
+          "max_us": 3
+        },
+        "completion_publish": {
+          "sum_us": 202,
+          "p50_us": 5,
+          "p99_us": 5,
+          "max_us": 5
+        },
+        "device_before_publish": {
+          "sum_us": 201849,
+          "p50_us": 4695,
+          "p99_us": 8026,
+          "max_us": 8026
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 2,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/bin/test_jobd_q8",
+        "--hardware",
+        "2"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 1.5792749982210808,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 42,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 42
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 9607144,
+      "last_index": 9608916,
+      "unique_indices": 1772,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 571,
+          "p50_us": 13,
+          "p99_us": 30,
+          "max_us": 30
+        },
+        "input_copy": {
+          "sum_us": 26587,
+          "p50_us": 671,
+          "p99_us": 694,
+          "max_us": 694
+        },
+        "compute": {
+          "sum_us": 158195,
+          "p50_us": 3615,
+          "p99_us": 6823,
+          "max_us": 6823
+        },
+        "output_copy": {
+          "sum_us": 2474,
+          "p50_us": 49,
+          "p99_us": 159,
+          "max_us": 159
+        },
+        "cleanup": {
+          "sum_us": 79,
+          "p50_us": 2,
+          "p99_us": 3,
+          "max_us": 3
+        },
+        "completion_publish": {
+          "sum_us": 207,
+          "p50_us": 5,
+          "p99_us": 5,
+          "max_us": 5
+        },
+        "device_before_publish": {
+          "sum_us": 195654,
+          "p50_us": 4536,
+          "p99_us": 7870,
+          "max_us": 7870
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 3,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/bin/test_jobd_q8",
+        "--hardware",
+        "3"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 1.578605002578115,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    }
+  ],
+  "phase_profile": "qualification",
+  "elapsed_including_load_s": 298.1758982930005,
+  "min_mem_available_kib": 257252424,
+  "memory_guard_triggered": false,
+  "runner_timed_out": false,
+  "barrier_released": true
+}

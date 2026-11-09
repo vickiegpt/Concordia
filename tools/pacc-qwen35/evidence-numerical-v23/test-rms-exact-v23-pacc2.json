@@ -1,0 +1,50 @@
+{
+  "device": 2,
+  "all_passed": true,
+  "cases": [
+    {
+      "rows": 1,
+      "hidden": 2048,
+      "eps": 1e-06,
+      "weighted": false,
+      "max_abs_error": 0.0,
+      "strided_exact": true,
+      "old_returncode": 0,
+      "old_first": -0.9999935626983643,
+      "new_first": 0.9999998807907104,
+      "expected": 0.9999998807907104
+    },
+    {
+      "rows": 3,
+      "hidden": 128,
+      "eps": 1e-06,
+      "weighted": true,
+      "max_abs_error": 0.0,
+      "strided_exact": true
+    },
+    {
+      "rows": 2,
+      "hidden": 2048,
+      "eps": 1e-06,
+      "weighted": true,
+      "max_abs_error": 0.0,
+      "strided_exact": true
+    },
+    {
+      "rows": 2,
+      "hidden": 512,
+      "eps": 1e-05,
+      "weighted": false,
+      "max_abs_error": 0.0,
+      "strided_exact": true
+    },
+    {
+      "rows": 8,
+      "hidden": 256,
+      "eps": 0.0,
+      "weighted": true,
+      "max_abs_error": 0.0,
+      "strided_exact": true
+    }
+  ]
+}

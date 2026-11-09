@@ -1,0 +1,9 @@
+{
+  "/srv/lanxin/qwen35-a3b/runtime-rne-v21/libnvcuda.so": "f33328373084e2ce5fcb1d3dd3ade361c2afc43fe1dd87d51e26078ab65c599f",
+  "/srv/lanxin/qwen35-a3b/runtime-rne-v21/libhetgpu_cuda_shim.so": "7f875a1841bdf13bbd462383b674e4f11d8c02f1c7b26978d1fe977f138518e3",
+  "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-q81-validation": "e2ea4831ea37357ce68bdc754691cefbfba4335d76ba27d8fae08eb228da7398",
+  "/srv/lanxin/qwen35-a3b/bin/run-pacc-recovered.py": "65ddfd90f3a4ae5bbba2f38c1b1c1b78597ec2d6b78230851ecf6c3e26500499",
+  "/srv/lanxin/qwen35-a3b/bin/ngl-sweep-long.json": "8443b2390837ee3bf4bea65eaee85698ac8af838aeafe4ca12f9ec396656bbc5",
+  "/srv/lanxin/qwen35-a3b/logs/cpu-q81-long-v21.json": "270963a9851b78596cd0f28205d2c1277e2b82b3157be25f7aee3184cb91a280",
+  "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/libllama.so.0.3.0": "652d89cf97b7ec831023d42d8569fb14cc0861993a1c52ab77ce32312ccf9f7b"
+}

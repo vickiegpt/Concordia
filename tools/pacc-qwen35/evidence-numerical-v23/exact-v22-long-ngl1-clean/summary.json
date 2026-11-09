@@ -1,0 +1,459 @@
+{
+  "all_correct": false,
+  "aggregate_output_tps": null,
+  "aggregate_decode_tps": null,
+  "token_matched_decode_tps": null,
+  "token_matched_output_tps": null,
+  "tokens_correct": false,
+  "xm_batch_verified": true,
+  "requested_ngl": 1,
+  "scope": "startup XM/build qualification + synchronous submission logs + end-to-end token validation; no runtime phase accounting",
+  "returncodes": [
+    1,
+    -15,
+    -15,
+    1
+  ],
+  "requests": [
+    {
+      "aggregate_decode_tps": null,
+      "aggregate_output_tps": null,
+      "all_correct": false,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 32,
+        "min_tokens": 32,
+        "prompts": [
+          "Write a detailed explanation of virtual memory:\n",
+          "Write a detailed explanation of matrix multiplication:\n"
+        ]
+      },
+      "decode_started_monotonic_us": 20080926617,
+      "diagnostic": false,
+      "error": "CPU token mismatch",
+      "first_mismatch": {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      },
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 1,
+      "reference_math": "CPU independent Q6_K x CUDA-Q8_1 head, FP64 accumulate",
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 20051102823,
+      "ubatch": 2
+    },
+    {
+      "aggregate_decode_tps": null,
+      "aggregate_output_tps": null,
+      "all_correct": false,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 32,
+        "min_tokens": 32,
+        "prompts": [
+          "Write a detailed explanation of virtual memory:\n",
+          "Write a detailed explanation of matrix multiplication:\n"
+        ]
+      },
+      "decode_started_monotonic_us": 20081220378,
+      "diagnostic": false,
+      "error": "CPU token mismatch",
+      "first_mismatch": {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      },
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 1,
+      "reference_math": "CPU independent Q6_K x CUDA-Q8_1 head, FP64 accumulate",
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 20051100346,
+      "ubatch": 2
+    },
+    {
+      "aggregate_decode_tps": null,
+      "aggregate_output_tps": null,
+      "all_correct": false,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 32,
+        "min_tokens": 32,
+        "prompts": [
+          "Write a detailed explanation of virtual memory:\n",
+          "Write a detailed explanation of matrix multiplication:\n"
+        ]
+      },
+      "decode_started_monotonic_us": 20081137616,
+      "diagnostic": false,
+      "error": "CPU token mismatch",
+      "first_mismatch": {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      },
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 1,
+      "reference_math": "CPU independent Q6_K x CUDA-Q8_1 head, FP64 accumulate",
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 20051102802,
+      "ubatch": 2
+    }
+  ],
+  "phase_profiles": [],
+  "xm_batch_proof": [
+    {
+      "device": 0,
+      "calls": 29,
+      "multi_tiles": 23461,
+      "max_n": 2,
+      "q6_calls": 29
+    },
+    {
+      "device": 1,
+      "calls": 29,
+      "multi_tiles": 23461,
+      "max_n": 2,
+      "q6_calls": 29
+    },
+    {
+      "device": 2,
+      "calls": 28,
+      "multi_tiles": 22652,
+      "max_n": 2,
+      "q6_calls": 28
+    },
+    {
+      "device": 3,
+      "calls": 29,
+      "multi_tiles": 23461,
+      "max_n": 2,
+      "q6_calls": 29
+    }
+  ],
+  "hardware_qualification": [
+    {
+      "complete_submissions": 42,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 42
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 9060593,
+      "last_index": 9062367,
+      "unique_indices": 1774,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 617,
+          "p50_us": 13,
+          "p99_us": 30,
+          "max_us": 30
+        },
+        "input_copy": {
+          "sum_us": 26680,
+          "p50_us": 653,
+          "p99_us": 868,
+          "max_us": 868
+        },
+        "compute": {
+          "sum_us": 159705,
+          "p50_us": 3592,
+          "p99_us": 7442,
+          "max_us": 7442
+        },
+        "output_copy": {
+          "sum_us": 2394,
+          "p50_us": 48,
+          "p99_us": 159,
+          "max_us": 159
+        },
+        "cleanup": {
+          "sum_us": 64,
+          "p50_us": 2,
+          "p99_us": 3,
+          "max_us": 3
+        },
+        "completion_publish": {
+          "sum_us": 211,
+          "p50_us": 5,
+          "p99_us": 6,
+          "max_us": 6
+        },
+        "device_before_publish": {
+          "sum_us": 197220,
+          "p50_us": 4491,
+          "p99_us": 8694,
+          "max_us": 8694
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 0,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/bin/test_jobd_q8",
+        "--hardware",
+        "0"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 2.2237519988266286,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 42,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 42
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 6366139,
+      "last_index": 6367911,
+      "unique_indices": 1772,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 578,
+          "p50_us": 13,
+          "p99_us": 30,
+          "max_us": 30
+        },
+        "input_copy": {
+          "sum_us": 27265,
+          "p50_us": 686,
+          "p99_us": 742,
+          "max_us": 742
+        },
+        "compute": {
+          "sum_us": 159186,
+          "p50_us": 3638,
+          "p99_us": 6825,
+          "max_us": 6825
+        },
+        "output_copy": {
+          "sum_us": 2515,
+          "p50_us": 49,
+          "p99_us": 166,
+          "max_us": 166
+        },
+        "cleanup": {
+          "sum_us": 58,
+          "p50_us": 2,
+          "p99_us": 3,
+          "max_us": 3
+        },
+        "completion_publish": {
+          "sum_us": 212,
+          "p50_us": 5,
+          "p99_us": 7,
+          "max_us": 7
+        },
+        "device_before_publish": {
+          "sum_us": 197358,
+          "p50_us": 4577,
+          "p99_us": 7893,
+          "max_us": 7893
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 1,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/bin/test_jobd_q8",
+        "--hardware",
+        "1"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 1.6937690015765838,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 42,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 42
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 6332581,
+      "last_index": 6334355,
+      "unique_indices": 1774,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 608,
+          "p50_us": 13,
+          "p99_us": 31,
+          "max_us": 31
+        },
+        "input_copy": {
+          "sum_us": 29794,
+          "p50_us": 750,
+          "p99_us": 778,
+          "max_us": 778
+        },
+        "compute": {
+          "sum_us": 161161,
+          "p50_us": 3684,
+          "p99_us": 6910,
+          "max_us": 6910
+        },
+        "output_copy": {
+          "sum_us": 2544,
+          "p50_us": 51,
+          "p99_us": 167,
+          "max_us": 167
+        },
+        "cleanup": {
+          "sum_us": 81,
+          "p50_us": 2,
+          "p99_us": 3,
+          "max_us": 3
+        },
+        "completion_publish": {
+          "sum_us": 203,
+          "p50_us": 5,
+          "p99_us": 6,
+          "max_us": 6
+        },
+        "device_before_publish": {
+          "sum_us": 201977,
+          "p50_us": 4693,
+          "p99_us": 8054,
+          "max_us": 8054
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 2,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/bin/test_jobd_q8",
+        "--hardware",
+        "2"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 1.5378879979834892,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 42,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 42
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 6368769,
+      "last_index": 6370541,
+      "unique_indices": 1772,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 580,
+          "p50_us": 13,
+          "p99_us": 28,
+          "max_us": 28
+        },
+        "input_copy": {
+          "sum_us": 26641,
+          "p50_us": 671,
+          "p99_us": 701,
+          "max_us": 701
+        },
+        "compute": {
+          "sum_us": 158098,
+          "p50_us": 3610,
+          "p99_us": 6887,
+          "max_us": 6887
+        },
+        "output_copy": {
+          "sum_us": 2452,
+          "p50_us": 49,
+          "p99_us": 162,
+          "max_us": 162
+        },
+        "cleanup": {
+          "sum_us": 75,
+          "p50_us": 2,
+          "p99_us": 3,
+          "max_us": 3
+        },
+        "completion_publish": {
+          "sum_us": 211,
+          "p50_us": 5,
+          "p99_us": 6,
+          "max_us": 6
+        },
+        "device_before_publish": {
+          "sum_us": 195555,
+          "p50_us": 4534,
+          "p99_us": 7951,
+          "max_us": 7951
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 3,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/bin/test_jobd_q8",
+        "--hardware",
+        "3"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 1.5780990033817943,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    }
+  ],
+  "phase_profile": "qualification",
+  "elapsed_including_load_s": 104.06440708900118,
+  "min_mem_available_kib": 257540064,
+  "memory_guard_triggered": false,
+  "runner_timed_out": false,
+  "barrier_released": true
+}

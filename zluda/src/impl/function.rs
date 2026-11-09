@@ -46,6 +46,9 @@ mod sifive_mmvf;
 #[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
 #[path = "sifive_softmax.rs"]
 mod sifive_softmax;
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[path = "sifive_half.rs"]
+mod sifive_half;
 #[cfg(all(
     feature = "sifive",
     not(feature = "amd"),
@@ -10997,27 +11000,7 @@ fn sifive_rope_has_freq_factors(kernel_name: &str, freq_factors: u64) -> bool {
     not(feature = "tenstorrent")
 ))]
 fn sifive_f32_to_f16(value: f32) -> u16 {
-    let bits = value.to_bits();
-    let sign = ((bits >> 16) & 0x8000) as u16;
-    let exp = ((bits >> 23) & 0xff) as i32;
-    let frac = bits & 0x7f_ffff;
-    if exp == 0xff {
-        return sign | if frac == 0 { 0x7c00 } else { 0x7e00 };
-    }
-    let half_exp = exp - 127 + 15;
-    if half_exp >= 0x1f {
-        sign | 0x7c00
-    } else if half_exp <= 0 {
-        if half_exp < -10 {
-            sign
-        } else {
-            let mant = frac | 0x80_0000;
-            let shift = (14 - half_exp) as u32;
-            sign | ((mant >> shift) as u16)
-        }
-    } else {
-        sign | ((half_exp as u16) << 10) | ((frac >> 13) as u16)
-    }
+    sifive_half::from_f32(value)
 }
 
 #[cfg(all(
@@ -19433,6 +19416,11 @@ unsafe fn try_offload_named_sifive_kernel(
         }
         let rmsnorm_min_hidden =
             sifive_parse_env_u64_default("HETGPU_SIFIVE_RMSNORM_OFFLOAD_MIN_HIDDEN", 1024);
+        if dtype == 4 && sifive_env_truthy("HETGPU_SIFIVE_RMS_EXACT") {
+            let rc=sifive_runtime_sys::rms_exact::hetgpu_sifive_submit_rms_exact_on(
+                current_sifive_device_id_or_zero(),x.cast(),weight.cast(),y.cast(),rows,hidden,eps);
+            return Some(if rc==0 {Ok(())} else {Err(CUerror::UNKNOWN)});
+        }
         if hidden < rmsnorm_min_hidden
             || !sifive_env_enabled_default("HETGPU_SIFIVE_RMSNORM_OFFLOAD", true)
         {

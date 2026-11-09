@@ -1,0 +1,23 @@
+[
+  {
+    "run": "exact-v23-noauto-long-ngl1",
+    "q6_head_host_elapsed_us": 380033192.0,
+    "decode_call_host_elapsed_us": 401718063.0,
+    "fraction": 0.9460196764913705,
+    "scope": "Sum of per-worker decode-call times; head includes staging, submission, wait and readback, NOT device compute time"
+  },
+  {
+    "run": "exact-v23-noauto-long-ngl2",
+    "q6_head_host_elapsed_us": 372504862.0,
+    "decode_call_host_elapsed_us": 882049947.0,
+    "fraction": 0.422317197871789,
+    "scope": "Sum of per-worker decode-call times; head includes staging, submission, wait and readback, NOT device compute time"
+  },
+  {
+    "run": "exact-v23-noauto-b4-t64-ngl1",
+    "q6_head_host_elapsed_us": 831104573.0,
+    "decode_call_host_elapsed_us": 906942670.0,
+    "fraction": 0.9163804951419917,
+    "scope": "Sum of per-worker decode-call times; head includes staging, submission, wait and readback, NOT device compute time"
+  }
+]

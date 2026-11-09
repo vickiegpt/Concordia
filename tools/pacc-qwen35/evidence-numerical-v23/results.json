@@ -1,0 +1,114 @@
+[
+  {
+    "run": "rne-v21-long-ngl1",
+    "all_correct": false,
+    "decode_tps": null,
+    "output_tps": null,
+    "errors": [
+      {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      },
+      {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      },
+      {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      },
+      {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      }
+    ]
+  },
+  {
+    "run": "exact-v22-long-ngl1",
+    "all_correct": false,
+    "decode_tps": null,
+    "output_tps": null,
+    "errors": []
+  },
+  {
+    "run": "exact-v22-long-ngl1-clean",
+    "all_correct": false,
+    "decode_tps": null,
+    "output_tps": null,
+    "errors": [
+      {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      },
+      {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      },
+      {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      }
+    ]
+  },
+  {
+    "run": "exact-v23-long-ngl1",
+    "all_correct": false,
+    "decode_tps": null,
+    "output_tps": null,
+    "errors": [
+      {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      },
+      {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      },
+      {
+        "actual": 1817,
+        "expected": 314,
+        "sequence": 1,
+        "step": 20
+      }
+    ]
+  },
+  {
+    "run": "exact-v23-noauto-long-ngl1",
+    "all_correct": true,
+    "decode_tps": 2.3790954257093877,
+    "output_tps": 1.90636949622935,
+    "errors": []
+  },
+  {
+    "run": "exact-v23-noauto-long-ngl2",
+    "all_correct": true,
+    "decode_tps": 1.0903727682003967,
+    "output_tps": 0.8767038829862231,
+    "errors": []
+  },
+  {
+    "run": "exact-v23-noauto-b4-t64-ngl1",
+    "all_correct": true,
+    "decode_tps": 4.34581657792183,
+    "output_tps": 3.8669239218366585,
+    "errors": []
+  }
+]

@@ -1,0 +1,30 @@
+{
+  "aggregate_decode_tps": null,
+  "aggregate_output_tps": null,
+  "all_correct": false,
+  "config": {
+    "batched_prefill": true,
+    "max_tokens": 32,
+    "min_tokens": 32,
+    "prompts": [
+      "Write a detailed explanation of virtual memory:\n",
+      "Write a detailed explanation of matrix multiplication:\n"
+    ]
+  },
+  "decode_started_monotonic_us": 20974376572,
+  "diagnostic": false,
+  "error": "CPU token mismatch",
+  "first_mismatch": {
+    "actual": 1817,
+    "expected": 314,
+    "sequence": 1,
+    "step": 20
+  },
+  "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+  "ngl": 2,
+  "reference_math": "CPU independent CUDA-Q8_1 head + quantized layer39, FP64 accumulate",
+  "reference_only": false,
+  "sequences": 2,
+  "started_monotonic_us": 20907490252,
+  "ubatch": 2
+}

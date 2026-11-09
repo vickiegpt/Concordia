@@ -1,0 +1,604 @@
+{
+  "aggregate_decode_tps": 1.1207075948516987,
+  "aggregate_output_tps": 0.9933343077322059,
+  "all_correct": true,
+  "barrier_synchronized": true,
+  "config": {
+    "batched_prefill": true,
+    "max_tokens": 64,
+    "min_tokens": 64,
+    "prompts": [
+      "Write a detailed explanation of virtual memory:\n",
+      "Write a detailed explanation of matrix multiplication:\n",
+      "Write a detailed explanation of virtual memory:\n",
+      "Write a detailed explanation of matrix multiplication:\n"
+    ]
+  },
+  "decode_started_monotonic_us": 21951519123,
+  "decode_tokens": 252,
+  "diagnostic": false,
+  "finished_monotonic_us": 22176377062,
+  "input_tokens": [
+    [
+      7734,
+      264,
+      11346,
+      15673,
+      314,
+      3972,
+      4779,
+      25,
+      198
+    ],
+    [
+      7734,
+      264,
+      11346,
+      15673,
+      314,
+      5979,
+      44896,
+      25,
+      198
+    ],
+    [
+      7734,
+      264,
+      11346,
+      15673,
+      314,
+      3972,
+      4779,
+      25,
+      198
+    ],
+    [
+      7734,
+      264,
+      11346,
+      15673,
+      314,
+      5979,
+      44896,
+      25,
+      198
+    ]
+  ],
+  "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+  "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+  "ngl": 1,
+  "op_offload": false,
+  "output_tokens": 256,
+  "reference_complete": false,
+  "reference_math": "CPU independent Q6_K x CUDA-Q8_1 head, FP64 accumulate",
+  "reference_only": false,
+  "sequences": 4,
+  "started_monotonic_us": 21918659194,
+  "steps": [
+    {
+      "active": 4,
+      "elapsed_us": 3518300
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3541938
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3558359
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3537603
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3529504
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3581079
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3517358
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3482354
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3547916
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3497813
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3539522
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3573920
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3561507
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3555250
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3575889
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3563359
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3582189
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3571168
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3505034
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3559956
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3579552
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3525066
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3584325
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3561576
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3449797
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3513949
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3546219
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3524014
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3570809
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3583705
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3533211
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3545850
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3592477
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3559644
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3621880
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3532349
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3545917
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3626518
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3575038
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3574184
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3646547
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3567900
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3532456
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3619790
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3517779
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3494928
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3578315
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3508680
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3496453
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3561322
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3539818
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3569966
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3587760
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3568707
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3602647
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3646714
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3533660
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3603652
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3632392
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3508424
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3528440
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3619401
+    },
+    {
+      "active": 4,
+      "elapsed_us": 3527148
+    }
+  ],
+  "texts": [
+    "1. What is virtual memory?\n2. How does it work?\n3. What are the benefits?\n4. What are the drawbacks?\n5. What is the difference between virtual memory and physical memory?\n\n<think>\n\n</think>\n\n### Virtual Memory: A Comprehensive Explanation\n\nVirtual memory is a fundamental memory",
+    "1. Define the operation and the condition for it to be possible.\n2. Explain the calculation of individual elements using the dot product of rows and columns.\n3. Provide a concrete example of multiplying two 2x2 matrices.\n4. Discuss the properties of matrix multiplication, specifically addressing commutativity and",
+    "1. What is virtual memory?\n2. How does it work?\n3. What are the benefits?\n4. What are the drawbacks?\n5. What is the difference between virtual memory and physical memory?\n\n<think>\n\n</think>\n\n### Virtual Memory: A Comprehensive Explanation\n\nVirtual memory is a fundamental memory",
+    "1. Define the operation and the condition for it to be possible.\n2. Explain the calculation of individual elements using the dot product of rows and columns.\n3. Provide a concrete example of multiplying two 2x2 matrices.\n4. Discuss the properties of matrix multiplication, specifically addressing commutativity and"
+  ],
+  "tokens": [
+    [
+      16,
+      13,
+      3437,
+      369,
+      3972,
+      4779,
+      30,
+      198,
+      17,
+      13,
+      2500,
+      1503,
+      424,
+      944,
+      30,
+      198,
+      18,
+      13,
+      3437,
+      513,
+      279,
+      7328,
+      30,
+      198,
+      19,
+      13,
+      3437,
+      513,
+      279,
+      85039,
+      30,
+      198,
+      20,
+      13,
+      3437,
+      369,
+      279,
+      6463,
+      1881,
+      3972,
+      4779,
+      321,
+      6745,
+      4779,
+      30,
+      271,
+      248068,
+      271,
+      248069,
+      271,
+      13962,
+      20094,
+      13453,
+      25,
+      357,
+      64605,
+      68868,
+      271,
+      31931,
+      4779,
+      369,
+      264,
+      15346,
+      4779
+    ],
+    [
+      16,
+      13,
+      18053,
+      279,
+      5488,
+      321,
+      279,
+      2876,
+      364,
+      424,
+      310,
+      381,
+      3102,
+      13,
+      198,
+      17,
+      13,
+      79091,
+      279,
+      21261,
+      314,
+      3714,
+      5255,
+      1608,
+      279,
+      12391,
+      1918,
+      314,
+      6761,
+      321,
+      7890,
+      13,
+      198,
+      18,
+      13,
+      38256,
+      264,
+      13769,
+      3010,
+      314,
+      81288,
+      1330,
+      220,
+      17,
+      87,
+      17,
+      34030,
+      13,
+      198,
+      19,
+      13,
+      63074,
+      279,
+      5706,
+      314,
+      5979,
+      44896,
+      11,
+      11352,
+      26153,
+      1028,
+      330,
+      41979,
+      321
+    ],
+    [
+      16,
+      13,
+      3437,
+      369,
+      3972,
+      4779,
+      30,
+      198,
+      17,
+      13,
+      2500,
+      1503,
+      424,
+      944,
+      30,
+      198,
+      18,
+      13,
+      3437,
+      513,
+      279,
+      7328,
+      30,
+      198,
+      19,
+      13,
+      3437,
+      513,
+      279,
+      85039,
+      30,
+      198,
+      20,
+      13,
+      3437,
+      369,
+      279,
+      6463,
+      1881,
+      3972,
+      4779,
+      321,
+      6745,
+      4779,
+      30,
+      271,
+      248068,
+      271,
+      248069,
+      271,
+      13962,
+      20094,
+      13453,
+      25,
+      357,
+      64605,
+      68868,
+      271,
+      31931,
+      4779,
+      369,
+      264,
+      15346,
+      4779
+    ],
+    [
+      16,
+      13,
+      18053,
+      279,
+      5488,
+      321,
+      279,
+      2876,
+      364,
+      424,
+      310,
+      381,
+      3102,
+      13,
+      198,
+      17,
+      13,
+      79091,
+      279,
+      21261,
+      314,
+      3714,
+      5255,
+      1608,
+      279,
+      12391,
+      1918,
+      314,
+      6761,
+      321,
+      7890,
+      13,
+      198,
+      18,
+      13,
+      38256,
+      264,
+      13769,
+      3010,
+      314,
+      81288,
+      1330,
+      220,
+      17,
+      87,
+      17,
+      34030,
+      13,
+      198,
+      19,
+      13,
+      63074,
+      279,
+      5706,
+      314,
+      5979,
+      44896,
+      11,
+      11352,
+      26153,
+      1028,
+      330,
+      41979,
+      321
+    ]
+  ],
+  "ubatch": 4
+}

@@ -47,3 +47,10 @@ try:
 except ValueError:pass
 results[0]['finished_monotonic_us']=old
 print('PASS CPU baseline separation and requested-ngl proof matching')
+parse=runpy.run_path(str(Path(__file__).with_name('run-four-pacc-requests.py')))['parse_batch_proof']
+line='PACC Q6_KxQ8_1 dev=2 m=248320 n=2 k=2048 tiles=809 elapsed_ms=12 completion=verified'
+assert parse([line],2)['multi_tiles']==809
+assert parse([line],1)['calls']==0
+assert parse([line.replace('n=2','n=1')],2)['multi_tiles']==0
+assert parse([line.replace('verified','failed')],2)['calls']==0
+print('PASS Q6_K batch evidence: device, columns and completion gates')

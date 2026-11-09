@@ -17,6 +17,25 @@ def available_kib():
         if line.startswith('MemAvailable:'):return int(line.split()[1])
     raise RuntimeError('MemAvailable is missing')
 
+def parse_batch_proof(lines,device):
+    proof=dict(device=device,calls=0,multi_tiles=0,max_n=0,q6_calls=0)
+    for line in lines:
+        if line.startswith('PACC_XM_REQUEST_BATCH '):
+            fields=dict(part.split('=',1) for part in line.split()[1:])
+            if fields.get('completion')!='verified':continue
+            proof['calls']+=1;proof['multi_tiles']+=int(fields['multi_tiles'])
+            proof['max_n']=max(proof['max_n'],int(fields['max_n']))
+        elif line.startswith('PACC Q6_KxQ8_1 '):
+            fields=dict(part.split('=',1) for part in line.split()[2:])
+            if fields.get('completion')!='verified' or int(fields['dev'])!=device:continue
+            n=int(fields['n']);tiles=int(fields['tiles'])
+            if n<1 or n>8 or tiles<1:continue
+            # aggregate() additionally requires the qualified XM jobd build on all cards.
+            proof['calls']+=1;proof['q6_calls']+=1
+            proof['multi_tiles']+=tiles if n>1 else 0
+            proof['max_n']=max(proof['max_n'],n)
+    return proof
+
 def aggregate(reference,results,profiles,proofs,codes,ngl=99):
     config=reference['config'];count=config['max_tokens'];batch=len(config['prompts'])
     valid=(len(results)==len(codes)==4 and 0<=ngl<=99 and not any(codes) and
@@ -68,6 +87,7 @@ def main():
     p.add_argument('--min-available-gib',type=int,default=16)
     p.add_argument('--ngl',type=int,default=99)
     p.add_argument('--start-barrier',action='store_true')
+    p.add_argument('--phase-profile',choices=['streaming','qualification'],default='streaming')
     a=p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+',a.prefix):p.error('invalid prefix')
     config=json.loads(a.case.read_text());reference=json.loads(a.reference.read_text())
@@ -91,6 +111,10 @@ def main():
         'HETGPU_SIFIVE_QK_VECTOR_PACK','HETGPU_SIFIVE_QK_EXPERT_BATCH',
         'HETGPU_SIFIVE_QK_VECTOR_REDUCE','HETGPU_SIFIVE_QK_PROFILE','HETGPU_SIFIVE_ELF_PROFILE',
         'HETGPU_SIFIVE_MMAP_WEIGHTS','HETGPU_SIFIVE_LAZY_ZERO')}
+    settings['HETGPU_SIFIVE_RMS_EXACT']=env.get('HETGPU_SIFIVE_RMS_EXACT','0')
+    settings['QWEN_OP_OFFLOAD']=env.get('QWEN_OP_OFFLOAD','default')
+    settings['reference_math']=reference.get('reference_math','native CPU')
+    settings['phase_profile']=a.phase_profile
     settings.update(ubatch=a.ubatch,timeout_s=a.timeout,runtime=str(a.runtime.resolve()),ngl=a.ngl,start_barrier=a.start_barrier)
     settings.update(wrapper=str(a.wrapper.resolve()),harness=str(a.harness.resolve()),
                     llama_library_dir=env.get('LLAMA_RUNTIME_LIBRARY_DIR'),
@@ -124,12 +148,13 @@ def main():
     def stop(worker,force=False):
         sig=signal.SIGKILL if force else signal.SIGTERM
         try:
-            if a.ngl==0:os.killpg(worker.pid,sig)
+            if a.ngl==0 or a.phase_profile=='qualification':os.killpg(worker.pid,sig)
             else:worker.send_signal(sig)
         except ProcessLookupError:pass
     try:
         for device in range(4):
-            log=(out/f'pacc{device}-driver.log').open('x');logs.append(log)
+            log_suffix='phases' if a.ngl>0 and a.phase_profile=='qualification' else 'driver'
+            log=(out/f'pacc{device}-{log_suffix}.log').open('x');logs.append(log)
             worker_env=env.copy()
             if a.start_barrier:worker_env.update(QWEN_BARRIER_DIR=str(barrier),QWEN_WORKER_ID=str(device))
             workload=[str(a.harness.resolve()),str(ROOT/'models/Qwen3.5-35B-A3B-Q4_K_M.gguf'),
@@ -141,7 +166,8 @@ def main():
             if a.ngl==0:
                 cmd=workload;worker_env.pop('LD_PRELOAD',None)
                 worker_env['LD_LIBRARY_PATH']=str(a.llama_library_dir.resolve())+':'+str(ROOT/'llama.cpp/build-pacc-cuda-gcc14/bin') if a.llama_library_dir else str(ROOT/'llama.cpp/build-pacc-cuda-gcc14/bin')
-            processes.append(subprocess.Popen(cmd,env=worker_env,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,start_new_session=a.ngl==0))
+            elif a.phase_profile=='qualification':cmd=[*wrapper,str(device),'--',*workload]
+            processes.append(subprocess.Popen(cmd,env=worker_env,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,start_new_session=a.ngl==0 or a.phase_profile=='qualification'))
         while any(x.poll() is None for x in processes):
             min_available=min(min_available,available_kib())
             memory_guard_triggered=min_available<floor_kib
@@ -171,20 +197,18 @@ def main():
         return [json.loads(file.read_text()) for i in range(4) if (file:=out/f'pacc{i}-{suffix}.json').exists()]
     proofs=[]
     for i in range(4):
-        proof=dict(device=i,calls=0,multi_tiles=0,max_n=0)
+        proof=parse_batch_proof([],i)
         file=out/f'pacc{i}-phases.log'
         if file.exists():
             with file.open(errors='replace') as stream:
-                for line in stream:
-                    if not line.startswith('PACC_XM_REQUEST_BATCH '):continue
-                    fields=dict(part.split('=',1) for part in line.split()[1:])
-                    if fields.get('completion')!='verified':continue
-                    proof['calls']+=1;proof['multi_tiles']+=int(fields['multi_tiles'])
-                    proof['max_n']=max(proof['max_n'],int(fields['max_n']))
+                proof=parse_batch_proof(stream,i)
         proofs.append(proof)
     results,profiles=load('result'),load('phases')
+    qualifications=load('qualification')
     if a.ngl==0:profiles=[];proofs=[]
-    report=aggregate(reference,results,profiles,proofs,codes,a.ngl)
+    report=aggregate(reference,results,qualifications if a.ngl>0 and a.phase_profile=='qualification' else profiles,proofs,codes,a.ngl)
+    if a.ngl>0 and a.phase_profile=='qualification':
+        report['scope']='startup XM/build qualification + synchronous submission logs + end-to-end token validation; no runtime phase accounting'
     if memory_guard_triggered:
         report.update(all_correct=False,aggregate_output_tps=None,aggregate_decode_tps=None,
                       token_matched_decode_tps=None,token_matched_output_tps=None,
@@ -193,6 +217,7 @@ def main():
         report.update(all_correct=False,aggregate_output_tps=None,aggregate_decode_tps=None,
                       token_matched_decode_tps=None,token_matched_output_tps=None,failure='timeout or incomplete barrier')
     report.update(returncodes=codes,requests=results,phase_profiles=profiles,xm_batch_proof=proofs,
+                  hardware_qualification=qualifications,phase_profile=a.phase_profile,
                   elapsed_including_load_s=time.monotonic()-started,
                   min_mem_available_kib=min_available,memory_guard_triggered=memory_guard_triggered,
                   runner_timed_out=runner_timed_out,barrier_released=barrier_released)

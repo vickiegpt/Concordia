@@ -1,0 +1,27 @@
+{
+  "device": 2,
+  "all_passed": true,
+  "cases": [
+    {
+      "m": 37,
+      "n": 4,
+      "k": 256,
+      "max_abs_error": 0.0,
+      "guards_unchanged": true
+    },
+    {
+      "m": 65,
+      "n": 4,
+      "k": 2048,
+      "max_abs_error": 0.0,
+      "guards_unchanged": true
+    },
+    {
+      "m": 17,
+      "n": 8,
+      "k": 256,
+      "max_abs_error": 0.0,
+      "guards_unchanged": true
+    }
+  ]
+}

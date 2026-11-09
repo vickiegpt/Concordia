@@ -1,5 +1,12 @@
 # PACC0 XM context and Qwen35 performance harness
 
+Latest numerical qualification: [runtime v23](qwen-numerical-v23.md).
+It fixes FP16 rounding and adds checked device-side RMSNorm, compares full
+logits with an independent CUDA-Q8_1 CPU oracle, and records the separate
+automatic-operation-offload discrepancy. Use the new numerical evaluation
+scripts for the current four-device allocation; older results below describe
+their own firmware/runtime versions and are not current qualification.
+
 This directory is a reproducible **experiment harness**, not a new production
 default. `hetgpu_pacc_jobd.c` is the exact legacy jobd source used by the running
 PACC0 firmware; keeping it here avoids overwriting an independently modified

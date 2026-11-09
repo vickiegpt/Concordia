@@ -1,0 +1,89 @@
+{
+  "complete_submissions": 3763,
+  "incomplete_submission_count": 1,
+  "incomplete_sample": [
+    [
+      7349028462300385003,
+      {
+        "last_index": 6311537,
+        "build": 131126
+      }
+    ]
+  ],
+  "saturated_submissions": 0,
+  "submission_build_counts": {
+    "0x20036": 3763
+  },
+  "build_matches": true,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 6163721,
+  "last_index": 6311538,
+  "unique_indices": 147817,
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 58757,
+      "p50_us": 15,
+      "p99_us": 21,
+      "max_us": 71
+    },
+    "input_copy": {
+      "sum_us": 3073441,
+      "p50_us": 786,
+      "p99_us": 1367,
+      "max_us": 1587
+    },
+    "compute": {
+      "sum_us": 5183166,
+      "p50_us": 1354,
+      "p99_us": 1484,
+      "max_us": 7992
+    },
+    "output_copy": {
+      "sum_us": 242135,
+      "p50_us": 64,
+      "p99_us": 67,
+      "max_us": 123
+    },
+    "cleanup": {
+      "sum_us": 9344,
+      "p50_us": 3,
+      "p99_us": 5,
+      "max_us": 54
+    },
+    "completion_publish": {
+      "sum_us": 18515,
+      "p50_us": 5,
+      "p99_us": 7,
+      "max_us": 43
+    },
+    "device_before_publish": {
+      "sum_us": 9284267,
+      "p50_us": 2417,
+      "p99_us": 3244,
+      "max_us": 9144
+    }
+  },
+  "returncode": -15,
+  "timed_out": false,
+  "capture_valid": false,
+  "device": 2,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-q81-validation",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "1",
+    "/srv/lanxin/qwen35-a3b/bin/ngl-sweep-long.json",
+    "/srv/lanxin/qwen35-a3b/logs/exact-v22-long-ngl1/pacc2-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/cpu-q81-long-v21.json",
+    "2"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 4.976535998139298,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": "RuntimeError: duplicate phase or reused completed sequence",
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

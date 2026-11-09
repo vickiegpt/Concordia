@@ -1,0 +1,81 @@
+{
+  "complete_submissions": 23461,
+  "incomplete_submission_count": 0,
+  "incomplete_sample": [],
+  "saturated_submissions": 0,
+  "submission_build_counts": {
+    "0x20036": 23461
+  },
+  "build_matches": true,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 5218472,
+  "last_index": 6137466,
+  "unique_indices": 918994,
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 365082,
+      "p50_us": 15,
+      "p99_us": 21,
+      "max_us": 85
+    },
+    "input_copy": {
+      "sum_us": 19168770,
+      "p50_us": 750,
+      "p99_us": 1362,
+      "max_us": 8440
+    },
+    "compute": {
+      "sum_us": 32067169,
+      "p50_us": 1354,
+      "p99_us": 1454,
+      "max_us": 9234
+    },
+    "output_copy": {
+      "sum_us": 1425867,
+      "p50_us": 61,
+      "p99_us": 64,
+      "max_us": 107
+    },
+    "cleanup": {
+      "sum_us": 59124,
+      "p50_us": 3,
+      "p99_us": 5,
+      "max_us": 61
+    },
+    "completion_publish": {
+      "sum_us": 119656,
+      "p50_us": 5,
+      "p99_us": 7,
+      "max_us": 64
+    },
+    "device_before_publish": {
+      "sum_us": 57703032,
+      "p50_us": 2373,
+      "p99_us": 3136,
+      "max_us": 10183
+    }
+  },
+  "returncode": 1,
+  "timed_out": false,
+  "capture_valid": false,
+  "device": 3,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-q81-validation",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "1",
+    "/srv/lanxin/qwen35-a3b/bin/ngl-sweep-long.json",
+    "/srv/lanxin/qwen35-a3b/logs/rne-v21-long-ngl1/pacc3-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/cpu-q81-long-v21.json",
+    "2"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 5.334814002708299,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": "KeyboardInterrupt: signal 15",
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}
