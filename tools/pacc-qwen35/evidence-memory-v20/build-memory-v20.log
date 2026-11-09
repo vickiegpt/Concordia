@@ -1,0 +1,80 @@
+    --> zluda/src/impl/checkpoint.rs:2156:41
+     |
+2156 |                     if let Some(cstr) = &PTX_BUFFER {
+     |                                         ^^^^^^^^^^^ shared reference to mutable static
+     |
+     = note: shared references to mutable statics are dangerous; it's undefined behavior if the static is mutated or if a mutable reference is created for it while the shared reference lives
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>
+     = note: `#[warn(static_mut_refs)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+help: use `&raw const` instead to create a raw pointer
+     |
+2156 |                     if let Some(cstr) = &raw const PTX_BUFFER {
+     |                                          +++++++++
+
+warning: creating a shared reference to mutable static
+    --> zluda/src/impl/checkpoint.rs:2171:41
+     |
+2171 |                     if let Some(cstr) = &PTX_BUFFER {
+     |                                         ^^^^^^^^^^^ shared reference to mutable static
+     |
+     = note: shared references to mutable statics are dangerous; it's undefined behavior if the static is mutated or if a mutable reference is created for it while the shared reference lives
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>
+help: use `&raw const` instead to create a raw pointer
+     |
+2171 |                     if let Some(cstr) = &raw const PTX_BUFFER {
+     |                                          +++++++++
+
+warning: creating a shared reference to mutable static
+    --> zluda/src/impl/checkpoint.rs:2181:45
+     |
+2181 |                         if let Some(cstr) = &PTX_BUFFER {
+     |                                             ^^^^^^^^^^^ shared reference to mutable static
+     |
+     = note: shared references to mutable statics are dangerous; it's undefined behavior if the static is mutated or if a mutable reference is created for it while the shared reference lives
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>
+help: use `&raw const` instead to create a raw pointer
+     |
+2181 |                         if let Some(cstr) = &raw const PTX_BUFFER {
+     |                                              +++++++++
+
+warning: creating a shared reference to mutable static
+    --> zluda/src/impl/checkpoint.rs:2204:41
+     |
+2204 |                     if let Some(cstr) = &NAME_BUFFER {
+     |                                         ^^^^^^^^^^^^ shared reference to mutable static
+     |
+     = note: shared references to mutable statics are dangerous; it's undefined behavior if the static is mutated or if a mutable reference is created for it while the shared reference lives
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>
+help: use `&raw const` instead to create a raw pointer
+     |
+2204 |                     if let Some(cstr) = &raw const NAME_BUFFER {
+     |                                          +++++++++
+
+warning: creating a shared reference to mutable static
+    --> zluda/src/impl/checkpoint.rs:2219:45
+     |
+2219 |                         if let Some(cstr) = &NAME_BUFFER {
+     |                                             ^^^^^^^^^^^^ shared reference to mutable static
+     |
+     = note: shared references to mutable statics are dangerous; it's undefined behavior if the static is mutated or if a mutable reference is created for it while the shared reference lives
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>
+help: use `&raw const` instead to create a raw pointer
+     |
+2219 |                         if let Some(cstr) = &raw const NAME_BUFFER {
+     |                                              +++++++++
+
+warning: creating a shared reference to mutable static
+    --> zluda/src/impl/checkpoint.rs:2523:29
+     |
+2523 |         if let Some(cstr) = &INSTRUMENTED_PTX_BUFFER {
+     |                             ^^^^^^^^^^^^^^^^^^^^^^^^ shared reference to mutable static
+     |
+     = note: shared references to mutable statics are dangerous; it's undefined behavior if the static is mutated or if a mutable reference is created for it while the shared reference lives
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>
+help: use `&raw const` instead to create a raw pointer
+     |
+2523 |         if let Some(cstr) = &raw const INSTRUMENTED_PTX_BUFFER {
+     |                              +++++++++
+
+warning: `zluda` (lib) generated 600 warnings (run `cargo fix --lib -p zluda` to apply 37 suggestions)
+    Finished `release` profile [optimized] target(s) in 34.82s

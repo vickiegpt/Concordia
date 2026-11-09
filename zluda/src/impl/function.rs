@@ -15875,10 +15875,10 @@ unsafe fn execute_bin_bcast_f32_fallback(
     let src1_i0 = ne0.min(ne10z).max(1);
     let src1_elems = checked_extent(ne13z, s13, ne12z, s12, ne11z, s11, src1_i0, s10)?;
     if !sifive_cuda_alloc_has_elems(dst as *const f32, dst_elems)
-        || (!src0.is_null() && !sifive_cuda_alloc_has_elems(src0, src0_elems))
+        || (!src0.is_null() && !sifive_cuda_or_mapped_read_has_elems(src0, src0_elems))
         || src1s
             .iter()
-            .any(|&ptr| !sifive_cuda_alloc_has_elems(ptr, src1_elems))
+            .any(|&ptr| !sifive_cuda_or_mapped_read_has_elems(ptr, src1_elems))
     {
         eprintln!(
             "[SIFIVE Backend] host-fallback bin_bcast '{}' rejected range dst={:p} src0={:p} dst_elems={} src0_elems={} src1_elems={}",
@@ -16097,6 +16097,16 @@ fn sifive_host_or_cuda_alloc_has_bytes(addr: u64, bytes: usize, need_write: bool
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+fn sifive_cuda_or_mapped_read_has_elems<T>(ptr: *const T, elems: usize) -> bool {
+    if sifive_cuda_alloc_has_elems(ptr, elems) { return true; }
+    std::env::var("HETGPU_SIFIVE_MMAP_WEIGHTS").ok().as_deref() == Some("1")
+        && super::memory::hetgpu_sifive_host_backing_mode_v1() == 1
+        && elems.checked_mul(std::mem::size_of::<T>())
+            .map(|bytes| sifive_host_or_cuda_alloc_has_bytes(ptr as u64, bytes, false))
+            .unwrap_or(false)
+}
+
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
 fn sifive_cuda_alloc_has_elems<T>(ptr: *const T, elems: usize) -> bool {
     elems
         .checked_mul(std::mem::size_of::<T>())

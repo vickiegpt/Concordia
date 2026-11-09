@@ -1,0 +1,8 @@
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=0 host=0x9c01b0 shared=0x20ef7387240 size=405504 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=1 host=0x99b200 shared=0x20ef73ea240 size=13824 flags=0x100
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=2 host=0x978020 shared=0x20ef73ed840 size=2176 flags=0x300
+sifive_LaunchKernel: staged kernel='pacc_q4k_tile_v1' arg=8 host=0x977a90 shared=0x20ef73ee0c0 size=1408 flags=0x100
+sifive_LaunchKernel: helper-refreshed image kernel='pacc_q4k_tile_v1' bytes=29248 slot_off=0x380000
+sifive_LaunchKernel: helper-submit kernel='pacc_q4k_tile_v1' seq=7348997116777992340 shared=0x20ef7380000 submit=29248 bytes on sifive3 slot0
+sifive_LaunchKernel: submitted ELF kernel='pacc_q4k_tile_v1' elf=28656 bytes submit=29248 bytes args=10 bindings=4 raw=0 bytes on sifive3
+PASS XM/RMS alternating device=3 repeats=64 large_payload=1 guards=unchanged

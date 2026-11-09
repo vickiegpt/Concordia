@@ -1,0 +1,160 @@
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC GDN device-core heads=32 seqs=2 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=2 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC attention softmax rows=2 cols=256 mask=false sinks=false completion=verified
+PACC argsort device-bitonic rows=2 cols=256 order=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=2048 k=512 tiles=36 multi_tiles=28 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC set_rows device-cast sparse-staging elements=1024 width=512 tiles=1 completion=verified
+PACC set_rows device-cast sparse-staging elements=1024 width=1 tiles=1 completion=verified
+PACC MMVF staged heads=16 samples=2 m=256 n=1 k=256 atype=3 completion=verified
+PACC attention softmax rows=32 cols=256 mask=true sinks=false completion=verified
+PACC MMVF staged heads=16 samples=2 m=256 n=1 k=256 atype=3 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC attention softmax rows=2 cols=256 mask=false sinks=false completion=verified
+PACC argsort device-bitonic rows=2 cols=256 order=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=2048 k=512 tiles=36 multi_tiles=28 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC concat device-tiled rows=16384 row_bytes=16 tiles=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC GDN device-core heads=32 seqs=2 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=2 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC attention softmax rows=2 cols=256 mask=false sinks=false completion=verified
+PACC argsort device-bitonic rows=2 cols=256 order=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=2048 k=512 tiles=36 multi_tiles=28 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC concat device-tiled rows=16384 row_bytes=16 tiles=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC GDN device-core heads=32 seqs=2 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=2 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC attention softmax rows=2 cols=256 mask=false sinks=false completion=verified
+PACC argsort device-bitonic rows=2 cols=256 order=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=2048 k=512 tiles=36 multi_tiles=28 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC concat device-tiled rows=16384 row_bytes=16 tiles=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC GDN device-core heads=32 seqs=2 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=2 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC attention softmax rows=2 cols=256 mask=false sinks=false completion=verified
+PACC argsort device-bitonic rows=2 cols=256 order=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=512 k=2048 tiles=20 multi_tiles=12 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=512 k=2048 tiles=20 multi_tiles=12 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=2048 k=512 tiles=40 multi_tiles=24 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC set_rows device-cast sparse-staging elements=1024 width=512 tiles=1 completion=verified
+PACC set_rows device-cast sparse-staging elements=1024 width=1 tiles=1 completion=verified
+PACC MMVF staged heads=16 samples=2 m=256 n=1 k=256 atype=3 completion=verified
+PACC attention softmax rows=32 cols=256 mask=true sinks=false completion=verified
+PACC MMVF staged heads=16 samples=2 m=256 n=1 k=256 atype=3 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC attention softmax rows=2 cols=256 mask=false sinks=false completion=verified
+PACC argsort device-bitonic rows=2 cols=256 order=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=11 m=512 k=2048 tiles=22 multi_tiles=10 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=11 m=512 k=2048 tiles=22 multi_tiles=10 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=11 m=2048 k=512 tiles=44 multi_tiles=20 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC concat device-tiled rows=16384 row_bytes=16 tiles=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC GDN device-core heads=32 seqs=2 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=2 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC attention softmax rows=2 cols=256 mask=false sinks=false completion=verified
+PACC argsort device-bitonic rows=2 cols=256 order=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=2048 k=512 tiles=36 multi_tiles=28 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC concat device-tiled rows=16384 row_bytes=16 tiles=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC GDN device-core heads=32 seqs=2 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=2 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC attention softmax rows=2 cols=256 mask=false sinks=false completion=verified
+PACC argsort device-bitonic rows=2 cols=256 order=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=11 m=512 k=2048 tiles=22 multi_tiles=10 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=11 m=512 k=2048 tiles=22 multi_tiles=10 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=11 m=2048 k=512 tiles=44 multi_tiles=20 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC concat device-tiled rows=16384 row_bytes=16 tiles=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+PACC GDN device-core heads=32 seqs=2 tokens=1 width=128 snapshots=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=4096 k=2048 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=1 channels=2 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC attention softmax rows=2 cols=256 mask=false sinks=false completion=verified
+PACC argsort device-bitonic rows=2 cols=256 order=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=512 k=2048 tiles=20 multi_tiles=12 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=512 k=2048 tiles=20 multi_tiles=12 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=10 m=2048 k=512 tiles=40 multi_tiles=24 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC set_rows device-cast sparse-staging elements=1024 width=512 tiles=1 completion=verified
+PACC set_rows device-cast sparse-staging elements=1024 width=1 tiles=1 completion=verified
+PACC MMVF staged heads=16 samples=2 m=256 n=1 k=256 atype=3 completion=verified
+PACC attention softmax rows=32 cols=256 mask=true sinks=false completion=verified
+PACC MMVF staged heads=16 samples=2 m=256 n=1 k=256 atype=3 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=4096 tiles=22 multi_tiles=22 max_n=2 completion=verified
+PACC attention softmax rows=2 cols=256 mask=false sinks=false completion=verified
+PACC argsort device-bitonic rows=2 cols=256 order=1 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=512 k=2048 tiles=18 multi_tiles=14 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=true requests=2 channels=8 groups=9 m=2048 k=512 tiles=36 multi_tiles=28 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=512 k=2048 tiles=3 multi_tiles=3 max_n=2 completion=verified
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=2048 k=512 tiles=4 multi_tiles=4 max_n=2 completion=verified
+PACC Q6_KxQ8_1 dev=3 m=248320 n=2 k=2048 tiles=809 elapsed_ms=2947.453 completion=verified
+MULTISEQ_TOKEN sequence=0 step=1 token=24
+MULTISEQ_TOKEN sequence=1 step=1 token=16
+MULTISEQ_BATCH active=2 elapsed_us=123542921
+~llama_context:      CUDA0 compute buffer size is   8.5884 MiB, matches expectation of   8.5884 MiB
+~llama_context:  CUDA_Host compute buffer size is   0.0412 MiB, matches expectation of   0.0412 MiB

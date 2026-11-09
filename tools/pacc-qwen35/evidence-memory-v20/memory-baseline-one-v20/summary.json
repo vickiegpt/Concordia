@@ -1,0 +1,115 @@
+{
+  "capacity_passed": true,
+  "variant": "baseline",
+  "workers": [
+    {
+      "after_context_kib": {
+        "AnonHugePages": 0,
+        "Anonymous": 59397132,
+        "FilePmdMapped": 0,
+        "KSM": 0,
+        "LazyFree": 0,
+        "Locked": 0,
+        "Private_Clean": 537996,
+        "Private_Dirty": 59397132,
+        "Private_Hugetlb": 0,
+        "Pss": 59935696,
+        "Pss_Anon": 59397132,
+        "Pss_Dirty": 59397132,
+        "Pss_File": 538564,
+        "Pss_Shmem": 0,
+        "Referenced": 59938360,
+        "Rss": 59938360,
+        "Shared_Clean": 3232,
+        "Shared_Dirty": 0,
+        "Shared_Hugetlb": 0,
+        "ShmemPmdMapped": 0,
+        "Swap": 0,
+        "SwapPss": 0
+      },
+      "after_model_kib": {
+        "AnonHugePages": 0,
+        "Anonymous": 21048456,
+        "FilePmdMapped": 0,
+        "KSM": 0,
+        "LazyFree": 0,
+        "Locked": 0,
+        "Private_Clean": 537676,
+        "Private_Dirty": 21048456,
+        "Private_Hugetlb": 0,
+        "Pss": 21586700,
+        "Pss_Anon": 21048456,
+        "Pss_Dirty": 21048456,
+        "Pss_File": 538244,
+        "Pss_Shmem": 0,
+        "Referenced": 21589364,
+        "Rss": 21589364,
+        "Shared_Clean": 3232,
+        "Shared_Dirty": 0,
+        "Shared_Hugetlb": 0,
+        "ShmemPmdMapped": 0,
+        "Swap": 0,
+        "SwapPss": 0
+      },
+      "aggregate_decode_tps": null,
+      "allocation_passed": true,
+      "context_tokens": 131072,
+      "max_rss_kib": 59937484,
+      "max_sequences": 512,
+      "sequences": 512,
+      "stage": "ngl=99 context allocation only"
+    }
+  ],
+  "barrier_samples": [
+    {
+      "pid": 119062,
+      "rollup_kib": {
+        "Rss": 59938360,
+        "Pss": 59935683,
+        "Pss_Dirty": 59397132,
+        "Pss_Anon": 59397132,
+        "Pss_File": 538551,
+        "Pss_Shmem": 0,
+        "Shared_Clean": 3232,
+        "Shared_Dirty": 0,
+        "Private_Clean": 537996,
+        "Private_Dirty": 59397132,
+        "Referenced": 59938360,
+        "Anonymous": 59397132,
+        "KSM": 0,
+        "LazyFree": 0,
+        "AnonHugePages": 0,
+        "ShmemPmdMapped": 0,
+        "FilePmdMapped": 0,
+        "Shared_Hugetlb": 0,
+        "Private_Hugetlb": 0,
+        "Swap": 0,
+        "SwapPss": 0,
+        "Locked": 0
+      },
+      "model_kib": {
+        "Rss": 527688,
+        "Pss": 527688,
+        "Shared_Clean": 0,
+        "Private_Clean": 527688,
+        "Private_Dirty": 0,
+        "Shared_Dirty": 0
+      },
+      "model_permissions": [
+        "r--s"
+      ]
+    }
+  ],
+  "ngl": 99,
+  "simultaneous_sequences": 512,
+  "initial_mem_available_kib": 259065596,
+  "min_mem_available_kib": 199501364,
+  "sum_pss_kib": 59935683,
+  "sum_private_dirty_kib": 59397132,
+  "aggregate_decode_tps": null,
+  "error": null,
+  "returncodes": [
+    0
+  ],
+  "limitation": "Initialization residency, not peak active-state memory or inference throughput"
+}

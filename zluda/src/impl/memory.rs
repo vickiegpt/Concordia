@@ -2054,6 +2054,7 @@ use cuda_types::cuda::*;
 ))]
 enum SifiveAllocKind {
     Host { align: usize },
+    HostMmap { map_len: usize },
     Driver { bo: sifive_runtime_sys::SifiveBoMap },
     SharedDdr,
     SharedDdrIpc { map_ptr: usize, map_len: usize },
@@ -2227,7 +2228,7 @@ fn sifive_update_alloc_stats_locked(map: &std::collections::HashMap<u64, SifiveA
     for alloc in map.values() {
         total = total.saturating_add(alloc.size);
         match &alloc.kind {
-            SifiveAllocKind::Host { .. } => host = host.saturating_add(alloc.size),
+            SifiveAllocKind::Host { .. } | SifiveAllocKind::HostMmap { .. } => host = host.saturating_add(alloc.size),
             SifiveAllocKind::Driver { .. } => driver = driver.saturating_add(alloc.size),
             SifiveAllocKind::SharedDdr => shared_ddr = shared_ddr.saturating_add(alloc.size),
             SifiveAllocKind::SharedDdrIpc { .. } => {
@@ -2704,11 +2705,48 @@ fn sifive_alloc_shared_ddr(bytesize: usize) -> Result<(u64, SifiveAlloc), CUerro
     not(feature = "intel"),
     not(feature = "tenstorrent")
 ))]
+unsafe fn sifive_discard_zero_pages(addr: usize, size: usize) -> bool {
+    // Called only for a range checked against an owned private anonymous mapping.
+    let page = libc::sysconf(libc::_SC_PAGESIZE);
+    if page <= 0 { return false; }
+    let page = page as usize;
+    if !page.is_power_of_two() { return false; }
+    let Some(end) = addr.checked_add(size) else { return false; };
+    let Some(rounded) = addr.checked_add(page - 1) else { return false; };
+    let first = rounded & !(page - 1);
+    let last = end & !(page - 1);
+    if last <= first { return false; }
+    if libc::madvise(first as *mut libc::c_void, last - first, libc::MADV_DONTNEED) != 0 {
+        return false;
+    }
+    std::ptr::write_bytes(addr as *mut u8, 0, first - addr);
+    std::ptr::write_bytes(last as *mut u8, 0, end - last);
+    true
+}
+
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
+#[no_mangle]
+pub extern "C" fn hetgpu_sifive_host_backing_mode_v1() -> u32 {
+    u32::from(std::env::var("HETGPU_SIFIVE_ALLOW_HOST_DEVICE_MEM").ok().as_deref() == Some("1")
+        && std::env::var("HETGPU_SIFIVE_REAL_DEVICE_MEM").ok().as_deref() != Some("1")
+        && std::env::var("HETGPU_SIFIVE_SHARED_DEVICE_MEM").ok().as_deref() != Some("1"))
+}
+
+#[cfg(all(feature = "sifive", not(feature = "amd"), not(feature = "intel"), not(feature = "tenstorrent")))]
 fn sifive_alloc_host(bytesize: usize) -> Result<(u64, SifiveAlloc), CUerror> {
     use std::alloc::{alloc_zeroed, Layout};
 
     let align = 128;
     let alloc_size = bytesize.max(1);
+    if alloc_size >= 1024 * 1024
+        && std::env::var("HETGPU_SIFIVE_LAZY_ZERO").ok().as_deref() == Some("1")
+    {
+        let ptr = unsafe { libc::mmap(std::ptr::null_mut(), alloc_size,
+            libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) };
+        if ptr == libc::MAP_FAILED { return Err(CUerror::OUT_OF_MEMORY); }
+        return Ok((ptr as u64, SifiveAlloc { size: alloc_size, phys: 0,
+            kind: SifiveAllocKind::HostMmap { map_len: alloc_size } }));
+    }
     let layout = Layout::from_size_align(alloc_size, align).map_err(|_| CUerror::OUT_OF_MEMORY)?;
     let ptr = unsafe { alloc_zeroed(layout) };
     if ptr.is_null() {
@@ -2840,6 +2878,9 @@ pub(crate) fn free_v2(dptr: CUdeviceptr) -> CUresult {
     };
     if let Some(alloc) = alloc {
         match alloc.kind {
+            SifiveAllocKind::HostMmap { map_len } => {
+                unsafe { libc::munmap(addr as *mut libc::c_void, map_len); }
+            }
             SifiveAllocKind::Host { align } => {
                 if let Ok(layout) = std::alloc::Layout::from_size_align(alloc.size.max(1), align) {
                     unsafe {
@@ -3093,6 +3134,11 @@ pub(crate) fn set_d32_v2(dst: CUdeviceptr, ui: ::core::ffi::c_uint, n: usize) ->
             {
                 return Err(CUerror::INVALID_VALUE);
             }
+            if ui == 0 && matches!(alloc.kind, SifiveAllocKind::HostMmap { .. })
+                && unsafe { sifive_discard_zero_pages(addr as usize, byte_count) } {
+                sifive_record_memory_transfer(0, byte_count);
+                return Ok(());
+            }
             if let SifiveAllocKind::Driver { bo } = &mut alloc.kind {
                 let dst = &mut bo.as_mut_slice()[offset..offset + byte_count];
                 for chunk in dst.chunks_exact_mut(std::mem::size_of::<u32>()) {
@@ -3138,6 +3184,11 @@ pub(crate) fn set_d8_v2(dst: CUdeviceptr, value: ::core::ffi::c_uchar, n: usize)
             if offset.checked_add(n).map_or(true, |end| end > alloc.size) {
                 return Err(CUerror::INVALID_VALUE);
             }
+            if value == 0 && matches!(alloc.kind, SifiveAllocKind::HostMmap { .. })
+                && unsafe { sifive_discard_zero_pages(addr as usize, n) } {
+                sifive_record_memory_transfer(0, n);
+                return Ok(());
+            }
             if let SifiveAllocKind::Driver { bo } = &mut alloc.kind {
                 bo.as_mut_slice()[offset..offset + n].fill(value);
                 bo.flush().map_err(|_| CUerror::UNKNOWN)?;
@@ -3177,7 +3228,7 @@ pub(crate) fn sifive_resolve_device_addr(ptr: *const ::core::ffi::c_void) -> Opt
                 SifiveAllocKind::SharedDdr | SifiveAllocKind::SharedDdrIpc { .. } => {
                     Some(alloc.phys.saturating_add(offset))
                 }
-                SifiveAllocKind::Host { .. } => Some(addr),
+                SifiveAllocKind::Host { .. } | SifiveAllocKind::HostMmap { .. } => Some(addr),
             }
         } else {
             None
@@ -3203,7 +3254,7 @@ pub(crate) fn sifive_driver_physical_addr(addr: u64) -> Option<u64> {
                 SifiveAllocKind::SharedDdr | SifiveAllocKind::SharedDdrIpc { .. } => {
                     Some(alloc.phys.saturating_add(offset))
                 }
-                SifiveAllocKind::Host { .. } => None,
+                SifiveAllocKind::Host { .. } | SifiveAllocKind::HostMmap { .. } => None,
             }
         } else {
             None
@@ -3228,7 +3279,7 @@ pub(crate) fn sifive_shared_ddr_physical_addr(addr: u64) -> Option<u64> {
                 SifiveAllocKind::SharedDdr | SifiveAllocKind::SharedDdrIpc { .. } => {
                     Some(alloc.phys.saturating_add(offset))
                 }
-                SifiveAllocKind::Driver { .. } | SifiveAllocKind::Host { .. } => None,
+                SifiveAllocKind::Driver { .. } | SifiveAllocKind::Host { .. } | SifiveAllocKind::HostMmap { .. } => None,
             }
         } else {
             None

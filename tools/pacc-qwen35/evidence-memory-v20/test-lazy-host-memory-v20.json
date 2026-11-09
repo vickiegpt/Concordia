@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "bytes": 33554555,
+  "fresh_resident_pages": 0,
+  "filled_resident_pages": 8193,
+  "after_unaligned_zero_pages": 2,
+  "zero_call_us": 5967.532,
+  "bounds_rejected": true,
+  "fork_isolation": true
+}

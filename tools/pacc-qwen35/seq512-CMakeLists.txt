@@ -10,14 +10,14 @@ file(GLOB model_sources CONFIGURE_DEPENDS "${LLAMA_SOURCE}/src/models/*.cpp")
 file(GLOB core_sources CONFIGURE_DEPENDS "${LLAMA_SOURCE}/src/*.cpp")
 add_library(llama SHARED ${core_sources} ${model_sources})
 target_include_directories(llama PUBLIC "${LLAMA_SOURCE}/include" "${GGML_SOURCE}/include"
-                           PRIVATE "${LLAMA_SOURCE}/src")
+                           PRIVATE "${LLAMA_SOURCE}/src" "${GGML_SOURCE}/src")
 target_compile_features(llama PRIVATE cxx_std_17)
 target_compile_definitions(llama PRIVATE LLAMA_BUILD LLAMA_MAX_SEQ=${LLAMA_MAX_SEQ}
   LLAMA_COMMIT="d222767-seq512" LLAMA_VERSION="0.3.0-dev"
   GGML_BACKEND_SHARED GGML_SHARED GGML_USE_CPU GGML_USE_CUDA)
 target_compile_definitions(llama PUBLIC LLAMA_SHARED)
 target_link_libraries(llama PUBLIC "${GGML_BIN}/libggml.so" "${GGML_BIN}/libggml-base.so"
-  "${GGML_BIN}/libggml-cpu.so" "${GGML_BIN}/libggml-cuda.so")
+  "${GGML_BIN}/libggml-cpu.so" "${GGML_BIN}/libggml-cuda.so" ${CMAKE_DL_LIBS})
 set_target_properties(llama PROPERTIES VERSION 0.3.0 SOVERSION 0
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin" BUILD_RPATH "${GGML_BIN}")
 add_executable(qwen-capacity-probe "${PROBE_SOURCE}")

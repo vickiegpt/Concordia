@@ -1,0 +1,82 @@
+isolated_recovered_worker physical=2 base=0x20ef7000000
+{
+  "complete_submissions": 3378,
+  "incomplete_submission_count": 0,
+  "incomplete_sample": [],
+  "saturated_submissions": 0,
+  "submission_build_counts": {
+    "0x20036": 3378
+  },
+  "build_matches": true,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 736741,
+  "last_index": 1170060,
+  "unique_indices": 433319,
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 28005,
+      "p50_us": 3,
+      "p99_us": 18,
+      "max_us": 43
+    },
+    "input_copy": {
+      "sum_us": 1266096,
+      "p50_us": 3,
+      "p99_us": 822,
+      "max_us": 7764
+    },
+    "compute": {
+      "sum_us": 42859846,
+      "p50_us": 3062,
+      "p99_us": 80591,
+      "max_us": 96210
+    },
+    "output_copy": {
+      "sum_us": 105681,
+      "p50_us": 3,
+      "p99_us": 66,
+      "max_us": 101
+    },
+    "cleanup": {
+      "sum_us": 3931,
+      "p50_us": 1,
+      "p99_us": 3,
+      "max_us": 5
+    },
+    "completion_publish": {
+      "sum_us": 15283,
+      "p50_us": 5,
+      "p99_us": 5,
+      "max_us": 38
+    },
+    "device_before_publish": {
+      "sum_us": 44736307,
+      "p50_us": 4549,
+      "p99_us": 80691,
+      "max_us": 96312
+    }
+  },
+  "returncode": 0,
+  "timed_out": false,
+  "capture_valid": true,
+  "device": 2,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v4",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "99",
+    "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc2-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+    "2"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 4.835316000026069,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": null,
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

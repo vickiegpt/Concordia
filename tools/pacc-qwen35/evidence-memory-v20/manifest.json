@@ -1,0 +1,631 @@
+{
+  "boot_id": "4ca2fa21-0d48-4090-93a5-51206ac1de29",
+  "cpu_server_pid": 4807,
+  "parent_commit": "5cdeee05a793356237ccf301023e00689d7f6c84",
+  "state": {
+    "boot_id": "4ca2fa21-0d48-4090-93a5-51206ac1de29",
+    "base": 2263296770048,
+    "size": 4194304,
+    "previous_base": 2203592949760,
+    "previous_size": 16777216,
+    "helper_sha256": "375525cb53213c11a630efe055f56da44f9fbf284ba3a89dd248ae5bec3f6bca",
+    "vendor_sha256": "19cdacf4ddfa8f6861477daa2be79f3e1e52d1a11780c7a209a9419e4a2a83a8",
+    "build_id": 131126,
+    "payload_base": 2097152,
+    "payload_bytes": 524288
+  },
+  "files": {
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/artifacts.json": {
+      "bytes": 923,
+      "sha256": "f61129e87d160061231ac420b4e78721b3f63ca9ff0f59d42760dd3030605c14"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc0-driver.log": {
+      "bytes": 1228,
+      "sha256": "e1e413233648221333883a8d37e626f50eda222123198288c968dbe7773db88a"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc0-phases.json": {
+      "bytes": 1172,
+      "sha256": "caffd1cd7c8731c8ff0815dcf607107a37ddb0fc32f0646f032c4e892f3fd437"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc0-phases.log": {
+      "bytes": 128111,
+      "sha256": "31fa0b74801b29a4058c3563d0c3c038ffba08bac7656687ade23642adf82375"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc0-qualification-driver.log": {
+      "bytes": 1728,
+      "sha256": "38b27c92092f584d743ef4103056fe62c32a0b7d051fe7c8b3ef17364f0541ed"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc0-qualification.json": {
+      "bytes": 1672,
+      "sha256": "919f16abdc2b938c8f5804cede444419b633032ea94637bb0c16989e934ea6af"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc0-qualification.log": {
+      "bytes": 1175,
+      "sha256": "549334797309905c8ea115a7044f745b62fb0bb8327c3a90f2dac28f401ee24d"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc1-driver.log": {
+      "bytes": 1203,
+      "sha256": "c255ffb12d8ee27db97630eab994b700154d64d53882bd0a5763eb726dde3656"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc1-phases.json": {
+      "bytes": 1147,
+      "sha256": "b754400071d4856064e1241a076cc9a615f1dca1c903b7cb154721ee78d01754"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc1-phases.log": {
+      "bytes": 128111,
+      "sha256": "ec055b737bdec17da52545a46e2646932beb05c3581df7aa1071b48316eab350"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc1-qualification-driver.log": {
+      "bytes": 1728,
+      "sha256": "5afff29ca4d3a8d50b02dc3e11f777b1493f36bc24f8d2542909e78bd1943255"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc1-qualification.json": {
+      "bytes": 1672,
+      "sha256": "d080c8a0685782bf7873d9d58d7264663408e88dde88025a6fa980f649f53d15"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc1-qualification.log": {
+      "bytes": 1175,
+      "sha256": "078187dd7af4c306d416f6b809b6be2ec8b40d7c580316a93c80574c1426e12e"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc2-driver.log": {
+      "bytes": 1229,
+      "sha256": "0e6a7c36eb720bdd3b653c7f021b1445ef91444c97a412b49244b44c27c7d2b4"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc2-phases.json": {
+      "bytes": 1173,
+      "sha256": "d8c38d0d02436d6bbaa9b232f6874e0a0d703f595d28620908fca67cb4f3667b"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc2-phases.log": {
+      "bytes": 128111,
+      "sha256": "b87809bfc6dcc38c884ee5b9e84572408afab8ba79838817a027f0811cf0a0f1"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc2-qualification-driver.log": {
+      "bytes": 1728,
+      "sha256": "7ad22c33338124dccf769d86e26bbad2129fef46f6a2386ef3783dc403558e59"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc2-qualification.json": {
+      "bytes": 1672,
+      "sha256": "b698f511cc8cc2736c8bc66a6f256522d4bbe37b9477acde9a7071a8f2e8bd6d"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc2-qualification.log": {
+      "bytes": 1175,
+      "sha256": "b81ed4aef9dd03b018fd31586af297ea8175659e696ca361912a0404330b8e72"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc3-driver.log": {
+      "bytes": 1229,
+      "sha256": "2fa3ffceccbeb4761b6951e1bcac0d7774de4ccbf1f1c74bd0f18d7d44e0c27b"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc3-phases.json": {
+      "bytes": 1173,
+      "sha256": "23d5c700fee979952b9abf92020565243ad92524b9ab5858f86e750b4cbf6f3f"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc3-phases.log": {
+      "bytes": 128111,
+      "sha256": "8f600dc39b8e1db899c3d198cf20221ddeae53536dee4c65856d368e5f142671"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc3-qualification-driver.log": {
+      "bytes": 1730,
+      "sha256": "f66427014ad3c8554f4ce20e2c89c1eb2cd418d094c3d7c3e01cc838f6b3de27"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc3-qualification.json": {
+      "bytes": 1674,
+      "sha256": "3af0caf37237f8a47dd5d84f9e8c7794aef73ec2559d94800e31a4730ac4827a"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc3-qualification.log": {
+      "bytes": 1175,
+      "sha256": "b8abf586516a8a4398bba06a6853ee51815bede8b1f9df060b6176b5619b5bf8"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/settings.json": {
+      "bytes": 612,
+      "sha256": "cee78a4aed89350bc187992ef99b1120eaacb4aa7627853e5cf3a76978715233"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/summary.json": {
+      "bytes": 6039,
+      "sha256": "0fcd694b435b8914ba7ad9d8531e06eea2102727966255c6ed63df56d9f56382"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/artifacts.json": {
+      "bytes": 923,
+      "sha256": "9755bf1f5cf09e732cf1643286f368fbe27fdfcbb381e3761236287b0ccc948e"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc0-driver.log": {
+      "bytes": 2029,
+      "sha256": "b9089580ec880a42f2606c453f431652ae433da23cd38e406041744eebf5aa1a"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc0-phases.json": {
+      "bytes": 1973,
+      "sha256": "09d8d05ba0c571c94d6d73b608b490ddb6a3df7174a047dab424f86de18eaf7e"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc0-phases.log": {
+      "bytes": 270131,
+      "sha256": "adf4a9fd66dc293b38d9bfb1b360a945a5c3407b2d0e4518e421b4b565f412b9"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc0-qualification-driver.log": {
+      "bytes": 1728,
+      "sha256": "d823ed1aab1a32edffdf56854e385a5838a5c7214012d6034065e35046fa8d51"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc0-qualification.json": {
+      "bytes": 1672,
+      "sha256": "4e20285e5d3cb7b24383c0207cbf21a599404507c7f0e981e69119c953d2296f"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc0-qualification.log": {
+      "bytes": 1175,
+      "sha256": "5ce448c02f49d3d173adcb6d942806c50c2b15776d321cafc4c083259d6a32bf"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc0-result.json": {
+      "bytes": 989,
+      "sha256": "f2d62c266e33d8f35647f65776457cce2f94ef30fa95c9768c00bfcfc60c6cd1"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc1-driver.log": {
+      "bytes": 2028,
+      "sha256": "1c39884275e3814c00428ca24a5a089f826dba3f1a1dad21c23f31c7bf93a952"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc1-phases.json": {
+      "bytes": 1972,
+      "sha256": "2cb9ba6a2230c76315fee6a98c97286ce8537d4220620304934163b31e4e23eb"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc1-phases.log": {
+      "bytes": 270131,
+      "sha256": "b2424909c881174beae98a5eee4e1a2a239f93c57b976bfbb0c432bf4598649f"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc1-qualification-driver.log": {
+      "bytes": 1728,
+      "sha256": "3fe17279c6ba523be87932f996fdfad81f48cb81e8dc840e5ec5c5f8e13b96a6"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc1-qualification.json": {
+      "bytes": 1672,
+      "sha256": "09f60df3f2ffd10a59094e39782443199ee9793d5ee99d7478908d04649eea19"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc1-qualification.log": {
+      "bytes": 1175,
+      "sha256": "6d30f396fa869267522c5b26db29f21943a5f914b306e0e4541a4632401edd9e"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc1-result.json": {
+      "bytes": 988,
+      "sha256": "b74675ff86f30da573907c4e80320df031117ebc1fc7ec5113830991d1afc75a"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc2-driver.log": {
+      "bytes": 2029,
+      "sha256": "0b6f381b73a0a202f397814d2f55b82f7306b9be3fc74b18718c191dfd3e6852"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc2-phases.json": {
+      "bytes": 1973,
+      "sha256": "093b3a2cdd9efe0fd9b6617d6e6cdb3338299ff183c3663a86e92994296ed09e"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc2-phases.log": {
+      "bytes": 270131,
+      "sha256": "1861713f7e29971394f3f7d839de687f25b75359a1b026353189237147cb6593"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc2-qualification-driver.log": {
+      "bytes": 1730,
+      "sha256": "3b6c9782c1e288ea8728e08f5f859dee663b14caff5a5fc78741914895006083"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc2-qualification.json": {
+      "bytes": 1674,
+      "sha256": "2ab2ed73aaf42db954a6e480db551728183862d301643de3313d65fc9146945f"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc2-qualification.log": {
+      "bytes": 1175,
+      "sha256": "5910b6a7b11d869042f05e5429b1554739a6dd90c3144b9e8c55a6c12b037964"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc2-result.json": {
+      "bytes": 988,
+      "sha256": "ea14dab9e177fb67962f9fc098130db9bddcfd1377dcaff7dc0a3d49f95bf22e"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc3-driver.log": {
+      "bytes": 2027,
+      "sha256": "a45beff2dc7649b9e713a49799eb8e9fc6cd3f86bb6b6baeae29ff6769faf1a8"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc3-phases.json": {
+      "bytes": 1971,
+      "sha256": "34b7e364a69ca70bb650ada7e2a272e6dafe99348f090a08754bb90c676285f8"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc3-phases.log": {
+      "bytes": 270131,
+      "sha256": "fb4cb5a59eeac8f38d53f4a325cc534afa92dd493961b9063953c1518b3fc6e0"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc3-qualification-driver.log": {
+      "bytes": 1731,
+      "sha256": "a812480962e1398833f39b7bf16ad90984fda1f3967f55b7de575d047b6bf6af"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc3-qualification.json": {
+      "bytes": 1675,
+      "sha256": "18c897652a6270ce98c4286f3fe3885fd80157b8f8131e11490c5419da73ae26"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc3-qualification.log": {
+      "bytes": 1175,
+      "sha256": "5b9d96f8b8deb9e80ef3af99a7cf518d920546544ff7d9ecb7c25b64efaf3420"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/pacc3-result.json": {
+      "bytes": 990,
+      "sha256": "91a767bfb3a8b1ed4ffcd16198dac60f1a8c3a65730d25f96b1b72af80b738b2"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/settings.json": {
+      "bytes": 683,
+      "sha256": "1309520f3a1be0f4de06488022a88f0af926dbfee35eb288f130a734dcabf5c7"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v20/summary.json": {
+      "bytes": 14983,
+      "sha256": "044263935d0b9626fd145673ae242a006fcc85ba6dbd833068021b29abb55727"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/artifacts.json": {
+      "bytes": 923,
+      "sha256": "30c37af1c6cae31df987f1699b65676dae3cbb77c3e98340d928b069eb522c4b"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc0-driver.log": {
+      "bytes": 1229,
+      "sha256": "472d4a229526d03817c258699e962b1bbf7a159ec91ce05869fb669ba7c7ec75"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc0-phases.json": {
+      "bytes": 1173,
+      "sha256": "72b8ae50f45b359bfbe0875c2a1cfd64d80939a71c2aa9caae95ba7d474ffbd1"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc0-phases.log": {
+      "bytes": 125430,
+      "sha256": "329e85fc2f97df577cddf087033d269070387508992220770a6a3e523469e7b3"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc0-qualification-driver.log": {
+      "bytes": 1730,
+      "sha256": "f97ec6636a8823f9d74cd4551f85bf5a4fc066dbb9bb1015795b75683bca9606"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc0-qualification.json": {
+      "bytes": 1674,
+      "sha256": "edb771f8e08a3e72953faeb7bd03ff67fa7c1cc2ccf3fa7bcb1fda69e45c59ea"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc0-qualification.log": {
+      "bytes": 1175,
+      "sha256": "74a485e181a4b2d22aa31b45a53d7ab87d46623dd87b9a8a883e6ed40f2b8abb"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc1-driver.log": {
+      "bytes": 1203,
+      "sha256": "12c8beb64913272c1433104460622345757a68780c40dab8848756af53f50c06"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc1-phases.json": {
+      "bytes": 1147,
+      "sha256": "13206e0be4a10dd447d1317f0e47767d88432a1b0c6ba95e53b0eab2ffa0f434"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc1-phases.log": {
+      "bytes": 125430,
+      "sha256": "bb022aa48b8f80b7a286793d102a71a77badefa755a6f4c6152d03755de8ddc2"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc1-qualification-driver.log": {
+      "bytes": 1730,
+      "sha256": "2d7d1261d89f5965c00ece18572a8ad23361123d66e7b4490232551384986178"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc1-qualification.json": {
+      "bytes": 1674,
+      "sha256": "a4369f853698d32b2066354d58326d99cecb0bf9f4570c73e931b670c9ccfd13"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc1-qualification.log": {
+      "bytes": 1175,
+      "sha256": "37558c6ff7d6d6dd68027d5fa10120d50e75943f2fe99813a8dcd2893cc63c51"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc2-driver.log": {
+      "bytes": 1230,
+      "sha256": "5e8a53e8f209a243b200ff01dfc4949c99d2417197eadfc03cb9c927458b0c0b"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc2-phases.json": {
+      "bytes": 1174,
+      "sha256": "54737dd3ee73384b4e5fef7a1414c7680a64bcb97f17d4f616d06d06de845714"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc2-phases.log": {
+      "bytes": 125430,
+      "sha256": "2777f98c20d2d8cee0885d400eb20ce336557dcdb04557a0b21a6d98c123d7d3"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc2-qualification-driver.log": {
+      "bytes": 1734,
+      "sha256": "1db209c0be61f562c71ba6ebe09eead6a75b11bd78d45af3c5052fdafae4c5d3"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc2-qualification.json": {
+      "bytes": 1678,
+      "sha256": "8677bd0c435518f52e5ea9dee78572067fd234d63e74f0ad4291d73a45ddbcf2"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc2-qualification.log": {
+      "bytes": 1175,
+      "sha256": "18460b33e780c433f3e3ca5f16a07c4776942feb1f36a62e36f47edaec21deac"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc3-driver.log": {
+      "bytes": 1229,
+      "sha256": "8bdee12cd7adab81d2fac2a722cac386a99d70b97365e1963823296626028ae3"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc3-phases.json": {
+      "bytes": 1173,
+      "sha256": "f841124d59218fce2e84fee5f6509049ea452df4cf13b5786b677d1add4442ea"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc3-phases.log": {
+      "bytes": 125430,
+      "sha256": "731cb8d59371ea5fb32bf8493c5eaa1a263ff234caa1def4d8946de50823eee6"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc3-qualification-driver.log": {
+      "bytes": 1734,
+      "sha256": "9b4b5499d0f5945efc73bdbe4055c9a9ba4740d030c5240ef4230ab96c8cb03a"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc3-qualification.json": {
+      "bytes": 1678,
+      "sha256": "2f03e7c5853f1b7bb375f5cfbc60a40966b0d75708134fcb2edebd26536888b8"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/pacc3-qualification.log": {
+      "bytes": 1175,
+      "sha256": "15b2641fc78d96c92ff3be984f5ac0670d6d7ff5cdbb64415091633cac92bc15"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/settings.json": {
+      "bytes": 683,
+      "sha256": "06c94c4fbb05d8b0926a4f6fb8e8972176cc9b39efefdc44f08a863ee2094e70"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-four-512-v20/summary.json": {
+      "bytes": 6036,
+      "sha256": "b94449d2ae71c24e6f546dbb02905279e98ddac4da564bbad25f995eb2ab419c"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-baseline-one-v20/summary.json": {
+      "bytes": 2885,
+      "sha256": "87e624fedd09483dd30713240dbd5f16b492dd680e2d96cd7d231901ccf45a94"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-baseline-one-v20/worker0.json": {
+      "bytes": 1314,
+      "sha256": "fa194705ed3ea5caebff6feddf8bee5f62391a70949531476b58c4b2540559a0"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-baseline-one-v20/worker0.json.ready": {
+      "bytes": 1284,
+      "sha256": "628aea43d9f7e0e9be1ffbcd43b1940b43719f106cc8a4f8f10554ba41eb3e17"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-baseline-one-v20/worker0.log": {
+      "bytes": 117229,
+      "sha256": "6eb0ef2edbac00475c987095814316098b2167ba693570377601d67a643cc89c"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/summary.json": {
+      "bytes": 10124,
+      "sha256": "0fbfcb3d997b22f56819269fed5ad5d2c03233ad911c85cf848d653d792766e5"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker0.json": {
+      "bytes": 1301,
+      "sha256": "c7b756a8fa35dd53fc70ca0909bbfdac5610acd3131f89e009dd68d469565c65"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker0.json.ready": {
+      "bytes": 1271,
+      "sha256": "eb412d49491827390bc9dd0b2d1e8309c4166b9b70a434afa933f7955b23a56e"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker0.log": {
+      "bytes": 117275,
+      "sha256": "84dabd6bad9595b8bbfeb54c1398cd49d1966dbadc76f89a4908fd383074456a"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker1.json": {
+      "bytes": 1301,
+      "sha256": "30a10b00ba2e75af6766285db7fd19dafbbdad47267ffc70c7c8d59c196e1577"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker1.json.ready": {
+      "bytes": 1271,
+      "sha256": "13352859695078f575609692bef22099a5cf54987594bd0d62ca3204f6910cce"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker1.log": {
+      "bytes": 117275,
+      "sha256": "42d4b21f350e3822aad6b356a311444e2f9da2875f8010f44190d6f0c7407ada"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker2.json": {
+      "bytes": 1301,
+      "sha256": "3808d165d82587f9eb8f9a2f2a334d4f1843708f3a80cdbffdf154e07469aab9"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker2.json.ready": {
+      "bytes": 1271,
+      "sha256": "7d64ea98d599c4a0568f5167ab833b7477e77daed8d77aa3d58202f487abfb5b"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker2.log": {
+      "bytes": 117275,
+      "sha256": "464d270652cfb5af3739d7a8425c25166ddc6f2ed411283ac279e2659f2e30de"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker3.json": {
+      "bytes": 1301,
+      "sha256": "79aecc80fc111397b5ec57a768c95b401f98a4454138ab9780d930d8d8437673"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker3.json.ready": {
+      "bytes": 1271,
+      "sha256": "51bb37ef3001122314b7d350e98eb9cae0038b9c98621d8388146276ae87f21b"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-mmap-four-v20/worker3.log": {
+      "bytes": 117275,
+      "sha256": "46ac46c8f90eaacdff03504838e817037a1810a16e6754d8a7afe778ce6f499f"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/summary.json": {
+      "bytes": 10058,
+      "sha256": "f158160d653b3bfe6355df888d731b441fdc64b3e4104593af01a584f7283dba"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker0.json": {
+      "bytes": 1292,
+      "sha256": "6c9dd704c88f59e1340177f13a2176ee29059c9a88d81134e7f151e87a92aa99"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker0.json.ready": {
+      "bytes": 1262,
+      "sha256": "f58461d463badc3cdf6d4057ebe5ba296809d110825f1cc37c2f1734f2246f01"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker0.log": {
+      "bytes": 117264,
+      "sha256": "87d3bb057c4741926d08d43e554c7eff125e5e6ceb5fa963b536d19ed7e93462"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker1.json": {
+      "bytes": 1296,
+      "sha256": "a1775be85f35c44904e86f0f31722af975dfa0cd8afb88d9998dd51bd6839cf0"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker1.json.ready": {
+      "bytes": 1266,
+      "sha256": "173694a9687bba022a0937c5a05d73a10c2105dffaec4775f619ee3f08ada134"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker1.log": {
+      "bytes": 117268,
+      "sha256": "0e7d6f9bef168a80c0f649ac79740fc4880ee8b8bfe730948a6f9087e39d80d8"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker2.json": {
+      "bytes": 1292,
+      "sha256": "4a19f1f2e8ed06518e55d0d87870d68faea00ce32593e8ebae20a8d8b66540ba"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker2.json.ready": {
+      "bytes": 1262,
+      "sha256": "54fddab8f3660042ab27da94611bc47e3f04e1a7faacfe23f28390abcbf74dd8"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker2.log": {
+      "bytes": 117264,
+      "sha256": "b4a2ffb847a6f89dc7897f61a83f9b3fa8b2ed49fcbad5e9240b6b958db3c2a0"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker3.json": {
+      "bytes": 1294,
+      "sha256": "4408437c998b561e7396caa2a91dec35d25bc1c5204a019b4df7dbaaeb83f8d2"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker3.json.ready": {
+      "bytes": 1264,
+      "sha256": "f573a3e269fa66c2534fd47fdf9a84dee41d69f4861a0e4800f3106ede445660"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-both-four-v20/worker3.log": {
+      "bytes": 117266,
+      "sha256": "193d6566aafda85527c297135b0e998511ff639f2f25c079ffdc8ee952e2c478"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/test-lazy-host-memory.json": {
+      "bytes": 220,
+      "sha256": "0adcaba231453308ab901024a93bb82bdf77ea64ad277d9ba6605859384f0e74"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/test-lazy-host-memory-v20.json": {
+      "bytes": 220,
+      "sha256": "faa4b71e0e92420f2e649935dc5d1c4d4af363d5b19d38dffca300e59dd25962"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/test-pacc-mmap-weights.log": {
+      "bytes": 1094,
+      "sha256": "740140269d83f117a361d22ca8d1eb5beabe6b5106d418a19b219707149c9d0a"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-fast-v20-live-smaps.json": {
+      "bytes": 2398,
+      "sha256": "0055f58c52a45f5723339513748d1592fba21e23d6447491786670abc8c6de6f"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/build-memory-v19.log": {
+      "bytes": 1371117,
+      "sha256": "1174d88d203deb5c6a296cc2f9a7492d1a5f70e559706b992626c6110fab5757"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/build-memory-v20.log": {
+      "bytes": 1371117,
+      "sha256": "54003bd0a958354a4c0a8625064d4db659832897885c6cad85a05367d3cc38af"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/build-seq512-memory.log": {
+      "bytes": 11760,
+      "sha256": "554bd295c117755d4372d9da56e5778e009463d15827aa54875e336f4a875e1a"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-postguard-v20-pacc0.log": {
+      "bytes": 72146,
+      "sha256": "25a9f8139e9d8a023ed97df18f415e19e63c76cab66382a4a43bea5547f87266"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-postguard-v20-pacc1.log": {
+      "bytes": 72146,
+      "sha256": "254fadc9dfa99b83c052573982f4d8c4249ba10fb4d52b46c22208ed0d7db461"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-postguard-v20-pacc2.log": {
+      "bytes": 72146,
+      "sha256": "9571edb63a38d1dc70cfc4b35974f0891f811a43eb4a73ff0acab87afe4e509c"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/memory-postguard-v20-pacc3.log": {
+      "bytes": 72146,
+      "sha256": "6ce658a79dcc67fe293dae51042e27b7193e37fa05ba9aad9f70fabe3934f8fd"
+    },
+    "/srv/lanxin/qwen35-a3b/runtime-memory-v20/libnvcuda.so": {
+      "bytes": 8208848,
+      "sha256": "6ab8386da9f17d104d9bf14aefdc35d0a17e4e5e5f61015c36f5ab7ee4a0995c"
+    },
+    "/srv/lanxin/qwen35-a3b/runtime-memory-v20/libhetgpu_cuda_shim.so": {
+      "bytes": 210936,
+      "sha256": "7f875a1841bdf13bbd462383b674e4f11d8c02f1c7b26978d1fe977f138518e3"
+    },
+    "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/libllama.so.0.3.0": {
+      "bytes": 3827784,
+      "sha256": "652d89cf97b7ec831023d42d8569fb14cc0861993a1c52ab77ce32312ccf9f7b"
+    },
+    "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v4": {
+      "bytes": 184352,
+      "sha256": "f5427ff4a9c708d5e489395ddea4073c118df9b305ce282f75c756373dd16939"
+    },
+    "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-memory-probe": {
+      "bytes": 101328,
+      "sha256": "887aad3e19ae21c3f8efedb23a45f84074f9cc77b7cd82acc5875b394af9c050"
+    },
+    "/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml.so": {
+      "bytes": 39400,
+      "sha256": "40a8eadf00e5e3bcc9620eda21ee8744c0d0c4788acf9273c9cc3bdea4d34f53"
+    },
+    "/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so": {
+      "bytes": 743640,
+      "sha256": "9748b325487bbc97ed58ee14990bcc3671f4fcfebf81c504b653523cdff0b1f3"
+    },
+    "/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cpu.so": {
+      "bytes": 905968,
+      "sha256": "b2c1beb68a88834da295be3699642a75aadc03e7d14b517a9ea786159bae4972"
+    },
+    "/srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so": {
+      "bytes": 10247704,
+      "sha256": "7ae887a73bb0d6ca445393451eed2bb873755b9b678c52217bed45b82c13c593"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-memory-source/src/llama-model.cpp": {
+      "bytes": 145210,
+      "sha256": "3067ff24113adf0ed9627d55bd0229d66f0ebf7bad229874c175f45610b50a0a"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-memory-source/src/pacc-mmap-weights.cpp": {
+      "bytes": 3194,
+      "sha256": "3aa04988c93c9fde53802ad5cadb51ce6460ed139966ab38cf7231f6d5c39718"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-memory-source/src/pacc-mmap-weights.h": {
+      "bytes": 232,
+      "sha256": "ce035beeae911e62b15d34d100b7ae9ec5d2ecbb704e30def08e9c7409bd9f51"
+    },
+    "/srv/lanxin/qwen35-a3b/seq512-memory-source/src/llama-cparams.h": {
+      "bytes": 2134,
+      "sha256": "299e7f0d4ce20c10c349d726351d7f504b159b4a6ed090e309295af1ab43bd98"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/zluda/src/impl/memory.rs": {
+      "bytes": 109870,
+      "sha256": "9a5de0743d3c92fa92654d88f9100f52d3ca85aabb5adbed20c9f9624345bf79"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/zluda/src/impl/function.rs": {
+      "bytes": 687677,
+      "sha256": "fa76e69ca9074d68c3a2d809ebd4f0dc8032e22709ae97e49297dbb4ed66d4fb"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/pacc-mmap-weights.cpp": {
+      "bytes": 3194,
+      "sha256": "3aa04988c93c9fde53802ad5cadb51ce6460ed139966ab38cf7231f6d5c39718"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/pacc-mmap-weights.h": {
+      "bytes": 232,
+      "sha256": "ce035beeae911e62b15d34d100b7ae9ec5d2ecbb704e30def08e9c7409bd9f51"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/seq512-mmap-weights.patch": {
+      "bytes": 1710,
+      "sha256": "efbee92dfa745a583e43e98c1327dc6f4e087d04f0a121fcba9a793100b977dd"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/seq512-CMakeLists.txt": {
+      "bytes": 1855,
+      "sha256": "3549402920c8b9b6195bf486d1c929c6856f5f544938debff236e072c034be0c"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/run-memory-capacity.py": {
+      "bytes": 4863,
+      "sha256": "f1f89d9c8f4e969d1dac39d414f5cf5f7bb583f81cd73070b0d6381e294a05fd"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/qwen-memory-probe.cpp": {
+      "bytes": 3008,
+      "sha256": "780b23ad90bb4c14d52544f6ffd4fc6f2069c6eb0111526998f87b6fe446bca5"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/run-four-pacc-requests.py": {
+      "bytes": 9739,
+      "sha256": "07832c8f6b1ace9f1e7bf2aa8f013cf2a6f163f6c90f69855b41014e176212f6"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/test-lazy-host-memory.py": {
+      "bytes": 2830,
+      "sha256": "78b37938d04bc1ebc0419fe2478e2e72407f181a30be0970f4b2f1abbc60a98a"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/test-pacc-mmap-weights.cpp": {
+      "bytes": 2692,
+      "sha256": "59463c492c5f9c813bf6d93531aa9d1245fb865b52bd61e51e7ca70e60e7a32a"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/build-memory-candidate.sh": {
+      "bytes": 1577,
+      "sha256": "695fd73526bf7e9b45a170a85e76064078fb6c94da941426b3e633c3bd8c8d1a"
+    },
+    "/srv/lanxin/qwen35-a3b/Concordia-xm-release/tools/pacc-qwen35/collect-memory-evidence.py": {
+      "bytes": 3555,
+      "sha256": "d785a817529341eb629020f6c1ae9b1e1663615857c4fde7af20e7ef3f855458"
+    },
+    "/lib/firmware/lanxin/lx500_pacc.bin": {
+      "bytes": 31716408,
+      "sha256": "19cdacf4ddfa8f6861477daa2be79f3e1e52d1a11780c7a209a9419e4a2a83a8"
+    }
+  }
+}

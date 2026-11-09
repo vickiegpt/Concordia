@@ -1,0 +1,188 @@
+{
+  "all_correct": false,
+  "aggregate_output_tps": null,
+  "aggregate_decode_tps": null,
+  "scope": "four hardware workers, real cross-request XM columns; no CPU matrix fallback",
+  "returncodes": [
+    1,
+    1,
+    1,
+    1
+  ],
+  "requests": [],
+  "phase_profiles": [
+    {
+      "complete_submissions": 0,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {},
+      "build_matches": false,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 727639,
+      "last_index": 729953,
+      "unique_indices": 2314,
+      "phases_us": {},
+      "returncode": -6,
+      "timed_out": false,
+      "capture_valid": false,
+      "device": 0,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v4",
+        "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "99",
+        "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+        "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc0-result.json",
+        "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+        "2"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 6.41915300002438,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": "KeyboardInterrupt: signal 15",
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 0,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {},
+      "build_matches": false,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 722170,
+      "last_index": 724412,
+      "unique_indices": 2242,
+      "phases_us": {},
+      "returncode": -6,
+      "timed_out": false,
+      "capture_valid": false,
+      "device": 1,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v4",
+        "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "99",
+        "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+        "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc1-result.json",
+        "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+        "2"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 6.563443999766605,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 0,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {},
+      "build_matches": false,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 709897,
+      "last_index": 712219,
+      "unique_indices": 2322,
+      "phases_us": {},
+      "returncode": -6,
+      "timed_out": false,
+      "capture_valid": false,
+      "device": 2,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v4",
+        "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "99",
+        "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+        "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc2-result.json",
+        "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+        "2"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 6.471272999988287,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": "KeyboardInterrupt: signal 15",
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 0,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {},
+      "build_matches": false,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 706117,
+      "last_index": 708425,
+      "unique_indices": 2308,
+      "phases_us": {},
+      "returncode": -6,
+      "timed_out": false,
+      "capture_valid": false,
+      "device": 3,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v4",
+        "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "99",
+        "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+        "/srv/lanxin/qwen35-a3b/logs/memory-four-fast-v19/pacc3-result.json",
+        "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+        "2"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 6.773954999516718,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": "KeyboardInterrupt: signal 15",
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    }
+  ],
+  "xm_batch_proof": [
+    {
+      "device": 0,
+      "calls": 2,
+      "multi_tiles": 44,
+      "max_n": 2
+    },
+    {
+      "device": 1,
+      "calls": 2,
+      "multi_tiles": 44,
+      "max_n": 2
+    },
+    {
+      "device": 2,
+      "calls": 2,
+      "multi_tiles": 44,
+      "max_n": 2
+    },
+    {
+      "device": 3,
+      "calls": 2,
+      "multi_tiles": 44,
+      "max_n": 2
+    }
+  ],
+  "elapsed_including_load_s": 15.597185151000303,
+  "min_mem_available_kib": 257859496,
+  "memory_guard_triggered": false
+}

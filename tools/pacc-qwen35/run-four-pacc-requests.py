@@ -74,7 +74,8 @@ def main():
     settings={key:env.get(key,'0') for key in (
         'HETGPU_SIFIVE_QK_REQUEST_BATCH','HETGPU_SIFIVE_QK_LOCAL_BATCH',
         'HETGPU_SIFIVE_QK_VECTOR_PACK','HETGPU_SIFIVE_QK_EXPERT_BATCH',
-        'HETGPU_SIFIVE_QK_VECTOR_REDUCE','HETGPU_SIFIVE_QK_PROFILE','HETGPU_SIFIVE_ELF_PROFILE')}
+        'HETGPU_SIFIVE_QK_VECTOR_REDUCE','HETGPU_SIFIVE_QK_PROFILE','HETGPU_SIFIVE_ELF_PROFILE',
+        'HETGPU_SIFIVE_MMAP_WEIGHTS','HETGPU_SIFIVE_LAZY_ZERO')}
     settings.update(ubatch=a.ubatch,timeout_s=a.timeout,runtime=str(a.runtime.resolve()))
     settings.update(wrapper=str(a.wrapper.resolve()),harness=str(a.harness.resolve()),
                     llama_library_dir=env.get('LLAMA_RUNTIME_LIBRARY_DIR'),

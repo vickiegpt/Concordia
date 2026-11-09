@@ -1,0 +1,12 @@
+PACC_MMAP_WEIGHTS bytes=4096 immutable=1 borrowed=1
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/riscv64-linux-gnu/libthread_db.so.1".
+0x00007fffae10ebac in __GI___wait4 (pid=116513, stat_loc=0x0, options=0, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+#0  0x00007fffae10ebac in __GI___wait4 (pid=116513, stat_loc=0x0, options=0, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+30	in ../sysdeps/unix/sysv/linux/wait4.c
+#1  0x00007fffae5392cc in ggml_print_backtrace () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so.0
+#2  0x00007fffae5393ea in ggml_abort () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so.0
+#3  0x00007fffae38eb00 in (anonymous namespace)::set(ggml_backend_buffer*, ggml_tensor*, void const*, unsigned long, unsigned long) () from /srv/lanxin/qwen35-a3b/build-seq512-memory/bin/libllama.so.0
+#4  0x000055557134c6de in main ()
+[Inferior 1 (process 116512) detached]
+PASS borrowed weights: padding and native-device rejection, immutable writes, reads and lifetime

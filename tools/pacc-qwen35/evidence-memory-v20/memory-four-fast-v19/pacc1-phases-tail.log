@@ -1,0 +1,160 @@
+llama_kv_cache: layer  18: filtered
+llama_kv_cache: layer  19: dev = CUDA0
+llama_kv_cache: layer  20: filtered
+llama_kv_cache: layer  21: filtered
+llama_kv_cache: layer  22: filtered
+llama_kv_cache: layer  23: dev = CUDA0
+llama_kv_cache: layer  24: filtered
+llama_kv_cache: layer  25: filtered
+llama_kv_cache: layer  26: filtered
+llama_kv_cache: layer  27: dev = CUDA0
+llama_kv_cache: layer  28: filtered
+llama_kv_cache: layer  29: filtered
+llama_kv_cache: layer  30: filtered
+llama_kv_cache: layer  31: dev = CUDA0
+llama_kv_cache: layer  32: filtered
+llama_kv_cache: layer  33: filtered
+llama_kv_cache: layer  34: filtered
+llama_kv_cache: layer  35: dev = CUDA0
+llama_kv_cache: layer  36: filtered
+llama_kv_cache: layer  37: filtered
+llama_kv_cache: layer  38: filtered
+llama_kv_cache: layer  39: dev = CUDA0
+llama_kv_cache:      CUDA0 KV buffer size =    10.00 MiB
+llama_kv_cache: size =   10.00 MiB (   256 cells,  10 layers,  2/2 seqs), K (f16):    5.00 MiB, V (f16):    5.00 MiB
+llama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 256
+llama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 256
+llama_memory_recurrent, layer   0: dev = CUDA0
+llama_memory_recurrent, layer   1: dev = CUDA0
+llama_memory_recurrent, layer   2: dev = CUDA0
+llama_memory_recurrent: layer   3: skipped
+llama_memory_recurrent, layer   4: dev = CUDA0
+llama_memory_recurrent, layer   5: dev = CUDA0
+llama_memory_recurrent, layer   6: dev = CUDA0
+llama_memory_recurrent: layer   7: skipped
+llama_memory_recurrent, layer   8: dev = CUDA0
+llama_memory_recurrent, layer   9: dev = CUDA0
+llama_memory_recurrent, layer  10: dev = CUDA0
+llama_memory_recurrent: layer  11: skipped
+llama_memory_recurrent, layer  12: dev = CUDA0
+llama_memory_recurrent, layer  13: dev = CUDA0
+llama_memory_recurrent, layer  14: dev = CUDA0
+llama_memory_recurrent: layer  15: skipped
+llama_memory_recurrent, layer  16: dev = CUDA0
+llama_memory_recurrent, layer  17: dev = CUDA0
+llama_memory_recurrent, layer  18: dev = CUDA0
+llama_memory_recurrent: layer  19: skipped
+llama_memory_recurrent, layer  20: dev = CUDA0
+llama_memory_recurrent, layer  21: dev = CUDA0
+llama_memory_recurrent, layer  22: dev = CUDA0
+llama_memory_recurrent: layer  23: skipped
+llama_memory_recurrent, layer  24: dev = CUDA0
+llama_memory_recurrent, layer  25: dev = CUDA0
+llama_memory_recurrent, layer  26: dev = CUDA0
+llama_memory_recurrent: layer  27: skipped
+llama_memory_recurrent, layer  28: dev = CUDA0
+llama_memory_recurrent, layer  29: dev = CUDA0
+llama_memory_recurrent, layer  30: dev = CUDA0
+llama_memory_recurrent: layer  31: skipped
+llama_memory_recurrent, layer  32: dev = CUDA0
+llama_memory_recurrent, layer  33: dev = CUDA0
+llama_memory_recurrent, layer  34: dev = CUDA0
+llama_memory_recurrent: layer  35: skipped
+llama_memory_recurrent, layer  36: dev = CUDA0
+llama_memory_recurrent, layer  37: dev = CUDA0
+llama_memory_recurrent, layer  38: dev = CUDA0
+llama_memory_recurrent: layer  39: skipped
+llama_memory_recurrent:      CUDA0 RS buffer size =   125.62 MiB
+llama_memory_recurrent: size =  125.62 MiB (     2 cells,  40 layers,  2 seqs  0 rs_seq), R (f32):    5.62 MiB, S (f32):  120.00 MiB
+llama_context: enumerating backends
+llama_context: backend_ptrs.size() = 2
+sched_reserve: reserving ...
+sched_reserve: max_nodes = 23456
+sched_reserve: reserving full memory module
+sched_reserve: worst-case: n_tokens = 2, n_seqs = 2, n_outputs = 2
+resolve_fused_ops: resolving fused Gated Delta Net support:
+graph_reserve: reserving a graph for ubatch with n_tokens =    2, n_seqs =  2, n_outputs =    2
+resolve_fused_ops: fused Gated Delta Net (autoregressive) enabled
+graph_reserve: reserving a graph for ubatch with n_tokens =   32, n_seqs =  2, n_outputs =   32
+resolve_fused_ops: fused Gated Delta Net (chunked) enabled
+resolve_fused_ops: resolving fused Lightning Indexer support:
+graph_reserve: reserving a graph for ubatch with n_tokens =    2, n_seqs =  2, n_outputs =    2
+resolve_fused_ops: Lightning Indexer enabled
+resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+graph_reserve: reserving a graph for ubatch with n_tokens =    2, n_seqs =  2, n_outputs =    2
+resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+graph_reserve: reserving a graph for ubatch with n_tokens =    2, n_seqs =  2, n_outputs =    2
+resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+graph_reserve: reserving a graph for ubatch with n_tokens =    2, n_seqs =  2, n_outputs =    2
+resolve_fused_ops: fused DeepSeek V4 HC post enabled
+graph_reserve: reserving a graph for ubatch with n_tokens =    2, n_seqs =  2, n_outputs =    2
+graph_reserve: reserving a graph for ubatch with n_tokens =    2, n_seqs =  2, n_outputs =    2
+graph_reserve: reserving a graph for ubatch with n_tokens =    2, n_seqs =  2, n_outputs =    2
+sched_reserve:      CUDA0 compute buffer size =     8.59 MiB
+sched_reserve:  CUDA_Host compute buffer size =     0.04 MiB
+sched_reserve: graph nodes  = 3787
+sched_reserve: graph splits = 2
+sched_reserve: reserve took 48.84 ms, sched copies = 1
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+sifive_LoadProgramPtx: PTX parse failed for module.ptx: [UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_\n()\n.noreturn;"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_()\n.noreturn                               // -- Begin function _ZL14no_device_codePKciS0_iS0_\n                                        // @_ZL14no_device_codePKciS0_iS0_\n{\n\t.local .align 8 .b8 \t__local_depot8[40];\n\t.reg .b64 \t%SP;\n\t.reg .b64 \t%SPL;\n\t.reg .b32 \t%r<5>;\n\t.reg .b64 \t%rd<11>;\n\n// %bb.0:\n\tmov.u64 \t%SPL, __local_depot8;\n\tcvta.local.u64 \t%SP, %SPL;\n\tadd.u64 \t%rd1, %SP, 0;\n\tadd.u64 \t%rd2, %SPL, 0;\n\tmov.u64 \t%rd3, _$_str;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd4, %rd3;\n\tst.local.u64 \t[%rd2], %rd4;\n\tmov.b32 \t%r1, 329;\n\tst.local.u32 \t[%rd2+8], %r1;\n\tmov.u64 \t%rd5, __FUNCTION___$__ZL18quantize_mmq_nvfp4ILb1ELb1EEvPKfPKiPvPfllllllli;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd6, %rd5;\n\tst.local.u64 \t[%rd2+16], %rd6;\n\tmov.b32 \t%r2, 800;\n\tst.local.u32 \t[%rd2+24], %r2;\n\tmov.u64 \t%rd7, _$_str1;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd8, %rd7;\n\tst.local.u64 \t[%rd2+32], %rd8;\n\tmov.u64 \t%rd9, _$_str2;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd10, %rd9;\n\t{ // callseq 1, 0\n\t.param .b64 param0;\n\tst.param.b64 \t[param0], %rd10;\n\t.param .b64 param1;\n\tst.param.b64 \t[param1], %rd1;\n\t.param .b32 retval0;\n\tcall.uni (retval0), \n\tvprintf, \n\t(\n\tparam0, \n\tparam1\n\t);\n\tld.param.b32 \t%r3, [retval0];\n\t} // callseq 1\n\t// begin inline asm\n\ttrap;\n\t// end inline asm\n\tret;\n                                        // -- End function\n}"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);")]
+[SIFIVE Backend] sifive_LoadProgramPtx failed: -1 (ptx_parse: module.ptx: [UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_\n()\n.noreturn;"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnrecognizedDirective(".func _ZL14no_device_codePKciS0_iS0_()\n.noreturn                               // -- Begin function _ZL14no_device_codePKciS0_iS0_\n                                        // @_ZL14no_device_codePKciS0_iS0_\n{\n\t.local .align 8 .b8 \t__local_depot8[40];\n\t.reg .b64 \t%SP;\n\t.reg .b64 \t%SPL;\n\t.reg .b32 \t%r<5>;\n\t.reg .b64 \t%rd<11>;\n\n// %bb.0:\n\tmov.u64 \t%SPL, __local_depot8;\n\tcvta.local.u64 \t%SP, %SPL;\n\tadd.u64 \t%rd1, %SP, 0;\n\tadd.u64 \t%rd2, %SPL, 0;\n\tmov.u64 \t%rd3, _$_str;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd4, %rd3;\n\tst.local.u64 \t[%rd2], %rd4;\n\tmov.b32 \t%r1, 329;\n\tst.local.u32 \t[%rd2+8], %r1;\n\tmov.u64 \t%rd5, __FUNCTION___$__ZL18quantize_mmq_nvfp4ILb1ELb1EEvPKfPKiPvPfllllllli;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd6, %rd5;\n\tst.local.u64 \t[%rd2+16], %rd6;\n\tmov.b32 \t%r2, 800;\n\tst.local.u32 \t[%rd2+24], %r2;\n\tmov.u64 \t%rd7, _$_str1;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd8, %rd7;\n\tst.local.u64 \t[%rd2+32], %rd8;\n\tmov.u64 \t%rd9, _$_str2;\n\tcvta"), UnrecognizedDirective(".global.u64 \t%rd10, %rd9;\n\t{ // callseq 1, 0\n\t.param .b64 param0;\n\tst.param.b64 \t[param0], %rd10;\n\t.param .b64 param1;\n\tst.param.b64 \t[param1], %rd1;\n\t.param .b32 retval0;\n\tcall.uni (retval0), \n\tvprintf, \n\t(\n\tparam0, \n\tparam1\n\t);\n\tld.param.b32 \t%r3, [retval0];\n\t} // callseq 1\n\t// begin inline asm\n\ttrap;\n\t// end inline asm\n\tret;\n                                        // -- End function\n}"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);"), UnknownFunction, UnrecognizedStatement("call.uni \n\t_ZL14no_device_codePKciS0_iS0_, \n\t(\n\t);")])
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+ZLUDA DEBUG: Compiling SIFIVE source q4k_tile.c to launchable ELF
+SIFIVE: Created LLVM bitcode: /dev/shm/hetgpu_tmp/.tmprb8mbT/q4k_tile.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpweCUF9/q4k_tile.bc -> /dev/shm/hetgpu_tmp/.tmpweCUF9/q4k_tile_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpweCUF9/q4k_tile_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpweCUF9/q4k_tile_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpweCUF9/q4k_tile_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmp0zwpJ4/q4k_tile_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmp0zwpJ4/q4k_tile_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmp0zwpJ4/q4k_tile_optimized_sifive.so
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmp0zwpJ4/q4k_tile.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmp0zwpJ4/q4k_tile_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmp0zwpJ4/q4k_tile_sifive.so
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=8192 k=2048 tiles=43 multi_tiles=43 max_n=2 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+ZLUDA DEBUG: Compiling SIFIVE source concat_tile.c to launchable ELF
+SIFIVE: Created LLVM bitcode: /dev/shm/hetgpu_tmp/.tmprPXJ6z/concat_tile.bc
+SIFIVE: prepared sanitized pre-opt LLVM IR for /dev/shm/hetgpu_tmp/.tmpnjn6NF/concat_tile.bc -> /dev/shm/hetgpu_tmp/.tmpnjn6NF/concat_tile_sifive_preopt.ll
+SIFIVE: Running opt on /dev/shm/hetgpu_tmp/.tmpnjn6NF/concat_tile_sifive_preopt.ll -> /dev/shm/hetgpu_tmp/.tmpnjn6NF/concat_tile_optimized.bc
+SIFIVE: Optimized bitcode: /dev/shm/hetgpu_tmp/.tmpnjn6NF/concat_tile_optimized.bc
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpDO0hth/concat_tile_optimized.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpDO0hth/concat_tile_optimized_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpDO0hth/concat_tile_optimized_sifive.so
+SIFIVE: using sanitized textual IR path for /dev/shm/hetgpu_tmp/.tmpDO0hth/concat_tile.bc (set HETGPU_SIFIVE_DIRECT_BC=1 to try direct bitcode codegen)
+SIFIVE/XM: Generated RISC-V object code with target=riscv64-unknown-elf march=rv64gcv_zbb_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma_zvl1024b_xsfvcp_xsfvfnrclipxfqf_xsfvqmaccqoq: /dev/shm/hetgpu_tmp/.tmpDO0hth/concat_tile_sifive.o
+SIFIVE/XM: Host-linked launchable RISC-V shared object: /dev/shm/hetgpu_tmp/.tmpDO0hth/concat_tile_sifive.so
+PACC concat device-tiled rows=16384 row_bytes=16 tiles=2 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+PACC_XM_REQUEST_BATCH moe=false requests=2 channels=1 groups=1 m=32 k=2048 tiles=1 multi_tiles=1 max_n=2 completion=verified
+[cudart_shim] cudaFuncGetAttributes: maxThreadsPerBlock=1024, numRegs=32
+[SIFIVE Backend] host-fallback bin_bcast '_ZL11k_bin_bcastIXadL_ZL6op_addffEEfffJPKfEEvPKT0_PKT1_PT2_jjj5uint3SA_SA_SA_SA_jjjjjjjjjjjDpT3_' rejected range dst=0x7ffa3a99cb00 src0=0x7ffa3a99ca00 dst_elems=64 src0_elems=64 src1_elems=32
+CUDA error: cudaErrorUnknown
+  current device: 0, in function ggml_cuda_kernel_launch at /srv/lanxin/qwen35-a3b/llama.cpp/ggml/src/ggml-cuda/common.cuh:1674
+  cudaGetLastError()
+/srv/lanxin/qwen35-a3b/llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu:107: CUDA error
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/riscv64-linux-gnu/libthread_db.so.1".
+0x00007fff82934bac in __GI___wait4 (pid=112324, stat_loc=0x0, options=0, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+warning: 30	../sysdeps/unix/sysv/linux/wait4.c: No such file or directory
+#0  0x00007fff82934bac in __GI___wait4 (pid=112324, stat_loc=0x0, options=0, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+30	in ../sysdeps/unix/sysv/linux/wait4.c
+#1  0x00007fff82d712cc in ggml_print_backtrace () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so.0
+#2  0x00007fff82d713ea in ggml_abort () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so.0
+#3  0x00007fff81aed0d6 in ggml_cuda_error(char const*, char const*, char const*, int, char const*) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0
+#4  0x00007fff81a976fc in void ggml_cuda_kernel_launch<void (*)(float const*, float const*, float*, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, float const*), float const*&, float const*&, float*&, long&, long&, long&, uint3 const&, uint3 const&, uint3 const&, uint3 const&, uint3 const&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, float const*>(void (*)(float const*, float const*, float*, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, float const*), ggml_cuda_kernel_launch_params const&, float const*&, float const*&, float*&, long&, long&, long&, uint3 const&, uint3 const&, uint3 const&, uint3 const&, uint3 const&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, unsigned long&, float const*&&) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0
+#5  0x00007fff81a52df2 in void ggml_cuda_op_bin_bcast<bin_bcast_cuda<&(op_add(float, float)), 1> >(ggml_tensor const*, ggml_tensor const*, ggml_tensor*, void const*, void const*, void*, CUstream_st*) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0
+#6  0x00007fff81af2738 in ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context*, ggml_cgraph*, bool, bool, void const*) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0
+#7  0x00007fff81af17c0 in ggml_backend_cuda_graph_compute(ggml_backend*, ggml_cgraph*) () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-cuda.so.0
+#8  0x00007fff82d88e5c in ggml_backend_sched_graph_compute_async () from /srv/lanxin/qwen35-a3b/llama.cpp/build-pacc-cuda-gcc14/bin/libggml-base.so.0
+#9  0x00007fff82abd3d8 in llama_context::graph_compute(ggml_cgraph*, bool) () from /srv/lanxin/qwen35-a3b/build-seq512-memory/bin/libllama.so.0
+#10 0x00007fff82abfc80 in llama_context::process_ubatch(llama_ubatch const&, llm_graph_type, llama_memory_context_i*, ggml_status&) () from /srv/lanxin/qwen35-a3b/build-seq512-memory/bin/libllama.so.0
+#11 0x00007fff82ac2f30 in llama_context::decode(llama_batch const&) () from /srv/lanxin/qwen35-a3b/build-seq512-memory/bin/libllama.so.0
+#12 0x00007fff82ac3ef4 in llama_decode () from /srv/lanxin/qwen35-a3b/build-seq512-memory/bin/libllama.so.0
+#13 0x0000555559c7de4a in main ()
+[Inferior 1 (process 111995) detached]

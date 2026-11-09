@@ -1,0 +1,31 @@
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-model.h"
++#include "pacc-mmap-weights.h"
+ 
+ #include "llama-arch.h"
+ #include "llama-ext.h"
+@@ -1695,9 +1696,10 @@
+         ggml_backend_dev_get_props(dev, &props);
+         bool buffer_from_host_ptr_supported = props.caps.buffer_from_host_ptr;
+         bool is_default_buft = buft == ggml_backend_dev_buffer_type(dev);
++        const bool pacc_mmap = ml.use_mmap && is_default_buft && pacc_mmap_weights_enabled(buft, ctx);
+ 
+         std::vector<ggml_backend_buffer_ptr> bufs;
+-        if (ml.use_mmap && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft) {
++        if (ml.use_mmap && use_mmap_buffer && (buffer_from_host_ptr_supported || pacc_mmap) && is_default_buft) {
+             GGML_ASSERT(!ml.no_alloc);
+             for (uint32_t idx = 0; idx < ml.files.size(); idx++) {
+                 // only the mmap region containing the tensors in the model is mapped to the backend buffer
+@@ -1711,7 +1713,9 @@
+                     continue;
+                 }
+                 const size_t max_size = ggml_get_max_tensor_size(ctx);
+-                ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + first, last - first, max_size);
++                ggml_backend_buffer_t buf = pacc_mmap
++                    ? pacc_mmap_weights_buffer(buft, (char *) addr + first, last - first)
++                    : ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + first, last - first, max_size);
+                 if (buf == nullptr) {
+                     throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
+                 }

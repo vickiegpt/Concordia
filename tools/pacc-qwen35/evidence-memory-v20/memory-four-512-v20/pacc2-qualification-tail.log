@@ -1,0 +1,16 @@
+PACC Q8_0xQ8_1 dev=2 m=33 n=1 k=32 tiles=1 elapsed_ms=1.892 completion=verified
+PACC Q8_0 tiled matvec: Q6_K packed input stride too short
+PACC Q8_0 tiled matvec: Q6_K invalid shape or unsafe completion policy
+PACC Q8_0xQ8_1 dev=2 m=1031 n=8 k=2048 tiles=5 elapsed_ms=53.262 completion=verified
+PACC Q8_0 tiled matvec: Q6_K packed input stride too short
+PACC Q8_0 tiled matvec: Q6_K invalid shape or unsafe completion policy
+PACC Q8_0xQ8_1 dev=2 m=3 n=3 k=32768 tiles=1 elapsed_ms=6.415 completion=verified
+PACC Q8_0 tiled matvec: Q6_K packed input stride too short
+PACC Q8_0 tiled matvec: Q6_K invalid shape or unsafe completion policy
+PACC Q8_0xQ8_1 dev=2 m=8192 n=2 k=2048 tiles=35 elapsed_ms=208.272 completion=verified
+PACC Q8_0 tiled matvec: Q6_K packed input stride too short
+PACC Q8_0 tiled matvec: Q6_K invalid shape or unsafe completion policy
+PASS Q8 mode=PACC m=33 n=1 k=32 max_abs_error=7.15255737e-07 elapsed_us=2189
+PASS Q8 mode=PACC m=1031 n=8 k=2048 max_abs_error=0.000284342095 elapsed_us=116033
+PASS Q8 mode=PACC m=3 n=3 k=32768 max_abs_error=0.00673043542 elapsed_us=7899
+PASS Q8 mode=PACC m=8192 n=2 k=2048 max_abs_error=0.000336939469 elapsed_us=344392
