@@ -1,0 +1,50 @@
+      "max_us": 84017
+    },
+    "output_copy": {
+      "sum_us": 99946,
+      "p50_us": 3,
+      "p99_us": 62,
+      "max_us": 98
+    },
+    "cleanup": {
+      "sum_us": 4017,
+      "p50_us": 1,
+      "p99_us": 3,
+      "max_us": 6
+    },
+    "completion_publish": {
+      "sum_us": 15732,
+      "p50_us": 5,
+      "p99_us": 6,
+      "max_us": 41
+    },
+    "device_before_publish": {
+      "sum_us": 41370945,
+      "p50_us": 4531,
+      "p99_us": 76181,
+      "max_us": 84117
+    }
+  },
+  "returncode": 0,
+  "timed_out": false,
+  "capture_valid": true,
+  "device": 3,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/build-seq512/bin/qwen-multiseq-v4",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "99",
+    "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc3-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+    "2"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 5.049291999966954,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": null,
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

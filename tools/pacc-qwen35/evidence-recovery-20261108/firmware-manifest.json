@@ -1,0 +1,42 @@
+{
+  "state": {
+    "boot_id": "4ca2fa21-0d48-4090-93a5-51206ac1de29",
+    "base": 2263296770048,
+    "size": 4194304,
+    "previous_base": 2203592949760,
+    "previous_size": 16777216,
+    "helper_sha256": "375525cb53213c11a630efe055f56da44f9fbf284ba3a89dd248ae5bec3f6bca",
+    "vendor_sha256": "19cdacf4ddfa8f6861477daa2be79f3e1e52d1a11780c7a209a9419e4a2a83a8",
+    "build_id": 131126,
+    "payload_base": 2097152,
+    "payload_bytes": 524288
+  },
+  "jobd_sha256": "3a0507b2c7be070d07aebd21ee287543869dd69bdd54c50e9a81f184d70288ce",
+  "control_reproduction": {
+    "device": 0,
+    "path": "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/old-boot-control-do-not-load.bin",
+    "sha256": "aeae60a8842ad62c6cee316227b9d0ad840a14c4c2b59b58532e5567aefc4323"
+  },
+  "images": [
+    {
+      "device": 0,
+      "path": "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc0-owned.bin",
+      "sha256": "68488373fbeb58444cbb81aa9c60febd76461fa8a9a1aa64b9ebda63873bfc30"
+    },
+    {
+      "device": 1,
+      "path": "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc1-owned.bin",
+      "sha256": "9f8982a3fcfc5547a74f813437221f47f2076c3c46b0bb6281d91e46ccf44faa"
+    },
+    {
+      "device": 2,
+      "path": "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc2-owned.bin",
+      "sha256": "95463b40becdad351e9e24829f86561c70b963dde89c6b283db80a6238323507"
+    },
+    {
+      "device": 3,
+      "path": "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc3-owned.bin",
+      "sha256": "1198febbccc6cd058b39f1e12ec0a8621a63c0ca5205242a5f28afe8aa1a93c5"
+    }
+  ]
+}

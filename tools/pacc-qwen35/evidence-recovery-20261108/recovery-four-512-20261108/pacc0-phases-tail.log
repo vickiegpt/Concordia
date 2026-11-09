@@ -1,0 +1,50 @@
+llama_kv_cache: layer  34: filtered
+llama_kv_cache: layer  35: dev = CUDA0
+llama_kv_cache: layer  36: filtered
+llama_kv_cache: layer  37: filtered
+llama_kv_cache: layer  38: filtered
+llama_kv_cache: layer  39: dev = CUDA0
+llama_kv_cache:      CUDA0 KV buffer size =  2560.00 MiB
+llama_kv_cache: size = 2560.00 MiB (   256 cells,  10 layers, 512/512 seqs), K (f16): 1280.00 MiB, V (f16): 1280.00 MiB
+llama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 256
+llama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 256
+llama_memory_recurrent, layer   0: dev = CUDA0
+llama_memory_recurrent, layer   1: dev = CUDA0
+llama_memory_recurrent, layer   2: dev = CUDA0
+llama_memory_recurrent: layer   3: skipped
+llama_memory_recurrent, layer   4: dev = CUDA0
+llama_memory_recurrent, layer   5: dev = CUDA0
+llama_memory_recurrent, layer   6: dev = CUDA0
+llama_memory_recurrent: layer   7: skipped
+llama_memory_recurrent, layer   8: dev = CUDA0
+llama_memory_recurrent, layer   9: dev = CUDA0
+llama_memory_recurrent, layer  10: dev = CUDA0
+llama_memory_recurrent: layer  11: skipped
+llama_memory_recurrent, layer  12: dev = CUDA0
+llama_memory_recurrent, layer  13: dev = CUDA0
+llama_memory_recurrent, layer  14: dev = CUDA0
+llama_memory_recurrent: layer  15: skipped
+llama_memory_recurrent, layer  16: dev = CUDA0
+llama_memory_recurrent, layer  17: dev = CUDA0
+llama_memory_recurrent, layer  18: dev = CUDA0
+llama_memory_recurrent: layer  19: skipped
+llama_memory_recurrent, layer  20: dev = CUDA0
+llama_memory_recurrent, layer  21: dev = CUDA0
+llama_memory_recurrent, layer  22: dev = CUDA0
+llama_memory_recurrent: layer  23: skipped
+llama_memory_recurrent, layer  24: dev = CUDA0
+llama_memory_recurrent, layer  25: dev = CUDA0
+llama_memory_recurrent, layer  26: dev = CUDA0
+llama_memory_recurrent: layer  27: skipped
+llama_memory_recurrent, layer  28: dev = CUDA0
+llama_memory_recurrent, layer  29: dev = CUDA0
+llama_memory_recurrent, layer  30: dev = CUDA0
+llama_memory_recurrent: layer  31: skipped
+llama_memory_recurrent, layer  32: dev = CUDA0
+llama_memory_recurrent, layer  33: dev = CUDA0
+llama_memory_recurrent, layer  34: dev = CUDA0
+llama_memory_recurrent: layer  35: skipped
+llama_memory_recurrent, layer  36: dev = CUDA0
+llama_memory_recurrent, layer  37: dev = CUDA0
+llama_memory_recurrent, layer  38: dev = CUDA0
+llama_memory_recurrent: layer  39: skipped

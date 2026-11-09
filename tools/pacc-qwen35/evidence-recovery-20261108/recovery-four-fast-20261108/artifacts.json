@@ -1,0 +1,9 @@
+{
+  "/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v18/libnvcuda.so": "6783baacc556ad2cb99683b2a9e2ac989f02e284ecee65534b57d2a07ba51b9c",
+  "/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v18/libhetgpu_cuda_shim.so": "7f875a1841bdf13bbd462383b674e4f11d8c02f1c7b26978d1fe977f138518e3",
+  "/srv/lanxin/qwen35-a3b/build-seq512/bin/qwen-multiseq-v4": "c5d11cc15d011c7fd439b176e04a6874c47cace51de21d20486a7b91eb72366e",
+  "/srv/lanxin/qwen35-a3b/bin/run-pacc-recovered.py": "65ddfd90f3a4ae5bbba2f38c1b1c1b78597ec2d6b78230851ecf6c3e26500499",
+  "/srv/lanxin/qwen35-a3b/bin/cross-fast.json": "e2f10f4b114c488242cfc4a0648368934a6c75df37f1ba2d6cff8a1fa00eb636",
+  "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json": "6b3f7b9797bab65439182a37d0681cd9a6dab2a5dbf0543f7051d428a402838e",
+  "/srv/lanxin/qwen35-a3b/build-seq512/bin/libllama.so.0.3.0": "319da8e0be0c8e65d98468e5d8da980ccd1bd6ba9156032dd28b6150b15f59c0"
+}

@@ -1,0 +1,37 @@
+isolated_recovered_worker physical=1 base=0x20ef7000000
+{
+  "complete_submissions": 0,
+  "incomplete_submission_count": 0,
+  "incomplete_sample": [],
+  "saturated_submissions": 0,
+  "submission_build_counts": {},
+  "build_matches": false,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 497068,
+  "last_index": 503122,
+  "unique_indices": 6054,
+  "phases_us": {},
+  "returncode": -15,
+  "timed_out": false,
+  "capture_valid": false,
+  "device": 1,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/build-seq512/bin/qwen-multiseq-v4",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "99",
+    "/srv/lanxin/qwen35-a3b/bin/cross-512-recovery.json",
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc1-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/recovery-512-cpu-reference.json",
+    "8"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 2.560245999120525,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": "KeyboardInterrupt: signal 15",
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

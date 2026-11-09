@@ -1,0 +1,12 @@
+{
+  "boot_id": "4ca2fa21-0d48-4090-93a5-51206ac1de29",
+  "base": 2263296770048,
+  "size": 4194304,
+  "previous_base": 2203592949760,
+  "previous_size": 16777216,
+  "helper_sha256": "375525cb53213c11a630efe055f56da44f9fbf284ba3a89dd248ae5bec3f6bca",
+  "vendor_sha256": "19cdacf4ddfa8f6861477daa2be79f3e1e52d1a11780c7a209a9419e4a2a83a8",
+  "build_id": 131126,
+  "payload_base": 2097152,
+  "payload_bytes": 524288
+}

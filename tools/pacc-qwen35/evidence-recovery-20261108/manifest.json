@@ -1,0 +1,411 @@
+{
+  "boot_id": "4ca2fa21-0d48-4090-93a5-51206ac1de29",
+  "cpu_server_pid4807_comm": "llama-server",
+  "pin_service_active": true,
+  "bound_devices": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "helper_parameters": {
+    "shared_ddr_base_override": "0",
+    "shared_ddr_size": "4194304",
+    "shared_ddr_dma_sync": "Y"
+  },
+  "parent_commit": "f423544012a07309cde2cddaa9e60bf3fe8a0c07",
+  "files": {
+    "/srv/lanxin/qwen35-a3b/logs/recovery-20261108/state.json": {
+      "bytes": 413,
+      "sha256": "e104e18215696145d4fe091c712c3fed1869342f66d0de8c992db8ffafb2c4d5"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-20261108/preflight-after.json": {
+      "bytes": 151,
+      "sha256": "87a2de2008fc233b23f0f3b3d03e9086f88577d98cdbbcd6f0a6b2fdb0a9777e"
+    },
+    "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/manifest.json": {
+      "bytes": 1574,
+      "sha256": "f698063a8ad6e7b711acc4b574d33136c5b6d2f085851b3b942063bbcfe7e748"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/package-recovery-20261108.log": {
+      "bytes": 8381,
+      "sha256": "d5ea0b62275346fe4a5937fd9039f61933f87a4cf33321a864f71a3c42cdfb5b"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-pacc0-qualification.json": {
+      "bytes": 1672,
+      "sha256": "7c4a7c3b3cd31f2e495d7e726d1aab80045c585fd8685ad4ad1137a67b5ccc93"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-pacc0-qualification.log": {
+      "bytes": 1177,
+      "sha256": "71dc6c44c8ff826d4e3474b06a77a7f5d639a076631b3121e456fab6f80247be"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-mixed-20261108-pacc0.log": {
+      "bytes": 72146,
+      "sha256": "cf26a10caae2a97ef60fb1120e6685d84858fea20a94081b5eddf78d99bfa725"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-postguard-20261108-pacc0.log": {
+      "bytes": 72146,
+      "sha256": "ee6d9dce9823a32cc8365d7cbf1694b1047b7985317e423b208369660e4ba4c4"
+    },
+    "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc0-owned.bin": {
+      "bytes": 31716408,
+      "sha256": "68488373fbeb58444cbb81aa9c60febd76461fa8a9a1aa64b9ebda63873bfc30"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-pacc1-qualification.json": {
+      "bytes": 1672,
+      "sha256": "6b9d2504dc8248603977d1f46c76ec67e28c79c9b22cebef7940e5ce7f5e2bd8"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-pacc1-qualification.log": {
+      "bytes": 1177,
+      "sha256": "dde058a8953f242161d6d52f77aac5622162e1afb258ddda011ecabbb6068ac3"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-mixed-20261108-pacc1.log": {
+      "bytes": 72146,
+      "sha256": "1c5c9d8509cd41b623b48be4b0da74eb18088d9b0736657cb2493221b360a508"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-postguard-20261108-pacc1.log": {
+      "bytes": 72146,
+      "sha256": "0714e38e9be3e7702f090cbdbede2c323e95182c6255b79eff1ec51a0fdae999"
+    },
+    "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc1-owned.bin": {
+      "bytes": 31716408,
+      "sha256": "9f8982a3fcfc5547a74f813437221f47f2076c3c46b0bb6281d91e46ccf44faa"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-pacc2-qualification.json": {
+      "bytes": 1672,
+      "sha256": "9b89c953d84d146cfb3c56e59a9673bb35d06a066f29f20d4e8acea74f728def"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-pacc2-qualification.log": {
+      "bytes": 1177,
+      "sha256": "d3b11ae69545f9b78e62d66f1520d793ab78e5d2a7e04a4a5247d34208f6b89d"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-mixed-20261108-pacc2.log": {
+      "bytes": 72146,
+      "sha256": "65623f3d586451dab8b8df7b9e44edd1ec7ce1d5941380818cf3815b860166df"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-postguard-20261108-pacc2.log": {
+      "bytes": 72146,
+      "sha256": "54e2c9bccb61b918cc5a0cd8425a327f48047ba186ab0a4ce1b8de85f877282a"
+    },
+    "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc2-owned.bin": {
+      "bytes": 31716408,
+      "sha256": "95463b40becdad351e9e24829f86561c70b963dde89c6b283db80a6238323507"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-pacc3-qualification.json": {
+      "bytes": 1671,
+      "sha256": "a01217260b30343675d2f803aba41fe581bf86fa38116d3ce3812888b4f00744"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-pacc3-qualification.log": {
+      "bytes": 1177,
+      "sha256": "aa7520a5c75a6e8cc16cfd6a6619dc165a7027b2d288e0936080836d20f51dc7"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-mixed-20261108-pacc3.log": {
+      "bytes": 72146,
+      "sha256": "4d3c0bf98c66768bc53c5e240dcb78954ef7bac97978ed4f9c4e98c12a161260"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-postguard-20261108-pacc3.log": {
+      "bytes": 72146,
+      "sha256": "a1c5d79df2c936aa6e535cb0ee0371e05cf088a4d13c312508bdce6bf3e6ff0e"
+    },
+    "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc3-owned.bin": {
+      "bytes": 31716408,
+      "sha256": "1198febbccc6cd058b39f1e12ec0a8621a63c0ca5205242a5f28afe8aa1a93c5"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/artifacts.json": {
+      "bytes": 929,
+      "sha256": "71d721e9b30f81cad8ca04e1bec013d99b62f9c7a29e6fd50868f03ada9a067b"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc0-driver.log": {
+      "bytes": 2025,
+      "sha256": "66e47f0a478d3208d54d5220622ebcbf438463c5848db1ae449e560b24da7f12"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc0-phases.json": {
+      "bytes": 1969,
+      "sha256": "4ffecbe088ec56d6629b72fd4263a2a55890e9bc40626be15c120803139ad7ff"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc0-phases.log": {
+      "bytes": 270072,
+      "sha256": "2e86b17562291c081644298f8d5d74b467198d60b105a8ffc31228a66afc2c98"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc0-qualification-driver.log": {
+      "bytes": 1730,
+      "sha256": "42ebb35bc5e3887fa29683d1b835a8308d2cd21313f4ffc8cd3141a072b1a4c6"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc0-qualification.json": {
+      "bytes": 1674,
+      "sha256": "5f7841f0e054134ca9853fde1e3449b3445171611b780acb575acbc388125a22"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc0-qualification.log": {
+      "bytes": 1175,
+      "sha256": "8dac8b32024b70398f1984407c4e13ab4d33aa883fbf0ffe3b0403f5922c7f76"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc0-result.json": {
+      "bytes": 987,
+      "sha256": "df6be1fc8d94730826fc17c98e3cd3067425b9a112bfde6e9b7241eb95663c48"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc1-driver.log": {
+      "bytes": 2027,
+      "sha256": "99ce835529f20745bf646c78fbf9a6d587fcd5bbbf79b6a37ae94e63608f534b"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc1-phases.json": {
+      "bytes": 1971,
+      "sha256": "e7c6abc87c52014e6599b5fc627d9686df2fb1424dde5b2d1da2f90c475eb328"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc1-phases.log": {
+      "bytes": 270072,
+      "sha256": "cf3f66cf73710ada6f5a78ad6d31ccdb1a291a6cecf45c0af66301b70bfc22c4"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc1-qualification-driver.log": {
+      "bytes": 1726,
+      "sha256": "fd740384d9e11b96f65f027fabff0db49e831428b39fdd2d285563233d444e43"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc1-qualification.json": {
+      "bytes": 1670,
+      "sha256": "50e1762e828a7d264be5edea7da7328c01b9792ee4a259e64a885a01c4843853"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc1-qualification.log": {
+      "bytes": 1175,
+      "sha256": "024344371d52be9f8c68b973a76b04d45ae85b635798972fcb3404aa4f736532"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc1-result.json": {
+      "bytes": 987,
+      "sha256": "6d836a0ef9c8c757f68d178f8d8f5e83e636da0d1f683a79861b7fcc026bd534"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc2-driver.log": {
+      "bytes": 2026,
+      "sha256": "0b5320e971ce3c641715ab49e276bda0f8c57578ed3813ae3f7dcb6e3081c30e"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc2-phases.json": {
+      "bytes": 1970,
+      "sha256": "da4b3c2eb72e5500f9a8803e30a90396584c8747750e4add4c6421ed6ecc8f40"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc2-phases.log": {
+      "bytes": 270072,
+      "sha256": "b4ce20204de9e6f69e19ea2b7cb1d61eb8737cd5a79f7327f4232ea54f87a9df"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc2-qualification-driver.log": {
+      "bytes": 1725,
+      "sha256": "179154ad9c7de43a744b8028e9004443624d597bea9eef449f9a11027a8584f8"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc2-qualification.json": {
+      "bytes": 1669,
+      "sha256": "17a7335977fcb797c4af768d462018f0f8333bec561ae0764c5de8c839e8c117"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc2-qualification.log": {
+      "bytes": 1175,
+      "sha256": "24283f965f829ab6cb7d23f1d356fe7d4b5b53d822e6b284e7a8d9372ac92a16"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc2-result.json": {
+      "bytes": 987,
+      "sha256": "43d565716547754705ac4bde6cd12e1c71202ca38812edbcfc957cccc58efafe"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc3-driver.log": {
+      "bytes": 2025,
+      "sha256": "17922b263fa6dcf9f7da14f97c15d815efabfd8adb92c6cbaa5aaa807cb7fd4b"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc3-phases.json": {
+      "bytes": 1969,
+      "sha256": "2b65abefa59718539df0e443c8844553cdd8d8e2ba34a81dd318b408bdf5dc88"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc3-phases.log": {
+      "bytes": 270072,
+      "sha256": "59e968a0189524376cac624c6737f0742db08233d864a0387d1bd469fb1422b9"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc3-qualification-driver.log": {
+      "bytes": 1729,
+      "sha256": "055bc4fc747d20581bbe6df0b4c0f0cc1b70f1fbe84cc9647bbfa22c1f9e7802"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc3-qualification.json": {
+      "bytes": 1673,
+      "sha256": "a4b4699c8c82ba66f60f0130db2c4a117190dc479b4c70fe89173261b6990a47"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc3-qualification.log": {
+      "bytes": 1175,
+      "sha256": "09d4a3bc2e64b877c34544f93919be46b4634212c42c2fb3dd5c94ae5a9065be"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/pacc3-result.json": {
+      "bytes": 985,
+      "sha256": "a9c9b89b9c63337b73aa5eeb39598ba23e6baf94a5372001630f2f5291e28581"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/settings.json": {
+      "bytes": 581,
+      "sha256": "31d20b4fc3fbcb18e524cfbbc7c075c0144c7d715ae98a449be5d515eb15afc3"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-fast-20261108/summary.json": {
+      "bytes": 14893,
+      "sha256": "46b7cc689643dbe0356313d8f5e8c7ac8fa365050585e78ba3217ccc08e3f6f4"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/artifacts.json": {
+      "bytes": 929,
+      "sha256": "40ad46a2bf6989a27b2fa7affd7e9b739477e528f98c459d59b359b7c44f8ec5"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc0-driver.log": {
+      "bytes": 1229,
+      "sha256": "9e289cefd2ca4a9ede777d1ca1fc65012a9a9c13dbc3b094524daa1a4e5fdafb"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc0-phases.json": {
+      "bytes": 1173,
+      "sha256": "0aba29dcf5605be8b6e6cc5eca07c30acef6e7f39ee9c7d19f9e37f473336ce1"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc0-phases.log": {
+      "bytes": 113380,
+      "sha256": "c5444d7fddc0ed8dfefdd3d4ad5780ce9d054893761072a8529752e3d5a27777"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc0-qualification-driver.log": {
+      "bytes": 1728,
+      "sha256": "328ced603685c67d8611a67737eaa633f7c459a6584ca5cecce25d3eeca6c896"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc0-qualification.json": {
+      "bytes": 1672,
+      "sha256": "48396a1f2822c946eb348e5ef61577d79c318f6b583a6ad00d1c095f63d6aa21"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc0-qualification.log": {
+      "bytes": 1175,
+      "sha256": "73429362397d01e51437f487deb0a19014d695da458660469a941bf65c6e2450"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc1-driver.log": {
+      "bytes": 1229,
+      "sha256": "d980262e6195f3e2240d31fac440dcfdf2a290a55d2230c158864422bfd6934e"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc1-phases.json": {
+      "bytes": 1173,
+      "sha256": "4af8d229459994540666111f5b7fa4f4340fb0e54627d0a6220efc45d21b89fd"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc1-phases.log": {
+      "bytes": 113380,
+      "sha256": "aff39dc309b3aa6e40df415e210b036f78c79be483a214353874aeeb17be488c"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc1-qualification-driver.log": {
+      "bytes": 1728,
+      "sha256": "55fea7b9902fe769c089cd822ee9b39c2371216106d4f985380e1392c1300289"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc1-qualification.json": {
+      "bytes": 1672,
+      "sha256": "4493c131a85a9733f2ac0b448f053ca221b650e3d200a954fcdd18ea50d1bc16"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc1-qualification.log": {
+      "bytes": 1175,
+      "sha256": "a3bb91197d4bb88ad543b7af8bf63bf20238a694e1f0e0ce000adcb2c7e2e157"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc2-driver.log": {
+      "bytes": 1229,
+      "sha256": "f1f358edf0c8f21b8e572e908332859198b9eaee69d31e9cd7c57e5299eb57b2"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc2-phases.json": {
+      "bytes": 1173,
+      "sha256": "e988eb4b10863daa62509425c54b16383b0d5ab193c4fd907d1b7e6bf3396caf"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc2-phases.log": {
+      "bytes": 113380,
+      "sha256": "ac3489f22eba512e95cbb30423138a0b18d3332c34749b06218f1735b9cacfa7"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc2-qualification-driver.log": {
+      "bytes": 1729,
+      "sha256": "9d98d5df5dfd9729f79e83ff70f9a3d54ed8fc61b26e21fbd69076cfe34cdbe0"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc2-qualification.json": {
+      "bytes": 1673,
+      "sha256": "dda1cc4b5d711331889da39cee4550be7e20eb5ec00585c3324d41496938a69f"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc2-qualification.log": {
+      "bytes": 1175,
+      "sha256": "1dedb3e8f3c8898b5118290fe5a00f399ab74a3506f9b0e19bc0262b80fb791e"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc3-driver.log": {
+      "bytes": 1230,
+      "sha256": "5b54cdfae039dcde902fb7b60f1a5ef591c52d7169b309f44bc92ee1181fcd1f"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc3-phases.json": {
+      "bytes": 1174,
+      "sha256": "8db8d6aef3b521572d4346192e514dad4afd8dcb7c7fd4cd2088da184dc000ff"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc3-phases.log": {
+      "bytes": 113380,
+      "sha256": "ac0e339229780571e66cf2a604604305b165e20d06f58cd357cec23ac7b9a0c3"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc3-qualification-driver.log": {
+      "bytes": 1732,
+      "sha256": "c8fd99d4c8f24a016d4bb35c533313338a2256dbc645121b8e882a28cbf17dde"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc3-qualification.json": {
+      "bytes": 1676,
+      "sha256": "177b6c27144d533ce6d9033e8099d496afb407f863ba06dd3a4104068b4ba408"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/pacc3-qualification.log": {
+      "bytes": 1175,
+      "sha256": "adf0874ac6db54812813414aecb1eee59aa91f7f7c927b335116871012f494fc"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/settings.json": {
+      "bytes": 608,
+      "sha256": "092bf60c388dfbfb31f00fb2d10afdec78db3b11a261e1bc84707330447237a6"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-four-512-20261108/summary.json": {
+      "bytes": 6122,
+      "sha256": "df29b326df7dd0596f4610b3a559914d9e426a034876fd939a7cb73d59f2f7df"
+    },
+    "/srv/lanxin/qwen35-a3b/bin/cross-512-recovery.json": {
+      "bytes": 5611,
+      "sha256": "1352d671439206554d11c045de723e613a57c95505a8ea3d91432d6391f7b64d"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-512-cpu-reference.json": {
+      "bytes": 49559,
+      "sha256": "6a96d7b8feb939aa70c2157555a7f00512f74b37c3202e69ef729b83b9afaeea"
+    },
+    "/srv/lanxin/qwen35-a3b/logs/recovery-512-cpu-reference.log": {
+      "bytes": 159903,
+      "sha256": "fa1948831f817bdb86923463623cb7beb45f689253ac379ce1c73e09a2a2062c"
+    },
+    "/srv/lanxin/qwen35-a3b/bin/recover-pacc-ddr.py": {
+      "bytes": 5669,
+      "sha256": "b24eb41b144937f344e837b4d7109e5da99e8ae58031c17d49a126cd654e1d2e"
+    },
+    "/srv/lanxin/qwen35-a3b/bin/package-recovery-jobd.py": {
+      "bytes": 2096,
+      "sha256": "cc9835788bdfbdcafbf968b9069e44d708a52e740f5103e99b2f960d0fdae49c"
+    },
+    "/srv/lanxin/qwen35-a3b/bin/load-recovered-pacc.py": {
+      "bytes": 2628,
+      "sha256": "f6632c5178d4ae49b1f9af3b56caa2520e0650dfb7145281311d1241410bf2a9"
+    },
+    "/srv/lanxin/qwen35-a3b/bin/run-pacc-recovered.py": {
+      "bytes": 2959,
+      "sha256": "65ddfd90f3a4ae5bbba2f38c1b1c1b78597ec2d6b78230851ecf6c3e26500499"
+    },
+    "/srv/lanxin/qwen35-a3b/bin/run-four-pacc-requests.py": {
+      "bytes": 9675,
+      "sha256": "01bd9b8b17b2e007ac29c3c59b65ee4706a4f33630af9f30cbc9c6bdc22a5eeb"
+    },
+    "/srv/lanxin/qwen35-a3b/bin/test-four-xm-rms.py": {
+      "bytes": 1209,
+      "sha256": "243d06c994d46be8fcf924ef4bfc8cc5b6f36a261b411ca6a7240647e1843c77"
+    },
+    "/srv/lanxin/qwen35-a3b/bin/make-recovery-512-case.py": {
+      "bytes": 421,
+      "sha256": "2d82290c5c8946b1fc6890fb85c3e3f18a8a8134471ced1f630374d5e76c33aa"
+    },
+    "/srv/lanxin/qwen35-a3b/bin/run-recovery-512-reference.py": {
+      "bytes": 911,
+      "sha256": "e5d9127058632fd9a75313505aa3d56cf8f9565f8edd1cd7b2dd384fe8516e4a"
+    },
+    "/srv/lanxin/qwen35-a3b/bin/collect-recovery-evidence.py": {
+      "bytes": 4366,
+      "sha256": "824ca771ea3205c4cf37c51103c7cd9d4eb9c2ec3fc9b2859fa32be85f9c944f"
+    },
+    "/srv/lanxin/qwen35-a3b/runtime-xm-request-batch-v18/libnvcuda.so": {
+      "bytes": 8204512,
+      "sha256": "6783baacc556ad2cb99683b2a9e2ac989f02e284ecee65534b57d2a07ba51b9c"
+    },
+    "/srv/lanxin/qwen35-a3b/build-seq512/bin/libllama.so.0.3.0": {
+      "bytes": 3822640,
+      "sha256": "319da8e0be0c8e65d98468e5d8da980ccd1bd6ba9156032dd28b6150b15f59c0"
+    },
+    "/srv/lanxin/qwen35-a3b/build-seq512/bin/qwen-multiseq-v4": {
+      "bytes": 184352,
+      "sha256": "c5d11cc15d011c7fd439b176e04a6874c47cace51de21d20486a7b91eb72366e"
+    },
+    "/lib/firmware/lanxin/lx500_pacc.bin": {
+      "bytes": 31716408,
+      "sha256": "19cdacf4ddfa8f6861477daa2be79f3e1e52d1a11780c7a209a9419e4a2a83a8"
+    }
+  }
+}

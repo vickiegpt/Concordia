@@ -12,6 +12,11 @@ import time
 
 ROOT=Path('/srv/lanxin/qwen35-a3b')
 
+def available_kib():
+    for line in Path('/proc/meminfo').read_text().splitlines():
+        if line.startswith('MemAvailable:'):return int(line.split()[1])
+    raise RuntimeError('MemAvailable is missing')
+
 def aggregate(reference,results,profiles,proofs,codes):
     config=reference['config'];count=config['max_tokens'];batch=len(config['prompts'])
     valid=(len(results)==len(profiles)==len(proofs)==len(codes)==4 and not any(codes) and
@@ -44,14 +49,23 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('prefix');p.add_argument('--runtime',type=Path,required=True)
     p.add_argument('--case',type=Path,required=True);p.add_argument('--reference',type=Path,required=True)
     p.add_argument('--timeout',type=int,default=21600);p.add_argument('--ubatch',type=int,default=8)
+    p.add_argument('--wrapper',type=Path,default=ROOT/'bin/run-pacc-isolated.sh')
+    p.add_argument('--harness',type=Path,default=ROOT/'bin/qwen-multiseq-v3')
+    p.add_argument('--llama-library-dir',type=Path)
+    p.add_argument('--min-available-gib',type=int,default=16)
     a=p.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+',a.prefix):p.error('invalid prefix')
     config=json.loads(a.case.read_text());reference=json.loads(a.reference.read_text())
     if (reference.get('config')!=config or reference.get('ngl')!=0 or
             not reference.get('reference_complete') or config.get('diagnostic',False) or
-            len(config['prompts'])<2 or not 2<=a.ubatch<=8):p.error('invalid CPU reference or batch')
+            len(config['prompts'])<2 or not 2<=a.ubatch<=8 or a.min_available_gib<1):p.error('invalid CPU reference or batch')
+    floor_kib=a.min_available_gib*1024*1024
+    if available_kib()<floor_kib:p.error('insufficient available memory before launch')
     out=ROOT/'logs'/a.prefix;out.mkdir(exist_ok=False)
     env=os.environ.copy();env['CONCORDIA_RELEASE']=str(a.runtime.resolve())
+    wrapper=[('python3' if a.wrapper.suffix=='.py' else 'bash'),str(a.wrapper.resolve())]
+    if a.llama_library_dir:
+        env['LLAMA_RUNTIME_LIBRARY_DIR']=str(a.llama_library_dir.resolve())
     for key in ('HETGPU_SIFIVE_QK_REQUEST_BATCH','HETGPU_SIFIVE_QK_LOCAL_BATCH',
                 'HETGPU_SIFIVE_QK_VECTOR_PACK','HETGPU_SIFIVE_QK_EXPERT_BATCH'):env[key]='1'
     for key in ('HETGPU_SIFIVE_QK_PROFILE','HETGPU_SIFIVE_ELF_PROFILE',
@@ -62,14 +76,19 @@ def main():
         'HETGPU_SIFIVE_QK_VECTOR_PACK','HETGPU_SIFIVE_QK_EXPERT_BATCH',
         'HETGPU_SIFIVE_QK_VECTOR_REDUCE','HETGPU_SIFIVE_QK_PROFILE','HETGPU_SIFIVE_ELF_PROFILE')}
     settings.update(ubatch=a.ubatch,timeout_s=a.timeout,runtime=str(a.runtime.resolve()))
+    settings.update(wrapper=str(a.wrapper.resolve()),harness=str(a.harness.resolve()),
+                    llama_library_dir=env.get('LLAMA_RUNTIME_LIBRARY_DIR'),
+                    min_available_gib=a.min_available_gib)
     (out/'settings.json').write_text(json.dumps(settings,indent=2)+'\n')
     artifacts={}
-    for file in [a.runtime/'libnvcuda.so',a.runtime/'libhetgpu_cuda_shim.so',ROOT/'bin/qwen-multiseq-v3',a.case,a.reference]:
+    files=[a.runtime/'libnvcuda.so',a.runtime/'libhetgpu_cuda_shim.so',a.harness,a.wrapper,a.case,a.reference]
+    if a.llama_library_dir:files.append(a.llama_library_dir/'libllama.so')
+    for file in files:
         artifacts[str(file.resolve())]=hashlib.sha256(file.read_bytes()).hexdigest()
     (out/'artifacts.json').write_text(json.dumps(artifacts,indent=2)+'\n')
     for device in range(4):
         with (out/f'pacc{device}-qualification-driver.log').open('x') as log:
-            qualification=subprocess.run(['bash',str(ROOT/'bin/run-pacc-isolated.sh'),str(device),'--','python3',
+            qualification=subprocess.run([*wrapper,str(device),'--','python3',
                 str(ROOT/'bin/profile-jobd-stream.py'),'--device',str(device),'--require-build','0x20036',
                 '--timeout','180','--output',str(out/f'pacc{device}-qualification.json'),'--',
                 str(ROOT/'bin/test_jobd_q8'),'--hardware',str(device)],env=env,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT)
@@ -81,19 +100,22 @@ def main():
             print(json.dumps(report,indent=2))
             return 1
     processes=[];logs=[];started=time.monotonic()
+    min_available=available_kib();memory_guard_triggered=False
     def interrupt(signum,frame):raise KeyboardInterrupt(f'signal {signum}')
     signal.signal(signal.SIGTERM,interrupt)
     try:
         for device in range(4):
             log=(out/f'pacc{device}-driver.log').open('x');logs.append(log)
-            cmd=['bash',str(ROOT/'bin/run-pacc-isolated.sh'),str(device),'--','python3',
+            cmd=[*wrapper,str(device),'--','python3',
                  str(ROOT/'bin/profile-jobd-stream.py'),'--device',str(device),'--require-build','0x20036',
                  '--timeout',str(a.timeout),'--output',str(out/f'pacc{device}-phases.json'),'--',
-                 str(ROOT/'bin/qwen-multiseq-v3'),str(ROOT/'models/Qwen3.5-35B-A3B-Q4_K_M.gguf'),
+                 str(a.harness.resolve()),str(ROOT/'models/Qwen3.5-35B-A3B-Q4_K_M.gguf'),
                  '99',str(a.case.resolve()),str(out/f'pacc{device}-result.json'),str(a.reference.resolve()),str(a.ubatch)]
             processes.append(subprocess.Popen(cmd,env=env,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT))
         while any(x.poll() is None for x in processes):
-            if any(x.poll() not in (None,0) for x in processes):
+            min_available=min(min_available,available_kib())
+            memory_guard_triggered=min_available<floor_kib
+            if memory_guard_triggered or any(x.poll() not in (None,0) for x in processes):
                 for x in processes:
                     if x.poll() is None:x.terminate()
                 break
@@ -123,8 +145,12 @@ def main():
         proofs.append(proof)
     results,profiles=load('result'),load('phases')
     report=aggregate(reference,results,profiles,proofs,codes)
+    if memory_guard_triggered:
+        report.update(all_correct=False,aggregate_output_tps=None,aggregate_decode_tps=None,
+                      failure='available memory crossed the configured floor')
     report.update(returncodes=codes,requests=results,phase_profiles=profiles,xm_batch_proof=proofs,
-                  elapsed_including_load_s=time.monotonic()-started)
+                  elapsed_including_load_s=time.monotonic()-started,
+                  min_mem_available_kib=min_available,memory_guard_triggered=memory_guard_triggered)
     (out/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps({k:v for k,v in report.items() if k not in ('requests','phase_profiles')},indent=2))
     return 0 if report['all_correct'] else 1

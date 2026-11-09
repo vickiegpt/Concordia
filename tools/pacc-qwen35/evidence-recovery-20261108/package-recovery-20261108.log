@@ -1,0 +1,82 @@
+patched outer:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched outer:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched outer:etc/skel/.bashrc: 145 bytes into 410-byte slot
+patched inner:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched inner:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched inner:etc/skel/.bashrc: 145 bytes into 410-byte slot
+wrote /srv/lanxin/qwen35-a3b/firmware/recovery-20261108/old-boot-control-do-not-load-raw.bin (31716408 bytes)
+{"fdt_offset": 126976, "fdt_size": 14213, "changed_offsets": [128109, 128110, 128119, 128120, 128130, 128131, 128142, 128143, 128154, 128155, 128793, 128794, 128803, 128804, 128814, 128815, 128826, 128827, 128838, 128839, 130129, 130130, 130139, 130140, 130150, 130151, 130162, 130163, 130174, 130175, 130813, 130814, 130823, 130824, 130834, 130835, 130846, 130847, 130858, 130859, 132149, 132150, 132159, 132160, 132170, 132171, 132182, 132183, 132194, 132195, 132833, 132834, 132843, 132844, 132854, 132855, 132866, 132867, 132878, 132879, 134169, 134170, 134179, 134180, 134190, 134191, 134202, 134203, 134214, 134215, 134853, 134854, 134863, 134864, 134874, 134875, 134886, 134887, 134898, 134899], "source_sha256": "f167534b43b41fe90c9b97c940a3a43e38a8cc85756e0b68373f9737c217784b", "output_sha256": "aeae60a8842ad62c6cee316227b9d0ad840a14c4c2b59b58532e5567aefc4323"}
+patched outer:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched outer:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched outer:etc/skel/.bashrc: 145 bytes into 410-byte slot
+patched inner:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched inner:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched inner:etc/skel/.bashrc: 145 bytes into 410-byte slot
+wrote /srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc0-owned-raw.bin (31716408 bytes)
+{"fdt_offset": 126976, "fdt_size": 14213, "changed_offsets": [128109, 128110, 128119, 128120, 128130, 128131, 128142, 128143, 128154, 128155, 128793, 128794, 128803, 128804, 128814, 128815, 128826, 128827, 128838, 128839, 130129, 130130, 130139, 130140, 130150, 130151, 130162, 130163, 130174, 130175, 130813, 130814, 130823, 130824, 130834, 130835, 130846, 130847, 130858, 130859, 132149, 132150, 132159, 132160, 132170, 132171, 132182, 132183, 132194, 132195, 132833, 132834, 132843, 132844, 132854, 132855, 132866, 132867, 132878, 132879, 134169, 134170, 134179, 134180, 134190, 134191, 134202, 134203, 134214, 134215, 134853, 134854, 134863, 134864, 134874, 134875, 134886, 134887, 134898, 134899], "source_sha256": "80c25df9f98f6792d754f0eca69d666620f61ed6a4550a1537051b6c0a5bbc2c", "output_sha256": "68488373fbeb58444cbb81aa9c60febd76461fa8a9a1aa64b9ebda63873bfc30"}
+patched outer:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched outer:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched outer:etc/skel/.bashrc: 145 bytes into 410-byte slot
+patched inner:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched inner:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched inner:etc/skel/.bashrc: 145 bytes into 410-byte slot
+wrote /srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc1-owned-raw.bin (31716408 bytes)
+{"fdt_offset": 126976, "fdt_size": 14213, "changed_offsets": [128109, 128110, 128119, 128120, 128130, 128131, 128142, 128143, 128154, 128155, 128793, 128794, 128803, 128804, 128814, 128815, 128826, 128827, 128838, 128839, 130129, 130130, 130139, 130140, 130150, 130151, 130162, 130163, 130174, 130175, 130813, 130814, 130823, 130824, 130834, 130835, 130846, 130847, 130858, 130859, 132149, 132150, 132159, 132160, 132170, 132171, 132182, 132183, 132194, 132195, 132833, 132834, 132843, 132844, 132854, 132855, 132866, 132867, 132878, 132879, 134169, 134170, 134179, 134180, 134190, 134191, 134202, 134203, 134214, 134215, 134853, 134854, 134863, 134864, 134874, 134875, 134886, 134887, 134898, 134899], "source_sha256": "9b0074e071e221c916c582a357aa2f829999642aff267cd57dc13ba2b9bae36f", "output_sha256": "9f8982a3fcfc5547a74f813437221f47f2076c3c46b0bb6281d91e46ccf44faa"}
+patched outer:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched outer:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched outer:etc/skel/.bashrc: 145 bytes into 410-byte slot
+patched inner:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched inner:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched inner:etc/skel/.bashrc: 145 bytes into 410-byte slot
+wrote /srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc2-owned-raw.bin (31716408 bytes)
+{"fdt_offset": 126976, "fdt_size": 14213, "changed_offsets": [128109, 128110, 128119, 128120, 128130, 128131, 128142, 128143, 128154, 128155, 128793, 128794, 128803, 128804, 128814, 128815, 128826, 128827, 128838, 128839, 130129, 130130, 130139, 130140, 130150, 130151, 130162, 130163, 130174, 130175, 130813, 130814, 130823, 130824, 130834, 130835, 130846, 130847, 130858, 130859, 132149, 132150, 132159, 132160, 132170, 132171, 132182, 132183, 132194, 132195, 132833, 132834, 132843, 132844, 132854, 132855, 132866, 132867, 132878, 132879, 134169, 134170, 134179, 134180, 134190, 134191, 134202, 134203, 134214, 134215, 134853, 134854, 134863, 134864, 134874, 134875, 134886, 134887, 134898, 134899], "source_sha256": "36b1fe7ce77299d314698334b222d6ec5e4ba5c1998b559ca482064d7e443998", "output_sha256": "95463b40becdad351e9e24829f86561c70b963dde89c6b283db80a6238323507"}
+patched outer:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched outer:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched outer:etc/skel/.bashrc: 145 bytes into 410-byte slot
+patched inner:home/root/pacc_skl_test: 1007608 bytes into 2305208-byte slot
+patched inner:etc/init.d/rcS: 414 bytes into 437-byte slot
+patched inner:etc/skel/.bashrc: 145 bytes into 410-byte slot
+wrote /srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc3-owned-raw.bin (31716408 bytes)
+{"fdt_offset": 126976, "fdt_size": 14213, "changed_offsets": [128109, 128110, 128119, 128120, 128130, 128131, 128142, 128143, 128154, 128155, 128793, 128794, 128803, 128804, 128814, 128815, 128826, 128827, 128838, 128839, 130129, 130130, 130139, 130140, 130150, 130151, 130162, 130163, 130174, 130175, 130813, 130814, 130823, 130824, 130834, 130835, 130846, 130847, 130858, 130859, 132149, 132150, 132159, 132160, 132170, 132171, 132182, 132183, 132194, 132195, 132833, 132834, 132843, 132844, 132854, 132855, 132866, 132867, 132878, 132879, 134169, 134170, 134179, 134180, 134190, 134191, 134202, 134203, 134214, 134215, 134853, 134854, 134863, 134864, 134874, 134875, 134886, 134887, 134898, 134899], "source_sha256": "510553a0284d53e0a4b0daf7c649a7ba36c099981767e10fcbc3fa5f8df581a7", "output_sha256": "1198febbccc6cd058b39f1e12ec0a8621a63c0ca5205242a5f28afe8aa1a93c5"}
+{
+  "state": {
+    "boot_id": "4ca2fa21-0d48-4090-93a5-51206ac1de29",
+    "base": 2263296770048,
+    "size": 4194304,
+    "previous_base": 2203592949760,
+    "previous_size": 16777216,
+    "helper_sha256": "375525cb53213c11a630efe055f56da44f9fbf284ba3a89dd248ae5bec3f6bca",
+    "vendor_sha256": "19cdacf4ddfa8f6861477daa2be79f3e1e52d1a11780c7a209a9419e4a2a83a8",
+    "build_id": 131126,
+    "payload_base": 2097152,
+    "payload_bytes": 524288
+  },
+  "jobd_sha256": "3a0507b2c7be070d07aebd21ee287543869dd69bdd54c50e9a81f184d70288ce",
+  "control_reproduction": {
+    "device": 0,
+    "path": "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/old-boot-control-do-not-load.bin",
+    "sha256": "aeae60a8842ad62c6cee316227b9d0ad840a14c4c2b59b58532e5567aefc4323"
+  },
+  "images": [
+    {
+      "device": 0,
+      "path": "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc0-owned.bin",
+      "sha256": "68488373fbeb58444cbb81aa9c60febd76461fa8a9a1aa64b9ebda63873bfc30"
+    },
+    {
+      "device": 1,
+      "path": "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc1-owned.bin",
+      "sha256": "9f8982a3fcfc5547a74f813437221f47f2076c3c46b0bb6281d91e46ccf44faa"
+    },
+    {
+      "device": 2,
+      "path": "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc2-owned.bin",
+      "sha256": "95463b40becdad351e9e24829f86561c70b963dde89c6b283db80a6238323507"
+    },
+    {
+      "device": 3,
+      "path": "/srv/lanxin/qwen35-a3b/firmware/recovery-20261108/pacc3-owned.bin",
+      "sha256": "1198febbccc6cd058b39f1e12ec0a8621a63c0ca5205242a5f28afe8aa1a93c5"
+    }
+  ]
+}

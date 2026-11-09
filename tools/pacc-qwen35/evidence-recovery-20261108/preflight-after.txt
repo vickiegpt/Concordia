@@ -1,0 +1,1 @@
+PACC safety preflight passed: boot_id=4ca2fa21-0d48-4090-93a5-51206ac1de29; firmware identity, completion and numerical correctness remain unverified.
