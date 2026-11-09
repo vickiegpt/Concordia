@@ -1,0 +1,81 @@
+{
+  "complete_submissions": 14064,
+  "incomplete_submission_count": 0,
+  "incomplete_sample": [],
+  "saturated_submissions": 0,
+  "submission_build_counts": {
+    "0x20036": 14064
+  },
+  "build_matches": true,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 4138513,
+  "last_index": 4733154,
+  "unique_indices": 594641,
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 195019,
+      "p50_us": 15,
+      "p99_us": 21,
+      "max_us": 61
+    },
+    "input_copy": {
+      "sum_us": 9741869,
+      "p50_us": 722,
+      "p99_us": 1262,
+      "max_us": 1495
+    },
+    "compute": {
+      "sum_us": 37209622,
+      "p50_us": 1352,
+      "p99_us": 21913,
+      "max_us": 87696
+    },
+    "output_copy": {
+      "sum_us": 787307,
+      "p50_us": 61,
+      "p99_us": 64,
+      "max_us": 136
+    },
+    "cleanup": {
+      "sum_us": 31273,
+      "p50_us": 2,
+      "p99_us": 5,
+      "max_us": 28
+    },
+    "completion_publish": {
+      "sum_us": 70684,
+      "p50_us": 5,
+      "p99_us": 7,
+      "max_us": 40
+    },
+    "device_before_publish": {
+      "sum_us": 50509331,
+      "p50_us": 2348,
+      "p99_us": 22011,
+      "max_us": 87798
+    }
+  },
+  "returncode": 1,
+  "timed_out": false,
+  "capture_valid": false,
+  "device": 3,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v5",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "2",
+    "/srv/lanxin/qwen35-a3b/bin/ngl-sweep-long.json",
+    "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-2-r1/pacc3-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-cpu.json",
+    "2"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 5.012019999412587,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": "KeyboardInterrupt: signal 15",
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

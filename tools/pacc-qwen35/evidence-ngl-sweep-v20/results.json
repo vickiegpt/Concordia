@@ -1,0 +1,638 @@
+[
+  {
+    "ngl": 0,
+    "repeat": 0,
+    "passed": true,
+    "tokens_correct": true,
+    "xm_batch_verified": false,
+    "xm_columns_observed": false,
+    "decode_tps": 22.21666805520842,
+    "output_tps": 26.574850557988814,
+    "token_matched_decode_tps": null,
+    "decode_tokens": 8,
+    "decode_window_s": 0.36009,
+    "min_mem_available_kib": 257928860,
+    "elapsed_s": 0.00837261199922068,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-0/summary.json",
+    "offloaded": [],
+    "scope": "four CPU-only workers; no accelerator throughput claim",
+    "phase": "coarse",
+    "errors": [],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 0,
+      "compute": 0,
+      "output_copy": 0,
+      "completion_publish": 0,
+      "device_before_publish": 0
+    }
+  },
+  {
+    "ngl": 1,
+    "repeat": 0,
+    "passed": false,
+    "tokens_correct": true,
+    "xm_batch_verified": false,
+    "xm_columns_observed": false,
+    "decode_tps": null,
+    "output_tps": null,
+    "token_matched_decode_tps": null,
+    "decode_tokens": null,
+    "decode_window_s": null,
+    "min_mem_available_kib": 257601992,
+    "elapsed_s": 0.008257419998699334,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-1/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 1/41 layers to GPU",
+      "load_tensors: offloaded 1/41 layers to GPU",
+      "load_tensors: offloaded 1/41 layers to GPU",
+      "load_tensors: offloaded 1/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers, verified cross-request XM; no CPU matrix fallback",
+    "phase": "coarse",
+    "errors": [],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 4795472,
+      "compute": 8860751,
+      "output_copy": 397883,
+      "completion_publish": 31868,
+      "device_before_publish": 15390692
+    }
+  },
+  {
+    "ngl": 2,
+    "repeat": 0,
+    "passed": true,
+    "tokens_correct": true,
+    "xm_batch_verified": true,
+    "xm_columns_observed": true,
+    "decode_tps": 1.1545982524866798,
+    "output_tps": 0.8032598292018585,
+    "token_matched_decode_tps": null,
+    "decode_tokens": 8,
+    "decode_window_s": 6.928817,
+    "min_mem_available_kib": 257374240,
+    "elapsed_s": 0.008551204999093898,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-2/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 2/41 layers to GPU",
+      "load_tensors: offloaded 2/41 layers to GPU",
+      "load_tensors: offloaded 2/41 layers to GPU",
+      "load_tensors: offloaded 2/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers, verified cross-request XM; no CPU matrix fallback",
+    "phase": "coarse",
+    "errors": [],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 4994315,
+      "compute": 16935560,
+      "output_copy": 399260,
+      "completion_publish": 34846,
+      "device_before_publish": 23731603
+    }
+  },
+  {
+    "ngl": 3,
+    "repeat": 0,
+    "passed": true,
+    "tokens_correct": true,
+    "xm_batch_verified": true,
+    "xm_columns_observed": true,
+    "decode_tps": 0.8300593544317129,
+    "output_tps": 0.6020214525829467,
+    "token_matched_decode_tps": 0.8300593544317129,
+    "decode_tokens": 8,
+    "decode_window_s": 9.637865,
+    "min_mem_available_kib": 257319796,
+    "elapsed_s": 0.008703835999767762,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-3/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 3/41 layers to GPU",
+      "load_tensors: offloaded 3/41 layers to GPU",
+      "load_tensors: offloaded 3/41 layers to GPU",
+      "load_tensors: offloaded 3/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers; cross-request XM verified",
+    "phase": "coarse",
+    "errors": [],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 4890501,
+      "compute": 19177800,
+      "output_copy": 399218,
+      "completion_publish": 34800,
+      "device_before_publish": 25861116
+    }
+  },
+  {
+    "ngl": 4,
+    "repeat": 0,
+    "passed": true,
+    "tokens_correct": true,
+    "xm_batch_verified": true,
+    "xm_columns_observed": true,
+    "decode_tps": 0.6119826040884875,
+    "output_tps": 0.4862653885140407,
+    "token_matched_decode_tps": null,
+    "decode_tokens": 8,
+    "decode_window_s": 13.072267,
+    "min_mem_available_kib": 257353328,
+    "elapsed_s": 0.00879788699967321,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-4/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 4/41 layers to GPU",
+      "load_tensors: offloaded 4/41 layers to GPU",
+      "load_tensors: offloaded 4/41 layers to GPU",
+      "load_tensors: offloaded 4/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers, verified cross-request XM; no CPU matrix fallback",
+    "phase": "coarse",
+    "errors": [],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 4962566,
+      "compute": 22302722,
+      "output_copy": 399200,
+      "completion_publish": 35092,
+      "device_before_publish": 29074596
+    }
+  },
+  {
+    "ngl": 8,
+    "repeat": 0,
+    "passed": true,
+    "tokens_correct": true,
+    "xm_batch_verified": true,
+    "xm_columns_observed": true,
+    "decode_tps": 0.3145223170686111,
+    "output_tps": 0.28347054045695985,
+    "token_matched_decode_tps": null,
+    "decode_tokens": 8,
+    "decode_window_s": 25.435397,
+    "min_mem_available_kib": 257437828,
+    "elapsed_s": 0.009298472999944352,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-8/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 8/41 layers to GPU",
+      "load_tensors: offloaded 8/41 layers to GPU",
+      "load_tensors: offloaded 8/41 layers to GPU",
+      "load_tensors: offloaded 8/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers, verified cross-request XM; no CPU matrix fallback",
+    "phase": "coarse",
+    "errors": [],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 5024912,
+      "compute": 35898338,
+      "output_copy": 399521,
+      "completion_publish": 38443,
+      "device_before_publish": 42802968
+    }
+  },
+  {
+    "ngl": 16,
+    "repeat": 0,
+    "passed": true,
+    "tokens_correct": true,
+    "xm_batch_verified": true,
+    "xm_columns_observed": true,
+    "decode_tps": 0.15949850480120406,
+    "output_tps": 0.15467801219574254,
+    "token_matched_decode_tps": null,
+    "decode_tokens": 8,
+    "decode_window_s": 50.15721,
+    "min_mem_available_kib": 257550544,
+    "elapsed_s": 0.010113732998433989,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-16/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 16/41 layers to GPU",
+      "load_tensors: offloaded 16/41 layers to GPU",
+      "load_tensors: offloaded 16/41 layers to GPU",
+      "load_tensors: offloaded 16/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers, verified cross-request XM; no CPU matrix fallback",
+    "phase": "coarse",
+    "errors": [],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 4890045,
+      "compute": 67582450,
+      "output_copy": 400951,
+      "completion_publish": 44005,
+      "device_before_publish": 74484701
+    }
+  },
+  {
+    "ngl": 32,
+    "repeat": 0,
+    "passed": true,
+    "tokens_correct": true,
+    "xm_batch_verified": true,
+    "xm_columns_observed": true,
+    "decode_tps": 0.08113772206392986,
+    "output_tps": 0.0819596150553584,
+    "token_matched_decode_tps": null,
+    "decode_tokens": 8,
+    "decode_window_s": 98.597789,
+    "min_mem_available_kib": 257586984,
+    "elapsed_s": 0.011490229997434653,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-32/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 32/41 layers to GPU",
+      "load_tensors: offloaded 32/41 layers to GPU",
+      "load_tensors: offloaded 32/41 layers to GPU",
+      "load_tensors: offloaded 32/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers; cross-request XM verified",
+    "phase": "coarse",
+    "errors": [],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 4877435,
+      "compute": 124212512,
+      "output_copy": 403420,
+      "completion_publish": 56012,
+      "device_before_publish": 131396749
+    }
+  },
+  {
+    "ngl": 99,
+    "repeat": 0,
+    "passed": true,
+    "tokens_correct": true,
+    "xm_batch_verified": true,
+    "xm_columns_observed": true,
+    "decode_tps": 0.0625023243051851,
+    "output_tps": 0.06359914603041657,
+    "token_matched_decode_tps": null,
+    "decode_tokens": 8,
+    "decode_window_s": 127.99524,
+    "min_mem_available_kib": 257561016,
+    "elapsed_s": 0.012561223000375321,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-99/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 41/41 layers to GPU",
+      "load_tensors: offloaded 41/41 layers to GPU",
+      "load_tensors: offloaded 41/41 layers to GPU",
+      "load_tensors: offloaded 41/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers; cross-request XM verified",
+    "phase": "coarse",
+    "errors": [],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 4723109,
+      "compute": 161318808,
+      "output_copy": 404701,
+      "completion_publish": 62311,
+      "device_before_publish": 168457084
+    }
+  },
+  {
+    "ngl": 0,
+    "repeat": 0,
+    "passed": true,
+    "tokens_correct": true,
+    "xm_batch_verified": false,
+    "xm_columns_observed": false,
+    "decode_tps": 31.111640232017567,
+    "output_tps": 26.01834110106164,
+    "token_matched_decode_tps": 31.111640232017567,
+    "decode_tokens": 248,
+    "decode_window_s": 7.971293,
+    "min_mem_available_kib": 257882072,
+    "elapsed_s": 0.00859592300184886,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-0-r0/summary.json",
+    "offloaded": [],
+    "scope": "four CPU-only workers; no accelerator throughput claim",
+    "phase": "long",
+    "errors": [],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 0,
+      "compute": 0,
+      "output_copy": 0,
+      "completion_publish": 0,
+      "device_before_publish": 0
+    }
+  },
+  {
+    "ngl": 1,
+    "repeat": 0,
+    "passed": false,
+    "tokens_correct": false,
+    "xm_batch_verified": false,
+    "xm_columns_observed": false,
+    "decode_tps": null,
+    "output_tps": null,
+    "token_matched_decode_tps": null,
+    "decode_tokens": null,
+    "decode_window_s": null,
+    "min_mem_available_kib": 257563712,
+    "elapsed_s": 0.00814685799923609,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-1-r0/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 1/41 layers to GPU",
+      "load_tensors: offloaded 1/41 layers to GPU",
+      "load_tensors: offloaded 1/41 layers to GPU",
+      "load_tensors: offloaded 1/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers; XM batching not verified",
+    "phase": "long",
+    "errors": [
+      {
+        "device": 0,
+        "error": "CPU token mismatch",
+        "first_mismatch": {
+          "actual": 2876,
+          "expected": 4530,
+          "sequence": 1,
+          "step": 7
+        }
+      },
+      {
+        "device": 1,
+        "error": "CPU token mismatch",
+        "first_mismatch": {
+          "actual": 2876,
+          "expected": 4530,
+          "sequence": 1,
+          "step": 7
+        }
+      },
+      {
+        "device": 2,
+        "error": "CPU token mismatch",
+        "first_mismatch": {
+          "actual": 2876,
+          "expected": 4530,
+          "sequence": 1,
+          "step": 7
+        }
+      },
+      {
+        "device": 3,
+        "error": "CPU token mismatch",
+        "first_mismatch": {
+          "actual": 2876,
+          "expected": 4530,
+          "sequence": 1,
+          "step": 7
+        }
+      }
+    ],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 41125513,
+      "compute": 71112112,
+      "output_copy": 3190704,
+      "completion_publish": 258770,
+      "device_before_publish": 126259621
+    }
+  },
+  {
+    "ngl": 2,
+    "repeat": 0,
+    "passed": false,
+    "tokens_correct": false,
+    "xm_batch_verified": false,
+    "xm_columns_observed": true,
+    "decode_tps": null,
+    "output_tps": null,
+    "token_matched_decode_tps": null,
+    "decode_tokens": null,
+    "decode_window_s": null,
+    "min_mem_available_kib": 257329488,
+    "elapsed_s": 0.009063288998731878,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-2-r0/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 2/41 layers to GPU",
+      "load_tensors: offloaded 2/41 layers to GPU",
+      "load_tensors: offloaded 2/41 layers to GPU",
+      "load_tensors: offloaded 2/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers; XM batching not verified",
+    "phase": "long",
+    "errors": [
+      {
+        "device": 0,
+        "error": "CPU token mismatch",
+        "first_mismatch": {
+          "actual": 2876,
+          "expected": 4530,
+          "sequence": 1,
+          "step": 7
+        }
+      },
+      {
+        "device": 1,
+        "error": "CPU token mismatch",
+        "first_mismatch": {
+          "actual": 2876,
+          "expected": 4530,
+          "sequence": 1,
+          "step": 7
+        }
+      },
+      {
+        "device": 2,
+        "error": "CPU token mismatch",
+        "first_mismatch": {
+          "actual": 2876,
+          "expected": 4530,
+          "sequence": 1,
+          "step": 7
+        }
+      }
+    ],
+    "profile_errors": [
+      {
+        "device": 1,
+        "error": "KeyboardInterrupt: signal 15",
+        "returncode": -15
+      },
+      {
+        "device": 2,
+        "error": "KeyboardInterrupt: signal 15",
+        "returncode": -15
+      },
+      {
+        "device": 3,
+        "error": "KeyboardInterrupt: signal 15",
+        "returncode": 1
+      }
+    ],
+    "device_phase_sum_us": {
+      "input_copy": 40229714,
+      "compute": 149178136,
+      "output_copy": 3164628,
+      "completion_publish": 275008,
+      "device_before_publish": 203711012
+    }
+  },
+  {
+    "ngl": 2,
+    "repeat": 1,
+    "passed": false,
+    "tokens_correct": false,
+    "xm_batch_verified": false,
+    "xm_columns_observed": true,
+    "decode_tps": null,
+    "output_tps": null,
+    "token_matched_decode_tps": null,
+    "decode_tokens": null,
+    "decode_window_s": null,
+    "min_mem_available_kib": 257289112,
+    "elapsed_s": 0.009110709001106443,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-2-r1/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 2/41 layers to GPU",
+      "load_tensors: offloaded 2/41 layers to GPU",
+      "load_tensors: offloaded 2/41 layers to GPU",
+      "load_tensors: offloaded 2/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers; XM batching not verified",
+    "phase": "long",
+    "errors": [
+      {
+        "device": 0,
+        "error": "CPU token mismatch",
+        "first_mismatch": {
+          "actual": 2876,
+          "expected": 4530,
+          "sequence": 1,
+          "step": 7
+        }
+      },
+      {
+        "device": 1,
+        "error": "CPU token mismatch",
+        "first_mismatch": {
+          "actual": 2876,
+          "expected": 4530,
+          "sequence": 1,
+          "step": 7
+        }
+      },
+      {
+        "device": 2,
+        "error": "CPU token mismatch",
+        "first_mismatch": {
+          "actual": 2876,
+          "expected": 4530,
+          "sequence": 1,
+          "step": 7
+        }
+      }
+    ],
+    "profile_errors": [
+      {
+        "device": 1,
+        "error": "KeyboardInterrupt: signal 15",
+        "returncode": -15
+      },
+      {
+        "device": 2,
+        "error": "KeyboardInterrupt: signal 15",
+        "returncode": -15
+      },
+      {
+        "device": 3,
+        "error": "KeyboardInterrupt: signal 15",
+        "returncode": 1
+      }
+    ],
+    "device_phase_sum_us": {
+      "input_copy": 40093546,
+      "compute": 149396704,
+      "output_copy": 3179637,
+      "completion_publish": 276761,
+      "device_before_publish": 203835748
+    }
+  },
+  {
+    "ngl": 1,
+    "repeat": 1,
+    "passed": false,
+    "tokens_correct": false,
+    "xm_batch_verified": false,
+    "xm_columns_observed": false,
+    "decode_tps": null,
+    "output_tps": null,
+    "token_matched_decode_tps": null,
+    "decode_tokens": null,
+    "decode_window_s": null,
+    "min_mem_available_kib": 257584292,
+    "elapsed_s": 0.007015293998847483,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-1-r1/summary.json",
+    "offloaded": [
+      "load_tensors: offloaded 1/41 layers to GPU",
+      "load_tensors: offloaded 1/41 layers to GPU",
+      "load_tensors: offloaded 1/41 layers to GPU",
+      "load_tensors: offloaded 1/41 layers to GPU"
+    ],
+    "scope": "four PACC/CPU workers; XM batching not verified",
+    "phase": "long",
+    "errors": [],
+    "profile_errors": [
+      {
+        "device": 0,
+        "error": "KeyboardInterrupt: signal 15",
+        "returncode": -15
+      },
+      {
+        "device": 1,
+        "error": "RuntimeError: duplicate phase or reused completed sequence",
+        "returncode": -15
+      },
+      {
+        "device": 2,
+        "error": "KeyboardInterrupt: signal 15",
+        "returncode": -15
+      },
+      {
+        "device": 3,
+        "error": "KeyboardInterrupt: signal 15",
+        "returncode": -15
+      }
+    ],
+    "device_phase_sum_us": {
+      "input_copy": 11544268,
+      "compute": 20161944,
+      "output_copy": 907857,
+      "completion_publish": 73588,
+      "device_before_publish": 35696305
+    }
+  },
+  {
+    "ngl": 0,
+    "repeat": 1,
+    "passed": true,
+    "tokens_correct": true,
+    "xm_batch_verified": false,
+    "xm_columns_observed": false,
+    "decode_tps": 31.981133194714033,
+    "output_tps": 25.88228514291116,
+    "token_matched_decode_tps": 31.981133194714033,
+    "decode_tokens": 248,
+    "decode_window_s": 7.754572,
+    "min_mem_available_kib": 257816552,
+    "elapsed_s": 0.006836352000391344,
+    "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-0-r1/summary.json",
+    "offloaded": [],
+    "scope": "four CPU-only workers; no accelerator throughput claim",
+    "phase": "long",
+    "errors": [],
+    "profile_errors": [],
+    "device_phase_sum_us": {
+      "input_copy": 0,
+      "compute": 0,
+      "output_copy": 0,
+      "completion_publish": 0,
+      "device_before_publish": 0
+    }
+  }
+]

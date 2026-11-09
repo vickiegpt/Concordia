@@ -1,0 +1,81 @@
+{
+  "complete_submissions": 3014,
+  "incomplete_submission_count": 0,
+  "incomplete_sample": [],
+  "saturated_submissions": 0,
+  "submission_build_counts": {
+    "0x20036": 3014
+  },
+  "build_matches": true,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 2152750,
+  "last_index": 2499584,
+  "unique_indices": 346834,
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 27748,
+      "p50_us": 13,
+      "p99_us": 20,
+      "max_us": 47
+    },
+    "input_copy": {
+      "sum_us": 1281039,
+      "p50_us": 738,
+      "p99_us": 1078,
+      "max_us": 1616
+    },
+    "compute": {
+      "sum_us": 33642326,
+      "p50_us": 1398,
+      "p99_us": 80878,
+      "max_us": 90204
+    },
+    "output_copy": {
+      "sum_us": 105129,
+      "p50_us": 63,
+      "p99_us": 66,
+      "max_us": 99
+    },
+    "cleanup": {
+      "sum_us": 4024,
+      "p50_us": 1,
+      "p99_us": 4,
+      "max_us": 6
+    },
+    "completion_publish": {
+      "sum_us": 13786,
+      "p50_us": 5,
+      "p99_us": 5,
+      "max_us": 35
+    },
+    "device_before_publish": {
+      "sum_us": 35499580,
+      "p50_us": 2514,
+      "p99_us": 80980,
+      "max_us": 90307
+    }
+  },
+  "returncode": 0,
+  "timed_out": false,
+  "capture_valid": true,
+  "device": 2,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v5",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "32",
+    "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+    "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-32/pacc2-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+    "2"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 6.944660999579355,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": null,
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

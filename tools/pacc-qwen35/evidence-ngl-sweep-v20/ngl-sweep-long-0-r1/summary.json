@@ -1,0 +1,1040 @@
+{
+  "all_correct": true,
+  "aggregate_output_tps": 25.88228514291116,
+  "aggregate_decode_tps": 31.981133194714033,
+  "token_matched_decode_tps": 31.981133194714033,
+  "token_matched_output_tps": 25.88228514291116,
+  "tokens_correct": true,
+  "xm_batch_verified": false,
+  "requested_ngl": 0,
+  "scope": "four CPU-only workers; no accelerator throughput claim",
+  "output_tokens": 256,
+  "decode_tokens": 248,
+  "start_skew_ms": 4.131,
+  "decode_start_skew_ms": 405.079,
+  "request_window_s": 9.890935,
+  "decode_window_s": 7.754572,
+  "returncodes": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "requests": [
+    {
+      "aggregate_decode_tps": 8.344296437860226,
+      "aggregate_output_tps": 6.619300058663547,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 32,
+        "min_tokens": 32,
+        "prompts": [
+          "Write a detailed explanation of virtual memory:\n",
+          "Write a detailed explanation of matrix multiplication:\n"
+        ]
+      },
+      "decode_started_monotonic_us": 16486129486,
+      "decode_tokens": 62,
+      "diagnostic": false,
+      "finished_monotonic_us": 16493559711,
+      "input_tokens": [
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          3972,
+          4779,
+          25,
+          198
+        ],
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          5979,
+          44896,
+          25,
+          198
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 0,
+      "output_tokens": 64,
+      "reference_complete": false,
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 16483891015,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 254118
+        },
+        {
+          "active": 2,
+          "elapsed_us": 207477
+        },
+        {
+          "active": 2,
+          "elapsed_us": 217613
+        },
+        {
+          "active": 2,
+          "elapsed_us": 428738
+        },
+        {
+          "active": 2,
+          "elapsed_us": 251978
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213578
+        },
+        {
+          "active": 2,
+          "elapsed_us": 225991
+        },
+        {
+          "active": 2,
+          "elapsed_us": 276352
+        },
+        {
+          "active": 2,
+          "elapsed_us": 242556
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213226
+        },
+        {
+          "active": 2,
+          "elapsed_us": 236471
+        },
+        {
+          "active": 2,
+          "elapsed_us": 227008
+        },
+        {
+          "active": 2,
+          "elapsed_us": 240996
+        },
+        {
+          "active": 2,
+          "elapsed_us": 305205
+        },
+        {
+          "active": 2,
+          "elapsed_us": 264236
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213232
+        },
+        {
+          "active": 2,
+          "elapsed_us": 210817
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212241
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212233
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213322
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214433
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213087
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214116
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213939
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213905
+        },
+        {
+          "active": 2,
+          "elapsed_us": 215082
+        },
+        {
+          "active": 2,
+          "elapsed_us": 215504
+        },
+        {
+          "active": 2,
+          "elapsed_us": 215278
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214842
+        },
+        {
+          "active": 2,
+          "elapsed_us": 215076
+        },
+        {
+          "active": 2,
+          "elapsed_us": 215099
+        }
+      ],
+      "texts": [
+        "1. What is virtual memory?\n2. How does it work?\n3. What are the benefits?\n4. What are the drawbacks?\n",
+        "1. Define the operation and the conditions required for it to be valid.\n2. Explain the step-by-step process of calculating the product of two matrices."
+      ],
+      "tokens": [
+        [
+          16,
+          13,
+          3437,
+          369,
+          3972,
+          4779,
+          30,
+          198,
+          17,
+          13,
+          2500,
+          1503,
+          424,
+          944,
+          30,
+          198,
+          18,
+          13,
+          3437,
+          513,
+          279,
+          7328,
+          30,
+          198,
+          19,
+          13,
+          3437,
+          513,
+          279,
+          85039,
+          30,
+          198
+        ],
+        [
+          16,
+          13,
+          18053,
+          279,
+          5488,
+          321,
+          279,
+          4530,
+          2483,
+          364,
+          424,
+          310,
+          381,
+          2610,
+          13,
+          198,
+          17,
+          13,
+          79091,
+          279,
+          2923,
+          13909,
+          28253,
+          1817,
+          314,
+          36370,
+          279,
+          1918,
+          314,
+          1330,
+          34030,
+          13
+        ]
+      ],
+      "ubatch": 2
+    },
+    {
+      "aggregate_decode_tps": 8.705528614440702,
+      "aggregate_output_tps": 6.624667653880161,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 32,
+        "min_tokens": 32,
+        "prompts": [
+          "Write a detailed explanation of virtual memory:\n",
+          "Write a detailed explanation of matrix multiplication:\n"
+        ]
+      },
+      "decode_started_monotonic_us": 16486432457,
+      "decode_tokens": 62,
+      "diagnostic": false,
+      "finished_monotonic_us": 16493554368,
+      "input_tokens": [
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          3972,
+          4779,
+          25,
+          198
+        ],
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          5979,
+          44896,
+          25,
+          198
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 0,
+      "output_tokens": 64,
+      "reference_complete": false,
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 16483893506,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 222590
+        },
+        {
+          "active": 2,
+          "elapsed_us": 233607
+        },
+        {
+          "active": 2,
+          "elapsed_us": 242023
+        },
+        {
+          "active": 2,
+          "elapsed_us": 217330
+        },
+        {
+          "active": 2,
+          "elapsed_us": 210671
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214213
+        },
+        {
+          "active": 2,
+          "elapsed_us": 233713
+        },
+        {
+          "active": 2,
+          "elapsed_us": 244102
+        },
+        {
+          "active": 2,
+          "elapsed_us": 314780
+        },
+        {
+          "active": 2,
+          "elapsed_us": 216135
+        },
+        {
+          "active": 2,
+          "elapsed_us": 233760
+        },
+        {
+          "active": 2,
+          "elapsed_us": 249944
+        },
+        {
+          "active": 2,
+          "elapsed_us": 210496
+        },
+        {
+          "active": 2,
+          "elapsed_us": 250431
+        },
+        {
+          "active": 2,
+          "elapsed_us": 205397
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212744
+        },
+        {
+          "active": 2,
+          "elapsed_us": 210787
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212600
+        },
+        {
+          "active": 2,
+          "elapsed_us": 211759
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213399
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214244
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212886
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214088
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214093
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213926
+        },
+        {
+          "active": 2,
+          "elapsed_us": 215070
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214724
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214381
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214807
+        },
+        {
+          "active": 2,
+          "elapsed_us": 215250
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214922
+        }
+      ],
+      "texts": [
+        "1. What is virtual memory?\n2. How does it work?\n3. What are the benefits?\n4. What are the drawbacks?\n",
+        "1. Define the operation and the conditions required for it to be valid.\n2. Explain the step-by-step process of calculating the product of two matrices."
+      ],
+      "tokens": [
+        [
+          16,
+          13,
+          3437,
+          369,
+          3972,
+          4779,
+          30,
+          198,
+          17,
+          13,
+          2500,
+          1503,
+          424,
+          944,
+          30,
+          198,
+          18,
+          13,
+          3437,
+          513,
+          279,
+          7328,
+          30,
+          198,
+          19,
+          13,
+          3437,
+          513,
+          279,
+          85039,
+          30,
+          198
+        ],
+        [
+          16,
+          13,
+          18053,
+          279,
+          5488,
+          321,
+          279,
+          4530,
+          2483,
+          364,
+          424,
+          310,
+          381,
+          2610,
+          13,
+          198,
+          17,
+          13,
+          79091,
+          279,
+          2923,
+          13909,
+          28253,
+          1817,
+          314,
+          36370,
+          279,
+          1918,
+          314,
+          1330,
+          34030,
+          13
+        ]
+      ],
+      "ubatch": 2
+    },
+    {
+      "aggregate_decode_tps": 8.14739531713999,
+      "aggregate_output_tps": 6.568557730489408,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 32,
+        "min_tokens": 32,
+        "prompts": [
+          "Write a detailed explanation of virtual memory:\n",
+          "Write a detailed explanation of matrix multiplication:\n"
+        ]
+      },
+      "decode_started_monotonic_us": 16486027378,
+      "decode_tokens": 62,
+      "diagnostic": false,
+      "finished_monotonic_us": 16493637172,
+      "input_tokens": [
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          3972,
+          4779,
+          25,
+          198
+        ],
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          5979,
+          44896,
+          25,
+          198
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 0,
+      "output_tokens": 64,
+      "reference_complete": false,
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 16483893785,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 412582
+        },
+        {
+          "active": 2,
+          "elapsed_us": 330332
+        },
+        {
+          "active": 2,
+          "elapsed_us": 425240
+        },
+        {
+          "active": 2,
+          "elapsed_us": 220811
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213702
+        },
+        {
+          "active": 2,
+          "elapsed_us": 226413
+        },
+        {
+          "active": 2,
+          "elapsed_us": 235156
+        },
+        {
+          "active": 2,
+          "elapsed_us": 256617
+        },
+        {
+          "active": 2,
+          "elapsed_us": 233927
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212896
+        },
+        {
+          "active": 2,
+          "elapsed_us": 242499
+        },
+        {
+          "active": 2,
+          "elapsed_us": 266081
+        },
+        {
+          "active": 2,
+          "elapsed_us": 278725
+        },
+        {
+          "active": 2,
+          "elapsed_us": 232485
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214962
+        },
+        {
+          "active": 2,
+          "elapsed_us": 211944
+        },
+        {
+          "active": 2,
+          "elapsed_us": 211843
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212167
+        },
+        {
+          "active": 2,
+          "elapsed_us": 211989
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212650
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212305
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212682
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214104
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213360
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213265
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214065
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213634
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214128
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213566
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214231
+        },
+        {
+          "active": 2,
+          "elapsed_us": 208009
+        }
+      ],
+      "texts": [
+        "1. What is virtual memory?\n2. How does it work?\n3. What are the benefits?\n4. What are the drawbacks?\n",
+        "1. Define the operation and the conditions required for it to be valid.\n2. Explain the step-by-step process of calculating the product of two matrices."
+      ],
+      "tokens": [
+        [
+          16,
+          13,
+          3437,
+          369,
+          3972,
+          4779,
+          30,
+          198,
+          17,
+          13,
+          2500,
+          1503,
+          424,
+          944,
+          30,
+          198,
+          18,
+          13,
+          3437,
+          513,
+          279,
+          7328,
+          30,
+          198,
+          19,
+          13,
+          3437,
+          513,
+          279,
+          85039,
+          30,
+          198
+        ],
+        [
+          16,
+          13,
+          18053,
+          279,
+          5488,
+          321,
+          279,
+          4530,
+          2483,
+          364,
+          424,
+          310,
+          381,
+          2610,
+          13,
+          198,
+          17,
+          13,
+          79091,
+          279,
+          2923,
+          13909,
+          28253,
+          1817,
+          314,
+          36370,
+          279,
+          1918,
+          314,
+          1330,
+          34030,
+          13
+        ]
+      ],
+      "ubatch": 2
+    },
+    {
+      "aggregate_decode_tps": 8.414460494650847,
+      "aggregate_output_tps": 6.473274882358344,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 32,
+        "min_tokens": 32,
+        "prompts": [
+          "Write a detailed explanation of virtual memory:\n",
+          "Write a detailed explanation of matrix multiplication:\n"
+        ]
+      },
+      "decode_started_monotonic_us": 16486413682,
+      "decode_tokens": 62,
+      "diagnostic": false,
+      "finished_monotonic_us": 16493781950,
+      "input_tokens": [
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          3972,
+          4779,
+          25,
+          198
+        ],
+        [
+          7734,
+          264,
+          11346,
+          15673,
+          314,
+          5979,
+          44896,
+          25,
+          198
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 0,
+      "output_tokens": 64,
+      "reference_complete": false,
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 16483895146,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 215125
+        },
+        {
+          "active": 2,
+          "elapsed_us": 354211
+        },
+        {
+          "active": 2,
+          "elapsed_us": 332564
+        },
+        {
+          "active": 2,
+          "elapsed_us": 224145
+        },
+        {
+          "active": 2,
+          "elapsed_us": 220689
+        },
+        {
+          "active": 2,
+          "elapsed_us": 242240
+        },
+        {
+          "active": 2,
+          "elapsed_us": 221710
+        },
+        {
+          "active": 2,
+          "elapsed_us": 219701
+        },
+        {
+          "active": 2,
+          "elapsed_us": 326880
+        },
+        {
+          "active": 2,
+          "elapsed_us": 274466
+        },
+        {
+          "active": 2,
+          "elapsed_us": 255005
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213375
+        },
+        {
+          "active": 2,
+          "elapsed_us": 210848
+        },
+        {
+          "active": 2,
+          "elapsed_us": 243432
+        },
+        {
+          "active": 2,
+          "elapsed_us": 211573
+        },
+        {
+          "active": 2,
+          "elapsed_us": 211574
+        },
+        {
+          "active": 2,
+          "elapsed_us": 210978
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212471
+        },
+        {
+          "active": 2,
+          "elapsed_us": 212776
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213827
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213710
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213754
+        },
+        {
+          "active": 2,
+          "elapsed_us": 215185
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213890
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214185
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214830
+        },
+        {
+          "active": 2,
+          "elapsed_us": 215251
+        },
+        {
+          "active": 2,
+          "elapsed_us": 215181
+        },
+        {
+          "active": 2,
+          "elapsed_us": 214521
+        },
+        {
+          "active": 2,
+          "elapsed_us": 213890
+        },
+        {
+          "active": 2,
+          "elapsed_us": 192939
+        }
+      ],
+      "texts": [
+        "1. What is virtual memory?\n2. How does it work?\n3. What are the benefits?\n4. What are the drawbacks?\n",
+        "1. Define the operation and the conditions required for it to be valid.\n2. Explain the step-by-step process of calculating the product of two matrices."
+      ],
+      "tokens": [
+        [
+          16,
+          13,
+          3437,
+          369,
+          3972,
+          4779,
+          30,
+          198,
+          17,
+          13,
+          2500,
+          1503,
+          424,
+          944,
+          30,
+          198,
+          18,
+          13,
+          3437,
+          513,
+          279,
+          7328,
+          30,
+          198,
+          19,
+          13,
+          3437,
+          513,
+          279,
+          85039,
+          30,
+          198
+        ],
+        [
+          16,
+          13,
+          18053,
+          279,
+          5488,
+          321,
+          279,
+          4530,
+          2483,
+          364,
+          424,
+          310,
+          381,
+          2610,
+          13,
+          198,
+          17,
+          13,
+          79091,
+          279,
+          2923,
+          13909,
+          28253,
+          1817,
+          314,
+          36370,
+          279,
+          1918,
+          314,
+          1330,
+          34030,
+          13
+        ]
+      ],
+      "ubatch": 2
+    }
+  ],
+  "phase_profiles": [],
+  "xm_batch_proof": [],
+  "elapsed_including_load_s": 15.01985832399805,
+  "min_mem_available_kib": 257816552,
+  "memory_guard_triggered": false,
+  "runner_timed_out": false,
+  "barrier_released": true
+}

@@ -1,0 +1,81 @@
+{
+  "complete_submissions": 1782,
+  "incomplete_submission_count": 0,
+  "incomplete_sample": [],
+  "saturated_submissions": 0,
+  "submission_build_counts": {
+    "0x20036": 1782
+  },
+  "build_matches": true,
+  "observed_index_gap_count": 0,
+  "late_records": 0,
+  "first_index_exclusive": 1738891,
+  "last_index": 1832243,
+  "unique_indices": 93352,
+  "phases_us": {
+    "dst_prepare": {
+      "sum_us": 24195,
+      "p50_us": 15,
+      "p99_us": 18,
+      "max_us": 44
+    },
+    "input_copy": {
+      "sum_us": 1155130,
+      "p50_us": 701,
+      "p99_us": 913,
+      "max_us": 1339
+    },
+    "compute": {
+      "sum_us": 5402518,
+      "p50_us": 1357,
+      "p99_us": 55032,
+      "max_us": 80416
+    },
+    "output_copy": {
+      "sum_us": 97116,
+      "p50_us": 59,
+      "p99_us": 62,
+      "max_us": 95
+    },
+    "cleanup": {
+      "sum_us": 3661,
+      "p50_us": 2,
+      "p99_us": 3,
+      "max_us": 5
+    },
+    "completion_publish": {
+      "sum_us": 8462,
+      "p50_us": 5,
+      "p99_us": 6,
+      "max_us": 33
+    },
+    "device_before_publish": {
+      "sum_us": 7003078,
+      "p50_us": 2333,
+      "p99_us": 55132,
+      "max_us": 80520
+    }
+  },
+  "returncode": 0,
+  "timed_out": false,
+  "capture_valid": true,
+  "device": 0,
+  "command": [
+    "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v5",
+    "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "4",
+    "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+    "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-4/pacc0-result.json",
+    "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+    "2"
+  ],
+  "sample_ms": 1,
+  "max_sample_gap_ms": 4.973728999175364,
+  "collection": "streaming histogram; no full raw ring retained",
+  "error": null,
+  "limitations": [
+    "Double-read stability is not source-side atomicity.",
+    "These phases cover PRELOADED jobs, not all ELF kernels.",
+    "Completion publish excludes host observation latency."
+  ]
+}

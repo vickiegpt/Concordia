@@ -1,0 +1,600 @@
+{
+  "all_correct": true,
+  "aggregate_output_tps": 0.8032598292018585,
+  "aggregate_decode_tps": 1.1545982524866798,
+  "requested_ngl": 2,
+  "scope": "four PACC/CPU workers, verified cross-request XM; no CPU matrix fallback",
+  "output_tokens": 16,
+  "decode_tokens": 8,
+  "request_window_s": 19.918835,
+  "decode_window_s": 6.928817,
+  "returncodes": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "requests": [
+    {
+      "aggregate_decode_tps": 0.32069110215278335,
+      "aggregate_output_tps": 0.2080617802005185,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 2,
+        "min_tokens": 2,
+        "prompts": [
+          "1",
+          "2"
+        ]
+      },
+      "decode_started_monotonic_us": 15295668453,
+      "decode_tokens": 2,
+      "diagnostic": false,
+      "finished_monotonic_us": 15301904984,
+      "input_tokens": [
+        [
+          16
+        ],
+        [
+          17
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 2,
+      "output_tokens": 4,
+      "reference_complete": false,
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 15282679925,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 6230007
+        }
+      ],
+      "texts": [
+        "99",
+        "01"
+      ],
+      "tokens": [
+        [
+          24,
+          24
+        ],
+        [
+          15,
+          16
+        ]
+      ],
+      "ubatch": 2
+    },
+    {
+      "aggregate_decode_tps": 0.31338624651181524,
+      "aggregate_output_tps": 0.20520434120044026,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 2,
+        "min_tokens": 2,
+        "prompts": [
+          "1",
+          "2"
+        ]
+      },
+      "decode_started_monotonic_us": 15295791959,
+      "decode_tokens": 2,
+      "diagnostic": false,
+      "finished_monotonic_us": 15302173860,
+      "input_tokens": [
+        [
+          16
+        ],
+        [
+          17
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 2,
+      "output_tokens": 4,
+      "reference_complete": false,
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 15282681095,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 6375436
+        }
+      ],
+      "texts": [
+        "99",
+        "01"
+      ],
+      "tokens": [
+        [
+          24,
+          24
+        ],
+        [
+          15,
+          16
+        ]
+      ],
+      "ubatch": 2
+    },
+    {
+      "aggregate_decode_tps": 0.3081000900114413,
+      "aggregate_output_tps": 0.2008149573004646,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 2,
+        "min_tokens": 2,
+        "prompts": [
+          "1",
+          "2"
+        ]
+      },
+      "decode_started_monotonic_us": 15296105873,
+      "decode_tokens": 2,
+      "diagnostic": false,
+      "finished_monotonic_us": 15302597270,
+      "input_tokens": [
+        [
+          16
+        ],
+        [
+          17
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 2,
+      "output_tokens": 4,
+      "reference_complete": false,
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 15282678435,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 6484942
+        }
+      ],
+      "texts": [
+        "99",
+        "01"
+      ],
+      "tokens": [
+        [
+          24,
+          24
+        ],
+        [
+          15,
+          16
+        ]
+      ],
+      "ubatch": 2
+    },
+    {
+      "aggregate_decode_tps": 0.3128600824010885,
+      "aggregate_output_tps": 0.20467751573483986,
+      "all_correct": true,
+      "barrier_synchronized": true,
+      "config": {
+        "batched_prefill": true,
+        "max_tokens": 2,
+        "min_tokens": 2,
+        "prompts": [
+          "1",
+          "2"
+        ]
+      },
+      "decode_started_monotonic_us": 15295830739,
+      "decode_tokens": 2,
+      "diagnostic": false,
+      "finished_monotonic_us": 15302223373,
+      "input_tokens": [
+        [
+          16
+        ],
+        [
+          17
+        ]
+      ],
+      "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+      "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+      "ngl": 2,
+      "output_tokens": 4,
+      "reference_complete": false,
+      "reference_only": false,
+      "sequences": 2,
+      "started_monotonic_us": 15282680435,
+      "steps": [
+        {
+          "active": 2,
+          "elapsed_us": 6386212
+        }
+      ],
+      "texts": [
+        "99",
+        "01"
+      ],
+      "tokens": [
+        [
+          24,
+          24
+        ],
+        [
+          15,
+          16
+        ]
+      ],
+      "ubatch": 2
+    }
+  ],
+  "phase_profiles": [
+    {
+      "complete_submissions": 1758,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 1758
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 1660916,
+      "last_index": 1736249,
+      "unique_indices": 75333,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 24257,
+          "p50_us": 15,
+          "p99_us": 18,
+          "max_us": 48
+        },
+        "input_copy": {
+          "sum_us": 1143427,
+          "p50_us": 696,
+          "p99_us": 873,
+          "max_us": 1239
+        },
+        "compute": {
+          "sum_us": 4043937,
+          "p50_us": 1350,
+          "p99_us": 11996,
+          "max_us": 50972
+        },
+        "output_copy": {
+          "sum_us": 97205,
+          "p50_us": 59,
+          "p99_us": 62,
+          "max_us": 100
+        },
+        "cleanup": {
+          "sum_us": 3624,
+          "p50_us": 2,
+          "p99_us": 4,
+          "max_us": 28
+        },
+        "completion_publish": {
+          "sum_us": 8429,
+          "p50_us": 5,
+          "p99_us": 6,
+          "max_us": 9
+        },
+        "device_before_publish": {
+          "sum_us": 5630501,
+          "p50_us": 2320,
+          "p99_us": 12096,
+          "max_us": 51072
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 0,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v5",
+        "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "2",
+        "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+        "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-2/pacc0-result.json",
+        "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+        "2"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 4.944350001096609,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 1758,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 1758
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 1654776,
+      "last_index": 1730106,
+      "unique_indices": 75330,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 25030,
+          "p50_us": 15,
+          "p99_us": 20,
+          "max_us": 26
+        },
+        "input_copy": {
+          "sum_us": 1238744,
+          "p50_us": 746,
+          "p99_us": 1100,
+          "max_us": 1426
+        },
+        "compute": {
+          "sum_us": 4224985,
+          "p50_us": 1357,
+          "p99_us": 13168,
+          "max_us": 77836
+        },
+        "output_copy": {
+          "sum_us": 99450,
+          "p50_us": 61,
+          "p99_us": 64,
+          "max_us": 100
+        },
+        "cleanup": {
+          "sum_us": 3991,
+          "p50_us": 2,
+          "p99_us": 5,
+          "max_us": 29
+        },
+        "completion_publish": {
+          "sum_us": 8981,
+          "p50_us": 5,
+          "p99_us": 7,
+          "max_us": 35
+        },
+        "device_before_publish": {
+          "sum_us": 5910463,
+          "p50_us": 2380,
+          "p99_us": 13276,
+          "max_us": 77936
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 1,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v5",
+        "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "2",
+        "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+        "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-2/pacc1-result.json",
+        "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+        "2"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 4.824449000807363,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 1758,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 1758
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 1641585,
+      "last_index": 1716916,
+      "unique_indices": 75331,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 26304,
+          "p50_us": 15,
+          "p99_us": 23,
+          "max_us": 57
+        },
+        "input_copy": {
+          "sum_us": 1358029,
+          "p50_us": 801,
+          "p99_us": 1482,
+          "max_us": 1577
+        },
+        "compute": {
+          "sum_us": 4502942,
+          "p50_us": 1373,
+          "p99_us": 14256,
+          "max_us": 84864
+        },
+        "output_copy": {
+          "sum_us": 104412,
+          "p50_us": 64,
+          "p99_us": 69,
+          "max_us": 100
+        },
+        "cleanup": {
+          "sum_us": 4263,
+          "p50_us": 3,
+          "p99_us": 5,
+          "max_us": 6
+        },
+        "completion_publish": {
+          "sum_us": 8531,
+          "p50_us": 5,
+          "p99_us": 6,
+          "max_us": 35
+        },
+        "device_before_publish": {
+          "sum_us": 6318517,
+          "p50_us": 2455,
+          "p99_us": 14356,
+          "max_us": 84961
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 2,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v5",
+        "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "2",
+        "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+        "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-2/pacc2-result.json",
+        "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+        "2"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 4.528995999862673,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    },
+    {
+      "complete_submissions": 1758,
+      "incomplete_submission_count": 0,
+      "incomplete_sample": [],
+      "saturated_submissions": 0,
+      "submission_build_counts": {
+        "0x20036": 1758
+      },
+      "build_matches": true,
+      "observed_index_gap_count": 0,
+      "late_records": 0,
+      "first_index_exclusive": 1638456,
+      "last_index": 1713798,
+      "unique_indices": 75342,
+      "phases_us": {
+        "dst_prepare": {
+          "sum_us": 24686,
+          "p50_us": 15,
+          "p99_us": 20,
+          "max_us": 59
+        },
+        "input_copy": {
+          "sum_us": 1254115,
+          "p50_us": 748,
+          "p99_us": 1219,
+          "max_us": 7731
+        },
+        "compute": {
+          "sum_us": 4163696,
+          "p50_us": 1359,
+          "p99_us": 13473,
+          "max_us": 67451
+        },
+        "output_copy": {
+          "sum_us": 98193,
+          "p50_us": 61,
+          "p99_us": 62,
+          "max_us": 90
+        },
+        "cleanup": {
+          "sum_us": 4046,
+          "p50_us": 2,
+          "p99_us": 5,
+          "max_us": 30
+        },
+        "completion_publish": {
+          "sum_us": 8905,
+          "p50_us": 5,
+          "p99_us": 7,
+          "max_us": 35
+        },
+        "device_before_publish": {
+          "sum_us": 5872122,
+          "p50_us": 2381,
+          "p99_us": 13573,
+          "max_us": 67548
+        }
+      },
+      "returncode": 0,
+      "timed_out": false,
+      "capture_valid": true,
+      "device": 3,
+      "command": [
+        "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v5",
+        "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "2",
+        "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+        "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-2/pacc3-result.json",
+        "/srv/lanxin/qwen35-a3b/logs/seq512-fast-cpu-reference-20261108.json",
+        "2"
+      ],
+      "sample_ms": 1,
+      "max_sample_gap_ms": 5.149900000105845,
+      "collection": "streaming histogram; no full raw ring retained",
+      "error": null,
+      "limitations": [
+        "Double-read stability is not source-side atomicity.",
+        "These phases cover PRELOADED jobs, not all ELF kernels.",
+        "Completion publish excludes host observation latency."
+      ]
+    }
+  ],
+  "xm_batch_proof": [
+    {
+      "device": 0,
+      "calls": 20,
+      "multi_tiles": 258,
+      "max_n": 2
+    },
+    {
+      "device": 1,
+      "calls": 20,
+      "multi_tiles": 258,
+      "max_n": 2
+    },
+    {
+      "device": 2,
+      "calls": 20,
+      "multi_tiles": 258,
+      "max_n": 2
+    },
+    {
+      "device": 3,
+      "calls": 20,
+      "multi_tiles": 258,
+      "max_n": 2
+    }
+  ],
+  "elapsed_including_load_s": 27.028470143999584,
+  "min_mem_available_kib": 257374240,
+  "memory_guard_triggered": false,
+  "runner_timed_out": false,
+  "barrier_released": true
+}

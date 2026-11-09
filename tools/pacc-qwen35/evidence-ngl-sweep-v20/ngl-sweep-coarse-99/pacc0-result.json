@@ -1,0 +1,56 @@
+{
+  "aggregate_decode_tps": 0.016697899252323175,
+  "aggregate_output_tps": 0.01643701627735943,
+  "all_correct": true,
+  "barrier_synchronized": true,
+  "config": {
+    "batched_prefill": true,
+    "max_tokens": 2,
+    "min_tokens": 2,
+    "prompts": [
+      "1",
+      "2"
+    ]
+  },
+  "decode_started_monotonic_us": 15884293683,
+  "decode_tokens": 2,
+  "diagnostic": false,
+  "finished_monotonic_us": 16004069229,
+  "input_tokens": [
+    [
+      16
+    ],
+    [
+      17
+    ]
+  ],
+  "measurement": "real model; independent sequences; excludes model load; output includes prefill",
+  "model": "/srv/lanxin/qwen35-a3b/models/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+  "ngl": 99,
+  "output_tokens": 4,
+  "reference_complete": false,
+  "reference_only": false,
+  "sequences": 2,
+  "started_monotonic_us": 15760716060,
+  "steps": [
+    {
+      "active": 2,
+      "elapsed_us": 119769053
+    }
+  ],
+  "texts": [
+    "99",
+    "01"
+  ],
+  "tokens": [
+    [
+      24,
+      24
+    ],
+    [
+      15,
+      16
+    ]
+  ],
+  "ubatch": 2
+}

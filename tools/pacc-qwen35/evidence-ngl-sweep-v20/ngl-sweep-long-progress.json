@@ -1,0 +1,151 @@
+{
+  "phase": "long",
+  "case": "/srv/lanxin/qwen35-a3b/bin/ngl-sweep-long.json",
+  "records": [
+    {
+      "ngl": 0,
+      "repeat": 0,
+      "passed": true,
+      "tokens_correct": true,
+      "xm_batch_verified": false,
+      "xm_columns_observed": false,
+      "decode_tps": 31.111640232017567,
+      "output_tps": 26.01834110106164,
+      "token_matched_decode_tps": 31.111640232017567,
+      "decode_tokens": 248,
+      "decode_window_s": 7.971293,
+      "min_mem_available_kib": 257882072,
+      "elapsed_s": 0.00859592300184886,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-0-r0/summary.json",
+      "offloaded": [],
+      "scope": "four CPU-only workers; no accelerator throughput claim"
+    },
+    {
+      "ngl": 1,
+      "repeat": 0,
+      "passed": false,
+      "tokens_correct": false,
+      "xm_batch_verified": false,
+      "xm_columns_observed": false,
+      "decode_tps": null,
+      "output_tps": null,
+      "token_matched_decode_tps": null,
+      "decode_tokens": null,
+      "decode_window_s": null,
+      "min_mem_available_kib": 257563712,
+      "elapsed_s": 0.00814685799923609,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-1-r0/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 1/41 layers to GPU",
+        "load_tensors: offloaded 1/41 layers to GPU",
+        "load_tensors: offloaded 1/41 layers to GPU",
+        "load_tensors: offloaded 1/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers; XM batching not verified"
+    },
+    {
+      "ngl": 2,
+      "repeat": 0,
+      "passed": false,
+      "tokens_correct": false,
+      "xm_batch_verified": false,
+      "xm_columns_observed": true,
+      "decode_tps": null,
+      "output_tps": null,
+      "token_matched_decode_tps": null,
+      "decode_tokens": null,
+      "decode_window_s": null,
+      "min_mem_available_kib": 257329488,
+      "elapsed_s": 0.009063288998731878,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-2-r0/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 2/41 layers to GPU",
+        "load_tensors: offloaded 2/41 layers to GPU",
+        "load_tensors: offloaded 2/41 layers to GPU",
+        "load_tensors: offloaded 2/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers; XM batching not verified"
+    },
+    {
+      "ngl": 2,
+      "repeat": 1,
+      "passed": false,
+      "tokens_correct": false,
+      "xm_batch_verified": false,
+      "xm_columns_observed": true,
+      "decode_tps": null,
+      "output_tps": null,
+      "token_matched_decode_tps": null,
+      "decode_tokens": null,
+      "decode_window_s": null,
+      "min_mem_available_kib": 257289112,
+      "elapsed_s": 0.009110709001106443,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-2-r1/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 2/41 layers to GPU",
+        "load_tensors: offloaded 2/41 layers to GPU",
+        "load_tensors: offloaded 2/41 layers to GPU",
+        "load_tensors: offloaded 2/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers; XM batching not verified"
+    },
+    {
+      "ngl": 1,
+      "repeat": 1,
+      "passed": false,
+      "tokens_correct": false,
+      "xm_batch_verified": false,
+      "xm_columns_observed": false,
+      "decode_tps": null,
+      "output_tps": null,
+      "token_matched_decode_tps": null,
+      "decode_tokens": null,
+      "decode_window_s": null,
+      "min_mem_available_kib": 257584292,
+      "elapsed_s": 0.007015293998847483,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-1-r1/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 1/41 layers to GPU",
+        "load_tensors: offloaded 1/41 layers to GPU",
+        "load_tensors: offloaded 1/41 layers to GPU",
+        "load_tensors: offloaded 1/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers; XM batching not verified"
+    },
+    {
+      "ngl": 0,
+      "repeat": 1,
+      "passed": true,
+      "tokens_correct": true,
+      "xm_batch_verified": false,
+      "xm_columns_observed": false,
+      "decode_tps": 31.981133194714033,
+      "output_tps": 25.88228514291116,
+      "token_matched_decode_tps": 31.981133194714033,
+      "decode_tokens": 248,
+      "decode_window_s": 7.754572,
+      "min_mem_available_kib": 257816552,
+      "elapsed_s": 0.006836352000391344,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-long-0-r1/summary.json",
+      "offloaded": [],
+      "scope": "four CPU-only workers; no accelerator throughput claim"
+    }
+  ],
+  "grouped": {
+    "0": {
+      "completed": 2,
+      "valid": 2,
+      "median_decode_tps": 31.5463867133658
+    },
+    "1": {
+      "completed": 2,
+      "valid": 0,
+      "median_decode_tps": null
+    },
+    "2": {
+      "completed": 2,
+      "valid": 0,
+      "median_decode_tps": null
+    }
+  }
+}

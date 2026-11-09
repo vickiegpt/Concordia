@@ -1,0 +1,20 @@
+{
+  "HETGPU_SIFIVE_QK_REQUEST_BATCH": "1",
+  "HETGPU_SIFIVE_QK_LOCAL_BATCH": "1",
+  "HETGPU_SIFIVE_QK_VECTOR_PACK": "1",
+  "HETGPU_SIFIVE_QK_EXPERT_BATCH": "1",
+  "HETGPU_SIFIVE_QK_VECTOR_REDUCE": "1",
+  "HETGPU_SIFIVE_QK_PROFILE": "0",
+  "HETGPU_SIFIVE_ELF_PROFILE": "0",
+  "HETGPU_SIFIVE_MMAP_WEIGHTS": "1",
+  "HETGPU_SIFIVE_LAZY_ZERO": "1",
+  "ubatch": 2,
+  "timeout_s": 900,
+  "runtime": "/srv/lanxin/qwen35-a3b/runtime-memory-v20",
+  "ngl": 3,
+  "start_barrier": true,
+  "wrapper": "/srv/lanxin/qwen35-a3b/bin/run-pacc-recovered.py",
+  "harness": "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin/qwen-multiseq-v5",
+  "llama_library_dir": "/srv/lanxin/qwen35-a3b/build-seq512-memory/bin",
+  "min_available_gib": 32
+}

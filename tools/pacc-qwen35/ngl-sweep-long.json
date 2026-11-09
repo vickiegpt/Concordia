@@ -1,0 +1,9 @@
+{
+  "prompts": [
+    "Write a detailed explanation of virtual memory:\n",
+    "Write a detailed explanation of matrix multiplication:\n"
+  ],
+  "max_tokens": 32,
+  "min_tokens": 32,
+  "batched_prefill": true
+}

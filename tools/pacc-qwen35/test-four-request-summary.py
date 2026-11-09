@@ -27,3 +27,23 @@ assert evaluate()['aggregate_decode_tps'] is None
 proofs[0]['max_n']=8;proofs[0]['device']=3
 assert not evaluate()['all_correct']
 print('PASS four-request aggregation: token, build, partition, XM-N and shared-clock gates')
+for r in results:r['ngl']=0
+out=aggregate(ref,results,[],[],[0]*4,ngl=0)
+assert out['all_correct'] and out['aggregate_decode_tps']==127 and 'CPU-only' in out['scope']
+assert not aggregate(ref,results,profiles,proofs,[0]*4,ngl=0)['all_correct']
+for r in results:r['ngl']=1
+proofs[-1]['device']=3;proofs[0]['device']=0
+assert aggregate(ref,results,profiles,proofs,[0]*4,ngl=1)['all_correct']
+assert not aggregate(ref,results,[],[],[0]*4,ngl=1)['all_correct']
+missing=aggregate(ref,results,[],[],[0]*4,ngl=1)
+assert missing['tokens_correct'] and not missing['xm_batch_verified']
+assert missing['aggregate_decode_tps'] is None and 'not verified' in missing['scope']
+assert missing['token_matched_decode_tps']==127
+assert not aggregate(ref,results,profiles,proofs,[0]*4,ngl=2)['all_correct']
+old=results[0]['finished_monotonic_us'];results[0]['finished_monotonic_us']=1
+try:
+    aggregate(ref,results,profiles,proofs,[0]*4,ngl=1)
+    raise AssertionError('invalid per-worker interval accepted')
+except ValueError:pass
+results[0]['finished_monotonic_us']=old
+print('PASS CPU baseline separation and requested-ngl proof matching')

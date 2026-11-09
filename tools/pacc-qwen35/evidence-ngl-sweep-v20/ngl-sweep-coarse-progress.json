@@ -1,0 +1,255 @@
+{
+  "phase": "coarse",
+  "case": "/srv/lanxin/qwen35-a3b/bin/cross-fast.json",
+  "records": [
+    {
+      "ngl": 0,
+      "repeat": 0,
+      "passed": true,
+      "tokens_correct": true,
+      "xm_batch_verified": false,
+      "xm_columns_observed": false,
+      "decode_tps": 22.21666805520842,
+      "output_tps": 26.574850557988814,
+      "token_matched_decode_tps": null,
+      "decode_tokens": 8,
+      "decode_window_s": 0.36009,
+      "min_mem_available_kib": 257928860,
+      "elapsed_s": 0.00837261199922068,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-0/summary.json",
+      "offloaded": [],
+      "scope": "four CPU-only workers; no accelerator throughput claim"
+    },
+    {
+      "ngl": 1,
+      "repeat": 0,
+      "passed": false,
+      "tokens_correct": true,
+      "xm_batch_verified": false,
+      "xm_columns_observed": false,
+      "decode_tps": null,
+      "output_tps": null,
+      "token_matched_decode_tps": null,
+      "decode_tokens": null,
+      "decode_window_s": null,
+      "min_mem_available_kib": 257601992,
+      "elapsed_s": 0.008257419998699334,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-1/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 1/41 layers to GPU",
+        "load_tensors: offloaded 1/41 layers to GPU",
+        "load_tensors: offloaded 1/41 layers to GPU",
+        "load_tensors: offloaded 1/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers, verified cross-request XM; no CPU matrix fallback"
+    },
+    {
+      "ngl": 2,
+      "repeat": 0,
+      "passed": true,
+      "tokens_correct": true,
+      "xm_batch_verified": true,
+      "xm_columns_observed": true,
+      "decode_tps": 1.1545982524866798,
+      "output_tps": 0.8032598292018585,
+      "token_matched_decode_tps": null,
+      "decode_tokens": 8,
+      "decode_window_s": 6.928817,
+      "min_mem_available_kib": 257374240,
+      "elapsed_s": 0.008551204999093898,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-2/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 2/41 layers to GPU",
+        "load_tensors: offloaded 2/41 layers to GPU",
+        "load_tensors: offloaded 2/41 layers to GPU",
+        "load_tensors: offloaded 2/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers, verified cross-request XM; no CPU matrix fallback"
+    },
+    {
+      "ngl": 3,
+      "repeat": 0,
+      "passed": true,
+      "tokens_correct": true,
+      "xm_batch_verified": true,
+      "xm_columns_observed": true,
+      "decode_tps": 0.8300593544317129,
+      "output_tps": 0.6020214525829467,
+      "token_matched_decode_tps": 0.8300593544317129,
+      "decode_tokens": 8,
+      "decode_window_s": 9.637865,
+      "min_mem_available_kib": 257319796,
+      "elapsed_s": 0.008703835999767762,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-3/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 3/41 layers to GPU",
+        "load_tensors: offloaded 3/41 layers to GPU",
+        "load_tensors: offloaded 3/41 layers to GPU",
+        "load_tensors: offloaded 3/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers; cross-request XM verified"
+    },
+    {
+      "ngl": 4,
+      "repeat": 0,
+      "passed": true,
+      "tokens_correct": true,
+      "xm_batch_verified": true,
+      "xm_columns_observed": true,
+      "decode_tps": 0.6119826040884875,
+      "output_tps": 0.4862653885140407,
+      "token_matched_decode_tps": null,
+      "decode_tokens": 8,
+      "decode_window_s": 13.072267,
+      "min_mem_available_kib": 257353328,
+      "elapsed_s": 0.00879788699967321,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-4/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 4/41 layers to GPU",
+        "load_tensors: offloaded 4/41 layers to GPU",
+        "load_tensors: offloaded 4/41 layers to GPU",
+        "load_tensors: offloaded 4/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers, verified cross-request XM; no CPU matrix fallback"
+    },
+    {
+      "ngl": 8,
+      "repeat": 0,
+      "passed": true,
+      "tokens_correct": true,
+      "xm_batch_verified": true,
+      "xm_columns_observed": true,
+      "decode_tps": 0.3145223170686111,
+      "output_tps": 0.28347054045695985,
+      "token_matched_decode_tps": null,
+      "decode_tokens": 8,
+      "decode_window_s": 25.435397,
+      "min_mem_available_kib": 257437828,
+      "elapsed_s": 0.009298472999944352,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-8/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 8/41 layers to GPU",
+        "load_tensors: offloaded 8/41 layers to GPU",
+        "load_tensors: offloaded 8/41 layers to GPU",
+        "load_tensors: offloaded 8/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers, verified cross-request XM; no CPU matrix fallback"
+    },
+    {
+      "ngl": 16,
+      "repeat": 0,
+      "passed": true,
+      "tokens_correct": true,
+      "xm_batch_verified": true,
+      "xm_columns_observed": true,
+      "decode_tps": 0.15949850480120406,
+      "output_tps": 0.15467801219574254,
+      "token_matched_decode_tps": null,
+      "decode_tokens": 8,
+      "decode_window_s": 50.15721,
+      "min_mem_available_kib": 257550544,
+      "elapsed_s": 0.010113732998433989,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-16/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 16/41 layers to GPU",
+        "load_tensors: offloaded 16/41 layers to GPU",
+        "load_tensors: offloaded 16/41 layers to GPU",
+        "load_tensors: offloaded 16/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers, verified cross-request XM; no CPU matrix fallback"
+    },
+    {
+      "ngl": 32,
+      "repeat": 0,
+      "passed": true,
+      "tokens_correct": true,
+      "xm_batch_verified": true,
+      "xm_columns_observed": true,
+      "decode_tps": 0.08113772206392986,
+      "output_tps": 0.0819596150553584,
+      "token_matched_decode_tps": null,
+      "decode_tokens": 8,
+      "decode_window_s": 98.597789,
+      "min_mem_available_kib": 257586984,
+      "elapsed_s": 0.011490229997434653,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-32/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 32/41 layers to GPU",
+        "load_tensors: offloaded 32/41 layers to GPU",
+        "load_tensors: offloaded 32/41 layers to GPU",
+        "load_tensors: offloaded 32/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers; cross-request XM verified"
+    },
+    {
+      "ngl": 99,
+      "repeat": 0,
+      "passed": true,
+      "tokens_correct": true,
+      "xm_batch_verified": true,
+      "xm_columns_observed": true,
+      "decode_tps": 0.0625023243051851,
+      "output_tps": 0.06359914603041657,
+      "token_matched_decode_tps": null,
+      "decode_tokens": 8,
+      "decode_window_s": 127.99524,
+      "min_mem_available_kib": 257561016,
+      "elapsed_s": 0.012561223000375321,
+      "summary": "/srv/lanxin/qwen35-a3b/logs/ngl-sweep-coarse-99/summary.json",
+      "offloaded": [
+        "load_tensors: offloaded 41/41 layers to GPU",
+        "load_tensors: offloaded 41/41 layers to GPU",
+        "load_tensors: offloaded 41/41 layers to GPU",
+        "load_tensors: offloaded 41/41 layers to GPU"
+      ],
+      "scope": "four PACC/CPU workers; cross-request XM verified"
+    }
+  ],
+  "grouped": {
+    "0": {
+      "completed": 1,
+      "valid": 1,
+      "median_decode_tps": 22.21666805520842
+    },
+    "1": {
+      "completed": 1,
+      "valid": 0,
+      "median_decode_tps": null
+    },
+    "2": {
+      "completed": 1,
+      "valid": 1,
+      "median_decode_tps": 1.1545982524866798
+    },
+    "3": {
+      "completed": 1,
+      "valid": 1,
+      "median_decode_tps": 0.8300593544317129
+    },
+    "4": {
+      "completed": 1,
+      "valid": 1,
+      "median_decode_tps": 0.6119826040884875
+    },
+    "8": {
+      "completed": 1,
+      "valid": 1,
+      "median_decode_tps": 0.3145223170686111
+    },
+    "16": {
+      "completed": 1,
+      "valid": 1,
+      "median_decode_tps": 0.15949850480120406
+    },
+    "32": {
+      "completed": 1,
+      "valid": 1,
+      "median_decode_tps": 0.08113772206392986
+    },
+    "99": {
+      "completed": 1,
+      "valid": 1,
+      "median_decode_tps": 0.0625023243051851
+    }
+  }
+}
